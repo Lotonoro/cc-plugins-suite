@@ -1,0 +1,105 @@
+# human-plugin
+
+A to-do list for you, kept by the agent. When a coding agent needs something from you (a PR approved, a command
+run, a decision made), it tends to restate the ask every turn, because the terminal scrolls it out of sight.
+human-plugin gives the agent a list it owns: each ask is filed once, pinned above your prompt, and removed by the agent
+as soon as it no longer applies.
+
+## What you see
+
+```
+To do for you 3 open
+  #4 Approve PR #163 on GitHub                               [✓]
+  +2 more […]
+```
+
+- **The band above your prompt** appears whenever the agent needs something from you. Blocking items, meaning the agent is
+  stuck until you act, come first, one row each, and their arrival raises a toast and a chime. Then come the rest, by
+  item number, while the rows last. When they don't all fit, the last row summarises what is left out: `+N blocking` for
+  the blocking items and `+N more` for the others. The header turns amber while anything blocking is open, so its colour
+  alone tells you whether the agent is stuck.
+- **`[✓]`** says you've done it. You get three seconds to change your mind (`[↶ 3s]`; the window ends on the
+  countdown's next one-second tick, so up to a second later), then the agent is told, checks, and removes the item. You can also say so in chat. Only the agent removes items, because it is the one that knows
+  when an ask is settled. A choice (a decision with options) gets answer buttons in the pane instead (see below).
+  A to-do the agent files with a `done` label, such as `Go with sqlite`, draws `[✓ Go with sqlite]`, and that press is
+  what the label says. A label is at most 24 columns (a wide character takes two). A bare `[✓]` on a proposal or a
+  recommendation is a go-ahead for it.
+- **`[✓]` and `[✗]` on a yes/no question.** `[✓]` answers yes and `[✗]` answers no, on the row. Each gets the same three
+  seconds to change your mind, then the agent is told the answer.
+- **Answer buttons.** A choice has one button per option in the pane, the recommended one first and
+  marked `(recommended)`, below the brief that explains the options. Pressing one gets the same three seconds to change
+  your mind, then the agent is told your choice and acts on it. A choice's row in the band shows no answer buttons: open
+  the decision to answer it.
+- **Reply field.** Under an open item's buttons in the pane is a one-line field: type a reply and press Enter, and it is sent with the same three seconds to change your mind (terminal and desktop only).
+- **`[…]`** on a title means the item is a choice, whose answers are in the pane alone. A to-do or a yes/no shows none,
+  even with a brief or a note, because its buttons are on the row. The summary row always shows `[…]` (`+N more […]`).
+  A press on a title, or on the summary row, opens the pane on that item; the summary opens on the first item it folds, a blocking one first. The pane shows the
+  one item you have selected: its note, its full detail, and its buttons last. Click an item in the band to show it, and click
+  the shown item again to close the pane. When the item you are shown is removed, or its answer or reply is sent, the pane moves to the next open item, and closes when none is left. A decision comes as a brief: the
+  question, the agent's recommendation, the options with their costs, and the context. The pane draws any table in a brief as a list, so it fits the narrow pane. Each code block in a brief, except one inside a nested list item, has a `[copy]` button under it that puts just that block's lines on your clipboard, with no frame characters; a toast says whether it took. Ask for more and the agent adds
+  to the brief instead of burying the answer in chat.
+- When the agent works out the answer itself, it tells you why in one line.
+
+Quick questions with a couple of clear options still arrive as Claude Code's usual question dialog. The list is for
+things you do outside the chat, things that can wait, and decisions that need room to explain.
+
+## Install
+
+At the prompt of a terminal session:
+
+```bash
+/plugin install human-plugin --marketplace <owner>/<repo>
+```
+
+Answer `y` to add the marketplace, then pick a scope.
+
+Or load it for one session from a clone of this repo: `claude --plugin-dir <clone>/mods/human-plugin`.
+
+After `claude plugin update human-plugin@<marketplace>`, a session that was already open keeps running the old version until `/reload-plugins` or a restart.
+
+Then start a new session and let the agent do the asking.
+
+## Details
+
+- **Delivery.** A done press or answer reaches the agent exactly once, and the item then leaves the list unless you still
+  have a step of your own to take: the agent's follow-up work is not yours, so it does not stay listed. When the session is idle it starts a short
+  turn; during a turn it is read before the agent's next model request; if you interrupt with Esc, it waits for your
+  next prompt. A press on an item the agent has already removed sends nothing. What is read during a turn or beside
+  your prompt also shows in your transcript as a dim line, `sent to Claude: …`, which the agent never reads.
+- **Survives compaction and resume.** `claude --resume` rebuilds the list from the session's transcript, subagents
+  included, and leaves out anything on a branch that `/rewind` abandoned. `/clear` empties the list. Item numbers
+  are never reused.
+- **Transcript rows.** The agent's calls to the list show as one line each (`human-plugin: added #4 …`), not as the
+  raw call.
+- **Restatement check.** At the end of a turn the mod checks the agent's closing reply for an open item's ask restated
+  without naming any listed item's id. On a catch it leaves the agent one short note, at most once per item, which you see as a dim `sent to Claude: …` line.
+  The check starts no turn.
+
+## Known limits
+
+- The restatement check is a heuristic. It reads only the reply's last message, after the final tool call. It misses a
+  paraphrase, a recap that puts no ask to the reader, and a block that names any listed item's id. It can mistake a block about an item's
+  subject for an ask, at the cost of one extra note. A resumed conversation can note an item once more.
+- A session that enables the plugin partway through may keep asking in chat until a `/clear` or a new session.
+- `/rewind` inside a running session does not rewind the list, because Claude Code gives a plugin no signal that a
+  rewind happened. The agent can still remove what no longer applies, and a resume rebuilds the list correctly.
+- A session forked with `--fork-session` after a compaction starts from that compaction, so items filed before it
+  are not carried over. No fork carries over items its subagents filed.
+- A done press that arrives just as a turn starts relies on Claude Code's documented handling of a row appended to a
+  running turn, which has not been observed live; if it differs, a done press that lands as a turn starts is read one
+  model request later, never lost.
+- Tested on the terminal only: the desktop app is untested, though it draws the reply field too. The chime plays on macOS only.
+
+## Development checks
+
+From the repository root, after the plugin has loaded once (Claude Code writes the type declarations that `tsc`
+needs into `.claude-plugin/types/` on first load):
+
+```bash
+claude plugin validate mods/human-plugin
+tsc -p mods/human-plugin
+claude plugin test mods/human-plugin
+```
+
+Before that first load the `tsconfig.json` the mod extends is missing, and `tsc` writes compiled `.js` files into
+`hooks/` instead of checking anything.

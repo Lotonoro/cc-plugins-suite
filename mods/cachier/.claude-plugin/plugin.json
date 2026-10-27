@@ -1,0 +1,39 @@
+{
+  "name": "cachier",
+  "author": {
+    "name": "Lotonoro"
+  },
+  "version": "0.0.1",
+  "description": "The prompt cache's time left on the prompt footer as a pie and a time, after its mode labels; a click on the pie switches keepalive, and a click on the time or the rebuild figure opens a details pane (the keepalive cost, its tallies, the session's cache misses, its earlier pauses, its long pauses with the refreshes that cover them); every cost in dollars at Anthropic's list prices or in tokens by kind, switched by /keepalive unit; failures on the status line; each message's time at its top right; and an opt-in keepalive that keeps an idle cache warm (off by default; each refresh costs a cache read).",
+  "types": "./types/index.d.ts",
+  "userConfig": {
+    "keepalive_lead_s": {
+      "type": "number",
+      "title": "Keepalive lead (seconds)",
+      "description": "Seconds before the cache expires that a keepalive refresh is sent (default 15). A refresh slower than half this raises the lead to twice its round trip for the session; keepalive stops only if that would pass half the TTL. Each refresh re-reads the whole cached context, so each one costs a cache read.",
+      "default": 15
+    },
+    "keepalive_count": {
+      "type": "number",
+      "title": "Keepalive refresh cap",
+      "description": "Caps the break-even and learned counts of an unpinned run; a prompt starts a new run. Unset, a run sends the learned count, else the break-even count: refreshes until they have cost one rewrite of the cache (about 24 on Opus 5.5 at the 5m TTL). A model with no price sends this option's value, or 3 when it is unset. A count pinned with /keepalive on <lead_s> <count> is sent as pinned. Each refresh costs a cache read of the whole context."
+    },
+    "keepalive_default": {
+      "type": "string",
+      "title": "Keepalive at session start",
+      "description": "Whether keepalive is on or off when a session starts. A click, or /keepalive on <lead_s> [count] or /keepalive off, changes only the session it is made in; /keepalive default on|off sets this.",
+      "options": ["off", "on"],
+      "default": "off"
+    },
+    "cost_unit": {
+      "type": "string",
+      "title": "Cost unit",
+      "description": "The unit costs start in: dollars at Anthropic's list prices (a figure with no price is shown in tokens), or tokens by kind (read, written). /keepalive unit dollars|tokens switches it for the session.",
+      "options": [
+        "dollars",
+        "tokens"
+      ],
+      "default": "dollars"
+    }
+  }
+}

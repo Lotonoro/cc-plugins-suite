@@ -1,0 +1,17 @@
+{
+  "name": "auditor",
+  "author": {
+    "name": "Lotonoro"
+  },
+  "version": "0.0.1",
+  "description": "Persistent reviewer subagent that audits each worker turn and hands its corrections back to the worker. Runs on claude-haiku-5-5 at high effort.",
+  "userConfig": {
+    "log": {
+      "type": "boolean",
+      "title": "Review log",
+      "description": "Write one JSON file per review to this session's auditor log directory.",
+      "default": false
+    }
+  },
+  "types": "./types/index.d.ts"
+}

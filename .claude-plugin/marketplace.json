@@ -1,0 +1,24 @@
+{
+  "name": "flea-market",
+  "owner": {
+    "name": "Lotonoro"
+  },
+  "description": "Mods for Claude Code: a prompt-cache countdown with keepalive, a reviewer subagent, and a to-do list the agent keeps for you.",
+  "plugins": [
+    {
+      "name": "cachier",
+      "source": "./mods/cachier",
+      "description": "Prompt-cache time left as a pie on the footer, opt-in keepalive pings, costs in dollars or tokens, and a time on every message."
+    },
+    {
+      "name": "auditor",
+      "source": "./mods/auditor",
+      "description": "A persistent reviewer subagent that audits each worker turn and hands its corrections back to the worker."
+    },
+    {
+      "name": "human-plugin",
+      "source": "./mods/human-plugin",
+      "description": "A to-do list for the user, kept by the agent and pinned above the prompt until the human marks each item done."
+    }
+  ]
+}

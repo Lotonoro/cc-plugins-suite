@@ -1,0 +1,231 @@
+# cachier
+
+A prompt-cache countdown, an opt-in keepalive, and a time on every message. It stays out of the way until you look
+for it.
+
+## The footer line
+
+In the prompt footer, at the right after the mode labels (`auditor is on`, say), a pie shows how much of the prompt cache's
+lifetime is left, and beside it the time left:
+
+| State | Footer |
+| --- | --- |
+| Warm | `◕ 3:12` (the time dim) |
+| Expired, the model priced | `○ ~$0.42 to rebuild` (dim; `~29k tokens to rebuild` in the token unit, or unpriced) |
+| No cache after a model switch or compaction | `○` |
+| Keepalive on, nothing to count yet (before the first reply, after `/clear`) | `○` |
+| Keepalive off, nothing to count | nothing: the footer's labels alone |
+
+- The pie's shape is the time left in quarters of the cache's lifetime, rounded up: `●` above three quarters, then `◕`,
+  `◑`, `◔`, and `○` once the cache is gone. The lifetime is 5 minutes or 1 hour, as the transcript records it: on a subscription the
+  main conversation defaults to 1 hour and on an API key to 5 minutes, and the `promptCacheTtl` setting changes it.
+- The pie's colour: green while keepalive refreshes, and with keepalive on and nothing to count. Otherwise (keepalive off,
+  or on but paused or spent) it is the normal text colour, then amber in the cache's last quarter, and red in its last
+  tenth (1:15 and 0:30 on a 5-minute cache, 15 and 6 minutes on an hour's). An expired cache is red with keepalive on and
+  dim with it off.
+- A click on the pie switches keepalive, as `/keepalive on` with the last-used lead and count (else the defaults) or
+  `/keepalive off` does. A click on the time or the rebuild figure opens the details pane, at any terminal width. Esc closes it.
+- Hovering the time or the figure shows the refresh cost in a popup just above it (`$0.006/refresh`); nothing on the
+  line moves, so the time stays clickable.
+- Hovering the pie shows keepalive's state in a popup just above it: `cache keepalive is on`, `cache keepalive is paused`
+  (on, but sending no more), or `cache keepalive is off`. It moves nothing on the line either.
+- On the phone cachier draws no mod UI, so the footer and the pane don't show there. Keepalive keeps running on the Mac.
+
+## The details pane
+
+A click on the time or the rebuild figure opens the pane, sized to its lines: one row per line, as wide as the longest. A
+click on the time while it is open closes it, as Esc or the person's close does. The pane says, in short lines with their
+units:
+
+- the cache's warmth: `Prompt cache warm, 3:12 left (5-minute cache)`, or, once the cache has expired or been reset, the
+  figure to rebuild it;
+- keepalive's state; while it is off or paused, what the pie's colours warn of; while paused, why, and that it resumes
+  after your next prompt;
+- what one refresh costs, or while keepalive is off, what one refresh would cost at the lead and count a click on the pie
+  would use;
+- when keepalive pays off (`Keepalive pays off if you're back between 5:00 and 1:54:00`);
+- this session's refreshes and their cost.
+
+The pane follows its lines: when a click on the pie or the countdown changes them, an open pane is re-opened at its new
+size. It opens with the best setup's sentence (see [Best setup](#best-setup)), priced from your recorded pauses, then its
+lines. The rest of what the history says is not in the pane: the learned counts, the one-hour advice, the misses by cause
+and why a figure is in tokens are in the answer to a bare `/keepalive`.
+
+## Keepalive
+
+- Every session starts off. `/keepalive default on` makes later sessions start on, and `/keepalive default off` goes
+  back. The pie, or `/keepalive on <lead_s> [count]` or `/keepalive off`, changes only the session it's made in, so
+  "off everywhere but here" takes `/keepalive default on` and a click on the pie.
+- While it's on, a refresh is sent shortly before the cache expires, so the next prompt reads the cache instead of
+  rewriting it. A refresh reads the whole cached context, so each one costs a cache read. That cost shows on hover over
+  the time (`$0.006/refresh`, or `~19k read/refresh` in tokens) and in the pane.
+- Output tokens are never priced: a refresh's cost is its cache read, plus any uncached input or cache write its reply reports.
+- Refreshes stop after a count per pause, learned from your own pauses or the break-even count until they say otherwise
+  (see [How many refreshes](#how-many-refreshes)). Then keepalive is paused until your next prompt. It is paused too if
+  you turn it on after the cache has expired. A message from another session or a finished background task doesn't
+  resume it.
+- A refresh that fails stops keepalive, and the status line says what broke in one clause, such as
+  `keepalive stopped: API error 529 (overloaded)`. Your next prompt restarts it.
+- The lead (how long before expiry a refresh is sent) starts at 15 s. A refresh slower than half the lead raises it to
+  twice that round trip for the session. It is never lowered, and keepalive stops instead of raising it past half the
+  TTL.
+
+## Cost unit
+
+- Every cost is in dollars or in tokens. `/keepalive unit dollars|tokens` switches the unit for the session, and every
+  figure in the hover and in the pane follows it. The `cost_unit` option sets the unit a session starts in; dollars by
+  default.
+- Dollars are Anthropic's list prices, read from the official pricing page
+  (`platform.claude.com/docs/en/about-claude/pricing.md`) at session start and every six hours after. A read that fails
+  is tried again after ten minutes, or at once when you switch to dollars; the failure goes to the debug log. Until the
+  page has been read, and whenever it can't be, a built-in table in `hooks/prices.ts` prices the models it lists. A 5 m
+  or 1 h cache write is priced at its own rate, a read at the read rate, and a prompt over a model's size threshold
+  (Haiku 5.5 over 100,000 tokens) at its higher rates.
+- A figure with no price is shown in tokens, and the bare `/keepalive` answer says why (`Shown in tokens: no price for …`). That covers a
+  model neither the page nor the built-in table lists, fast mode, and a response that names no model.
+- Tokens name what was done with them (`~19k tokens read`, `~20k tokens written`), since a write costs many reads. The
+  bare `/keepalive` answer says how many reads a 5 m write costs on the current model.
+
+## Message times
+
+Each message has its time at its top right, so you can see how long each phase took.
+
+## `/keepalive`
+
+`on <lead_s> [count]`, `off`, `default on|off`, `unit dollars|tokens`, or no argument for the state and the full
+rundown, in four sections: Cache (the warmth, with the figure to rebuild an expired or reset cache), Keepalive (its
+state and the refresh cost, how many refreshes a pause gets and why, when it pays off, this session and your pauses),
+Advice (the best setup's sentence, the one-hour cache advice, the misses by cause, why figures are in tokens) and
+Settings (the TTL, lead, refresh count, start mode and unit: each value, where it came from when that is known, and what
+changes it; the TTL and start mode apply to new sessions). A section with nothing to say is left out. The text wraps at
+48 columns. A count pins the refreshes per pause for the session; without one, each pause sends the learned count, else
+the break-even count.
+
+Options: `keepalive_lead_s` (default 15), the lead the pie uses until a command sets one; `keepalive_count` (unset by default), a cap on the
+break-even count; `keepalive_default` (`off` or `on`, default `off`), the mode a session starts in, which
+`/keepalive default` sets; `cost_unit` (`dollars` or `tokens`, default `dollars`).
+
+## How many refreshes
+
+Keepalive can't know how long you'll be away, so each pause is a bet. A refresh costs a cache read of the whole context;
+a lapse costs a rewrite of it. On Opus 5.5 a 5 m write costs 25 reads and a 1 h write 40, so letting the cache lapse and
+paying for the rewrite costs 24 reads more than one refresh, or 39 at the 1 h TTL.
+
+This is the ski-rental problem: rent (refresh) until the rent has cost one purchase (the rewrite), then buy (stop and let
+the cache lapse). Cachier refreshes until the refreshes have cost as much as the rewrite they avoid: the write rate less
+the read rate, over the read rate, rounded down. That is 24 refreshes at the 5 m TTL, covering a pause of about 1 h 54 m
+with the default lead, and 39 at the 1 h TTL. It is a ratio of prices, so the size of the context doesn't change it.
+
+However long the pause turns out to be, this rule never costs more than twice what the best choice in hindsight would
+have, give or take the one refresh sent in the lead before you came back:
+
+- Back before the refreshes run out: you paid only for the refreshes you needed, which cost less than the rewrite.
+- Back after: you paid for the refreshes and then the rewrite, about two rewrites, against the one rewrite turning
+  keepalive off would have cost.
+
+A model with no price (see Cost unit) has no break-even count, and sends `keepalive_count`, or 3 when it is unset.
+
+### Learning from your pauses
+
+Break-even is the safe bet with nothing known about you. Once cachier has seen your pauses (kept as below), it prices
+each count from 0 up to break-even over them, the way the marker prices a pause: the refreshes sent before you came
+back, plus a rewrite if the cache lapsed. The cheapest count wins, and the bare `/keepalive` answer says what it learned from
+(`Learned from your pauses: 6 refreshes, which cover 33:30; 10 of your 13 pauses ended within it.`).
+
+The savings come from long pauses. A pause shorter than the time between refreshes costs nothing at any count, but one
+longer than any count covers (lunch, a meeting, the night) costs break-even's 24 refreshes and the rewrite too, where no
+refreshes would have cost the rewrite alone. So if your long pauses are usually much longer than half an hour, keepalive
+learns to send fewer refreshes, down to none. With none, it stays on and sends nothing, and the answer says so
+(`Learned from your pauses: no refreshes, as … ended within the 5:00 TTL.`).
+
+Which pauses to learn from is left to the history: all of them, or only those that started in the same hour of the day.
+Each rule is checked by leaving one pause out at a time and pricing it at the count the others teach. The rule that
+would have cost least on pauses it hadn't seen is used, and break-even wins a tie. With only a few pauses no learned
+rule beats break-even, so nothing changes until your history earns it. No threshold is set by hand.
+
+A count you pin with `/keepalive on <lead> <count>` is sent as pinned, and `keepalive_count` caps the learned count as
+it caps break-even.
+
+### 5 m or 1 h
+
+A 1 h cache makes every write dearer (on Opus 5.5, $8 per million tokens against $5) and every pause up to an hour free.
+Which is cheaper depends on how long you pause and how much each turn writes, so cachier prices your recorded pauses at
+both, at today's rates, in the mode keepalive is in: no refreshes while it is off, your pinned count, or the count it
+would learn for that TTL. A switch takes a new session, so the other TTL is priced as one starts: keepalive on or off as
+`keepalive_default` says, at the `keepalive_lead_s` lead and no pinned count. Once the other TTL would have cost less,
+the answer says so and how to switch (`A 1-hour cache would have saved $4.74 over 10 priced pauses across sessions:
+set "promptCacheTtl": "1h" in settings.json.`). The figure is what it is, over every priced pause across sessions (those recorded
+with their context); this line has no threshold, so weigh a saving over a few pauses as the few pauses it is.
+
+### Best setup
+
+Pauses are also priced, the same way, at all four setups: 5 m or 1 h, keepalive on or off (which pauses: below). Each
+"on" setup at your current TTL uses the lead and count keepalive runs with, or a click on the pie would start with: a
+pinned count, else the count learned from your whole history, else break-even. An "on" setup at the other TTL needs a new
+session, so it uses the lead and count a new session's click starts with: the `keepalive_lead_s` lead and no pinned count.
+A change of TTL says to click the pie only when the new session would start keepalive (per `keepalive_default`) other
+than the change wants, and when it does, the click is made in the new session, e.g.
+`A 1-hour cache with keepalive off would have saved $1.20 over 10 recent pauses: set "promptCacheTtl": "1h" in
+settings.json and, in the new session, click the pie off.` The sentence is added beside the figures above and the TTL line,
+which stay. It says one thing:
+
+- a change, when the cheapest setup differs from yours and saves at least $0.01 and at least 5% of what your setup cost
+  over those pauses: the TTL and keepalive settings that change, and the saving. A TTL change names
+  the `promptCacheTtl` setting and applies to new sessions; a keepalive change says to click the pie;
+- or that you're on the cheapest setup, and what it saves against the other: keepalive on against keepalive off at the
+  same TTL, or the other TTL when keepalive is off. Priced from the pause records at today's setting, not money
+  already saved;
+- or that you're on the cheapest setup, and the baseline costs about the same.
+
+When a cheaper setup exists but would not clear the threshold, the sentence opens by naming it and its saving ("No
+other setup would have saved enough to change (a 1-hour cache with keepalive off would have saved $0.02)"), and never
+calls your setup the cheapest. Where no change is worth making and the baseline costs no more, the sentence says the
+baseline would have cost about the same when the two are within half a cent, else that it would have cost a little less,
+too little to change, with no figure; when the setup it opens with is the baseline, the opening names the pauses and
+nothing follows it.
+
+A keepalive run whose lead is not below a TTL sends no refresh at that TTL, so it is priced there as keepalive off.
+
+The pauses are this session's once five of them can be priced, else the 50 newest priced pauses across sessions, and
+every sentence says which; with fewer than five priced pauses anywhere there is no sentence. In tokens it names the
+setup and points to `/keepalive unit dollars` for the figure. It opens the details pane and is the first line of the
+Advice section of a bare `/keepalive`.
+
+Cachier can't switch the TTL itself: no plugin setting controls it. Set `"promptCacheTtl": "5m"` or `"1h"` in
+settings.json; `FORCE_PROMPT_CACHING_5M` and `CLAUDE_CODE_PROMPT_CACHE_TTL` override it. The docs don't say a running
+session picks up the change, so cachier counts a switch as taking effect in sessions started after you set it.
+
+With `--debug` or `--debug-file`, each refresh, lead raise, miss and long pause writes a `cachier` line to
+the debug log.
+
+Cachier keeps one record per pause your prompt ends, in its plugin store under your config directory: when the pause
+started, how long it ran, the local hour and weekday, the cache TTL, what a rewrite costs over a refresh, and the size of
+the cached context and how much it grew since the session's previous pause. Nothing from the conversation is kept. It
+holds the newest 2,000 or so pauses across all sessions, for keepalive to learn its refresh count from. Nothing else is
+written to disk. The only request cachier makes itself is the pricing page, with nothing sent but the request. Each
+keepalive refresh is a model request.
+
+## Known limits
+
+- A miss is a reply that rewrote at least half its context while reading at most half the previous one. The half is a
+  chosen threshold, not a measured one.
+- Pause gaps run between replies' logged times, so they include the next reply's duration, usually a few seconds.
+- Dollars are priced when each figure is counted, so a price change mid-session leaves earlier figures at the old
+  price.
+- Cachier draws nothing in the engine's hint row. Its pie goes after the footer's labels, with a dim separator between
+  them wherever a label is drawn before it. A label drawn after the line gets its separator from the plugin that draws
+  it, as auditor's does.
+
+## Loading
+
+Load it with `claude --plugin-dir <path>/mods/cachier`, or install it from the flea-market marketplace.
+
+Terminal only. The desktop surface is not tested.
+
+## Checks
+
+`claude plugin validate mods/cachier`, `tsc -p mods/cachier`, `claude plugin test mods/cachier`.
+
+`tsc` needs `.claude-plugin/types/`, which the engine writes the first time it loads the mod from a folder (for
+example `claude --plugin-dir mods/cachier`). Before that the `tsconfig.json` it extends is missing, and `tsc` writes
+compiled `.js` files into `hooks/` instead of checking anything.

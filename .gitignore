@@ -1,0 +1,9 @@
+# The global gitignore drops every dotfile; these are the mods' manifests and this file
+!.gitignore
+!.claude-plugin
+!mods/*/.claude-plugin
+# Operational artifacts (plans, memory, local settings): private scratch
+.claude/
+# Written by the engine when it loads a mod
+mods/*/.claude-plugin/types/
+.DS_Store

@@ -1,0 +1,49 @@
+// One answer a decision offers, as an AskUserQuestion option: a button labelled `label`, with its `description`. At most one is
+// `recommended`.
+export type ItemOption = { label: string; description: string; recommended: boolean }
+
+// One ask the agent has of the human. `state` is `done-pending` once the human marks it done, until the agent removes it
+// or reopens it with a note. `agent` is null when the main agent filed it, else the subagent's id.
+// `done-waiting` is the undo window after a done press: nothing is sent yet. `done-pending` is sent, until the agent acts.
+export type ItemState = 'open' | 'done-waiting' | 'done-pending'
+
+export type Item = {
+  id: number
+  title: string
+  detail: string
+  blocking: boolean
+  createdAt: number
+  state: ItemState
+  // When the done press opened the undo window; null outside it.
+  pressedAt: number | null
+  note: string | null
+  agent: string | null
+  unread: boolean
+  // The answers a decision offers (none for a plain ask), and the one the human pressed, while its undo window runs or after.
+  options: ItemOption[]
+  // A yes/no question (the agent's `yesno` marker): its row offers a yes and a no in place of a check, and its answer is `yes` or
+  // `no`. It has no options.
+  yesno: boolean
+  // The answer a press chose (an option's label, or `yes` or `no`), or the text of a reply the human typed, while its undo window runs or
+  // after. `replied` says the text is the reply.
+  answer: string | null
+  replied: boolean
+  // What a press of a plain to-do's ✓ means (`Go with sqlite`): drawn on its button as `[✓ <label>]`, and sent as the press's answer.
+  // Null for a plain to-do with a bare `[✓]`, and for a yes/no or a decision, which say what a press means themselves.
+  doneLabel: string | null
+}
+
+// The whole list, in one value so a write checks it at once: the items, and the number the next item takes.
+export type Store = { items: Item[]; next: number }
+
+// A done notice the agent is still owed (turns.ts). It is kept in the state, since a reload starts the module's own variables over.
+export type Notice = { id: number; text: string }
+
+// The owed notices as the state keeps them: held for the human's next prompt, or waiting for a read point or a turn.
+export type OwedNotices = { held: Notice[]; waiting: Notice[] }
+
+declare module 'claude-code' {
+  interface PluginState {
+    'human-plugin': { list: Store; selection: number | null; corrected: number[]; notices: OwedNotices }
+  }
+}

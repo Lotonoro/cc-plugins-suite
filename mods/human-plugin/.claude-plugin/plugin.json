@@ -1,0 +1,9 @@
+{
+  "name": "human-plugin",
+  "author": {
+    "name": "Lotonoro"
+  },
+  "version": "0.0.1",
+  "description": "A to-do list for the user, kept by the agent: each ask the agent has of the human is filed as an item, pinned above the prompt until the human marks it done.",
+  "types": "./types/index.d.ts"
+}
