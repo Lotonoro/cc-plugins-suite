@@ -65,7 +65,7 @@ const listOf = ({ headers, rows }: Table): string[] => {
   })
 }
 
-// The prose of a brief, its tables drawn as lists. Its input has no fenced code: fences.ts cuts the blocks out before this sees the text.
+// The prose of a brief, its tables drawn as lists. Its input has no recognised fenced code: fences.ts cuts the blocks out before this sees the text.
 export const tablesAsLists = (markdown: string): string => {
   const lines = markdown.split('\n')
   const out: string[] = []
