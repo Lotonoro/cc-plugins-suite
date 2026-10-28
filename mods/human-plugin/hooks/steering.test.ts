@@ -107,3 +107,7 @@ test('blocking means a workstream is blocked, and the agent promotes an item wit
 test('the done schema asks for a few words, at most 24 columns', () => {
   expect(TOOL_SPEC.inputSchema.properties.done.description).toContain('a few words, at most 24 columns')
 })
+
+test('the schema takes term, a string, for the term the agent uses for the human', () => {
+  expect(TOOL_SPEC.inputSchema.properties.term.type).toBe('string')
+})

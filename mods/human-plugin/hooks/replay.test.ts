@@ -56,6 +56,43 @@ test('replay rebuilds the list from the main and subagent transcripts in time or
   expect(unreadable).toEqual([])
 })
 
+test('a resume rebuilds the term the main agent last stated, on an add or an update; a subagent\'s term is not used', async () => {
+  const main = [
+    call('2026-10-20T10:00:00.000Z', 'a', { action: 'add', title: 'Pick a db', term: 'owner' }),
+    result('2026-10-20T10:00:01.000Z', 'a', 'added #1 (term set to "owner")'),
+    call('2026-10-20T10:00:05.000Z', 'b', { action: 'update', id: 1, term: 'lead' }),
+    result('2026-10-20T10:00:06.000Z', 'b', 'no change to #1 (term set to "lead")'),
+  ].join('\n') + '\n'
+  const sub = [
+    call('2026-10-20T10:00:07.000Z', 'e', { action: 'add', title: 'Sub ask', term: 'the user' }),
+    result('2026-10-20T10:00:08.000Z', 'e', 'added #2 (term not used: only the main agent sets it)'),
+  ].join('\n') + '\n'
+  const { store } = await replay([sourceOf(main), sourceOf(sub, 'sub-1')])
+  expect(store.term).toBe('lead')
+  expect(store.items.map(it => it.id)).toEqual([1, 2])
+})
+
+test('a call the mod refused for a term over the limit never ran, so the term before it stays', async () => {
+  const text = [
+    call('2026-10-20T10:00:00.000Z', 'a', { action: 'add', title: 'Pick a db', term: 'owner' }),
+    result('2026-10-20T10:00:01.000Z', 'a', 'added #1 (term set to "owner")'),
+    call('2026-10-20T10:00:02.000Z', 'b', { action: 'update', id: 1, term: 'x'.repeat(21) }),
+    result('2026-10-20T10:00:03.000Z', 'b', 'term must be at most 20 columns: give the short word or name you use for the human', true),
+  ].join('\n') + '\n'
+  const { store } = await replay([sourceOf(text)])
+  expect(store.term).toBe('owner')
+})
+
+test('a subagent\'s term is not used, so an add it states over the limit still replays its item', async () => {
+  const sub = [
+    call('2026-10-20T10:00:03.000Z', 'e', { action: 'add', title: 'Sub ask', term: 'x'.repeat(21) }),
+    result('2026-10-20T10:00:04.000Z', 'e', 'added #1 (term not used: only the main agent sets it)'),
+  ].join('\n') + '\n'
+  const { store } = await replay([sourceOf(sub, 'sub-1')])
+  expect(store.items.map(it => it.title)).toEqual(['Sub ask'])
+  expect(store.term).toBe(null)
+})
+
 test('a line may be split at any piece boundary', async () => {
   const whole = await replay([sourceOf(MAIN)])
   for (const size of [1, 7, 300]) {
@@ -175,7 +212,7 @@ test('a half-written last line is dropped without a skip, and a corrupt complete
 })
 
 test('an empty transcript replays to an empty list', async () => {
-  expect((await replay([sourceOf('')])).store).toEqual({ items: [], next: 1 })
+  expect((await replay([sourceOf('')])).store).toEqual({ items: [], next: 1, term: null })
 })
 
 test('a row whose timestamp is no date cannot be placed in time: its call and its notice are skipped and counted, the rest replays', async () => {

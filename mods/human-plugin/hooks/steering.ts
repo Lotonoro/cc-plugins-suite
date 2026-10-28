@@ -69,6 +69,7 @@ export const TOOL_SPEC = {
       blocking: { type: 'boolean', description: 'True when any workstream cannot go on without the human. Set it with update once a workstream has reached a point where it waits on a non-blocking item.' },
       done: { type: 'string', description: 'What pressing ✓ means on a to-do, e.g. "Go with sqlite": a few words, at most 24 columns. Not for a yes/no or a decision.' },
       note: { type: 'string', description: 'A note on the item; a blank one clears it.' },
+      term: { type: 'string', description: 'The term for the human, drawn on the band.' },
     },
     required: ['action'],
   },

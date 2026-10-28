@@ -16,7 +16,7 @@ const item: Item = {
   unread: false,
   options: [], answer: null, yesno: false, replied: false, doneLabel: null, thread: [], windowTurns: [], windowChanged: false,
 }
-const store: Store = { items: [item], next: 4 }
+const store: Store = { items: [item], next: 4, term: null }
 const stateOf = (s: Store) => s.items[0]?.state
 
 test('the notice names the item by id and title, in the marker form the replay reads, and never carries the brief', () => {
@@ -143,13 +143,13 @@ test('a labelled to-do\'s press notice says what the human pressed, on its own l
 })
 
 test('a labelled to-do\'s press carries its label through the window and into the sent item', () => {
-  const waiting = press({ items: [{ ...item, doneLabel: 'Go with sqlite' }], next: 4 }, 3, 1000, 'Go with sqlite')
+  const waiting = press({ items: [{ ...item, doneLabel: 'Go with sqlite' }], next: 4, term: null }, 3, 1000, 'Go with sqlite')
   expect(waiting.items[0]).toMatchObject({ state: 'done-waiting', answer: 'Go with sqlite', replied: false })
   expect(expire(waiting, 3, 1000).sent).toMatchObject({ state: 'done-pending', answer: 'Go with sqlite' })
 })
 
 test('a reply on a labelled to-do is still a reply: its text is sent, and the label is not', () => {
-  const labelled: Store = { items: [{ ...item, doneLabel: 'Go with sqlite' }], next: 4 }
+  const labelled: Store = { items: [{ ...item, doneLabel: 'Go with sqlite' }], next: 4, term: null }
   const sent = expire(reply(labelled, 3, 1000, 'Use postgres instead'), 3, 1000).sent
   expect(sent).toMatchObject({ state: 'done-pending', answer: 'Use postgres instead', replied: true })
   expect(doneNotice(sent as Item)).toBe(
@@ -180,7 +180,7 @@ const applied = (s: Store, raw: Record<string, unknown>): Store => {
   if ('deny' in out) throw new Error(out.deny)
   return out.store
 }
-const labelled: Store = { items: [{ ...item, doneLabel: 'Go with sqlite' }], next: 4 }
+const labelled: Store = { items: [{ ...item, doneLabel: 'Go with sqlite' }], next: 4, term: null }
 
 test('a label changed inside the undo window still sends the label that was pressed', () => {
   const relabelled = applied(press(labelled, 3, 1000, 'Go with sqlite'), { action: 'update', id: 3, done: 'Use postgres' })
@@ -253,9 +253,9 @@ test('reopen archives the sent answer as the thread\'s human turn before it clea
 test('the words of each kind of answer stay on the item after a reopen: an option, a yes or no, a labelled press and a bare done', () => {
   const decision: Item = { ...item, options: [{ label: 'Use postgres', description: '', recommended: false }, { label: 'Use sqlite', description: '', recommended: false }] }
   const cases: [Store, string | null, string][] = [
-    [{ items: [decision], next: 4 }, 'Use postgres', 'Use postgres'],
-    [{ items: [{ ...item, yesno: true }], next: 4 }, 'no', 'no'],
-    [{ items: [{ ...item, doneLabel: 'Go with sqlite' }], next: 4 }, 'Go with sqlite', 'Go with sqlite'],
+    [{ items: [decision], next: 4, term: null }, 'Use postgres', 'Use postgres'],
+    [{ items: [{ ...item, yesno: true }], next: 4, term: null }, 'no', 'no'],
+    [{ items: [{ ...item, doneLabel: 'Go with sqlite' }], next: 4, term: null }, 'Go with sqlite', 'Go with sqlite'],
     [store, null, 'pressed done'],
   ]
   for (const [before, answer, words] of cases) {
@@ -266,7 +266,7 @@ test('the words of each kind of answer stay on the item after a reopen: an optio
 
 test('an undo press on a window the agent added a turn to folds that turn into the brief, as an append would add it: with no human turn in the thread, the thread gains nothing', () => {
   const agentTurn = { speaker: 'agent' as const, words: 'The sqlite file is in data/.' }
-  const waiting: Store = { items: [{ ...item, state: 'done-waiting', pressedAt: 1000, answer: 'Use sqlite', replied: true, windowTurns: [agentTurn] }], next: 4 }
+  const waiting: Store = { items: [{ ...item, state: 'done-waiting', pressedAt: 1000, answer: 'Use sqlite', replied: true, windowTurns: [agentTurn] }], next: 4, term: null }
   expect(press(waiting, 3, 2000, null).items[0]).toMatchObject({
     state: 'open', answer: null, replied: false, detail: 'postgres or sqlite\n\nThe sqlite file is in data/.', thread: [], windowTurns: [],
   })
@@ -279,7 +279,7 @@ test('after an undo the item has no human turn, so the window\'s turn and the ne
 })
 
 test('an undo into an empty brief sets it to the window\'s turn alone, as an append onto an empty brief does', () => {
-  const blank: Store = { items: [{ ...item, detail: '' }], next: 4 }
+  const blank: Store = { items: [{ ...item, detail: '' }], next: 4, term: null }
   const waiting = applied(press(blank, 3, 1000, 'Use sqlite'), { action: 'append', id: 3, text: 'It needs a file.' })
   expect(press(waiting, 3, 2000, null).items[0]).toMatchObject({ detail: 'It needs a file.', thread: [] })
 })
@@ -287,14 +287,14 @@ test('an undo into an empty brief sets it to the window\'s turn alone, as an app
 test('an undo gives the window\'s turns to the brief while the thread holds no human turn, and to the thread after its last turn once it holds one', () => {
   const agentTurn = { speaker: 'agent' as const, words: 'The sqlite file is in data/.' }
   const earlier = { speaker: 'human' as const, words: 'Use postgres' }
-  const windowed = (thread: Turn[]): Store => ({ items: [{ ...item, thread, state: 'done-waiting', pressedAt: 1000, answer: 'Use sqlite', replied: true, windowTurns: [agentTurn] }], next: 4 })
+  const windowed = (thread: Turn[]): Store => ({ items: [{ ...item, thread, state: 'done-waiting', pressedAt: 1000, answer: 'Use sqlite', replied: true, windowTurns: [agentTurn] }], next: 4, term: null })
   expect(press(windowed([]), 3, 2000, null).items[0]).toMatchObject({ detail: 'postgres or sqlite\n\nThe sqlite file is in data/.', thread: [] })
   expect(press(windowed([earlier]), 3, 2000, null).items[0]).toMatchObject({ detail: 'postgres or sqlite', thread: [earlier, agentTurn] })
 })
 
 test('a window the agent added a turn to ends by sending the reply and reopening the item: the reply first, the agent\'s turn after, and the notice carries the reply', () => {
   const agentTurn = { speaker: 'agent' as const, words: 'The sqlite file is in data/.' }
-  const waiting: Store = { items: [{ ...item, state: 'done-waiting', pressedAt: 1000, answer: 'Use sqlite', replied: true, windowTurns: [agentTurn] }], next: 4 }
+  const waiting: Store = { items: [{ ...item, state: 'done-waiting', pressedAt: 1000, answer: 'Use sqlite', replied: true, windowTurns: [agentTurn] }], next: 4, term: null }
   const out = expire(waiting, 3, 1000)
   expect(out.sent).toMatchObject({ state: 'done-pending', answer: 'Use sqlite', replied: true })
   expect(out.store.items[0]).toMatchObject({ state: 'open', unread: true, answer: null, replied: false, windowTurns: [] })

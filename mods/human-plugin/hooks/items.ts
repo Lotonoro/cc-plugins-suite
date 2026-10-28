@@ -3,7 +3,7 @@ import { answered, archive, cancelWindow, labelOf, reopen, turnsOf, withSection 
 
 export const PLUGIN = 'human-plugin'
 export const TOOL = 'mcp__human-plugin__human_items'
-export const EMPTY: Store = { items: [], next: 1 }
+export const EMPTY: Store = { items: [], next: 1, term: null }
 
 const STATES: readonly ItemState[] = ['open', 'done-waiting', 'done-pending']
 
@@ -65,19 +65,26 @@ export const normalizeItem = (raw: unknown): Item | null => {
   return stored === 'done-waiting' && pressedAt === null ? cancelWindow(item) : item
 }
 
-// The whole list as stored: its items normalized (the garbage ones dropped), and the id counter kept at least one above the highest
-// id, so an id is never handed out twice.
+// The term as stored: text that is not blank. Any other value is no term, so a list an older release wrote has none.
+const termStored = (raw: unknown): string | null => (typeof raw === 'string' && raw.trim() !== '' ? raw : null)
+
+// The whole list as stored: its items normalized (the garbage ones dropped), the id counter kept at least one above the highest
+// id, so an id is never handed out twice, and the term as stored.
 export const normalizeStore = (raw: unknown): Store => {
   const r = typeof raw === 'object' && raw !== null ? (raw as Record<string, unknown>) : {}
   const items = Array.isArray(r.items) ? r.items.map(normalizeItem).filter((it): it is Item => it !== null) : []
   const highest = items.reduce((max, it) => Math.max(max, it.id), 0)
   const saved = typeof r.next === 'number' && Number.isInteger(r.next) && r.next >= 1 ? r.next : 1
-  return { items, next: Math.max(saved, highest + 1) }
+  return { items, next: Math.max(saved, highest + 1), term: termStored(r.term) }
 }
 
+// A term as the input check reads it: one line, or the reason it is refused. A blank term is `ok` with a null value, which clears the term.
+type TermCheck = { ok: true; value: string | null } | { ok: false; reason: string }
+
+// `term` is the term the call states for the human (add and update only): undefined when it states none.
 export type ToolInput =
-  | { action: 'add'; title: string; detail: string; blocking: boolean; options: ItemOption[]; yesno: boolean; doneLabel: string | null }
-  | { action: 'update'; id: number; title?: string; detail?: string; blocking?: boolean; note?: string | null; options?: ItemOption[]; doneLabel?: string | null }
+  | { action: 'add'; title: string; detail: string; blocking: boolean; options: ItemOption[]; yesno: boolean; doneLabel: string | null; term?: TermCheck }
+  | { action: 'update'; id: number; title?: string; detail?: string; blocking?: boolean; note?: string | null; options?: ItemOption[]; doneLabel?: string | null; term?: TermCheck }
   | { action: 'append'; id: number; text: string }
   | { action: 'remove'; id: number }
   | { action: 'list' }
@@ -117,16 +124,36 @@ const columns = (text: string): number =>
     return sum + (WIDE.some(([lo, hi]) => cp >= lo && cp <= hi) ? 2 : 1)
   }, 0)
 
+// The longest term the agent gives for the human, in display columns: the short word the band's chip names the human by.
+const TERM_MAX = 20
+
+// A label or a term as one line: whitespace collapsed to single spaces and trimmed, so a line break is drawn as a space. Refused, with
+// `refusal` as the reason, when it is over `max` columns.
+const lineOf = (raw: string, max: number, refusal: string): { ok: true; value: string } | { ok: false; reason: string } => {
+  const line = raw.replace(/\s+/g, ' ').trim()
+  return columns(line) > max ? { ok: false, reason: refusal } : { ok: true, value: line }
+}
+
 // The label a plain to-do's ✓ carries: what a press means, one line (whitespace is drawn as a space). Undefined when none was given, and
 // null when an update's `done: ''` clears it. A yes/no or a decision says what each press means in its own buttons, so it takes none.
 const parseDone = (raw: unknown, decision: boolean, clear: boolean): { ok: true; value: string | null | undefined } | { ok: false; reason: string } => {
   if (raw === undefined) return { ok: true, value: undefined }
   if (decision) return { ok: false, reason: 'done is for a to-do: a yes/no or a decision already says what each press means' }
   if (typeof raw !== 'string') return { ok: false, reason: 'done must be text' }
-  const label = raw.replace(/\s+/g, ' ').trim()
-  if (label === '') return clear ? { ok: true, value: null } : { ok: false, reason: 'done needs a label, e.g. "Go with sqlite"' }
-  if (columns(label) > DONE_MAX) return { ok: false, reason: `done must be at most ${DONE_MAX} columns: name what a press does in a few words` }
-  return { ok: true, value: label }
+  const label = lineOf(raw, DONE_MAX, `done must be at most ${DONE_MAX} columns: name what a press does in a few words`)
+  if (!label.ok) return label
+  if (label.value === '') return clear ? { ok: true, value: null } : { ok: false, reason: 'done needs a label, e.g. "Go with sqlite"' }
+  return { ok: true, value: label.value }
+}
+
+// The term the call states for the human, as the input check reads it: one line, at most TERM_MAX columns, null when blank. Undefined when none
+// is given. A refused term is returned, not acted on here: whether it refuses the call depends on the caller, and withTerm decides that.
+const parseTerm = (raw: unknown): TermCheck | undefined => {
+  if (raw === undefined) return undefined
+  if (typeof raw !== 'string') return { ok: false, reason: 'term must be text' }
+  const term = lineOf(raw, TERM_MAX, `term must be at most ${TERM_MAX} columns: give the short word or name you use for the human`)
+  if (!term.ok) return term
+  return { ok: true, value: term.value === '' ? null : term.value }
 }
 
 // The model's tool input is external data: it is checked here once, and the rest of the mod sees only ToolInput.
@@ -158,6 +185,7 @@ export const parseInput = (raw: unknown): Parsed => {
           options: options.value ?? [],
           yesno: r.yesno === true,
           doneLabel: done.value ?? null,
+          term: parseTerm(r.term),
         },
       }
     }
@@ -193,8 +221,10 @@ export const parseInput = (raw: unknown): Parsed => {
       const done = parseDone(r.done, r.options !== undefined, true)
       if (!done.ok) return done
       if (done.value !== undefined) value.doneLabel = done.value
-      if (value.title === undefined && value.detail === undefined && value.blocking === undefined && value.note === undefined && value.options === undefined && value.doneLabel === undefined) {
-        return { ok: false, reason: 'update changes nothing: give a title, detail, blocking, note, options or done' }
+      const term = parseTerm(r.term)
+      if (term !== undefined) value.term = term
+      if (value.title === undefined && value.detail === undefined && value.blocking === undefined && value.note === undefined && value.options === undefined && value.doneLabel === undefined && value.term === undefined) {
+        return { ok: false, reason: 'update changes nothing: give a title, detail, blocking, note, options, done or term' }
       }
       return { ok: true, value }
     }
@@ -223,6 +253,9 @@ export type Outcome =
   | { deny: string }
   | { store: Store; reply: string; added: Item | null; changed: { id: number; reopened: boolean; promoted: boolean } | null }
 
+// An outcome that is not denied.
+type Applied = Extract<Outcome, { store: Store }>
+
 // The fields an agent's change writes, each as the text it compares by: the detail, the note and each option's description by their
 // trimmed text, so a whitespace-only edit is no change, and a field a change empties as ''. `unchanged` is every field equal. `asks` is a
 // field that differs and is not emptied, which sets a title, a blocking mark, options, or text in the detail, note or done label. Both read
@@ -240,7 +273,7 @@ const asks = (before: Item, after: Item): boolean => FIELDS.some(field => field(
 
 // An agent's change to `target`, written as `after`. One that leaves the item as it was is no change. One that asks the human something
 // (asks) puts a sent item back to open, with its reply field (done.ts); an item in its undo window keeps the window, and reopens when it ends.
-const change = (store: Store, target: Item, after: Item, reply: string): Outcome => {
+const change = (store: Store, target: Item, after: Item, reply: string): Applied => {
   if (unchanged(target, after)) return { store, reply: `no change to #${target.id}`, added: null, changed: null }
   const asked = asks(target, after)
   const marked = asked && target.state === 'done-waiting' ? { ...after, windowChanged: true } : after
@@ -263,6 +296,26 @@ const appendTurn = (store: Store, target: Item, text: string): Outcome => {
     added: null,
     changed: { id: target.id, reopened: target.state === 'done-pending', promoted: false },
   }
+}
+
+// The note a reply ends with about the term, after the item's outcome. An outcome holds no opening parenthesis, so outcomeOf can cut it off.
+const termNote = (text: string): string => ` (${text})`
+
+// The term a call leaves on the list, as the call states it. A subagent's term is not used, valid or not, and the reply says so. The main
+// agent's term replaces the list's, a blank one clearing it; a term it states that is refused refuses the whole call, so nothing is applied.
+// A call with no term leaves the list's as it is. The reply names what became of the term, after the item's outcome.
+const withTerm = (out: Applied, term: TermCheck | undefined, ctx: Ctx): Outcome => {
+  if (term === undefined) return out
+  if (ctx.agent !== null) return { ...out, reply: `${out.reply}${termNote('term not used: only the main agent sets it')}` }
+  if (!term.ok) return { deny: term.reason }
+  const note = term.value === null ? termNote('term cleared') : termNote(`term set to "${term.value}"`)
+  return { ...out, store: { ...out.store, term: term.value }, reply: `${out.reply}${note}` }
+}
+
+// The item's outcome in a reply: the reply without the term note that follows it (the transcript row, ui.ts, draws the outcome alone).
+export const outcomeOf = (reply: string): string => {
+  const at = reply.indexOf(' (')
+  return at === -1 ? reply : reply.slice(0, at)
 }
 
 export const act = (store: Store, input: ToolInput, ctx: Ctx): Outcome => {
@@ -288,7 +341,7 @@ export const act = (store: Store, input: ToolInput, ctx: Ctx): Outcome => {
       windowTurns: [],
       windowChanged: false,
     }
-    return { store: { items: [...store.items, item], next: store.next + 1 }, reply: `added #${item.id}`, added: item, changed: null }
+    return withTerm({ store: { items: [...store.items, item], next: store.next + 1, term: store.term }, reply: `added #${item.id}`, added: item, changed: null }, input.term, ctx)
   }
   const target = store.items.find(it => it.id === input.id)
   if (target === undefined) return { deny: `no item #${input.id}` }
@@ -311,7 +364,7 @@ export const act = (store: Store, input: ToolInput, ctx: Ctx): Outcome => {
   if (input.options !== undefined && target.doneLabel !== null) {
     return { deny: `#${target.id} has a done label: it is a to-do, which takes no options; clear the label first with done: ''` }
   }
-  return change(store, target, {
+  return withTerm(change(store, target, {
     ...target,
     title: input.title ?? target.title,
     detail: input.detail ?? target.detail,
@@ -319,7 +372,7 @@ export const act = (store: Store, input: ToolInput, ctx: Ctx): Outcome => {
     note: input.note !== undefined ? input.note : target.note,
     options: input.options ?? target.options,
     doneLabel: input.doneLabel !== undefined ? input.doneLabel : target.doneLabel,
-  }, `updated #${target.id}`)
+  }, `updated #${target.id}`), input.term, ctx)
 }
 
 // The item the pane shows: the selected one, or with no selection the first. A selection whose item is gone names none; the pane
@@ -334,8 +387,8 @@ export const successorOf = (items: readonly Item[], removed: number): Item | und
   return open.find(it => it.id > removed) ?? open[open.length - 1]
 }
 
-// Empties the list and keeps the id counter: an id is never handed out twice, even across /clear.
-export const clearAll = (store: Store): Store => ({ items: [], next: store.next })
+// Empties the list and keeps the id counter: an id is never handed out twice, even across /clear. The term goes with the items.
+export const clearAll = (store: Store): Store => ({ items: [], next: store.next, term: null })
 
 // Carries the id counter a /clear saved in the plugin store into the new session. The store is the plugin's own JSON, so
 // anything but a whole number from 1 is no saved counter; the counter never goes down.
@@ -346,11 +399,11 @@ export const carryNext = (store: Store, saved: unknown): Store => {
 
 // Joins the list rebuilt from a transcript with the list as it stands. The transcript decides every item whose id it
 // handed out (`known`, on any branch): kept as replayed, or gone if the replay dropped it. An item it does not know was
-// added after the transcript was read, and stays. The counter never goes down.
+// added after the transcript was read, and stays. The counter never goes down. A term set live is kept; the rebuilt one fills a list that has none.
 export const mergeRestored = (live: Store, replayed: Store, known: readonly number[]): Store => {
   const decided = new Set([...known, ...replayed.items.map(it => it.id)])
   const added = live.items.filter(it => !decided.has(it.id))
-  return { items: [...replayed.items, ...added], next: Math.max(live.next, replayed.next) }
+  return { items: [...replayed.items, ...added], next: Math.max(live.next, replayed.next), term: live.term ?? replayed.term }
 }
 
 // A line break as the tool row's `^` takes one: a carriage return, a line feed, a Unicode line or paragraph separator, or a CRLF pair as one.
