@@ -168,7 +168,7 @@ const NEXT_KEY = 'next'
 // session whose count is behind the store's keeps the store's.
 const saveCounter = async ($: EngineInterface, next: number): Promise<void> => {
   try {
-    await $.store.set(NEXT_KEY, carryNext({ items: [], next }, await $.store.get(NEXT_KEY)).next)
+    await $.store.set(NEXT_KEY, carryNext({ items: [], next, term: null }, await $.store.get(NEXT_KEY)).next)
   } catch (err) {
     $.ui.log(`human-plugin: the id counter was not saved: ${String(err)}`)
   }

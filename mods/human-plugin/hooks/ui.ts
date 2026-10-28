@@ -2,7 +2,7 @@ import type { ButtonProps, BoxProps, ElementConstructor, InputProps, MarkdownPro
 import type { Item, Store, Turn } from '../types'
 import { labelOf, oneLine, turnsOf } from './done'
 import { briefParts } from './fences'
-import { parseInput, selectedItem, type ToolInput } from './items'
+import { outcomeOf, parseInput, selectedItem, type ToolInput } from './items'
 import { bandRows } from './layout'
 import { tablesAsLists } from './tables'
 
@@ -156,10 +156,12 @@ const doing = (input: ToolInput): string => {
 const done = (input: ToolInput, reply: string): string => {
   switch (input.action) {
     case 'add':
-      return `${reply} ${input.title}${input.blocking ? ' (blocking)' : ''}`
+      return `${outcomeOf(reply)} ${input.title}${input.blocking ? ' (blocking)' : ''}`
     case 'list':
       // One header line per item (`#N blocking, state: title`), so an open item is a line with `open:`; a detail's own lines are not items.
       return `listed ${(reply.match(/^#\d+ (non-)?blocking, open: /gm) ?? []).length} open`
+    case 'update':
+      return outcomeOf(reply)
     default:
       return reply
   }
@@ -180,6 +182,9 @@ export const toolLine = (call: ToolCall): string => {
   return `human-plugin: ${text}`.replace(/\s+/g, ' ')
 }
 
+// The chip names the term the agent states for the human; it says "you" until one is stated, and again once the agent clears it (the term '').
+const chipText = (term: string | null): string => (term === null || term === '' ? 'To do for you' : `To do for ${term}`)
+
 // The band above the prompt: a header with the count, then the rows that fit. When items are folded, the summary row is the way into
 // the pane for them. The pane is also opened by a title, and closed by its own close or a press on the item it shows.
 export const band = (t: Table, h: Handlers, store: Store, view: View): RenderElement => {
@@ -191,7 +196,7 @@ export const band = (t: Table, h: Handlers, store: Store, view: View): RenderEle
   // item, `permission` otherwise. The count after it is plain text: the open items, and the sent ones by their own count.
   const header = t.Box({
     children: [
-      t.Box({ flexShrink: 0, children: [t.Text({ bold: true, color: 'inverseText', backgroundColor: open.some(it => it.blocking) ? 'warning' : 'permission', children: [' To do for you '] })] }),
+      t.Box({ flexShrink: 0, children: [t.Text({ bold: true, color: 'inverseText', backgroundColor: open.some(it => it.blocking) ? 'warning' : 'permission', children: [` ${chipText(store.term)} `] })] }),
       t.Text({ children: [` ${open.length} open${pending > 0 ? `, ${pending} sent` : ''} `] }),
     ],
   })

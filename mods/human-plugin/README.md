@@ -18,7 +18,8 @@ To do for you 3 open
   an open item blocking because its work has come to wait on it. Then come the rest, by item number, while the rows last. When
   they don't all fit, the last row summarises what is left out: `+N blocking` for the blocking items and `+N more` for the
   others. The header turns amber while anything blocking is open, so its colour alone tells you whether any of the agent's work
-  is stuck.
+  is stuck. The header reads `To do for you` until the agent states the term it uses for you, and then `To do for` followed by
+  that term.
 - **`[✓]`** says you've done it. You get three seconds to change your mind (`[↶ 3s]`; the window ends on the
   countdown's next one-second tick, so up to a second later), then the agent is told, checks, and removes the item. You can also say so in chat. Only the agent removes items, because it is the one that knows
   when an ask is settled; when it adds to a sent item instead, the item comes back open, with its reply field, marked `•`. A choice (a decision with options) gets answer buttons in the pane instead (see below).

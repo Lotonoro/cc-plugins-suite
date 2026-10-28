@@ -177,7 +177,7 @@ test('a session.end whose carry throws still empties the list, with the id count
   const e = { reason: 'clear' }
   const answered = await (catches['session.end'] as Handler)(broken(logs, [], stored, writes) as never, e as never, next(false) as never)
   expect(answered).toEqual({ passed: e })
-  expect(writes).toEqual([{ items: [], next: 7 }])
+  expect(writes).toEqual([{ items: [], next: 7, term: null }])
   expect(logs).toEqual(['human-plugin: the session.end hook throw: list unreadable'])
 })
 
@@ -1610,7 +1610,7 @@ test('the tool lists and removes a 0.1-shaped item, and drops a garbage item fro
   expect(await (hooks['tool.call'] as Handler)(env as never, { tool: TOOL, action: 'remove', id: 1 } as never, next(false) as never)).toEqual({
     result: 'removed #1',
   })
-  expect(values.list).toEqual({ items: [], next: 3 })
+  expect(values.list).toEqual({ items: [], next: 3, term: null })
 })
 
 test('the band shows no garbage item, and draws the one beside it', async () => {
@@ -1620,6 +1620,94 @@ test('the band shows no garbage item, and draws the one beside it', async () => 
   const text = JSON.stringify(await band(hooks, env))
   expect(text).toContain('Pick a db')
   expect(text).not.toContain('garbage')
+})
+
+// The mod's tool called as the model calls it: from the main agent, or as a subagent when the input names its `agentId`.
+const runTool = (hooks: Record<string, Handler>, env: unknown, input: Record<string, unknown>) =>
+  (hooks['tool.call'] as Handler)(env as never, { tool: TOOL, ...input } as never, next(false) as never)
+
+test('an add from the main agent with a term draws the chip with it, and its reply names the term', async () => {
+  reset()
+  const { hooks } = wire()
+  const { env } = memEnv([], [], null)
+  expect(await runTool(hooks, env, { action: 'add', title: 'Pick a db', term: 'owner' })).toEqual({ result: 'added #1 (term set to "owner")' })
+  expect(JSON.stringify(await band(hooks, env))).toContain('To do for owner')
+})
+
+test('a term is drawn as one line with single spaces; a blank one returns the chip to To do for you, and its add still lands', async () => {
+  reset()
+  const { hooks } = wire()
+  const { env } = memEnv([], [], null)
+  expect(await runTool(hooks, env, { action: 'add', title: 'Pick a db', term: 'Team\n   lead' })).toEqual({ result: 'added #1 (term set to "Team lead")' })
+  expect(JSON.stringify(await band(hooks, env))).toContain('To do for Team lead')
+  expect(await runTool(hooks, env, { action: 'add', title: 'Second', term: '  ' })).toEqual({ result: 'added #2 (term cleared)' })
+  const drawn = JSON.stringify(await band(hooks, env))
+  expect(drawn).toContain('To do for you')
+  expect(drawn).toContain('2 open')
+  expect(drawn).not.toContain('Team lead')
+})
+
+test('a later term changes the chip; a call with no term leaves it, and a term-only update sets it at once', async () => {
+  reset()
+  const { hooks } = wire()
+  const { env } = memEnv([], [], null)
+  await runTool(hooks, env, { action: 'add', title: 'Pick a db', term: 'owner' })
+  await runTool(hooks, env, { action: 'add', title: 'Second' })
+  expect(JSON.stringify(await band(hooks, env))).toContain('To do for owner')
+  expect(await runTool(hooks, env, { action: 'update', id: 2, term: 'lead' })).toEqual({ result: 'no change to #2 (term set to "lead")' })
+  expect(JSON.stringify(await band(hooks, env))).toContain('To do for lead')
+  await runTool(hooks, env, { action: 'update', id: 2, note: 'recheck' })
+  expect(JSON.stringify(await band(hooks, env))).toContain('To do for lead')
+})
+
+test('a subagent\'s term is not used: its add adds the item, and the chip keeps the term the main agent set', async () => {
+  reset()
+  const { hooks } = wire()
+  const { env } = memEnv([], [], null)
+  await runTool(hooks, env, { action: 'add', title: 'Pick a db', term: 'owner' })
+  expect(await runTool(hooks, env, { action: 'add', title: 'Sub ask', term: 'the user', agentId: 'sub-1' })).toEqual({
+    result: 'added #2 (term not used: only the main agent sets it)',
+  })
+  expect(await runTool(hooks, env, { action: 'add', title: 'Long ask', term: 'x'.repeat(21), agentId: 'sub-1' })).toEqual({
+    result: 'added #3 (term not used: only the main agent sets it)',
+  })
+  expect(JSON.stringify(await band(hooks, env))).toContain('To do for owner')
+})
+
+test('an over-long term refuses the add or the update: no item is added or changed, and the chip keeps its term', async () => {
+  reset()
+  const { hooks } = wire()
+  const { env, values } = memEnv([], [], null)
+  await runTool(hooks, env, { action: 'add', title: 'Pick a db', term: 'owner' })
+  const reason = 'term must be at most 20 columns: give the short word or name you use for the human'
+  const tooLong = 'x'.repeat(21)
+  expect(await runTool(hooks, env, { action: 'add', title: 'Second', term: tooLong })).toEqual({ deny: reason })
+  expect(await runTool(hooks, env, { action: 'update', id: 1, title: 'Renamed', term: tooLong })).toEqual({ deny: reason })
+  expect(await runTool(hooks, env, { action: 'update', id: 1, term: tooLong })).toEqual({ deny: reason })
+  expect(values.list).toMatchObject({ items: [{ id: 1, title: 'Pick a db' }], term: 'owner' })
+  expect(JSON.stringify(await band(hooks, env))).toContain('To do for owner')
+})
+
+test('a term-only update naming an item no one has is refused, and the chip keeps its term', async () => {
+  reset()
+  const { hooks } = wire()
+  const { env } = memEnv([], [], null)
+  await runTool(hooks, env, { action: 'add', title: 'Pick a db', term: 'owner' })
+  expect(await runTool(hooks, env, { action: 'update', id: 9, term: 'lead' })).toEqual({ deny: 'no item #9' })
+  expect(JSON.stringify(await band(hooks, env))).toContain('To do for owner')
+})
+
+test('after a /clear the band reads To do for you until a term is stated again', async () => {
+  reset()
+  const { hooks } = wire()
+  const { env, values } = memEnv([], [], null)
+  await runTool(hooks, env, { action: 'add', title: 'Pick a db', term: 'owner' })
+  await (hooks['session.end'] as Handler)(env as never, { reason: 'clear' } as never, next(false) as never)
+  expect(values.list).toEqual({ items: [], next: 2, term: null })
+  expect(await runTool(hooks, env, { action: 'add', title: 'Next ask' })).toEqual({ result: 'added #2' })
+  const drawn = JSON.stringify(await band(hooks, env))
+  expect(drawn).toContain('To do for you')
+  expect(drawn).not.toContain('owner')
 })
 
 test('a reload restarts the undo countdown: its first tick sends each window that has run out, once, and a later tick the rest', async () => {
