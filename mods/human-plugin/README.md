@@ -93,6 +93,10 @@ Then start a new session and let the agent do the asking.
   running turn, which has not been observed live; if it differs, a done press that lands as a turn starts is read one
   model request later, never lost.
 - Tested on the terminal only: the desktop app is untested, though it draws the reply field too. The chime plays on macOS only.
+- The band's `To do for <term>` chip draws a term of up to 20 columns in a header that does not wrap, so on a very narrow
+  terminal the header can overflow or wrap.
+- A term read back from stored state is not re-checked against the 20-column and one-line limits that the tool applies to
+  live input, so a hand-edited or corrupt stored list can show a longer or multi-line term.
 
 ## Development checks
 
