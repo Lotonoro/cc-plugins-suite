@@ -52,7 +52,7 @@ import { appended, HISTORY_BOUND, keyOf, KEY_PREFIX, merged, recordOf, recordsOf
 import { adviceOf, ratesOfView, type Inputs } from './advice'
 import { learnedLine, learnedOf, ttlAdviceLine, ttlAdviceOf, ttlSwitchOf, type Learned } from './learn'
 import { breakEvenLine, countLineOf, judge, KEPT_COUNT, ratioOf, rebuildOf, runCountOf, sessionBalanceLine, NO_JUDGED, pauseOf, type Pause } from './verdict'
-import { answerOf, type Setting } from './sections'
+import { answerOf, type Setting, type Snapshot } from './sections'
 import { stampLabel, withStamp } from './stamp'
 import { foldStatsEvents, INITIAL_STATS, pendingFor, rundownSections, sessionLineOf, type MissEvent, type LongPauseEvent } from './stats'
 import { lookupRows, readCache, type History, type Host, type Row } from './transcript'
@@ -204,16 +204,17 @@ const inBackground = ($: Dollar, work: Promise<unknown>) => {
 // The unit pressed this session, or the option's while none is: a value of another shape, from an earlier load, counts as
 // none, so the unit is never written for want of a press.
 const unitPressedNow = (held: unknown): held is Unit => held === 'dollars' || held === 'tokens'
-export const unitFrom = (held: unknown, fallback: Unit): Unit => (unitPressedNow(held) ? held : fallback)
+export const unitFrom = (held: unknown, fallback: Unit = defaultUnit): Unit => (unitPressedNow(held) ? held : fallback)
 
-const unitNow = async ($: Dollar): Promise<Unit> => unitFrom((await $.state.get(UNIT)).value, defaultUnit)
+const unitNow = async ($: Dollar): Promise<Unit> => unitFrom((await $.state.get(UNIT)).value)
 
 // What figures are worded with now: the session's unit, the price list, and the model, speed and TTL of the cache a ping
 // would read.
-const moneyOf = async ($: Dollar, view: CacheView): Promise<Money> => {
+const moneyFrom = (held: unknown, view: CacheView): Money => {
   const known = view.kind === 'known' ? view : null
-  return { unit: await unitNow($), list: priceList(sync), model: known?.model ?? null, speed: known?.speed ?? null, ttl: known?.ttlLabel ?? '5m' }
+  return { unit: unitFrom(held), list: priceList(sync), model: known?.model ?? null, speed: known?.speed ?? null, ttl: known?.ttlLabel ?? '5m' }
 }
+const moneyOf = async ($: Dollar, view: CacheView): Promise<Money> => moneyFrom((await $.state.get(UNIT)).value, view)
 
 // A cold mark lifts once the reading or a live request start is later than it.
 const settleColdMark = async ($: Dollar) => {
@@ -534,10 +535,11 @@ const tallyWrite = async ($: Dollar, change: (t: TallyState) => TallyState) => {
 }
 
 // The cache as keepalive counts it: a cold cache has no live entry to count from until a request touches it again.
+const effectiveOf = (view: CacheView, cold: ColdMark | null): CacheView => cold === null ? view : NO_CACHE
 const effectiveView = async ($: Dollar): Promise<CacheView> => {
   const view = (await $.state.get(VIEW)).value ?? NO_CACHE
   const cold = (await $.state.get(COLD)).value ?? null
-  return cold === null ? view : NO_CACHE
+  return effectiveOf(view, cold)
 }
 
 // A fork's end, as a ping sees it: a reply, a throw, or the TTL lapsing before any reply.
@@ -830,39 +832,45 @@ const settingsOf = (raw: CacheView, run: { leadMs: number; count: number | null 
   ]
 }
 
+// The figures and sentences the bare command's sections state. The clock is read first, then each state key once, in sequence:
+// not an atomic snapshot, so a write that lands between two reads can leave figures from two moments. A surface that states the
+// sections calls it and lays them out with answerOf; only the command calls it today, and the pane will take it too.
+const snapshotNow = async ($: Dollar): Promise<Snapshot> => {
+  const nowMs = await $.clock.now()
+  const held = (await $.state.get(KEEPALIVE)).value ?? INITIAL
+  const live = (await $.state.get(TOUCH)).value ?? null
+  const raw = (await $.state.get(VIEW)).value ?? NO_CACHE
+  const cold = (await $.state.get(COLD)).value ?? null
+  const unitHeld = (await $.state.get(UNIT)).value
+  const view = effectiveOf(raw, cold)
+  const money = moneyFrom(unitHeld, view)
+  const tally = (await $.state.get(TALLY)).value ?? INITIAL_TALLY
+  const stats = (await $.state.get(STATS)).value ?? INITIAL_STATS
+  const rebuild = rebuildOf(raw, money)
+  const reading = readingOf(raw, live, cold, nowMs, rebuild)
+  const judged = (await $.state.get(JUDGED)).value ?? NO_JUDGED
+  const run = runOf(held, defaultRun)
+  const rundown = rundownSections(tally, stats, money)
+  const kept = keptOf(held, view, money, nowMs)
+  return {
+    cache: [warmthOf(reading, raw.kind === 'known' ? raw.ttlLabel : '5m', rebuild)].filter((line) => line !== ''),
+    keepalive: [
+      step(held, view, live, gapOpen(held), nowMs, money).text,
+      ...countLines(held, view, money, nowMs, kept),
+      ...(defaultRun === undefined ? [] : [breakEvenLine(held, view, money, defaultsNow(defaultRun, view, money, nowMs))]),
+      sessionBalanceLine(judged, money.unit),
+      ...rundown.keepalive,
+    ].filter((line) => line !== ''),
+    advice: [sentenceNow(held, view, money), ...ttlAdviceLines(held, view, money), ...rundown.advice, ...unitNotes(money, view, tally, stats)].filter((line) => line !== ''),
+    settings: settingsOf(raw, run, kept, tally, view, money, nowMs, unitPressedNow(unitHeld)),
+  }
+}
+
 const keepaliveCommand = async ($: Dollar, args: string, origin: { kind: string }): Promise<string> => {
   const request = parseRequest(args)
   switch (request.kind) {
-    case 'status': {
-      const nowMs = await $.clock.now()
-      const held = (await $.state.get(KEEPALIVE)).value ?? INITIAL
-      const live = (await $.state.get(TOUCH)).value ?? null
-      const view = await effectiveView($)
-      const money = await moneyOf($, view)
-      const tally = (await $.state.get(TALLY)).value ?? INITIAL_TALLY
-      const stats = (await $.state.get(STATS)).value ?? INITIAL_STATS
-      const cold = (await $.state.get(COLD)).value ?? null
-      const raw = (await $.state.get(VIEW)).value ?? NO_CACHE
-      const rebuild = rebuildOf(raw, money)
-      const reading = readingOf(raw, live, cold, nowMs, rebuild)
-      const judged = (await $.state.get(JUDGED)).value ?? NO_JUDGED
-      const run = runOf(held, defaultRun)
-      const rundown = rundownSections(tally, stats, money)
-      const kept = keptOf(held, view, money, nowMs)
-      const answer = answerOf({
-        cache: [warmthOf(reading, raw.kind === 'known' ? raw.ttlLabel : '5m', rebuild)].filter((line) => line !== ''),
-        keepalive: [
-          step(held, view, live, gapOpen(held), nowMs, money).text,
-          ...countLines(held, view, money, nowMs, kept),
-          ...(defaultRun === undefined ? [] : [breakEvenLine(held, view, money, defaultsNow(defaultRun, view, money, nowMs))]),
-          sessionBalanceLine(judged, money.unit),
-          ...rundown.keepalive,
-        ].filter((line) => line !== ''),
-        advice: [sentenceNow(held, view, money), ...ttlAdviceLines(held, view, money), ...rundown.advice, ...unitNotes(money, view, tally, stats)].filter((line) => line !== ''),
-        settings: settingsOf(raw, run, kept, tally, view, money, nowMs, unitPressedNow((await $.state.get(UNIT)).value)),
-      })
-      return answer
-    }
+    case 'status':
+      return answerOf(await snapshotNow($))
     case 'usage':
       return 'usage: /keepalive on <lead seconds> [refreshes], /keepalive off, /keepalive default on|off, or /keepalive unit dollars|tokens. Without refreshes, each run sends the count learned from your pauses, else the break-even count. The default is the mode new sessions start in.'
     case 'off':

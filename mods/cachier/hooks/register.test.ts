@@ -4322,6 +4322,374 @@ describe('the bare command answers four sections, in order: Cache, Keepalive, Ad
   })
 })
 
+// The bare command's whole answer for fixed states: the text its sections lay out, headings and blank lines included. The cold-mark and
+// shared-price pins take the fixtures of the existing tests of those two scenes and pin their whole answers, not a phrase of them.
+describe('the bare command answers whole: the text its sections lay out, for fixed states', () => {
+  const expired = () => ({
+    text: lines([
+      user({ uuid: 'u1', parent: null, ts: iso(T0) }),
+      assistant({ uuid: 'a1', parent: 'u1', ts: iso(T0), write: 18551, out: 7000, tags: FIVE, model: 'claude-opus-5-5', speed: 'standard' }),
+    ]),
+  })
+
+  test('keepalive on and refreshing: the whole answer, with the next refresh scheduled', async ($, on) => {
+    kaWorld(on, opusCached())
+    const clock = mock.clock(on, { now: T0 })
+    await $.classic.SessionStart({ source: 'startup', transcript_path: PATH })
+    await toggle($, 'on 15')
+    await clock.advance(1000)
+    expect(await commandText($, '')).toBe(
+      [
+        'Cache',
+        '  Prompt cache warm, 4:59 left (5-minute cache)',
+        '',
+        'Keepalive',
+        '  keepalive on · Next refresh: $0.004 (~19k',
+        '    cached tokens read), every 4:45 · next',
+        '    refresh in 4:44, 24 left',
+        '  Each pause sends at most 24 refreshes: the',
+        '    break-even count, the most refreshes that',
+        '    cost no more than the rewrite they avoid.',
+        "  Keepalive pays off if you're back between 5:00",
+        '    and 1:54:00',
+        '',
+        'Settings',
+        '  TTL 5 min (read from the last response): set',
+        '    "promptCacheTtl": "1h" in settings.json for',
+        '    1 h (new sessions).',
+        '  lead 15 s: /keepalive on <lead seconds>.',
+        '  refreshes a pause break-even: /keepalive on',
+        '    <lead seconds> <refreshes>, or',
+        '    keepalive_count.',
+        '  start mode off (keepalive_default option):',
+        '    /keepalive default on|off, for new sessions.',
+        '  unit dollars (cost_unit option): /keepalive',
+        '    unit tokens|dollars.',
+      ].join('\n'),
+    )
+  })
+
+  test('keepalive off: the whole answer', async ($, on) => {
+    kaWorld(on, opusCached())
+    const clock = mock.clock(on, { now: T0 })
+    await $.classic.SessionStart({ source: 'startup', transcript_path: PATH })
+    await clock.advance(1000)
+    expect(await commandText($, '')).toBe(
+      [
+        'Cache',
+        '  Prompt cache warm, 4:59 left (5-minute cache)',
+        '',
+        'Keepalive',
+        '  keepalive off',
+        '  Each pause sends at most 24 refreshes: the',
+        '    break-even count, the most refreshes that',
+        '    cost no more than the rewrite they avoid.',
+        "  Keepalive pays off if you're back between 5:00",
+        '    and 1:54:00',
+        '',
+        'Settings',
+        '  TTL 5 min (read from the last response): set',
+        '    "promptCacheTtl": "1h" in settings.json for',
+        '    1 h (new sessions).',
+        '  lead 15 s: /keepalive on <lead seconds>.',
+        '  refreshes a pause break-even: /keepalive on',
+        '    <lead seconds> <refreshes>, or',
+        '    keepalive_count.',
+        '  start mode off (keepalive_default option):',
+        '    /keepalive default on|off, for new sessions.',
+        '  unit dollars (cost_unit option): /keepalive',
+        '    unit tokens|dollars.',
+      ].join('\n'),
+    )
+  })
+
+  test('a pinned count under a keepalive_count cap: the whole answer gives the pinned count, with no cap line', { options: { keepalive_count: 6 } }, async ($, on) => {
+    kaWorld(on, opusCached())
+    const clock = mock.clock(on, { now: T0 })
+    await $.classic.SessionStart({ source: 'startup', transcript_path: PATH })
+    await toggle($, 'on 60 2')
+    await clock.advance(1000)
+    expect(await commandText($, '')).toBe(
+      [
+        'Cache',
+        '  Prompt cache warm, 4:59 left (5-minute cache)',
+        '',
+        'Keepalive',
+        '  keepalive on · Next refresh: $0.004 (~19k',
+        '    cached tokens read), every 4 min · next',
+        '    refresh in 3:59, 2 left',
+        '  Each pause sends at most 2 refreshes: the',
+        '    count you pinned with /keepalive on.',
+        "  Keepalive pays off if you're back between 5:00",
+        '    and 13:00',
+        '',
+        'Settings',
+        '  TTL 5 min (read from the last response): set',
+        '    "promptCacheTtl": "1h" in settings.json for',
+        '    1 h (new sessions).',
+        '  lead 60 s: /keepalive on <lead seconds>.',
+        '  refreshes a pause 2, pinned: /keepalive on',
+        '    <lead seconds> <refreshes>, or',
+        '    keepalive_count.',
+        '  start mode off (keepalive_default option):',
+        '    /keepalive default on|off, for new sessions.',
+        '  unit dollars (cost_unit option): /keepalive',
+        '    unit tokens|dollars.',
+      ].join('\n'),
+    )
+  })
+
+  test('an expired cache: the whole answer gives the rebuild figure in dollars', async ($, on) => {
+    kaWorld(on, expired())
+    const clock = mock.clock(on, { now: T0 + 400000 })
+    await $.classic.SessionStart({ source: 'startup', transcript_path: PATH })
+    await clock.advance(1000)
+    expect(await commandText($, '')).toBe(
+      [
+        'Cache',
+        '  Prompt cache expired, ~$0.13 to rebuild.',
+        '',
+        'Keepalive',
+        '  keepalive off',
+        '  Each pause sends at most 24 refreshes: the',
+        '    break-even count, the most refreshes that',
+        '    cost no more than the rewrite they avoid.',
+        "  Keepalive pays off if you're back between 5:00",
+        '    and 1:54:00',
+        '',
+        'Settings',
+        '  TTL 5 min (read from the last response): set',
+        '    "promptCacheTtl": "1h" in settings.json for',
+        '    1 h (new sessions).',
+        '  lead 15 s: /keepalive on <lead seconds>.',
+        '  refreshes a pause break-even: /keepalive on',
+        '    <lead seconds> <refreshes>, or',
+        '    keepalive_count.',
+        '  start mode off (keepalive_default option):',
+        '    /keepalive default on|off, for new sessions.',
+        '  unit dollars (cost_unit option): /keepalive',
+        '    unit tokens|dollars.',
+      ].join('\n'),
+    )
+  })
+
+  test('an expired cache: the whole answer gives the rebuild figure in tokens, with the unit switched this session', async ($, on) => {
+    kaWorld(on, expired())
+    const clock = mock.clock(on, { now: T0 + 400000 })
+    await $.classic.SessionStart({ source: 'startup', transcript_path: PATH })
+    await clock.advance(1000)
+    await toggle($, 'unit tokens')
+    expect(await commandText($, '')).toBe(
+      [
+        'Cache',
+        '  Prompt cache expired, ~26k tokens to rebuild.',
+        '',
+        'Keepalive',
+        '  keepalive off',
+        '  Each pause sends at most 24 refreshes: the',
+        '    break-even count, the most refreshes that',
+        '    cost no more than the rewrite they avoid.',
+        "  Keepalive pays off if you're back between 5:00",
+        '    and 1:54:00',
+        '',
+        'Advice',
+        '  A 5-minute cache write costs about 25 cache',
+        '    reads on claude-opus-5-5.',
+        '',
+        'Settings',
+        '  TTL 5 min (read from the last response): set',
+        '    "promptCacheTtl": "1h" in settings.json for',
+        '    1 h (new sessions).',
+        '  lead 15 s: /keepalive on <lead seconds>.',
+        '  refreshes a pause break-even: /keepalive on',
+        '    <lead seconds> <refreshes>, or',
+        '    keepalive_count.',
+        '  start mode off (keepalive_default option):',
+        '    /keepalive default on|off, for new sessions.',
+        '  unit tokens (switched this session):',
+        '    /keepalive unit tokens|dollars.',
+      ].join('\n'),
+    )
+  })
+
+  test('a cold mark being written: the whole answer says the cache reset is being recorded, and gives no next-refresh figure', { options: { keepalive_lead_s: 60, keepalive_count: 2 } }, async ($, on) => {
+    const doc: any = { text: '', exists: false }
+    kaWorld(on, doc)
+    let release: () => void = () => {}
+    const gate = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    let holding = false
+    on('state.set', (_$: any, e: any, next: any) => {
+      if (e.key === 'cold' && e.value !== null && !holding) {
+        holding = true
+        return gate.then(() => next(e))
+      }
+      return next(e)
+    })
+    const clock = mock.clock(on, { now: T0 })
+    await $.classic.SessionStart({ source: 'startup', transcript_path: PATH })
+    await clock.settle()
+    await toggle($, 'on 60 2')
+    doc.exists = undefined
+    doc.text = cached().text
+    await mainStep($)
+    await turnEnd($)
+    const switching = $.classic.PostModelSwitch({ from_model: 'a', to_model: 'b', requested_model: 'b', source: 'command', prompt_cache_warm: true, cache_ttl: '5m', context_tokens: 1, estimated_cache_write_usd: 0, pricing: 'catalog' } as any)
+    await clock.settle()
+    try {
+      expect(holding).toBe(true)
+      expect(await commandText($, '')).toBe(
+        [
+          'Cache',
+          '  Prompt cache warm, 5:00 left (5-minute cache)',
+          '',
+          'Keepalive',
+          '  keepalive on · paused until the cache reset is',
+          '    recorded',
+          '  Each pause sends at most 2 refreshes: the',
+          '    count you pinned with /keepalive on.',
+          '',
+          'Advice',
+          '  Shown in tokens: no price for an unnamed',
+          '    model.',
+          '',
+          'Settings',
+          '  TTL 5 min (read from the last response): set',
+          '    "promptCacheTtl": "1h" in settings.json for',
+          '    1 h (new sessions).',
+          '  lead 60 s: /keepalive on <lead seconds>.',
+          '  refreshes a pause 2, pinned: /keepalive on',
+          '    <lead seconds> <refreshes>, or',
+          '    keepalive_count.',
+          '  start mode off (keepalive_default option):',
+          '    /keepalive default on|off, for new sessions.',
+          '  unit dollars (cost_unit option): /keepalive',
+          '    unit tokens|dollars.',
+        ].join('\n'),
+      )
+    } finally {
+      release()
+    }
+    await switching
+    await clock.advance(1000)
+    await mainStep($)
+    await turnEnd($)
+    await clock.advance(1000)
+  })
+
+  test('a price from the shared price record: the whole answer after the first fold, its misses priced at the stored rate', { options: { keepalive_lead_s: 15, keepalive_count: 3 } }, async ($, on) => {
+    // The state an earlier load left: the stats counted the first reply, and a cursor stops the first pass at it.
+    const stats = { ...INITIAL_STATS, transcript: PATH, cursor: 'm1', lastAtMs: T0, lastTotal: 18559, lastTtlMs: 300000 }
+    const doc = {
+      text: lines([
+        user({ uuid: 'u1', parent: null, ts: iso(T0) }),
+        assistant({ uuid: 'a1', parent: 'u1', ts: iso(T0), write: 18551, tags: FIVE, msg: 'm1', model: 'claude-opus-5-5', speed: 'standard' }),
+        assistant({ uuid: 'a2', parent: 'a1', ts: iso(T0 + 360000), write: 20000, tags: FIVE, msg: 'm2', model: 'claude-opus-5-5', speed: 'standard' }),
+      ]),
+      store: { prices: storedPrices() },
+    }
+    const rec = kaWorld(on, doc)
+    // The staged stats stand in for the state's stats on each read that finds none. The count below checks that one did, so a read shape
+    // that no longer matches fails here, not as a different answer.
+    let injected = 0
+    on('state.get', async (_$: any, e: any, next: any) => {
+      const got = await next(e)
+      if (e.plugin === 'cachier' && e.key === 'stats' && got.value?.value === undefined) {
+        injected += 1
+        return { value: { ...got.value, value: stats } }
+      }
+      return got
+    })
+    const clock = mock.clock(on, { now: T0 + 360000 })
+    await $.classic.SessionStart({ source: 'startup', transcript_path: PATH })
+    await clock.settle()
+    expect(injected).toBeGreaterThan(0)
+    expect(rec.fetches).toEqual([])
+    expect(await commandText($, '')).toBe(
+      [
+        'Cache',
+        '  Prompt cache expired, ~$0.20 to rebuild.',
+        '',
+        'Keepalive',
+        '  keepalive off',
+        '  Each pause sends at most 3 refreshes:',
+        '    keepalive_count, which caps the break-even',
+        '    count of 24.',
+        "  Keepalive pays off if you're back between 5:00",
+        '    and 19:15',
+        '  Long pauses: 1 · p90 6:00 · mean 6:00 · max',
+        '    6:00',
+        '',
+        'Advice',
+        '  Cache misses: 1 (lapse 1), $0.20 rewritten',
+        '',
+        'Settings',
+        '  TTL 5 min (read from the last response): set',
+        '    "promptCacheTtl": "1h" in settings.json for',
+        '    1 h (new sessions).',
+        '  lead 15 s: /keepalive on <lead seconds>.',
+        '  refreshes a pause break-even (keepalive_count',
+        '    caps it): /keepalive on <lead seconds>',
+        '    <refreshes>, or keepalive_count.',
+        '  start mode off (keepalive_default option):',
+        '    /keepalive default on|off, for new sessions.',
+        '  unit dollars (cost_unit option): /keepalive',
+        '    unit tokens|dollars.',
+      ].join('\n'),
+    )
+  })
+
+  test('a cold mark cleared by /clear: the whole answer has no Cache section', async ($, on) => {
+    kaWorld(on, cached())
+    const clock = mock.clock(on, { now: T0 })
+    await $.classic.SessionStart({ source: 'startup', transcript_path: PATH })
+    await clock.settle()
+    await $.classic.SessionStart({ source: 'clear', transcript_path: PATH })
+    await clock.advance(1000)
+    expect(await commandText($, '')).toBe(
+      [
+        'Keepalive',
+        '  keepalive off',
+        '',
+        'Settings',
+        '  TTL 5 min (read from the last response): set',
+        '    "promptCacheTtl": "1h" in settings.json for',
+        '    1 h (new sessions).',
+        '  lead 15 s: /keepalive on <lead seconds>.',
+        '  refreshes a pause break-even: /keepalive on',
+        '    <lead seconds> <refreshes>, or',
+        '    keepalive_count.',
+        '  start mode off (keepalive_default option):',
+        '    /keepalive default on|off, for new sessions.',
+        '  unit dollars (cost_unit option): /keepalive',
+        '    unit tokens|dollars.',
+      ].join('\n'),
+    )
+  })
+})
+
+// The reads a status call makes of the states it states: each is read once per call, so its figures are one reading.
+describe('the bare command reads each state it states once per call', () => {
+  test('one status call reads the cache view, the cold mark and the unit once each', { options: { keepalive_lead_s: 15, keepalive_count: 3 } }, async ($, on) => {
+    kaWorld(on, opusCached())
+    let counting = false
+    const reads: string[] = []
+    on('state.get', (_$: any, e: any, next: any) => {
+      if (counting && e.plugin === 'cachier') reads.push(e.key)
+      return next(e)
+    })
+    const clock = mock.clock(on, { now: T0 })
+    await $.classic.SessionStart({ source: 'startup', transcript_path: PATH })
+    await clock.advance(1000)
+    counting = true
+    await commandText($, '')
+    counting = false
+    const count = (key: string) => reads.filter((read) => read === key).length
+    expect({ view: count('view'), cold: count('cold'), unit: count('unit') }).toEqual({ view: 1, cold: 1, unit: 1 })
+  })
+})
+
 describe('the best setup: one sentence, in the pane and in the bare command, priced over this session or recent pauses', () => {
   // Ten ten-minute pauses, each with a million tokens written: on 5 m keepalive costs $5.04 a pause, off $5.48, 1 h $8.00.
   const pauseOf = (i: number, startMs = 1000 + i) => ({ startMs, pausedMs: 10 * MIN, hour: 10, weekday: 2, ratio: 24, ttlMs: 300000, contextTokens: 100000, grownTokens: 1000000 })
