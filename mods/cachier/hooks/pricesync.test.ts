@@ -351,6 +351,34 @@ describe('check: two sessions, and one read per session at a time', () => {
     expect(perBillion(priceList(sync)['claude-opus-5-5']!.read)).toBe(400)
   })
 
+  test('a tick that passed its due check while another read in the session finished and succeeded makes no second read', async () => {
+    const w = makeWorld({ store: { prices: record({}, { lastSuccessMs: T - WEEK }) } })
+    const sync = priceSync()
+    await priceReady(sync, w.dollar as any)
+    const hold = deferred<void>()
+    let held = false
+    const slowClock = {
+      ...w.dollar,
+      clock: {
+        ...w.dollar.clock,
+        now: async () => {
+          if (!held && w.gets.length >= 2) {
+            held = true
+            await hold.promise
+          }
+          return w.dollar.clock.now()
+        },
+      },
+    }
+    const tick = priceCheck(sync, slowClock as any)
+    await until(() => held)
+    await priceCheck(sync, w.dollar as any)
+    expect(w.fetches.length).toBe(1)
+    hold.resolve()
+    await tick
+    expect(w.fetches.length).toBe(1)
+  })
+
   test('a read landing after another session added a model keeps that model, marked missing', async () => {
     const gate = deferred<ReturnType<typeof answer>>()
     const w = makeWorld({ store: { prices: record({}, { lastSuccessMs: T - WEEK }) }, fetch: () => gate.promise })
@@ -596,5 +624,158 @@ describe('check: refused writes and failed reads', () => {
     await priceCheck(sync, w.dollar as any)
     expect(w.fetches).toEqual([])
     expect(dueAtMs(w.stored()!)).toBe(T + 14 * DAY)
+  })
+})
+
+describe('overlapping loads and a check that throws', () => {
+  test('a slower earlier load never lands over a newer one: the older record is not in force', async () => {
+    const w = makeWorld({ store: { prices: record({ m: model(R1) }, { lastSuccessMs: T }) } })
+    const late = deferred<void>()
+    let reads = 0
+    const slow = {
+      ...w.dollar,
+      store: {
+        ...w.dollar.store,
+        get: async (key: string) => {
+          reads++
+          if (reads > 1) return w.dollar.store.get(key)
+          const seen = w.values.get(key)
+          await late.promise
+          return seen
+        },
+      },
+    }
+    const sync = priceSync()
+    const ready = priceReady(sync, slow as any)
+    await until(() => reads === 1)
+    w.values.set('prices', record({ m: model(R2) }, { lastSuccessMs: T }))
+    const check = priceCheck(sync, slow as any)
+    late.resolve()
+    await Promise.all([ready, check])
+    expect(reads).toBe(2)
+    expect(priceList(sync).m).toEqual(R2)
+  })
+
+  test('a slower earlier load answers as the newer one did: when the newer read fails, the due check makes no stamp and no fetch', async () => {
+    const w = makeWorld({ store: { prices: record({ m: model(R1) }, { lastSuccessMs: T - WEEK }) } })
+    const sync = priceSync()
+    await priceReady(sync, w.dollar as any)
+    const late = deferred<void>()
+    let reads = 0
+    const refusing = {
+      ...w.dollar,
+      store: {
+        ...w.dollar.store,
+        get: async (key: string) => {
+          reads++
+          if (reads > 1) throw new Error('store read refused')
+          const seen = w.values.get(key)
+          await late.promise
+          return seen
+        },
+      },
+    }
+    const scheduled = priceCheck(sync, refusing as any)
+    await until(() => reads === 1)
+    await priceCheck(sync, refusing as any, true)
+    late.resolve()
+    await scheduled
+    expect(w.logs.join('\n')).toContain('store read refused')
+    expect(w.writes).toEqual([])
+    expect(w.fetches).toEqual([])
+    expect(priceList(sync).m).toEqual(R1)
+  })
+
+  test('a due check re-reads for itself, so a stamp another session wrote while an older load was in flight makes it not due', async () => {
+    const w = makeWorld({ store: { prices: record({ m: model(R1) }, { lastSuccessMs: T - WEEK }) } })
+    const sync = priceSync()
+    await priceReady(sync, w.dollar as any)
+    w.advance(61000)
+    const late = deferred<void>()
+    let reads = 0
+    const slow = {
+      ...w.dollar,
+      store: {
+        ...w.dollar.store,
+        get: async (key: string) => {
+          reads++
+          if (reads > 1) return w.dollar.store.get(key)
+          const seen = w.values.get(key)
+          await late.promise
+          return seen
+        },
+      },
+    }
+    const first = priceCheck(sync, slow as any)
+    await until(() => reads === 1)
+    w.values.set('prices', record({ m: model(R1) }, { lastSuccessMs: T - WEEK, attempt: { stampMs: T + 61000, outcome: null, failures: 0, previous: null } }))
+    const second = priceCheck(sync, slow as any)
+    late.resolve()
+    await Promise.all([first, second])
+    expect(w.fetches).toEqual([])
+  })
+
+  test('a switch that finds a tick read running whose stamp was refused still fetches for itself', async () => {
+    const w = makeWorld({ store: { prices: record({ m: model(R1) }, { lastSuccessMs: T - WEEK }) } })
+    const sync = priceSync()
+    await priceReady(sync, w.dollar as any)
+    const gate = deferred<void>()
+    const refusing = {
+      ...w.dollar,
+      store: {
+        ...w.dollar.store,
+        set: async () => {
+          await gate.promise
+          throw new Error('store write refused')
+        },
+      },
+    }
+    const tick = priceCheck(sync, refusing as any)
+    await until(() => sync.reading !== null)
+    const switched = priceCheck(sync, refusing as any, true)
+    gate.resolve()
+    await Promise.all([tick, switched])
+    expect(w.fetches).toEqual([PRICING_URL])
+  })
+
+  test('a first load that throws does not leave ready rejected: a later ready retries and succeeds', async () => {
+    const w = makeWorld()
+    let calls = 0
+    const flaky = {
+      ...w.dollar,
+      clock: {
+        ...w.dollar.clock,
+        now: async () => {
+          if (++calls === 1) throw new Error('clock unavailable')
+          return T
+        },
+      },
+    }
+    const sync = priceSync()
+    await expect(priceReady(sync, flaky as any)).rejects.toThrow('clock unavailable')
+    await priceReady(sync, flaky as any)
+    expect(w.gets).toEqual(['prices'])
+    expect(sync.loaded).toBe(true)
+  })
+
+  test('a check whose page read throws resolves, logs why, and leaves the stored list as it was', async () => {
+    const w = makeWorld({
+      store: { prices: record({ m: model(R1) }, { lastSuccessMs: T - WEEK }) },
+      fetch: async () => ({
+        status: 200,
+        ok: true,
+        headers: {},
+        get text(): string {
+          throw new Error('page text unreadable')
+        },
+      }),
+    })
+    const sync = priceSync()
+    await priceReady(sync, w.dollar as any)
+    await expect(priceCheck(sync, w.dollar as any, true)).resolves.toBeUndefined()
+    expect(w.logs.join('\n')).toContain('page text unreadable')
+    expect(w.stored()!.models).toEqual({ m: model(R1) })
+    expect(w.stored()!.lastSuccessMs).toBe(T - WEEK)
+    expect(sync.reading).toBeNull()
   })
 })

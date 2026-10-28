@@ -32,7 +32,12 @@ export type PriceSync = {
   readAtMs: number
   loaded: boolean
   readable: boolean
-  reading: Promise<void> | null
+  // Whether the run in flight fetched the page.
+  reading: Promise<boolean> | null
+  // Bumped by every load and every write of the copy; a load applies its result only if it is still the latest.
+  generation: number
+  // The newest load started.
+  newest: Promise<boolean>
   readyPromise: Promise<void> | null
 }
 
@@ -41,17 +46,44 @@ export function report($: Dollar, err: unknown) {
   $.ui.log(`cachier: ${err instanceof Error ? (err.stack ?? err.message) : String(err)}`, { to: 'debug' })
 }
 
-// Reads the record. A failure keeps the last list in force and leaves the copy marked unreadable; the next check past
-// the minute reads again. Returns whether the store answered.
-async function loadRecord(state: PriceSync, $: Dollar): Promise<boolean> {
-  const atMs = await $.clock.now()
+// Adopts a record as this session's copy: a newer state than any load still in flight.
+function adopt(state: PriceSync, record: PriceRecord | null, atMs: number) {
+  state.generation++
+  state.record = record
   state.readAtMs = atMs
+}
+
+// Reads the record. A failure keeps the last list in force and leaves the copy marked unreadable; the next check past
+// the minute reads again. Returns whether the store answered. Latest wins: a load's result is applied only if no newer
+// load or write began since, so a slower earlier read never lands over a newer state, and every caller reads for itself.
+async function loadRecord(state: PriceSync, $: Dollar): Promise<boolean> {
+  const own = loadOnce(state, $, ++state.generation)
+  state.newest = own
+  let answered = await own
+  // A load that a newer load superseded leaves the copy to that one, which began after this caller did: wait for it and
+  // answer as it did, so a caller that re-reads to decide never decides on a copy older than its own call.
+  for (let last = own; state.newest !== last; ) {
+    last = state.newest
+    answered = await last.catch(() => false)
+  }
+  return answered
+}
+
+async function loadOnce(state: PriceSync, $: Dollar, generation: number): Promise<boolean> {
+  const atMs = await $.clock.now()
   try {
-    state.record = recordOf(await $.store.get(PRICE_KEY))
-    state.readable = true
+    const record = recordOf(await $.store.get(PRICE_KEY))
+    if (generation === state.generation) {
+      state.record = record
+      state.readAtMs = atMs
+      state.readable = true
+    }
     return true
   } catch (err) {
-    state.readable = false
+    if (generation === state.generation) {
+      state.readAtMs = atMs
+      state.readable = false
+    }
     report($, err)
     return false
   } finally {
@@ -61,10 +93,16 @@ async function loadRecord(state: PriceSync, $: Dollar): Promise<boolean> {
 }
 
 async function readyOf(state: PriceSync, $: Dollar): Promise<void> {
-  state.readyPromise ??= (async () => {
+  const ready = (state.readyPromise ??= (async () => {
     if (!state.loaded) await loadRecord(state, $)
-  })()
-  await state.readyPromise
+  })())
+  try {
+    await ready
+  } catch (err) {
+    // A rejected first load is not kept: a later ready tries again.
+    if (state.readyPromise === ready) state.readyPromise = null
+    throw err
+  }
 }
 
 async function fetchPage($: Dollar): Promise<ReadOutcome> {
@@ -91,7 +129,8 @@ async function fetchPage($: Dollar): Promise<ReadOutcome> {
   }
 }
 
-async function readPage(state: PriceSync, $: Dollar, switched: boolean): Promise<void> {
+// Returns whether it fetched the page.
+async function readPage(state: PriceSync, $: Dollar, switched: boolean): Promise<boolean> {
   const stampMs = await $.clock.now()
   const base = state.record
   const pending = stampedOf(base, stampMs)
@@ -99,15 +138,14 @@ async function readPage(state: PriceSync, $: Dollar, switched: boolean): Promise
   if (pending !== base) {
     try {
       await $.store.set(PRICE_KEY, pending)
-      state.record = pending
-      state.readAtMs = stampMs
+      adopt(state, pending, stampMs)
     } catch (err) {
       stamped = false
       report($, err)
     }
   }
   // A refused stamp means this session does not read; a switch reads anyway, since the user asked for it.
-  if (!stamped && !switched) return
+  if (!stamped && !switched) return false
 
   const outcome = await fetchPage($)
   const atMs = await $.clock.now()
@@ -119,25 +157,25 @@ async function readPage(state: PriceSync, $: Dollar, switched: boolean): Promise
     // No write without a fresh re-read: this session's copy may predate a newer stamp, and a write would overwrite it.
     // The stamp already stored stands as a pending failure on the schedule.
     report($, err)
-    return
+    return true
   }
 
   if (outcome.kind === 'success') {
     const next = landedOf(held, outcome.list, atMs, stampMs)
     try {
       await $.store.set(PRICE_KEY, next)
-      state.record = next
-      state.readAtMs = atMs
-      return
+      adopt(state, next, atMs)
+      return true
     } catch (err) {
       // A refused list write lands nothing: the stored list stays in force, and the retry is an unreachable failure's.
       report($, err)
     }
     await writeFailure(state, $, held, 'unreachable', stampMs, atMs)
-    return
+    return true
   }
 
   await writeFailure(state, $, held, outcome.kind, stampMs, atMs)
+  return true
 }
 
 // Writes a read's failure onto the record as it is stored now, so every session follows one retry schedule. A write refused
@@ -158,15 +196,20 @@ async function writeFailure(
       report($, err)
     }
   }
-  state.record = next
-  state.readAtMs = atMs
+  adopt(state, next, atMs)
+}
+
+// Waits for the read in flight. True when the check is done: the run fetched, or the check is no switch. A switch whose
+// awaited run made no fetch (its stamp was refused) goes on to its own read.
+async function joinedRun(state: PriceSync, switched: boolean): Promise<boolean> {
+  while (state.reading !== null) {
+    if ((await state.reading) || !switched) return true
+  }
+  return false
 }
 
 async function checkOf(state: PriceSync, $: Dollar, switched: boolean): Promise<void> {
-  if (state.reading !== null) {
-    await state.reading
-    return
-  }
+  if (await joinedRun(state, switched)) return
 
   let nowMs = await $.clock.now()
   if (!state.loaded || nowMs - state.readAtMs > COPY_MAX_MS) {
@@ -185,10 +228,12 @@ async function checkOf(state: PriceSync, $: Dollar, switched: boolean): Promise<
   }
 
   // Two calls in one session share one page read; a switch that finds one running waits for its result.
-  if (state.reading !== null) {
-    await state.reading
-    return
+  // Rechecked after each wait, so the run is claimed in the same turn that finds none in flight.
+  while (state.reading !== null) {
+    if (await joinedRun(state, switched)) return
   }
+  // The clock await above can outlast another read's success, so a tick tests the copy it holds now, with no await before the claim.
+  if (!switched && !isDue(state.record, nowMs)) return
   const run = readPage(state, $, switched)
   state.reading = run.finally(() => {
     state.reading = null
@@ -203,6 +248,8 @@ export const priceSync = (): PriceSync => ({
   loaded: false,
   readable: false,
   reading: null,
+  generation: 0,
+  newest: Promise.resolve(true),
   readyPromise: null,
 })
 
@@ -216,6 +263,11 @@ export function priceList(sync: PriceSync): PriceList {
   return pricesOf(sync.record)
 }
 
-export function priceCheck(sync: PriceSync, $: Dollar, switched = false): Promise<void> {
-  return checkOf(sync, $, switched)
+// Never rejects: a failure is logged and the check ends, so a caller's command is not broken by it.
+export async function priceCheck(sync: PriceSync, $: Dollar, switched = false): Promise<void> {
+  try {
+    await checkOf(sync, $, switched)
+  } catch (err) {
+    report($, err)
+  }
 }
