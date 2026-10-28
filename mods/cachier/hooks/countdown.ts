@@ -90,6 +90,10 @@ export const pieOf = (reading: Reading | null, on: boolean, refresh: string | nu
   return { footer, colour: warns ? COLOUR_SENTENCE : null }
 }
 
+// Whether the warmth line draws the rebuild figure: a reading that is not warm, with a figure to draw. The bare command gives the figure's
+// reason only where this holds, so the two cannot disagree.
+export const rebuildDrawnOf = (reading: Reading | null, rebuild: string): boolean => reading !== null && reading.state !== 'warm' && rebuild !== ''
+
 // The details pane's first line: the cache's warmth, its time left in the lifetime `ttl` names, or cold or expired with the figure to rebuild
 // it (`rebuild`, empty for none). Empty when there is no reading to count from.
 export const warmthOf = (reading: Reading | null, ttl: '1h' | '5m', rebuild: string): string => {
@@ -97,7 +101,7 @@ export const warmthOf = (reading: Reading | null, ttl: '1h' | '5m', rebuild: str
   const life = `${TTL_WORDS[ttl]} cache`
   if (reading.state === 'warm') return `Prompt cache warm, ${reading.words} left (${life})`
   const state = reading.state === 'expired' ? 'expired' : RESET
-  return rebuild === '' ? `Prompt cache ${state}.` : `Prompt cache ${state}, ${rebuild} to rebuild.`
+  return rebuildDrawnOf(reading, rebuild) ? `Prompt cache ${state}, ${rebuild} to rebuild.` : `Prompt cache ${state}.`
 }
 
 // A cold mark lifts when a touch after it is known: the reading's, or a live request start.

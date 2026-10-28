@@ -43,7 +43,8 @@ click on that word while it is open closes it, as Esc or the person's close does
 units:
 
 - the cache's warmth: `Prompt cache warm, 3:12 left (5-minute cache)`, or, once the cache has expired or been reset, the
-  figure to rebuild it (the context plus the last reply's output, which the next prompt writes with it);
+  figure to rebuild it (the context plus the last reply's output, which the next prompt writes with it). The figure is priced
+  at the model that last wrote the cache, so after a model switch it is at the rates of the model switched from;
 - keepalive's state; while it is off or paused, what the pie's colours warn of; while paused, why, and that it resumes
   after your next prompt;
 - what one refresh costs, or while keepalive is off, what one refresh would cost at the lead and count a click on the pie
@@ -130,7 +131,8 @@ and why a figure is in tokens are in the answer to a bare `/keepalive`.
   model with no price, is skipped and written to the debug log; a file that is not JSON or cannot be read is skipped
   whole and logged as unreadable. An unknown field or section is ignored and named in the debug log.
 - A figure with no price is shown in tokens, and the bare `/keepalive` answer says why (`Shown in tokens: no price for …`). That covers a
-  model neither the page nor the built-in table lists, fast mode, and a response that names no model.
+  model neither the page nor the built-in table lists, fast mode, and a response that names no model. This holds for the figure to
+  rebuild an expired or reset cache too, wherever the Cache section draws one.
 - Tokens name what was done with them (`~19k tokens read`, `~20k tokens written`), since a write costs many reads. The
   bare `/keepalive` answer says how many reads a 5 m write costs on the current model.
 

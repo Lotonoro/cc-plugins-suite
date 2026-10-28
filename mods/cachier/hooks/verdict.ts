@@ -84,16 +84,16 @@ export const rewriteSpendOf = (view: Extract<CacheView, { kind: 'known' }>, mone
 }
 
 // What the next prompt pays to write an expired cache again: the view's context plus the last reply's output, which the
-// next request re-sends and writes with it, at the model's write rate for the TTL in force. A size tier follows that total.
+// next request re-sends and writes with it, at the write rate for the TTL in force of the model and speed the view itself names,
+// not the money's: under a cold mark the money names no model, yet the stored view still does. A size tier follows that total.
 // The lapse comparisons stay over the prefix alone (rewriteSpendOf): a warm cache writes the output too.
 export const rebuildSpendOf = (view: Extract<CacheView, { kind: 'known' }>, money: Money): Spend => {
   const total = view.promptTokens + view.outputTokens
   const write = view.ttlLabel === '1h' ? { ...NO_KINDS, write1h: total } : { ...NO_KINDS, write5m: total }
-  return spendOf(money.list, money.model, money.speed, write, total)
+  return spendOf(money.list, view.model, view.speed, write, total)
 }
 
-// The rebuild figure in the unit shown, for the footer, the pane's warmth line and the bare `/keepalive` answer; empty for a
-// view that isn't known.
+// The rebuild figure in the unit shown, for the footer and the pane's warmth line; empty for a view that isn't known.
 export const rebuildOf = (view: CacheView, money: Money): string => (view.kind === 'known' ? uponOf(rebuildSpendOf(view, money), money.unit) : '')
 
 // One refresh's dollars, and what a rewrite costs over a read, for the context a warm cache holds; null with no warm cache or no
