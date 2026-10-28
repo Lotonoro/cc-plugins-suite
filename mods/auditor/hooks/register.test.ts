@@ -542,20 +542,21 @@ describe('auditor', () => {
     expect(seen.prompts).toEqual(['fix the parser', FRAMED(1, 'a.ts:4 swallows it.')])
   })
 
-  test('the turn-end flush logs one transcript line for the note it submits', ON, async ($, on) => {
+  test('the turn-end flush submits its note as the prompt row and logs no transcript line for it', ON, async ($, on) => {
     const seen = engine(on)
     await busyWorker($)
     await reviewed($, NOTE(), 'ag1')
     await mainTurnEnd($)
     expect(seen.prompts).toEqual(['fix the parser', FRAMED(1, 'a.ts:4 swallows it.')])
-    expect(transcriptLines(seen)).toEqual(['auditor note 1 to Claude: a.ts:4 swallows it.'])
+    expect(transcriptLines(seen)).toEqual([])
   })
 
-  test('a note of several paragraphs logs its transcript line as one line', ON, async ($, on) => {
+  test('a note of several paragraphs appended at a tool batch logs its transcript line as one line', ON, async ($, on) => {
     const seen = engine(on)
     await busyWorker($)
-    await reviewed($, HANDBACK('a.ts:4 swallows it.\n\nb.ts:2 also.'), 'ag1')
-    await mainTurnEnd($)
+    await turnEnded($, 'ag1', 'a.ts:4 swallows it.\n\nb.ts:2 also.')
+    await $.classic.PostToolBatch({ tool_calls: [] })
+    expect(seen.appends).toEqual([ROW(FRAMED(1, 'a.ts:4 swallows it.\n\nb.ts:2 also.'))])
     expect(transcriptLines(seen)).toEqual(['auditor note 1 to Claude: a.ts:4 swallows it. b.ts:2 also.'])
   })
 
@@ -731,7 +732,7 @@ describe('auditor', () => {
     expect(logOf(seen, LOG_1)).toMatchObject({ note_delivered: true })
   })
 
-  test('a refused append logs no transcript line, and the turn-end flush that submits its note logs it once', ON, async ($, on) => {
+  test('a refused append logs no transcript line, and the turn-end flush that submits its note logs none either', ON, async ($, on) => {
     const seen = engine(on, { appendDenies: 'refused' })
     await $.prompt.submit(COMPOSER('carry on'))
     await $.classic.Stop(stop)
@@ -741,7 +742,7 @@ describe('auditor', () => {
     expect(transcriptLines(seen)).toEqual([])
     await mainTurnEnd($)
     expect(seen.prompts).toEqual(['carry on', FRAMED(1, 'a.ts:4 held.')])
-    expect(transcriptLines(seen)).toEqual(['auditor note 1 to Claude: a.ts:4 held.'])
+    expect(transcriptLines(seen)).toEqual([])
   })
 
   test('a note appended at a tool batch is the reviewer\'s own in its record, labelled as the flush labels it', ON, async ($, on) => {
@@ -3081,12 +3082,12 @@ describe('the reviewer\'s task rows', () => {
     expect(seen.spawns.length).toBe(1)
   })
 
-  test('the prompt row of a note the auditor submits is not drawn unless the transcript is expanded, since its dim line shows it; another plugin\'s prompt row draws', ON, async ($, on) => {
+  test('the prompt row of a note the auditor submits is drawn, expanded or not; another plugin\'s prompt row draws too', ON, async ($, on) => {
     engine(on)
     otherMods(on, DRAWN)
     const mount = (props: ReturnType<typeof TASK_ROW>) => $.ui.mount({ plugin: 'auditor', surface: 'terminal', component: 'UserMessage', props })
     const NOTE_ROW = 'auditor, review 1:\na.ts:4 swallows it.'
-    expect(await (await mount(TASK_ROW(NOTE_ROW, { kind: 'plugin', name: 'auditor' }, undefined))).find({ type: 'Text', text: DRAWN })).toBeUndefined()
+    expect(await (await mount(TASK_ROW(NOTE_ROW, { kind: 'plugin', name: 'auditor' }, undefined))).find({ type: 'Text', text: DRAWN })).toBeDefined()
     expect(await (await mount(TASK_ROW(NOTE_ROW, { kind: 'plugin', name: 'auditor' }, undefined, true))).find({ type: 'Text', text: DRAWN })).toBeDefined()
     expect(await (await mount(TASK_ROW('#3 is done: Pick a db', { kind: 'plugin', name: 'human-plugin' }, undefined))).find({ type: 'Text', text: DRAWN })).toBeDefined()
   })

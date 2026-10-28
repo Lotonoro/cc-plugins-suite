@@ -295,17 +295,17 @@ const framedOf = (notes: readonly PendingNote[]): string => notes.map(n => frame
 // A delivered stall note sets the once-per-stall guard only when its review was dispatched after the user's latest prompt. An older review's note answers a turn the user has already moved past, so it must not hold back the stall fact of the turn it lands in.
 const withStallGuard = (c: Conversation, notes: readonly PendingNote[]): Conversation => (notes.some(n => n.stall && n.number > c.dispatchesAtPrompt) ? { ...c, nudged: true } : c)
 
-// What the user sees of each delivered note: a dim transcript line, which the model is not sent, one line for each note, its line breaks
-// drawn as spaces. An appended row and context beside the user's prompt draw nothing of their own, and a flushed note's prompt row is
-// hidden (the UserMessage hook), so by every path the line is the one view of a note.
+// What the user sees of each delivered note that no prompt row of its own shows: a dim transcript line, which the model is not sent, one line for
+// each note, its line breaks drawn as spaces. An appended row and context beside the user's prompt draw nothing of their own, so the line is their
+// one view; a submitted note is its own prompt row, and markDelivered shows no line for it.
 const showNotes = ($: Pick<Scope, 'ui'>, notes: readonly PendingNote[]): void => {
   for (const note of notes) $.ui.log(`auditor note ${note.number} to Claude: ${note.text.replace(/\s*[\r\n\u2028\u2029]+\s*/g, ' ')}`)
 }
 
-// The bookkeeping of a delivery, by every path: the notes are shown (showNotes), a delivered stall note is the nudge for its stall (no second one until the user's next prompt), the notes are kept for a fresh reviewer's brief, and each log is marked delivered. The guard and the kept notes are written under the take's epoch (`epoch`).
-const markDelivered = async ($: Scope, log: boolean, sessionId: string, taken: TakenNotes): Promise<void> => {
+// The bookkeeping of a delivery, by every path: the notes are shown (showNotes) unless they went as a submit, whose prompt row is their view, a delivered stall note is the nudge for its stall (no second one until the user's next prompt), the notes are kept for a fresh reviewer's brief, and each log is marked delivered. The guard and the kept notes are written under the take's epoch (`epoch`).
+const markDelivered = async ($: Scope, log: boolean, sessionId: string, to: Hold, taken: TakenNotes): Promise<void> => {
   const { notes } = taken
-  showNotes($, notes)
+  if (to !== 'submit') showNotes($, notes)
   // The latest delivered notes are kept for a fresh reviewer's first brief, in the change that arms the guard.
   await change($, inEpoch(taken.epoch, c => ({ ...withStallGuard(c, notes), deliveredNotes: [...c.deliveredNotes, ...notes.map(n => frameNote(n.number, n.text))].slice(-CARRIED_NOTES) })))
   for (const note of notes) await patchLog($, log, sessionId, note.number, { note_delivered: true })
@@ -332,7 +332,7 @@ const flush = async ($: Scope, log: boolean): Promise<boolean> => {
     await restorePending($, taken)
     return false
   }
-  await markDelivered($, log, sessionId, taken)
+  await markDelivered($, log, sessionId, 'submit', taken)
   return true
 }
 
@@ -355,7 +355,7 @@ const deliverAtToolBatch = async ($: Scope, log: boolean): Promise<void> => {
     await restorePending($, taken)
     return
   }
-  await markDelivered($, log, sessionId, taken)
+  await markDelivered($, log, sessionId, 'append', taken)
   // Labelled as the flush's prompt is: the plugin's own submission, which the record reads by its origin. Written under the take's epoch (`epoch`), as the delivery's bookkeeping is.
   await change($, inEpoch(taken.epoch, c => withEntry(c, promptEntry('plugin', text))))
 }
@@ -949,7 +949,7 @@ export const register: Register = (on, options) => {
     // The notes reached the model beside the prompt whatever became of the record, so their delivery is marked apart from it.
     if (held.length > 0) {
       try {
-        await markDelivered($, log, sessionId, taken)
+        await markDelivered($, log, sessionId, 'prompt', taken)
       } catch (err) {
         recordFailed($, 'note delivery bookkeeping', err)
       }
@@ -1056,11 +1056,10 @@ export const register: Register = (on, options) => {
   })
 
   // Hidden unless the transcript is expanded: a reviewer's task row, whatever its status, for any reviewer this conversation has spawned (a
-  // failure shows in the footer label instead), and the prompt row of a note the flush submits (its dim line shows it, showNotes).
+  // failure shows in the footer label instead).
   on('ui.render', { component: 'UserMessage' }, async ($, e, next) => {
     const { isExpanded, origin, task } = e.props
     if (isExpanded) return next(e)
-    if (origin.kind === 'plugin' && origin.name === PLUGIN) return $.ui.resolve(e).Box({})
     if (origin.kind !== 'task-notification' || task?.id === undefined) return next(e)
     if (!(await readConversation($)).reviewerIds.includes(task.id)) return next(e)
     const { Box } = $.ui.resolve(e)

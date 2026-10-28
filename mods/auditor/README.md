@@ -31,8 +31,9 @@ earlier one, confirm a fix, or correct the wording of a message when nothing wou
   that turn ends if it makes no more calls. Two holds keep notes back until you prompt: after you interrupt a turn, and
   after a submit another hook dropped (a busy agent still reads those at its next tool call). Your next prompt (typed
   or sent from your phone, but not a slash command) carries them beside it and ends both holds; a slash command
-  releases nothing. Every note shows in your transcript as a
-  dim line, `auditor note N to Claude: …`, when it reaches the agent; the agent never reads that line. An escalation
+  releases nothing. A note submitted as its own prompt shows in your transcript as that prompt
+  row, marked as the auditor plugin's; a note appended at a tool call or carried beside your prompt shows as a
+  dim line, `auditor note N to Claude: …`, which the agent never reads. An escalation
   needs you: the agent answers it in the transcript, where you read it.
 - **Nothing else.** Beyond those lines, a review that finds nothing leaves no trace on screen, and neither do the reviewer's own messages
   or task rows. Two things reach you: an escalation of an unresolved disagreement, as a toast and as a push
