@@ -70,7 +70,7 @@ test('a done notice marks the item done-pending', async () => {
 
 const REPLY_NOTICE = '#1 is done: Pick a db\nThe human replied on #1: use sqlite\nAct on that reply, then remove it.'
 
-test('a reply notice then an append rebuilds the item open, with no answer and not unread', async () => {
+test('a reply notice then an append rebuilds the item open, the reply first in its thread and the append after it, the brief as it was', async () => {
   const text = [
     call('2026-10-20T10:00:00.000Z', 'a', { action: 'add', title: 'Pick a db' }),
     result('2026-10-20T10:00:01.000Z', 'a', 'added #1'),
@@ -79,7 +79,41 @@ test('a reply notice then an append rebuilds the item open, with no answer and n
     result('2026-10-20T10:00:04.000Z', 'b', 'appended to #1'),
   ].join('\n') + '\n'
   const { store } = await replay([sourceOf(text)])
-  expect(store.items[0]).toMatchObject({ state: 'open', answer: null, replied: false, unread: false, detail: 'sqlite needs a file' })
+  expect(store.items[0]).toMatchObject({ state: 'open', answer: null, replied: false, unread: false, detail: '' })
+  expect(store.items[0]?.thread).toEqual([{ speaker: 'human', words: 'use sqlite' }, { speaker: 'agent', words: 'sqlite needs a file' }])
+})
+
+const REPLY_NOTICE_2 = '#1 is done: Pick a db\nThe human replied on #1: use postgres\nAct on that reply, then remove it.'
+
+test('a resumed transcript of a reply, an append, a reply and an append rebuilds the thread the live list holds', async () => {
+  const text = [
+    call('2026-10-20T10:00:00.000Z', 'a', { action: 'add', title: 'Pick a db' }),
+    result('2026-10-20T10:00:01.000Z', 'a', 'added #1'),
+    notice('2026-10-20T10:00:02.000Z', REPLY_NOTICE),
+    call('2026-10-20T10:00:03.000Z', 'b', { action: 'append', id: 1, text: 'sqlite needs a file' }),
+    result('2026-10-20T10:00:04.000Z', 'b', 'appended to #1'),
+    notice('2026-10-20T10:00:05.000Z', REPLY_NOTICE_2),
+    call('2026-10-20T10:00:06.000Z', 'c', { action: 'append', id: 1, text: 'postgres needs a server' }),
+    result('2026-10-20T10:00:07.000Z', 'c', 'appended to #1'),
+  ].join('\n') + '\n'
+  const { store } = await replay([sourceOf(text)])
+  expect(store.items[0]).toMatchObject({ state: 'open', detail: '' })
+  expect(store.items[0]?.thread).toEqual([
+    { speaker: 'human', words: 'use sqlite' },
+    { speaker: 'agent', words: 'sqlite needs a file' },
+    { speaker: 'human', words: 'use postgres' },
+    { speaker: 'agent', words: 'postgres needs a server' },
+  ])
+})
+
+test('a reply notice with no append after it rebuilds the item sent, its answer derived and its thread empty', async () => {
+  const text = [
+    call('2026-10-20T10:00:00.000Z', 'a', { action: 'add', title: 'Pick a db' }),
+    result('2026-10-20T10:00:01.000Z', 'a', 'added #1'),
+    notice('2026-10-20T10:00:02.000Z', REPLY_NOTICE),
+  ].join('\n') + '\n'
+  const { store } = await replay([sourceOf(text)])
+  expect(store.items[0]).toMatchObject({ state: 'done-pending', answer: 'use sqlite', replied: true, thread: [] })
 })
 
 test('an append made before the reply notice reached the transcript rebuilds the item sent: the resume order puts the change first', async () => {

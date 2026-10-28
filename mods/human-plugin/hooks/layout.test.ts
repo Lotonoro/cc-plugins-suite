@@ -18,6 +18,8 @@ const item = (id: number, blocking = false): Item => ({
   yesno: false,
   replied: false,
   doneLabel: null,
+  thread: [],
+  windowTurns: [],
 })
 
 const ids = (rows: ReturnType<typeof bandRows>): number[] => rows.map(r => (r.kind === 'item' ? r.item.id : -1))

@@ -122,11 +122,13 @@ export async function followShown($: EngineInterface, out: Exclude<Outcome, { de
   else if (out.changed?.id === shown) inBackground($, switchPane($, shown, items))
 }
 
-// After a window ends and sends `id`: the pane moves on only when it shows that item.
+// After a window ends and sends `id`: the pane moves on only when it shows that item. A window whose end reopened the item (an agent turn it took:
+// done.ts, expire) leaves the item open, so the pane stays on it and re-asks its rows, as a change does.
 export async function followSent($: EngineInterface, items: readonly Item[], id: number): Promise<void> {
   const shown = await shownId($)
   if (!paneOpen || shown !== id) return
-  moveOn($, items, id)
+  if (items.some(it => it.id === id && it.state === 'open')) inBackground($, switchPane($, id, items))
+  else moveOn($, items, id)
 }
 
 // Shows an item in the pane: the pane opens first when it is shut (the open is made inside the press), then the item is selected.

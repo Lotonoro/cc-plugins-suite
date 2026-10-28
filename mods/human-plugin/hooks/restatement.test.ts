@@ -18,6 +18,8 @@ const item = (id: number, title: string, state: ItemState = 'open', options: Ite
   yesno: false,
   replied: false,
   doneLabel: null,
+  thread: [],
+  windowTurns: [],
 })
 
 const option = (label: string): ItemOption => ({ label, description: '', recommended: false })

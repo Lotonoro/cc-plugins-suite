@@ -1,5 +1,5 @@
 import type { EngineInterface } from 'claude-code'
-import type { Store } from '../types'
+import type { Item } from '../types'
 import { doneNotice } from './done'
 import { notEntered, offer } from './turns'
 
@@ -18,17 +18,15 @@ export async function enter($: EngineInterface, text: string, onRefused: () => v
   }
 }
 
-// Sends the notice of a done item: a turn when idle; while a turn runs, or a submit is starting one, the notice waits for
-// the turn's next read point (see turns.ts). The debug line names the press (its token) that opened the window, so each
+// Sends the notice of a sent item (as the window sent it, its answer still in place): a turn when idle; while a turn runs, or a submit is starting
+// one, the notice waits for the turn's next read point (see turns.ts). The debug line names the press (its token) that opened the window, so each
 // notice traces to one press.
-export async function send($: EngineInterface, store: Store, id: number, token: number): Promise<void> {
-  const item = store.items.find(it => it.id === id)
-  if (item === undefined) return
-  const notice = { id, text: doneNotice(item) }
+export async function send($: EngineInterface, item: Item, token: number): Promise<void> {
+  const notice = { id: item.id, text: doneNotice(item) }
   if (offer(notice) === 'queued') {
-    $.ui.log(`human-plugin: sent #${id} for press ${token} to the running turn`, { to: 'debug' })
+    $.ui.log(`human-plugin: sent #${item.id} for press ${token} to the running turn`, { to: 'debug' })
     return
   }
-  $.ui.log(`human-plugin: sent #${id} for press ${token} via submit`, { to: 'debug' })
+  $.ui.log(`human-plugin: sent #${item.id} for press ${token} via submit`, { to: 'debug' })
   await enter($, notice.text, () => notEntered([notice]))
 }

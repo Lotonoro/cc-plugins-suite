@@ -1,7 +1,9 @@
 import { expect, test } from 'claude-code/testing'
-import { normalizeItem } from './items'
+import { act, listText, normalizeItem } from './items'
+import { expire, reply } from './done'
 import { band, pane, paneRows, toolLine, type Handlers, type Table, type View } from './ui'
-import type { Item, Store } from '../types'
+import { FENCE } from './tables'
+import type { Item, Store, Turn } from '../types'
 
 // A table whose constructors return their props, so a test reads the tree the drawing built.
 type Node = { type: string; children?: unknown[]; wrap?: string; [k: string]: unknown }
@@ -43,7 +45,7 @@ const item: Item = {
   note: 'still open',
   agent: null,
   unread: false,
-  options: [], answer: null, yesno: false, replied: false, doneLabel: null,
+  options: [], answer: null, yesno: false, replied: false, doneLabel: null, thread: [], windowTurns: [],
 }
 const store: Store = { items: [item], next: 2 }
 
@@ -283,6 +285,15 @@ test('a list draws the number of items, and a list with none says so', () => {
   expect(toolLine({ input: { action: 'list' }, output: '#1 blocking, open: a\n#2 non-blocking, open: b', isRunning: false, isErrored: false }))
     .toBe('human-plugin: listed 2 open')
   expect(toolLine({ input: { action: 'list' }, output: 'no items', isRunning: false, isErrored: false })).toBe('human-plugin: listed 0 open')
+})
+
+test('a reply that reads like an item header does not raise the open count: a thread line is indented, so the count is of items', () => {
+  const sent = expire(reply(store, 1, 1000, '#3 blocking, open: x'), 1, 1000).store
+  const reopened = act(sent, { action: 'append', id: 1, text: 'It needs a file.' }, { agent: null, now: 0 })
+  if (!('store' in reopened)) throw new Error(reopened.deny)
+  const listed = listText(reopened.store.items)
+  expect(listed).toContain('\n  you: #3 blocking, open: x\n')
+  expect(toolLine({ input: { action: 'list' }, output: listed, isRunning: false, isErrored: false })).toBe('human-plugin: listed 1 open')
 })
 
 test('an errored call draws its error text, and a running one draws what it is doing', () => {
@@ -605,4 +616,77 @@ test('the pane asks for a row more for each copy button', () => {
   const plain = { ...item, detail: 'One.\nTwo.\nThree.', note: null }
   const coded = { ...item, detail: 'One.\n```\nTwo.\n```', note: null }
   expect(paneRows(coded)).toBe(paneRows({ ...plain, detail: 'One.\nTwo.\nThree.\nFour.' }) + 1)
+})
+
+// Six turns: the two oldest are folded, the last four whole.
+const SIX: Turn[] = [
+  { speaker: 'human', words: 'Use sqlite' },
+  { speaker: 'agent', words: 'Noted.' },
+  { speaker: 'human', words: 'And the cache?' },
+  { speaker: 'agent', words: 'Redis.' },
+  { speaker: 'human', words: 'Fine.' },
+  { speaker: 'agent', words: 'Done with that.' },
+]
+
+test('an item with six turns draws its two older turns as one dim line each, then the last four whole, then its controls and reply field', () => {
+  const tree = pane(withInput, handlers, { items: [{ ...item, detail: '', note: null, thread: SIX }], next: 2 }, view())
+  const kids = (tree as Node).children as Node[]
+  expect(kids.slice(1).map(k => k.key ?? k.type)).toEqual(['turn-1-0', 'turn-1-1', 'turn-1-2', 'turn-1-3', 'turn-1-4', 'turn-1-5', 'done-1', 'reply-1'])
+  expect(kids.slice(1, 3).map(k => [texts(k).join(''), nodes(k, 'Text')[0]?.dimColor, nodes(k, 'Text')[0]?.wrap])).toEqual([['you: Use sqlite', true, 'truncate-end'], ['agent: Noted.', true, 'truncate-end']])
+  expect(kids.slice(3, 7).map(k => [texts(k).join(''), nodes(k, 'Markdown').map(m => m.text)])).toEqual([['you: And the cache?', []], ['agent:', ['Redis.']], ['you: Fine.', []], ['agent:', ['Done with that.']]])
+})
+
+test('a sent reply is drawn as the newest turn, just above its ✓ sent', () => {
+  const sent: Item = { ...item, detail: '', note: null, state: 'done-pending', answer: 'Use sqlite', replied: true, thread: [{ speaker: 'agent', words: 'Which store?' }] }
+  const tree = pane(withInput, handlers, { items: [sent], next: 2 }, view())
+  const kids = (tree as Node).children as Node[]
+  expect(kids.slice(-2).map(k => k.key ?? k.type)).toEqual(['turn-1-1', 'done-1'])
+  expect(texts(kids.at(-2)).join('')).toBe('you: Use sqlite')
+  expect(nodes(tree, 'Button').find(b => b.key === 'done-1')?.label).toBe('✓ sent')
+})
+
+test('an agent turn with fenced blocks is drawn as a brief: a copy button under each block copies exactly its lines', () => {
+  const copied: [string, unknown][] = []
+  const h: Handlers = { ...handlers, copy: (text, surface) => void copied.push([text, surface]) }
+  const turn: Turn = { speaker: 'agent', words: 'Run this:\n\n```sh\nls -la\ncd /tmp\n```\n\nThen this:\n\n```\nmake test\n```' }
+  const tree = pane(table, h, { items: [{ ...item, detail: '', note: null, thread: [turn] }], next: 2 }, view())
+  expect(nodes(tree, 'Markdown').map(n => n.text)).toEqual(['Run this:', '```sh\nls -la\ncd /tmp\n```', 'Then this:', '```\nmake test\n```'])
+  const copies = nodes(tree, 'Button').filter(b => String(b.key).startsWith('copy-'))
+  expect(copies.map(b => [b.key, b.label])).toEqual([['copy-turn-1-0-1', '[copy]'], ['copy-turn-1-0-3', '[copy]']])
+  for (const b of copies) (b.onPress as (press: { surface: string }) => void)({ surface: 'terminal' })
+  expect(copied).toEqual([['ls -la\ncd /tmp', 'terminal'], ['make test', 'terminal']])
+})
+
+// The rows a drawn tree takes, counted from the tree as the surface lays it out: a column stacks its children and a row is as tall as its
+// tallest; a text is a row a line; a Markdown block a row a line and one more under each heading, but a fenced block is code and has none;
+// a button or a field is one row.
+const drawnRows = (node: unknown): number => {
+  const n = node as Node
+  if (n.type === 'Text') return texts(n).join('').split('\n').length
+  if (n.type === 'Markdown') {
+    const text = String(n.text)
+    const headings = FENCE.test(text) ? 0 : text.split('\n').filter(line => /^#{1,6}\s/.test(line)).length
+    return text.split('\n').length + headings
+  }
+  if (n.type === 'Button' || n.type === 'Input') return 1
+  const rows = (n.children ?? []).map(drawnRows)
+  return n.flexDirection === 'column' ? rows.reduce((sum, r) => sum + r, 0) : Math.max(0, ...rows)
+}
+
+test('the pane\'s row request for an item with a thread equals the rows its drawn output takes', () => {
+  const thread: Turn[] = [
+    { speaker: 'human', words: 'Use sqlite' },
+    { speaker: 'agent', words: 'Noted.' },
+    { speaker: 'human', words: 'Both.\nStill open?' },
+    { speaker: 'agent', words: '# Plan\n\nRun this:\n\n```sh\nls -la\n# not a heading\n```\n\n| Store | Cost |\n|---|---|\n| sqlite | low |' },
+    { speaker: 'human', words: 'Fine.' },
+    { speaker: 'agent', words: 'Done.\n\nThanks.' },
+  ]
+  const one: Item = { ...item, detail: 'Brief.\n\nMore.', note: 'still open\nsecond line', thread }
+  const decision: Item['options'] = [{ label: 'Postgres', description: '', recommended: true }, { label: 'sqlite', description: '', recommended: false }]
+  const drawn = (shown: Item): number => drawnRows(pane(withInput, handlers, { items: [shown], next: 2 }, view()))
+  expect(paneRows(one)).toBe(drawn(one))
+  expect(paneRows({ ...one, options: decision })).toBe(drawn({ ...one, options: decision }))
+  const sent: Item = { ...one, options: decision, state: 'done-pending', answer: 'Postgres' }
+  expect(paneRows(sent)).toBe(drawn(sent))
 })

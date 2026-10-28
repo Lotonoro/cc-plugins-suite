@@ -1020,7 +1020,7 @@ test('a reply typed in the pane is sent once, through the undo window, with its 
   expect(submitted).toEqual([{ text: '#1 is done: Item 1\nThe human replied on #1: Use sqlite\nAct on that reply, then remove it. Keep it only if the human still has a step of their own to take, updated to name that step; your own follow-up work does not stay on the list.' }])
 })
 
-test('an agent change during a reply\'s undo window leaves the window running: the notice sent at its end carries the reply, and the item is sent, not cancelled', async () => {
+test('an agent change during a reply\'s undo window is a turn after the reply: the window runs on, and its end sends the reply and reopens the item with that turn after it', async () => {
   reset()
   const { hooks } = wire()
   const open: string[] = []
@@ -1035,10 +1035,14 @@ test('an agent change during a reply\'s undo window leaves the window running: t
   expect(timers.length).toBe(1)
   await (hooks['tool.call'] as Handler)(env as never, { tool: TOOL, action: 'append', id: 1, text: 'more' } as never, next(false) as never)
   await settle()
-  expect((values.list as { items: Item[] }).items[0]).toMatchObject({ state: 'done-waiting', detail: 'Brief 1.\n\nmore', answer: 'Use sqlite', replied: true })
+  expect((values.list as { items: Item[] }).items[0]).toMatchObject({
+    state: 'done-waiting', detail: 'Brief 1.', answer: 'Use sqlite', replied: true, windowTurns: [{ speaker: 'agent', words: 'more' }],
+  })
   await tickAt(timers, clock, 3000)
   expect(submitted).toEqual([{ text: '#1 is done: Item 1\nThe human replied on #1: Use sqlite\nAct on that reply, then remove it. Keep it only if the human still has a step of their own to take, updated to name that step; your own follow-up work does not stay on the list.' }])
-  expect((values.list as { items: Item[] }).items[0]).toMatchObject({ state: 'done-pending', answer: 'Use sqlite', replied: true })
+  expect((values.list as { items: Item[] }).items[0]).toMatchObject({
+    state: 'open', answer: null, replied: false, thread: [{ speaker: 'human', words: 'Use sqlite' }, { speaker: 'agent', words: 'more' }],
+  })
 })
 
 test('a press on undo cancels a reply: nothing is sent, and the item is open with no reply', async () => {
@@ -1196,7 +1200,7 @@ test('an append that reopens the sent item the pane shows re-asks its rows with 
   const two = (values.list as { items: Item[] }).items.find(it => it.id === 2) as Item
   expect(two).toMatchObject({ state: 'open', unread: false })
   expect(opened).toEqual([{ id: 'human-items', rows: paneRows(two) }])
-  expect(opened[0]?.rows).toBe(paneRows({ ...two, state: 'done-pending' }) + 1)
+  expect(opened[0]?.rows).toBe(paneRows({ ...two, state: 'done-waiting' }) + 1)
   expect(values.selection).toBe(2)
 })
 

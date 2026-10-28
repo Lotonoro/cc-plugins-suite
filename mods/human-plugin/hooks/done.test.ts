@@ -1,5 +1,5 @@
 import { expect, test } from 'claude-code/testing'
-import { doneNotice, expire, pointerText, press, reopen, reply } from './done'
+import { doneNotice, expire, pointerText, press, reopen, reply, turnsOf } from './done'
 import { act, parseInput } from './items'
 import type { Item, Store } from '../types'
 
@@ -14,7 +14,7 @@ const item: Item = {
   note: null,
   agent: null,
   unread: false,
-  options: [], answer: null, yesno: false, replied: false, doneLabel: null,
+  options: [], answer: null, yesno: false, replied: false, doneLabel: null, thread: [], windowTurns: [],
 }
 const store: Store = { items: [item], next: 4 }
 const stateOf = (s: Store) => s.items[0]?.state
@@ -219,4 +219,55 @@ test('a window running when the agent changes the item still sends what the huma
   expect(changed.items[0]).toMatchObject({ state: 'done-waiting', pressedAt: 1000 })
   const sent = expire(changed, 3, 1000).sent
   expect(sent && doneNotice(sent)).toContain('The human replied on #3: Use postgres')
+})
+
+test('a sent answer reads as the human turn of its kind: a reply\'s words, an option, a yes or no, a labelled press\'s label, or the phrase of a bare done', () => {
+  const sentWith = (over: Partial<Item>): Item => ({ ...item, state: 'done-pending', ...over })
+  expect(turnsOf(sentWith({ answer: 'Use sqlite, not postgres', replied: true }))).toEqual([{ speaker: 'human', words: 'Use sqlite, not postgres' }])
+  expect(turnsOf(sentWith({ answer: 'Use postgres' }))).toEqual([{ speaker: 'human', words: 'Use postgres' }])
+  expect(turnsOf(sentWith({ yesno: true, answer: 'no' }))).toEqual([{ speaker: 'human', words: 'no' }])
+  expect(turnsOf(sentWith({ doneLabel: 'Go with sqlite', answer: 'Go with sqlite' }))).toEqual([{ speaker: 'human', words: 'Go with sqlite' }])
+  expect(turnsOf(sentWith({ answer: null }))).toEqual([{ speaker: 'human', words: 'pressed done' }])
+})
+
+test('an answer still in its undo window is no turn yet, and an item with no answer has none', () => {
+  expect(turnsOf(item)).toEqual([])
+  expect(turnsOf(press(store, 3, 1000, 'Use postgres').items[0] as Item)).toEqual([])
+})
+
+test('reopen archives the sent answer as the thread\'s human turn before it clears the answer: the item is open and unread', () => {
+  const sent = expire(reply(store, 3, 1000, 'Use postgres'), 3, 1000).store
+  expect(reopen(sent, 3).store.items[0]).toMatchObject({
+    state: 'open', answer: null, replied: false, unread: true, thread: [{ speaker: 'human', words: 'Use postgres' }],
+  })
+})
+
+test('the words of each kind of answer stay on the item after a reopen: an option, a yes or no, a labelled press and a bare done', () => {
+  const decision: Item = { ...item, options: [{ label: 'Use postgres', description: '', recommended: false }, { label: 'Use sqlite', description: '', recommended: false }] }
+  const cases: [Store, string | null, string][] = [
+    [{ items: [decision], next: 4 }, 'Use postgres', 'Use postgres'],
+    [{ items: [{ ...item, yesno: true }], next: 4 }, 'no', 'no'],
+    [{ items: [{ ...item, doneLabel: 'Go with sqlite' }], next: 4 }, 'Go with sqlite', 'Go with sqlite'],
+    [store, null, 'pressed done'],
+  ]
+  for (const [before, answer, words] of cases) {
+    const sent = expire(press(before, 3, 1000, answer), 3, 1000).store
+    expect(reopen(sent, 3).store.items[0]?.thread).toEqual([{ speaker: 'human', words }])
+  }
+})
+
+test('an undo press on a window the agent added a turn to keeps that turn on the item, which is open again', () => {
+  const agentTurn = { speaker: 'agent' as const, words: 'The sqlite file is in data/.' }
+  const waiting: Store = { items: [{ ...item, state: 'done-waiting', pressedAt: 1000, answer: 'Use sqlite', replied: true, windowTurns: [agentTurn] }], next: 4 }
+  expect(press(waiting, 3, 2000, null).items[0]).toMatchObject({ state: 'open', answer: null, replied: false, thread: [agentTurn], windowTurns: [] })
+})
+
+test('a window the agent added a turn to ends by sending the reply and reopening the item: the reply first, the agent\'s turn after, and the notice carries the reply', () => {
+  const agentTurn = { speaker: 'agent' as const, words: 'The sqlite file is in data/.' }
+  const waiting: Store = { items: [{ ...item, state: 'done-waiting', pressedAt: 1000, answer: 'Use sqlite', replied: true, windowTurns: [agentTurn] }], next: 4 }
+  const out = expire(waiting, 3, 1000)
+  expect(out.sent).toMatchObject({ state: 'done-pending', answer: 'Use sqlite', replied: true })
+  expect(out.store.items[0]).toMatchObject({ state: 'open', unread: true, answer: null, replied: false, windowTurns: [] })
+  expect(turnsOf(out.store.items[0] as Item)).toEqual([{ speaker: 'human', words: 'Use sqlite' }, agentTurn])
+  expect(doneNotice(out.sent as Item)).toContain('The human replied on #3: Use sqlite')
 })

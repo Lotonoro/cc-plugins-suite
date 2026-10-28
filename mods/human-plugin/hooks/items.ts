@@ -1,5 +1,5 @@
-import type { Item, ItemOption, ItemState, Store } from '../types'
-import { reopen } from './done'
+import type { Item, ItemOption, ItemState, Store, Turn } from '../types'
+import { answered, archive, labelOf, reopen, turnsOf } from './done'
 
 export const PLUGIN = 'human-plugin'
 export const TOOL = 'mcp__human-plugin__human_items'
@@ -19,6 +19,18 @@ const optionOf = (raw: unknown): ItemOption | null => {
   if (typeof r.label !== 'string' || r.label === '') return null
   return { label: r.label, description: typeof r.description === 'string' ? r.description : '', recommended: r.recommended === true }
 }
+
+// One turn as stored. A turn with no known speaker, or no words, is malformed and is dropped.
+const turnOf = (raw: unknown): Turn | null => {
+  if (typeof raw !== 'object' || raw === null) return null
+  const r = raw as Record<string, unknown>
+  const speaker = r.speaker
+  if ((speaker !== 'human' && speaker !== 'agent') || typeof r.words !== 'string' || r.words.trim() === '') return null
+  return { speaker, words: r.words }
+}
+
+// A stored list of turns, its malformed turns dropped. A value that is no list is an empty one.
+const turnsStored = (raw: unknown): Turn[] => (Array.isArray(raw) ? raw.map(turnOf).filter((turn): turn is Turn => turn !== null) : [])
 
 // One item as stored, with every field the current release reads filled in: a list an older release wrote lacks the fields added
 // since, and a field of the wrong type takes its default. Null when the item has no id (a whole number from 1) or no title.
@@ -45,6 +57,8 @@ export const normalizeItem = (raw: unknown): Item | null => {
     answer: typeof r.answer === 'string' ? r.answer : null,
     replied: r.replied === true,
     doneLabel: typeof r.doneLabel === 'string' ? r.doneLabel : null,
+    thread: turnsStored(r.thread),
+    windowTurns: turnsStored(r.windowTurns),
   }
 }
 
@@ -229,6 +243,20 @@ const change = (store: Store, target: Item, after: Item, reply: string): Outcome
   return { store: out.store, reply, added: null, changed: { id: target.id, reopened: out.reopened } }
 }
 
+// An agent addition to an item the human has answered is a turn after the answer, not a change to the brief. A sent answer is archived first, so
+// the turn follows it, and the item reopens; an answer in its undo window keeps the window, and the turn waits in it for the window's end (done.ts).
+const appendTurn = (store: Store, target: Item, text: string): Outcome => {
+  const turn: Turn = { speaker: 'agent', words: text }
+  const base = target.state === 'done-pending' ? archive(target) : target
+  const after = target.state === 'done-waiting' ? { ...base, windowTurns: [...base.windowTurns, turn] } : { ...base, thread: [...base.thread, turn] }
+  return {
+    store: { ...store, items: store.items.map(it => (it.id === target.id ? after : it)) },
+    reply: `appended to #${target.id}`,
+    added: null,
+    changed: { id: target.id, reopened: target.state === 'done-pending' },
+  }
+}
+
 export const act = (store: Store, input: ToolInput, ctx: Ctx): Outcome => {
   if (input.action === 'list') return { store, reply: listText(store.items), added: null, changed: null }
   if (input.action === 'add') {
@@ -248,12 +276,15 @@ export const act = (store: Store, input: ToolInput, ctx: Ctx): Outcome => {
       replied: false,
       yesno: input.yesno,
       doneLabel: input.doneLabel,
+      thread: [],
+      windowTurns: [],
     }
     return { store: { items: [...store.items, item], next: store.next + 1 }, reply: `added #${item.id}`, added: item, changed: null }
   }
   const target = store.items.find(it => it.id === input.id)
   if (target === undefined) return { deny: `no item #${input.id}` }
   if (input.action === 'append') {
+    if (answered(target)) return appendTurn(store, target, input.text)
     const detail = target.detail === '' ? input.text : `${target.detail}\n\n${input.text}`
     return change(store, target, { ...target, detail }, `appended to #${target.id}`)
   }
@@ -313,13 +344,20 @@ export const mergeRestored = (live: Store, replayed: Store, known: readonly numb
   return { items: [...replayed.items, ...added], next: Math.max(live.next, replayed.next) }
 }
 
+// One turn as `list` prints it: labelled with who spoke, and every line of it indented, so no line of a turn reads as an item's header.
+const turnLines = (turn: Turn): string[] => {
+  const [first = '', ...rest] = turn.words.split('\n')
+  return [`  ${labelOf(turn)}: ${first}`, ...rest.map(line => `  ${line}`)]
+}
+
 export const listText = (items: readonly Item[]): string => {
   if (items.length === 0) return 'no items'
   return items
     .map(it => {
       const detail = it.detail === '' ? '' : ` - ${it.detail}`
       const note = it.note === null ? '' : ` (note: ${it.note})`
-      return `#${it.id} ${it.blocking ? 'blocking' : 'non-blocking'}, ${it.state}: ${it.title}${detail}${note}`
+      const header = `#${it.id} ${it.blocking ? 'blocking' : 'non-blocking'}, ${it.state}: ${it.title}${detail}${note}`
+      return [header, ...turnsOf(it).flatMap(turnLines)].join('\n')
     })
     .join('\n')
 }

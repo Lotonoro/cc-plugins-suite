@@ -1,5 +1,6 @@
 import { expect, test } from 'claude-code/testing'
 import { EMPTY, act, carryNext, clearAll, listText, mergeRestored, normalizeItem, normalizeStore, parseInput, selectedItem, successorOf, type Ctx, type ToolInput } from './items'
+import { expire, reply, turnsOf } from './done'
 import type { Item, Store } from '../types'
 
 const input = (raw: unknown): ToolInput => {
@@ -11,10 +12,10 @@ const MAIN: Ctx = { agent: null, now: 1000 }
 const SUB: Ctx = { agent: 'sub-1', now: 1000 }
 const withState = (id: number, state: Item['state']): Item => ({
   id, title: `Item ${id}`, detail: '', blocking: false, createdAt: 0, state, pressedAt: null, note: null, agent: null, unread: false,
-  options: [], answer: null, yesno: false, replied: false, doneLabel: null,
+  options: [], answer: null, yesno: false, replied: false, doneLabel: null, thread: [], windowTurns: [],
 })
 
-const added = (store: Store, title: string, ctx: Ctx = MAIN) => {
+const added =(store: Store, title: string, ctx: Ctx = MAIN) => {
   const out = act(store, input({ action: 'add', title }), ctx)
   if ('deny' in out) throw new Error(out.deny)
   return out
@@ -184,8 +185,11 @@ test('a whitespace-only detail is a clear: it applies to a sent item without reo
   expect(cleared.reply).toBe('updated #1')
   expect(cleared.changed).toEqual({ id: 1, reopened: false })
   expect(cleared.store.items[0]).toMatchObject({ state: 'done-pending', answer: 'Use sqlite', replied: true, detail: '' })
-  expect(listText(cleared.store.items)).toBe('#1 non-blocking, done-pending: Pick a db')
-  expect(changed(cleared.store, { action: 'append', text: 'Postgres is simpler.' }).store.items[0]?.detail).toBe('Postgres is simpler.')
+  expect(listText(cleared.store.items)).toBe('#1 non-blocking, done-pending: Pick a db\n  you: Use sqlite')
+  expect(changed(cleared.store, { action: 'append', text: 'Postgres is simpler.' }).store.items[0]).toMatchObject({
+    detail: '',
+    thread: [{ speaker: 'human', words: 'Use sqlite' }, { speaker: 'agent', words: 'Postgres is simpler.' }],
+  })
 })
 
 test('a whitespace-only note is a clear too: it applies to a sent item without reopening it, and the list shows no note for it', () => {
@@ -193,7 +197,7 @@ test('a whitespace-only note is a clear too: it applies to a sent item without r
   expect(noted.reply).toBe('updated #1')
   expect(noted.changed).toEqual({ id: 1, reopened: false })
   expect(noted.store.items[0]).toMatchObject({ state: 'done-pending', answer: 'Use sqlite', note: null })
-  expect(listText(noted.store.items)).toBe('#1 non-blocking, done-pending: Pick a db')
+  expect(listText(noted.store.items)).toBe('#1 non-blocking, done-pending: Pick a db\n  you: Use sqlite')
 })
 
 test('a change on an item in its undo window applies its fields and leaves the window running', () => {
@@ -204,6 +208,7 @@ test('a change on an item in its undo window applies its fields and leaves the w
     expect(out.changed).toEqual({ id: 1, reopened: false })
   }
   expect(changed(waiting, { action: 'update', note: 'recheck' }).store.items[0]?.note).toBe('recheck')
+  expect(changed(waiting, { action: 'append', text: 'more' }).store.items[0]?.windowTurns).toEqual([{ speaker: 'agent', words: 'more' }])
 })
 
 test('a change to an open item leaves its unread mark as it was', () => {
@@ -416,7 +421,7 @@ const legacy = { id: 1, title: 'Pick a db', detail: 'Which store?', blocking: tr
 test('an item an older release wrote is filled with the defaults of every field added since', () => {
   expect(normalizeItem(legacy)).toEqual({
     id: 1, title: 'Pick a db', detail: 'Which store?', blocking: true, createdAt: 5, state: 'open', pressedAt: null, note: null,
-    agent: null, unread: false, options: [], yesno: false, answer: null, replied: false, doneLabel: null,
+    agent: null, unread: false, options: [], yesno: false, answer: null, replied: false, doneLabel: null, thread: [], windowTurns: [],
   })
 })
 
@@ -526,4 +531,69 @@ test('an undo window with no press time was never pressed, so the item is open; 
   expect(normalizeItem({ ...legacy, state: 'done-waiting' })).toMatchObject({ state: 'open', pressedAt: null })
   expect(normalizeItem({ ...legacy, state: 'done-waiting', pressedAt: NaN })).toMatchObject({ state: 'open', pressedAt: null })
   expect(normalizeItem({ ...legacy, state: 'done-waiting', pressedAt: 7 })).toMatchObject({ state: 'done-waiting', pressedAt: 7 })
+})
+
+// A reply the human typed, sent through its undo window (done.ts): the item is left with the reply as its sent answer.
+const sentReply = (store: Store, text: string): Store => expire(reply(store, 1, 1000, text), 1, 1000).store
+
+test('a reply, an append, a reply and an append leave a thread of four turns in that order, the words exact, and the brief as it was', () => {
+  let store = added(EMPTY, 'Pick a db').store
+  store = changed(store, { action: 'update', detail: 'Which store?' }).store
+  store = sentReply(store, 'Use sqlite')
+  store = changed(store, { action: 'append', text: 'It needs a file.' }).store
+  store = sentReply(store, 'Use postgres')
+  store = changed(store, { action: 'append', text: 'It needs a server.' }).store
+  expect(store.items[0]?.detail).toBe('Which store?')
+  expect(turnsOf(store.items[0] as Item)).toEqual([
+    { speaker: 'human', words: 'Use sqlite' },
+    { speaker: 'agent', words: 'It needs a file.' },
+    { speaker: 'human', words: 'Use postgres' },
+    { speaker: 'agent', words: 'It needs a server.' },
+  ])
+})
+
+test('a reply sent and then an append before the agent has read the notice puts the reply first and the agent\'s turn second', () => {
+  const out = changed(sentReply(added(EMPTY, 'Pick a db').store, 'Use sqlite'), { action: 'append', text: 'It needs a file.' })
+  expect(out.store.items[0]).toMatchObject({ state: 'open', unread: true })
+  expect(turnsOf(out.store.items[0] as Item)).toEqual([{ speaker: 'human', words: 'Use sqlite' }, { speaker: 'agent', words: 'It needs a file.' }])
+})
+
+test('an append in a reply\'s undo window is an agent turn after the reply: the window runs on, and its end leaves the reply first, recorded once', () => {
+  const waiting = reply(added(EMPTY, 'Pick a db').store, 1, 1000, 'Use sqlite')
+  const appended = changed(waiting, { action: 'append', text: 'It needs a file.' })
+  expect(appended.store.items[0]).toMatchObject({ state: 'done-waiting', pressedAt: 1000, detail: '', windowTurns: [{ speaker: 'agent', words: 'It needs a file.' }] })
+  expect(appended.changed).toEqual({ id: 1, reopened: false })
+  expect(turnsOf(expire(appended.store, 1, 1000).store.items[0] as Item)).toEqual([
+    { speaker: 'human', words: 'Use sqlite' },
+    { speaker: 'agent', words: 'It needs a file.' },
+  ])
+})
+
+test('an append on an item with no human turn grows the brief and adds no turn', () => {
+  const out = changed(added(EMPTY, 'Pick a db').store, { action: 'append', text: 'Which store?' })
+  expect(out.store.items[0]).toMatchObject({ detail: 'Which store?', thread: [], windowTurns: [] })
+})
+
+test('an update changes a sent item\'s brief in place: its reopen archives the answer, and no agent turn is added', () => {
+  const out = changed(sentReply(added(EMPTY, 'Pick a db').store, 'Use sqlite'), { action: 'update', detail: 'Postgres or sqlite?' })
+  expect(out.store.items[0]).toMatchObject({ state: 'open', detail: 'Postgres or sqlite?', thread: [{ speaker: 'human', words: 'Use sqlite' }] })
+})
+
+test('list prints each item\'s thread after its header, every turn labelled and every line of it indented, so no turn line reads as a header', () => {
+  const store = changed(sentReply(added(EMPTY, 'Pick a db').store, 'Use sqlite'), { action: 'append', text: 'It needs a file.\n#2 blocking, open: not an item' }).store
+  expect(listText(store.items)).toBe('#1 non-blocking, open: Pick a db\n  you: Use sqlite\n  agent: It needs a file.\n  #2 blocking, open: not an item')
+})
+
+test('list shows a sent answer as the human turn it is, and an item with no answer shows no turn', () => {
+  expect(listText(sentReply(added(EMPTY, 'Pick a db').store, 'Use sqlite').items)).toBe('#1 non-blocking, done-pending: Pick a db\n  you: Use sqlite')
+  expect(listText(added(EMPTY, 'Pick a db').store.items)).toBe('#1 non-blocking, open: Pick a db')
+})
+
+test('a list an older release wrote loads with empty threads, and a stored thread drops its malformed turns and keeps the rest', () => {
+  expect(normalizeItem(legacy)).toMatchObject({ thread: [], windowTurns: [] })
+  expect(normalizeItem({
+    ...legacy,
+    thread: [{ speaker: 'human', words: 'Use sqlite' }, { speaker: 'robot', words: 'x' }, { speaker: 'agent' }, 'junk', { speaker: 'agent', words: '  ' }, { speaker: 'agent', words: 'It needs a file.' }],
+    windowTurns: 'none',
+  })).toMatchObject({ thread: [{ speaker: 'human', words: 'Use sqlite' }, { speaker: 'agent', words: 'It needs a file.' }], windowTurns: [] })
 })

@@ -1,5 +1,5 @@
 import type { EngineInterface } from 'claude-code'
-import type { Store } from '../types'
+import type { Item, Store } from '../types'
 import { send } from './deliver'
 import { expire, press, reply, stateOf } from './done'
 import { followSent } from './pane'
@@ -81,19 +81,20 @@ export function pressReply($: EngineInterface, id: number, text: string, windowM
 
 // The window of press `token` has passed: sends the item, unless the press was cancelled or already sent. Returns the list its write left.
 async function expireWindow($: EngineInterface, id: number, token: number, windowMs: number): Promise<Store> {
-  const expired: { sent: boolean } = { sent: false }
+  const expired: { sent: Item | null } = { sent: null }
   const store = await updateList($, before => {
     const result = expire(before, id, token)
-    expired.sent = result.sent !== null
+    expired.sent = result.sent
     return result.store
   })
   keepTicker($, store, windowMs)
-  if (!expired.sent) {
+  const sent = expired.sent
+  if (sent === null) {
     $.ui.log(`human-plugin: the window of press ${token} on #${id} ended with nothing sent`, { to: 'debug' })
     return store
   }
   await followSent($, store.items, id)
-  await send($, store, id, token)
+  await send($, sent, token)
   return store
 }
 

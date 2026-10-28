@@ -8,6 +8,9 @@ export type ItemOption = { label: string; description: string; recommended: bool
 // `done-waiting` is the undo window after a done press: nothing is sent yet. `done-pending` is sent, until the agent acts.
 export type ItemState = 'open' | 'done-waiting' | 'done-pending'
 
+// One turn of an item's exchange: who spoke, and the words. A human turn is an answer the human sent (done.ts derives it).
+export type Turn = { speaker: 'human' | 'agent'; words: string }
+
 export type Item = {
   id: number
   title: string
@@ -32,6 +35,12 @@ export type Item = {
   // What a press of a plain to-do's ✓ means (`Go with sqlite`): drawn on its button as `[✓ <label>]`, and sent as the press's answer.
   // Null for a plain to-do with a bare `[✓]`, and for a yes/no or a decision, which say what a press means themselves.
   doneLabel: string | null
+  // The exchange on the item, in order: each answer the human sent that the agent reopened past (archived by done.ts), and each agent
+  // addition after it.
+  thread: Turn[]
+  // The agent's additions made while the item's answer is in its undo window. They follow that answer, which joins the thread when the
+  // window ends; a cancelled window moves them into the thread (done.ts).
+  windowTurns: Turn[]
 }
 
 // The whole list, in one value so a write checks it at once: the items, and the number the next item takes.

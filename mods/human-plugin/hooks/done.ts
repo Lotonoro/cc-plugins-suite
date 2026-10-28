@@ -1,4 +1,4 @@
-import type { Item, Store } from '../types'
+import type { Item, Store, Turn } from '../types'
 
 // The text the agent reads when the human's done press is sent: the item's title, and the answer the press chose, if an option or
 // a yes or no was pressed, the label a labelled to-do's ✓ carries, or the reply the human typed. It carries no brief: the agent wrote
@@ -44,13 +44,44 @@ const mapItem = (store: Store, id: number, change: (item: Item) => Item): Store 
   items: store.items.map(it => (it.id === id ? change(it) : it)),
 })
 
+// The words of a bare done press, which carries no answer: the human's turn for it.
+const BARE_DONE = 'pressed done'
+
+// The human's turn for the answer an item carries: the words the press or the reply sent, or the phrase of a bare done.
+const humanTurn = (item: Item): Turn => ({ speaker: 'human', words: item.answer ?? BARE_DONE })
+
+// The item's exchange as it reads: its thread, then the sent answer while it awaits the agent (the newest human turn), then the agent's turns
+// its undo window took (none once sent, since the window's end reopens the item with them: expire). The list, the pane and `/asks` read it here.
+export const turnsOf = (item: Item): Turn[] => [...item.thread, ...(item.state === 'done-pending' ? [humanTurn(item)] : []), ...item.windowTurns]
+
+// The label a turn is listed and drawn under: who spoke.
+export const labelOf = (turn: Turn): string => (turn.speaker === 'human' ? 'you' : 'agent')
+
+// Whether the human has answered the item, so an agent addition is a turn and not a change to the brief: a human turn is in the thread, or an
+// answer is out (in its undo window, or sent).
+export const answered = (item: Item): boolean => item.state !== 'open' || item.thread.some(turn => turn.speaker === 'human')
+
+// A sent item's answer becomes the thread's next human turn, the agent's turns its window took follow it, and the item is open again, unread.
+export const archive = (item: Item): Item => ({
+  ...item,
+  state: 'open',
+  pressedAt: null,
+  answer: null,
+  replied: false,
+  unread: true,
+  thread: [...item.thread, humanTurn(item), ...item.windowTurns],
+  windowTurns: [],
+})
+
 // A done press, or the press of an option or of a labelled to-do's ✓ (`answer`, its label). Open starts the undo window (nothing is sent yet) with that
 // answer. Inside the window only the undo press (`answer` null) cancels it: an answer pressed there is a button drawn while the item
-// was open, and changes nothing. A sent item is left as it is.
+// was open, and changes nothing. The cancelled window's agent turns stay on the item, in its thread. A sent item is left as it is.
 export const press = (store: Store, id: number, now: number, answer: string | null): Store =>
   mapItem(store, id, it => {
     if (it.state === 'open') return { ...it, state: 'done-waiting', pressedAt: now, answer }
-    if (it.state === 'done-waiting' && answer === null) return { ...it, state: 'open', pressedAt: null, answer: null, replied: false }
+    if (it.state === 'done-waiting' && answer === null) {
+      return { ...it, state: 'open', pressedAt: null, answer: null, replied: false, thread: [...it.thread, ...it.windowTurns], windowTurns: [] }
+    }
     return it
   })
 
@@ -61,19 +92,20 @@ export const reply = (store: Store, id: number, now: number, text: string): Stor
     it.state === 'open' ? { ...it, state: 'done-waiting', pressedAt: now, answer: oneLine(text), replied: true } : it,
   )
 
-// The agent changed a sent item in a way that asks the human something (items.ts decides): it goes back to open, with the press's
-// answer and reply cleared, and unread so the band shows the follow-up. Any other item is left as it is, a window that is running included.
+// The agent changed a sent item in a way that asks the human something (items.ts decides): its answer is archived into the thread, and the item
+// goes back to open, unread, so the band shows the follow-up. Any other item is left as it is, a window that is running included.
 export const reopen = (store: Store, id: number): { store: Store; reopened: boolean } => {
   const target = store.items.find(it => it.id === id)
   if (target === undefined || target.state !== 'done-pending') return { store, reopened: false }
-  return { store: mapItem(store, id, it => ({ ...it, state: 'open', pressedAt: null, answer: null, replied: false, unread: true })), reopened: true }
+  return { store: mapItem(store, id, archive), reopened: true }
 }
 
-// The window of press `token` has passed. It sends only if that press is still the open window: a cancelled
-// item sends nothing, and a second expiry of the same press finds it already sent.
+// The window of press `token` has passed. It sends only if that press is still the open window: a cancelled item sends nothing, and a second
+// expiry of the same press finds it already sent. The item it sends is returned as sent, for its notice. An agent turn the window took reopens the
+// item here, with the answer archived ahead of those turns: the reply first, the agent's after.
 export const expire = (store: Store, id: number, token: number): { store: Store; sent: Item | null } => {
   const target = store.items.find(it => it.id === id)
   if (target === undefined || target.state !== 'done-waiting' || target.pressedAt !== token) return { store, sent: null }
   const sent: Item = { ...target, state: 'done-pending', pressedAt: null }
-  return { store: mapItem(store, id, () => sent), sent }
+  return { store: mapItem(store, id, () => (sent.windowTurns.length > 0 ? archive(sent) : sent)), sent }
 }
