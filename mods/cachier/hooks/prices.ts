@@ -95,8 +95,22 @@ export const parsePricing = (markdown: string): PriceList | null => {
   return Object.keys(list).length === 0 ? null : list
 }
 
-// A transcript names a model with or without a date: `claude-haiku-4-5-20251001` is `claude-haiku-4-5`.
-export const ratesFor = (list: PriceList, model: string | null): Rates | null => (model === null ? null : (list[model.replace(/-\d{8}$/, '')] ?? null))
+// A model id as the list names it. A transcript names a model with or without a date (`claude-haiku-4-5-20251001`), and the
+// partner platforms wrap it: Bedrock as `[region.]anthropic.claude-opus-4-1-20250805-v1[:0]` (the region of a cross-region
+// inference profile, matched as a short lowercase label so a new region needs no change here), Vertex as
+// `claude-opus-4-1@20250805`. Matching the list model only, never an id that merely contains one. The `-v1[:0]` version is
+// Bedrock's alone: only an `anthropic.`-prefixed id loses it.
+const normalised = (model: string): string => {
+  const bedrock = /^(?:[a-z][a-z-]{0,9}\.)?anthropic\./.exec(model)
+  const bare = bedrock === null ? model : model.slice(bedrock[0].length).replace(/-v\d+(?::\d+)?$/, '')
+  return bare.replace(/@\d{8}$/, '').replace(/-\d{8}$/, '')
+}
+
+// An entry the list holds itself: `list[id]` alone would reach Object.prototype for `constructor`, `toString` or `__proto__`.
+const ownRates = (list: PriceList, id: string): Rates | null => (Object.hasOwn(list, id) ? list[id]! : null)
+
+// The id exactly as given first, so a price kept for a partner id wins over its list model's; then its normalised form.
+export const ratesFor = (list: PriceList, model: string | null): Rates | null => (model === null ? null : (ownRates(list, model) ?? ownRates(list, normalised(model))))
 
 // A cache lifetime in words, as every surface that names a TTL words it.
 export const TTL_WORDS: Record<TtlLabel, string> = { '5m': '5-minute', '1h': '1-hour' }
