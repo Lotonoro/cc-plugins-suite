@@ -6,14 +6,15 @@ for it.
 ## The footer line
 
 In the prompt footer, at the right after the mode labels (`auditor is on`, say), a pie shows how much of the prompt cache's
-lifetime is left, and beside it the time left:
+lifetime is left, and next to it the time left, or a word where there is no time:
 
 | State | Footer |
 | --- | --- |
 | Warm | `◕ 3:12` (the time dim) |
 | Expired, the model priced | `○ ~$0.42 to rebuild` (dim; `~29k tokens to rebuild` in the token unit, or unpriced) |
-| No cache after a model switch or compaction | `○` |
-| Keepalive on, nothing to count yet (before the first reply, after `/clear`) | `○` |
+| Cache reset by a model switch or compaction | `○ reset` (dim) |
+| Keepalive on, nothing to count yet (before the first reply, after `/clear`) | `○ no count` (dim) |
+| Keepalive on, a model switch or compaction before any reply has written the cache | `○ no count` (dim) |
 | Keepalive off, nothing to count | nothing: the footer's labels alone |
 
 - The pie's shape is the time left in quarters of the cache's lifetime, rounded up: `●` above three quarters, then `◕`,
@@ -24,7 +25,7 @@ lifetime is left, and beside it the time left:
   tenth (1:15 and 0:30 on a 5-minute cache, 15 and 6 minutes on an hour's). An expired cache is red with keepalive on and
   dim with it off.
 - A click on the pie switches keepalive, as `/keepalive on` with the last-used lead and count (else the defaults) or
-  `/keepalive off` does. A click on the time or the rebuild figure opens the details pane, at any terminal width. Esc closes it.
+  `/keepalive off` does. A click on the time, the rebuild figure, `reset` or `no count` opens the details pane, at any terminal width. Esc closes it.
 - Hovering the time or the figure shows the refresh cost in a popup just above it (`$0.006/refresh`); nothing on the
   line moves, so the time stays clickable.
 - Hovering the pie shows keepalive's state in a popup just above it: `cache keepalive is on`, `cache keepalive is paused`
@@ -33,8 +34,8 @@ lifetime is left, and beside it the time left:
 
 ## The details pane
 
-A click on the time or the rebuild figure opens the pane, sized to its lines: one row per line, as wide as the longest. A
-click on the time while it is open closes it, as Esc or the person's close does. The pane says, in short lines with their
+A click on the time, the rebuild figure, `reset` or `no count` opens the pane, sized to its lines: one row per line, as wide as the longest. A
+click on that word while it is open closes it, as Esc or the person's close does. The pane says, in short lines with their
 units:
 
 - the cache's warmth: `Prompt cache warm, 3:12 left (5-minute cache)`, or, once the cache has expired or been reset, the

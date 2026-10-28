@@ -368,7 +368,7 @@ describe('countdown', () => {
     await clock.advance(10000)
     await $.classic.PostModelSwitch({ from_model: 'a', to_model: 'b', requested_model: 'b', source: 'command', prompt_cache_warm: true, cache_ttl: '5m', context_tokens: 1, estimated_cache_write_usd: 0, pricing: 'catalog' } as any)
     await clock.advance(1000)
-    expect(await hint($)).toBe('')
+    expect(await hint($)).toBe('reset')
     expect(rec.logs.filter((l) => !l.includes('cachier switch'))).toEqual([])
     doc.text += lines([user({ uuid: 'u2', parent: 'a1', ts: iso(T0 + 11000) }), assistant({ uuid: 'a2', parent: 'u2', ts: iso(T0 + 11500), read: 9 })])
     await $.turn.complete({ answer: 'x', durationMs: 1, isAborted: false, turnId: 't', reason: 'answer' } as any)
@@ -383,7 +383,7 @@ describe('countdown', () => {
     await $.classic.SessionStart({ source: 'startup', transcript_path: PATH })
     await $.classic.PostCompact({ trigger: 'manual', compact_summary: 's' } as any)
     await clock.advance(1000)
-    expect(await hint($)).toBe('')
+    expect(await hint($)).toBe('reset')
   })
 
   test('a clear draws no countdown, and a resume reads the cache from the transcript it resumed', async ($, on) => {
@@ -1184,6 +1184,11 @@ describe('keepalive', () => {
     await clock.advance(600000)
     expect(rec.forks).toEqual([])
     expect(await toggle($, '')).toContain('Keepalive  on, no count no live cache to count from, nothing scheduled')
+    // The footer's word and the heading's state name one state: the heading's line is `on, ` and the footer's word.
+    const word = await hint($)
+    expect(word).toBe('no count')
+    const heading = (await commandText($, '')).split('\n').find((l: string) => l.startsWith('Keepalive'))
+    expect(heading).toBe(`Keepalive  on, ${word}`)
   })
 
   test('enabling with no transcript path shows no cost and sends no fork', async ($, on) => {
@@ -1567,6 +1572,8 @@ describe('keepalive: the queue and the race', () => {
     release()
     await switching
     await clock.advance(1000)
+    // The mark has landed over a known cache: the footer reads `reset`.
+    expect(await hint($)).toBe('reset')
     await mainStep($)
     await turnEnd($)
     await clock.advance(1000)
@@ -2705,7 +2712,7 @@ describe('the low-key UI: the footer line, the click, the gutter, and what the s
     await clock.settle()
     await toggle($, 'on 60 2')
     await clock.advance(400000)
-    expect(await hint($)).toBe('')
+    expect(await hint($)).toBe('no count')
     expect(rec.forks).toEqual([])
   })
 
@@ -4921,6 +4928,8 @@ describe('the Keepalive section words the pie\'s warning only while the pie warn
       expect(text).toContain('Keepalive  paused until the cache reset is recorded')
       expect(text).not.toContain('about to lapse')
       expect(await drawnHint($)).toContain('"color":"success"')
+      await clock.advance(1000)
+      expect(await hint($)).toBe('reset')
     } finally {
       release()
     }

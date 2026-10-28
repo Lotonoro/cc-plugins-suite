@@ -70,16 +70,16 @@ describe('readingOf: the countdown the pie and its time show', () => {
   })
 })
 
-describe('footerOf: the pie and its time, and the tone the pie is drawn in', () => {
+describe('footerOf: the pie and its words, and the tone the pie is drawn in', () => {
   const warm = readingOf(known, null, null, T + 108000, UPON)
   const quarter = readingOf(known, null, null, T + 240000, UPON)
   const tenth = readingOf(known, null, null, T + 280000, UPON)
   const expired = readingOf(known, null, null, T + 300000, UPON)
   const cold = readingOf(known, null, COLD, T, UPON)
 
-  test('with nothing to count, nothing is drawn unless keepalive is on, and then the pie alone, in green', () => {
+  test('with nothing to count, nothing is drawn unless keepalive is on, and then the pie with `no count`, in green', () => {
     expect(footerOf(null, false, false)).toBeNull()
-    expect(footerOf(null, true, false)).toEqual({ quarter: 0, words: '', tone: 'on' })
+    expect(footerOf(null, true, false)).toEqual({ quarter: 0, words: 'no count', tone: 'on' })
   })
 
   test('a warm cache that keepalive will refresh is green at every quarter, the time after the pie', () => {
@@ -104,9 +104,9 @@ describe('footerOf: the pie and its time, and the tone the pie is drawn in', () 
     expect(footerOf(expired, false, false)).toEqual({ quarter: 0, words: '~$0.42 to rebuild', tone: 'gone' })
   })
 
-  test('a cold cache is an empty pie with no words: green with keepalive on, dim off', () => {
-    expect(footerOf(cold, true, false)).toEqual({ quarter: 0, words: '', tone: 'on' })
-    expect(footerOf(cold, false, false)).toEqual({ quarter: 0, words: '', tone: 'gone' })
+  test('a cold cache is an empty pie with `reset`: green with keepalive on, dim off', () => {
+    expect(footerOf(cold, true, false)).toEqual({ quarter: 0, words: 'reset', tone: 'on' })
+    expect(footerOf(cold, false, false)).toEqual({ quarter: 0, words: 'reset', tone: 'gone' })
   })
 })
 

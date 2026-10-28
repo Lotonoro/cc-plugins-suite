@@ -26,27 +26,26 @@ const state = (extra: Partial<HintState> = {}): HintState => ({
   breakEven: '',
   ...extra,
 })
-// The footer's parts: the pie button, the separator, and the time (a keyed Box of the time's button and its hover reveal). A line with
-// no time is the pie alone.
-const pieOf = (line: any) => (line.props.key === 'pie-box' ? line : line.children[0]).children[0]
-// The pie's keyed Box, which holds the pie and its hover popup: the line's first child, or the line itself with no time.
-const pieBoxOf = (line: any) => (line.props.key === 'pie-box' ? line : line.children[0])
+// The footer's parts: the pie button, the separator, and the words (a keyed Box of the details button and its hover reveal).
+const pieOf = (line: any) => line.children[0].children[0]
+// The pie's keyed Box, which holds the pie and its hover popup: the line's first child.
+const pieBoxOf = (line: any) => line.children[0]
 const timeOf = (line: any) => line.children[2]
 const glyphOf = (pie: any) => pie.props.children[0].children[0]
 const toneOf = (pie: any) => pie.props.children[0].props
 const revealOf = (line: any) => timeOf(line).children[1]
 
-describe('footerLine: the pie, and the time beside it', () => {
+describe('footerLine: the pie, and its words', () => {
   test('with no line to show, there is no element', () => {
     expect(footerLine(t, null, false, noop, noop)).toBeNull()
     expect(footerLine(t, state({ reading: null }), false, noop, noop)).toBeNull()
   })
 
-  test('nothing to count with keepalive on is the pie alone, empty and green', () => {
-    const pie = footerLine(t, state({ reading: null }), true, noop, noop) as any
-    expect(pie.props.key).toBe('pie-box')
-    expect(glyphOf(pieOf(pie))).toBe('○')
-    expect(toneOf(pieOf(pie))).toEqual({ color: 'success' })
+  test('nothing to count with keepalive on is the empty green pie with `no count` beside it, a dim details button', () => {
+    const line = footerLine(t, state({ reading: null }), true, noop, noop) as any
+    expect(glyphOf(pieOf(line))).toBe('○')
+    expect(toneOf(pieOf(line))).toEqual({ color: 'success' })
+    expect(timeOf(line).children[0].props).toMatchObject({ key: 'details', dimColor: true, children: ['no count'] })
   })
 
   test('a warm cache that keepalive refreshes draws its quarter as the pie, green, then the time', () => {
@@ -86,12 +85,13 @@ describe('footerLine: the pie, and the time beside it', () => {
     expect(toneOf(pieOf(footerLine(t, state({ reading: expired }), false, noop, noop)))).toEqual({ dimColor: true })
   })
 
-  test('a cold cache is an empty pie with no time: green with keepalive on, dim off', () => {
+  test('a cold cache is an empty pie with `reset` beside it: green with keepalive on, dim off', () => {
     const cold: Reading = { words: '', state: 'cold', quarter: 0, warn: 'calm' }
     const on = footerLine(t, state({ reading: cold }), true, noop, noop) as any
-    expect(on.props.key).toBe('pie-box')
     expect(toneOf(pieOf(on))).toEqual({ color: 'success' })
+    expect(timeOf(on).children[0].props).toMatchObject({ key: 'details', dimColor: true, children: ['reset'] })
     const off = footerLine(t, state({ reading: cold }), false, noop, noop) as any
+    expect(timeOf(off).children[0].props).toMatchObject({ key: 'details', children: ['reset'] })
     expect(glyphOf(pieOf(off))).toBe('○')
     expect(toneOf(pieOf(off))).toEqual({ dimColor: true })
   })

@@ -13,7 +13,7 @@ type Table = {
 
 // The pie's glyph by its quarter step: empty at 0 (cold, expired, or nothing to count), full above three quarters of the TTL left.
 const GLYPHS = ['○', '◔', '◑', '◕', '●']
-// The pie's colour as theme tokens, so it follows the person's theme. The time and the figure beside it are dim, never coloured.
+// The pie's colour as theme tokens, so it follows the person's theme. The words beside it (the time, the rebuild figure, `reset` or `no count`) are dim, never coloured.
 const TONE_PROPS: Record<Tone, Partial<TextProps>> = {
   on: { color: 'success' },
   quiet: {},
@@ -41,7 +41,7 @@ const popup = (t: Table, text: string): RenderElement =>
     children: [t.Text({ dimColor: true, wrap: 'truncate-end', children: [text] })],
   })
 
-// The footer line: the pie, which a click switches keepalive with, and beside it the time or the rebuild figure, which a click opens the
+// The footer line: the pie, which a click switches keepalive with, and beside it the time, the rebuild figure, `reset` or `no count`, which a click opens the
 // details with. The refresh cost shows on hover, in a popup above the time, for reference at any time. `on` is whether keepalive is on.
 // Null when there is no line to show.
 export const footerLine = (t: Table, state: HintState | null, on: boolean, onToggle: () => void, onDetails: () => void): RenderElement | null => {
@@ -55,7 +55,6 @@ export const footerLine = (t: Table, state: HintState | null, on: boolean, onTog
   })
   // The pie's box is its popup's anchor.
   const pieBox = t.Box({ key: 'pie-box', flexDirection: 'row', children: [pie, popup(t, pieHoverOf(state, on))] })
-  if (footer.words === '') return pieBox
   const cost = state?.cost ?? state?.offer ?? null
   const time = t.Box({
     key: 'time',

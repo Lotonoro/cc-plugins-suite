@@ -1537,7 +1537,7 @@ export const register: Register = (on, options) => {
   )
 
   // The footer's mode labels, with the line drawn after them: the engine's and another plugin's, as the hooks beneath draw them. The
-  // engine's footer is awaited so those hooks run first. The pie is keepalive's switch; a click on the time or the rebuild figure beside it
+  // engine's footer is awaited so those hooks run first. The pie is keepalive's switch; a click on the word beside it (the time, the rebuild figure, `reset` or `no count`)
   // opens the details pane.
   on('ui.render', { component: 'SessionMode' }, async ($, e, next) => {
     const tree = await next(e)
