@@ -201,9 +201,17 @@ test('after a fence in item 1., a following item 2. keeps its indented sub-bulle
   ])
 })
 
-test('a CRLF blank line does not end a list item, and CRLF line endings are kept as written', () => {
+test('a CRLF blank line does not end a list item, and no part keeps a carriage return', () => {
   expect(briefParts('1. Run:\r\n\r\n   ```sh\r\n   ls\r\n   ```')).toEqual([
-    { kind: 'prose', text: '1. Run:\r' },
-    { kind: 'code', text: '```sh\r\nls\r\n```', body: 'ls\r' },
+    { kind: 'prose', text: '1. Run:' },
+    { kind: 'code', text: '```sh\nls\n```', body: 'ls' },
+  ])
+})
+
+test('a CRLF brief with a nested fence has no carriage return in any part or copied body', () => {
+  expect(briefParts('- a\r\n  - b\r\n    ```sh\r\n    if x:\r\n        y()\r\n    ```\r\n    after\r\n')).toEqual([
+    { kind: 'prose', text: '- a\n  - b' },
+    { kind: 'code', text: '```sh\nif x:\n    y()\n```', body: 'if x:\n    y()' },
+    { kind: 'prose', text: 'after' },
   ])
 })

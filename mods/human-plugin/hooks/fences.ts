@@ -62,7 +62,7 @@ const blockAt = (lines: string[], open: number, marker: string, enclosing: ListI
   let j = open + 1
   let close: number | null = null
   for (; j < lines.length; j++) {
-    const text = (lines[j] ?? '').replace(/\r$/, '')
+    const text = lines[j] ?? ''
     const { col, chars } = run(text, 0)
     const rest = text.slice(chars)
     if (rest === '') continue
@@ -82,7 +82,7 @@ const scan = (lines: string[]): Block[] => {
   let top: ListItem | null = null
   let i = 0
   while (i < lines.length) {
-    const text = (lines[i] ?? '').replace(/\r$/, '')
+    const text = lines[i] ?? ''
     const { col, chars } = run(text, 0)
     const rest = text.slice(chars)
     if (rest === '') {
@@ -139,8 +139,9 @@ const cutAt = (block: Block | null, index: number): number => {
 // column of its item, for the drawing: markdown removes the fence's own indent as it draws the block. Its `body` is the lines inside the fences, less
 // the column the fence starts at, what a copy puts on the clipboard. Prose lines after a block lose the column of the item around it (cutAt).
 // Prose parts lose their blank edge lines, and a blank one is dropped.
+// A line's trailing \r is its CRLF line break, cut at the split: no part's text or body carries one.
 export const briefParts = (markdown: string): BriefPart[] => {
-  const lines = markdown.split('\n')
+  const lines = markdown.split('\n').map(line => line.replace(/\r$/, ''))
   const parts: BriefPart[] = []
   let previous: Block | null = null
   let cursor = 0
