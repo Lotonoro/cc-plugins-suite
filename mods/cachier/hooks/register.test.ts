@@ -3,6 +3,7 @@ import { assistant, fakeFiles, lines, user } from './fixture'
 import { HISTORY_BOUND, keyOf } from './history'
 import { INITIAL as INITIAL_KEEPALIVE } from './keepalive'
 import { alarmOf, learnTranscript, pressCountdown, pressOnce, restoreState, STATE_SHAPE, unitFrom } from './register'
+import { INITIAL_STATS } from './stats'
 
 const PATH = '/home/test/.claude/projects/p/s1.jsonl'
 const T0 = Date.parse('2026-10-18T10:00:00.000Z')
@@ -3370,6 +3371,21 @@ const opusCached = () => ({
   ]),
 })
 
+// The shared price record a session finds in the store, with Opus 5.5's read price and write rates doubled from the built-in
+// table's, so a figure priced from it is distinguishable from one priced at the built-in table.
+const storedPrices = () => ({
+  models: {
+    'claude-opus-5-5': {
+      rates: { input: 4e-6, read: 0.4e-6, write5m: 10e-6, write1h: 16e-6, above: null },
+      changedMs: null,
+      missingSinceMs: null,
+    },
+  },
+  lastSuccessMs: T0,
+  lastChangeMs: null,
+  attempt: { stampMs: T0, outcome: 'success', failures: 0, previous: null },
+})
+
 describe('the cost unit: dollars at list prices, or tokens, switched by /keepalive unit', () => {
   test("a refresh on a priced model is shown in dollars", { options: { keepalive_lead_s: 15, keepalive_count: 3 } }, async ($, on) => {
     kaWorld(on, { ...opusCached() })
@@ -3510,6 +3526,53 @@ describe('the cost unit: dollars at list prices, or tokens, switched by /keepali
     expect(drawn).toContain('~19k read/refresh')
     expect(await toggle($, '')).toContain('Shown in tokens: no price for claude-nonesuch-1.')
     await m.unmount()
+  })
+
+  test('a stored price record prices the first fold after a reload, without reading the page', { options: { keepalive_lead_s: 15, keepalive_count: 3 } }, async ($, on) => {
+    // The state an earlier load left: the stats counted the first reply, and a cursor stops the first pass at it.
+    const stats = { ...INITIAL_STATS, transcript: PATH, cursor: 'm1', lastAtMs: T0, lastTotal: 18559, lastTtlMs: 300000 }
+    const doc = {
+      text: lines([
+        user({ uuid: 'u1', parent: null, ts: iso(T0) }),
+        assistant({ uuid: 'a1', parent: 'u1', ts: iso(T0), write: 18551, tags: FIVE, msg: 'm1', model: 'claude-opus-5-5', speed: 'standard' }),
+        assistant({ uuid: 'a2', parent: 'a1', ts: iso(T0 + 360000), write: 20000, tags: FIVE, msg: 'm2', model: 'claude-opus-5-5', speed: 'standard' }),
+      ]),
+      store: { prices: storedPrices() },
+    }
+    const rec = kaWorld(on, doc)
+    on('state.get', async (_$: any, e: any, next: any) => {
+      const got = await next(e)
+      return e.plugin === 'cachier' && e.key === 'stats' && got.value?.value === undefined ? { value: { ...got.value, value: stats } } : got
+    })
+    const clock = mock.clock(on, { now: T0 + 360000 })
+    await $.classic.SessionStart({ source: 'startup', transcript_path: PATH })
+    await clock.settle()
+    expect(rec.fetches).toEqual([])
+    // The fold's write is priced at the stored $10 per million, not the built-in $5: 20,000 tokens cost $0.20.
+    expect((await commandText($, '')).replace(/\n\s*/g, ' ')).toContain('Cache misses: 1 (lapse 1), $0.20 rewritten')
+  })
+
+  test('an unreadable price record prices the first fold at the built-in table and logs why', { options: { keepalive_lead_s: 15, keepalive_count: 3 } }, async ($, on) => {
+    const stats = { ...INITIAL_STATS, transcript: PATH, cursor: 'm1', lastAtMs: T0, lastTotal: 18559, lastTtlMs: 300000 }
+    const doc = {
+      text: lines([
+        user({ uuid: 'u1', parent: null, ts: iso(T0) }),
+        assistant({ uuid: 'a1', parent: 'u1', ts: iso(T0), write: 18551, tags: FIVE, msg: 'm1', model: 'claude-opus-5-5', speed: 'standard' }),
+        assistant({ uuid: 'a2', parent: 'a1', ts: iso(T0 + 360000), write: 20000, tags: FIVE, msg: 'm2', model: 'claude-opus-5-5', speed: 'standard' }),
+      ]),
+      getDenied: new Set(['prices']),
+    }
+    const rec = kaWorld(on, doc)
+    on('state.get', async (_$: any, e: any, next: any) => {
+      const got = await next(e)
+      return e.plugin === 'cachier' && e.key === 'stats' && got.value?.value === undefined ? { value: { ...got.value, value: stats } } : got
+    })
+    const clock = mock.clock(on, { now: T0 + 360000 })
+    await $.classic.SessionStart({ source: 'startup', transcript_path: PATH })
+    await clock.settle()
+    expect(rec.fetches).toEqual([])
+    expect(rec.logs.join('\n')).toContain('read refused')
+    expect((await commandText($, '')).replace(/\n\s*/g, ' ')).toContain('Cache misses: 1 (lapse 1), $0.10 rewritten')
   })
 })
 
@@ -3809,14 +3872,14 @@ describe('the pause history: each pause a prompt ends, kept in the store under t
     expect((rec.store.get(KEY) as any[]).length).toBe(1)
   })
 
-  test("a session start deletes the keys that hold only pauses older than the history keeps, and leaves this session's own", async ($, on) => {
+  test("a session start deletes the keys that hold only pauses older than the history keeps, and leaves this session's own and the shared price record", async ($, on) => {
     const old = { startMs: 1, pausedMs: MIN, hour: 0, weekday: 0, ratio: 24, ttlMs: 300000 }
     const recent = Array.from({ length: 2000 }, (_, i) => ({ ...old, startMs: 1000 + i }))
-    const rec = kaWorld(on, { ...cached(), store: { 'pauses/old': [old], 'pauses/recent': recent, other: 1 } })
+    const rec = kaWorld(on, { ...cached(), store: { 'pauses/old': [old], 'pauses/recent': recent, prices: storedPrices() } })
     const clock = mock.clock(on, { now: T0 })
     await $.classic.SessionStart({ source: 'startup', transcript_path: PATH })
     await clock.advance(1000)
-    expect([...rec.store.keys()].sort()).toEqual(['other', 'pauses/recent'])
+    expect([...rec.store.keys()].sort()).toEqual(['pauses/recent', 'prices'])
   })
 
   test("a pause whose write was refused is the one the next pause's growth counts from, though the key never held it", async ($, on) => {
@@ -3839,11 +3902,11 @@ describe('the pause history: each pause a prompt ends, kept in the store under t
     const old = { startMs: 1, pausedMs: MIN, hour: 0, weekday: 0, ratio: 24, ttlMs: 300000 }
     const recent = Array.from({ length: 2000 }, (_, i) => ({ ...old, startMs: 1000 + i }))
     const deleteDenied = new Set(['pauses/old0', 'pauses/old1'])
-    const rec = kaWorld(on, { ...cached(), store: { 'pauses/old0': [old], 'pauses/old1': [old], 'pauses/old2': [old], 'pauses/recent': recent }, deleteDenied })
+    const rec = kaWorld(on, { ...cached(), store: { 'pauses/old0': [old], 'pauses/old1': [old], 'pauses/old2': [old], 'pauses/recent': recent, prices: storedPrices() }, deleteDenied })
     const clock = mock.clock(on, { now: T0 })
     await $.classic.SessionStart({ source: 'startup', transcript_path: PATH })
     await clock.advance(1000)
-    expect([...rec.store.keys()].sort()).toEqual(['pauses/old0', 'pauses/old1', 'pauses/recent'])
+    expect([...rec.store.keys()].sort()).toEqual(['pauses/old0', 'pauses/old1', 'pauses/recent', 'prices'])
     expect(rec.logs.filter((l: string) => l.includes('delete refused'))).toHaveLength(1)
   })
 })
