@@ -15,7 +15,7 @@ import { NO_JUDGED } from './verdict'
 const SAMPLE = {
   shape: 4,
   transcript: '/t.jsonl',
-  view: { kind: 'known', touchMs: 1, ttlMs: 300000, ttlLabel: '5m', promptTokens: 1, model: 'm', speed: 's' },
+  view: { kind: 'known', touchMs: 1, ttlMs: 300000, ttlLabel: '5m', promptTokens: 1, outputTokens: 0, model: 'm', speed: 's' },
   cold: { reason: 'cleared', atMs: 1 },
   touch: 1,
   keepalive: {
@@ -107,7 +107,7 @@ const fingerprint = () => fnv(shapeOf({ sample: SAMPLE, views: VIEWS, defaults: 
 // and 8 kept the details' first line in the stored hint as its warmth, and dropped the history sentences, the unit notes, the marker and the bar from it,
 // and 9 dropped the keepalive generation from the stored hint, which nothing read, and 10 kept in keepalive's state whether its cost was stated,
 // and 11 gave keepalive a run id that only an enable advances, so a run's cost is stated once for that run, and 12 dropped
-// keepalive's record of a cost shown (its disclosed and stated flags and the run id), with the gate that held a refresh until then.
+// keepalive's record of a cost shown (its disclosed and stated flags and the run id), with the gate that held a refresh until then, and 13 added the output tokens of the reply the view's prefix comes from.
 const SHAPES: Record<number, string> = {
   2: 'd13a40b8',
   3: 'ce6161ac',
@@ -120,6 +120,7 @@ const SHAPES: Record<number, string> = {
   10: 'ca14d30f',
   11: 'f67817dd',
   12: '684c6cf5',
+  13: 'ba479bff',
 }
 
 describe('the state shape: a change to a state type moves STATE_SHAPE', () => {

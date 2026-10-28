@@ -51,12 +51,13 @@ import { closedPane, isPaneOpen, paneAlarm, PANE, resizePane, syncPane, togglePa
 import { appended, HISTORY_BOUND, keyOf, KEY_PREFIX, merged, recordOf, recordsOf, staleKeys, type PauseRecord } from './history'
 import { adviceOf, ratesOfView, type Inputs } from './advice'
 import { learnedLine, learnedOf, ttlAdviceLine, ttlAdviceOf, ttlSwitchOf, type Learned } from './learn'
-import { breakEvenLine, countLineOf, judge, KEPT_COUNT, ratioOf, rewriteSpendOf, runCountOf, sessionBalanceLine, NO_JUDGED, pauseOf, type Pause } from './verdict'
-import { answerOf, type Setting } from './sections'
+import { breakEvenLine, countLineOf, judge, KEPT_COUNT, ratioOf, rebuildOf, runCountOf, sessionBalanceLine, NO_JUDGED, pauseOf, type Pause } from './verdict'
+import { answerOf, type Setting, type Snapshot } from './sections'
 import { stampLabel, withStamp } from './stamp'
 import { foldStatsEvents, INITIAL_STATS, pendingFor, rundownSections, sessionLineOf, type MissEvent, type LongPauseEvent } from './stats'
 import { lookupRows, readCache, type History, type Host, type Row } from './transcript'
-import { dollars, NO_KINDS, parsePricing, PRICES, PRICING_URL, spendOf, TTL_WORDS, unitOf, uponOf, writeReadRatio, type Money, type PriceList } from './prices'
+import { dollars, NO_KINDS, spendOf, TTL_WORDS, unitOf, writeReadRatio, type Money } from './prices'
+import { priceCheck, priceList, priceReady, priceSync, report } from './pricesync'
 
 type Dollar = EngineInterface
 
@@ -81,9 +82,6 @@ const JUDGED = { plugin: 'cachier', key: 'judged' } as const
 const SHAPE = { plugin: 'cachier', key: 'shape' } as const
 // The unit costs are shown in.
 const UNIT = { plugin: 'cachier', key: 'unit' } as const
-// How long the price list read from the pricing page is kept, and how long before a failed read is tried again.
-const PRICES_FRESH_MS = 6 * 3600000
-const PRICES_RETRY_MS = 600000
 // Attempts at one keepalive state write before it is given up, when other hooks keep beating it to the version.
 const WRITE_ATTEMPTS = 5
 const PING_PROMPT = 'ok'
@@ -195,81 +193,28 @@ const hostOf = ($: Dollar): Host => ({
   },
 })
 
-// A failure is logged with its stack; the status line and the stamps carry on without it.
-const report = ($: Dollar, err: unknown) => {
-  $.ui.log(`cachier: ${err instanceof Error ? (err.stack ?? err.message) : String(err)}`, { to: 'debug' })
-}
-
-// The price list in force: the built-in one until the pricing page has been read, then the page's rows over it. A reload
-// starts over from the built-in one and reads the page again.
-let prices: PriceList = PRICES
-// When the page is next read, and whether the last read failed.
-let pricesDueMs = 0
-let pricesFailed = false
-// The page read in flight, so a second caller waits for it instead of sending another.
-let pricesLoading: Promise<void> | null = null
+// This load's shared price record and page read. Re-created in register(), so a reload starts with none of it.
+let sync = priceSync()
 
 // Work a hook starts and does not wait for: a failure is reported, and the hook's own result is not held up by it.
 const inBackground = ($: Dollar, work: Promise<unknown>) => {
   work.catch((err: unknown) => report($, err))
 }
 
-// Reads Anthropic's pricing page; throws when it does not answer in time or answers badly.
-const fetchPrices = async ($: Dollar): Promise<PriceList> => {
-  let late: () => void = () => {}
-  const timeout = new Promise<null>((resolve) => {
-    late = () => resolve(null)
-  })
-  const timer = $.clock.after(READ_TIMEOUT_MS, late)
-  try {
-    const answer = await Promise.race([$.http.fetch(PRICING_URL), timeout])
-    if (answer === null) throw new Error('the pricing page did not answer in time')
-    if (!answer.ok) throw new Error(`the pricing page answered ${answer.status}`)
-    const read = parsePricing(answer.text)
-    if (read === null) throw new Error('the pricing page has no model prices it can read')
-    return read
-  } finally {
-    timer.cancel()
-  }
-}
-
-// Reads the pricing page when it is due, one read at a time. A read that fails is reported and tried again after ten minutes,
-// the list in force kept. `now`: a failed read is tried again at once rather than after the retry window.
-const readPrices = async ($: Dollar, now: boolean): Promise<void> => {
-  const nowMs = await $.clock.now()
-  if (nowMs < pricesDueMs && !(now && pricesFailed)) return
-  try {
-    prices = { ...PRICES, ...(await fetchPrices($)) }
-    pricesFailed = false
-    pricesDueMs = nowMs + PRICES_FRESH_MS
-  } catch (err) {
-    report($, err)
-    pricesFailed = true
-    pricesDueMs = nowMs + PRICES_RETRY_MS
-  }
-}
-
-// The slot is taken before anything is awaited, so two callers in the same moment share one read.
-const loadPrices = ($: Dollar, now = false): Promise<void> => {
-  pricesLoading ??= readPrices($, now).finally(() => {
-    pricesLoading = null
-  })
-  return pricesLoading
-}
-
 // The unit pressed this session, or the option's while none is: a value of another shape, from an earlier load, counts as
 // none, so the unit is never written for want of a press.
 const unitPressedNow = (held: unknown): held is Unit => held === 'dollars' || held === 'tokens'
-export const unitFrom = (held: unknown, fallback: Unit): Unit => (unitPressedNow(held) ? held : fallback)
+export const unitFrom = (held: unknown, fallback: Unit = defaultUnit): Unit => (unitPressedNow(held) ? held : fallback)
 
-const unitNow = async ($: Dollar): Promise<Unit> => unitFrom((await $.state.get(UNIT)).value, defaultUnit)
+const unitNow = async ($: Dollar): Promise<Unit> => unitFrom((await $.state.get(UNIT)).value)
 
 // What figures are worded with now: the session's unit, the price list, and the model, speed and TTL of the cache a ping
 // would read.
-const moneyOf = async ($: Dollar, view: CacheView): Promise<Money> => {
+const moneyFrom = (held: unknown, view: CacheView): Money => {
   const known = view.kind === 'known' ? view : null
-  return { unit: await unitNow($), list: prices, model: known?.model ?? null, speed: known?.speed ?? null, ttl: known?.ttlLabel ?? '5m' }
+  return { unit: unitFrom(held), list: priceList(sync), model: known?.model ?? null, speed: known?.speed ?? null, ttl: known?.ttlLabel ?? '5m' }
 }
+const moneyOf = async ($: Dollar, view: CacheView): Promise<Money> => moneyFrom((await $.state.get(UNIT)).value, view)
 
 // A cold mark lifts once the reading or a live request start is later than it.
 const settleColdMark = async ($: Dollar) => {
@@ -309,12 +254,12 @@ const readOnce = async ($: Dollar) => {
   await $.state.set(VIEW, view)
   const counted = read
   if (counted !== null) {
-    // Each response is priced as it is counted, so a read of the pricing page still in flight is waited for; it has its own timeout.
-    await loadPrices($)
+    // Each response is priced at the record in force when it is counted, so the fold waits for this session's first read of it.
+    await priceReady(sync, $)
     let found: MissEvent[] = []
     let pauses: LongPauseEvent[] = []
     const wrote = await statsWrite($, (s) => {
-      const out = foldStatsEvents(s, counted, prices)
+      const out = foldStatsEvents(s, counted, priceList(sync))
       found = out.events
       pauses = out.pauses
       return out.state
@@ -442,25 +387,44 @@ const learnPath = async ($: Dollar, path: string) => {
   if (await learnTranscript($, path)) refresh($)
 }
 
-const setCold = async ($: Dollar, reason: ColdMark['reason']) => {
+// `adds` says, once pings are paused and before the mark is written, whether the mark's time joins the reset times the miss
+// classifier reads. Compaction and /clear always add.
+const setCold = async ($: Dollar, reason: ColdMark['reason'], adds: (atMs: number) => Promise<boolean> = async () => true) => {
   // Pings wait from the start of the mark until it lands, so no tick can read the cache as warm across the switch.
   await editKeepalive($, coldBegun)
   const atMs = await $.clock.now()
+  const add = await adds(atMs)
   await $.state.set(COLD, { reason, atMs })
-  await statsWrite($, (s) => ({ ...s, coldSince: [...s.coldSince, atMs] }))
+  if (add) await statsWrite($, (s) => ({ ...s, coldSince: [...s.coldSince, atMs] }))
   await editKeepalive($, coldLanded)
   await settleColdMark($)
 }
 
 // A cold mark from a hook the engine awaits. A failure is logged and fails closed, so no ping forks on a cache the mod could
 // not mark cold; it never reaches the engine.
-const markCold = async ($: Dollar, reason: ColdMark['reason']): Promise<void> => {
+const markCold = async ($: Dollar, reason: ColdMark['reason'], adds?: (atMs: number) => Promise<boolean>): Promise<void> => {
   try {
-    await setCold($, reason)
+    await setCold($, reason, adds)
   } catch (err) {
     report($, err)
     gapBroken = true
   }
+}
+
+// Whether a switch forfeits a cache cachier reads as warm now, the footer's own reading with the cache view and the standing mark
+// as they stand. A reading that cannot be taken is not warm. The engine's flag and the reading go to the debug log to compare.
+const switchForfeits = async ($: Dollar, engineWarm: boolean, nowMs: number): Promise<boolean> => {
+  let state = 'unread'
+  try {
+    const view = (await $.state.get(VIEW)).value ?? NO_CACHE
+    const live = (await $.state.get(TOUCH)).value ?? null
+    const cold = (await $.state.get(COLD)).value ?? null
+    state = readingOf(view, live, cold, nowMs, '')?.state ?? 'none'
+  } catch (err) {
+    report($, err)
+  }
+  debugLine($, 'cachier switch', { prompt_cache_warm: engineWarm, reading: state })
+  return state === 'warm'
 }
 
 const liveTouch = async ($: Dollar) => {
@@ -521,7 +485,7 @@ const resetKeepalive = async ($: Dollar): Promise<void> => {
 
 // The shape of the values this code keeps in the session's state. Bump it with any change to a value's shape in
 // types/index.d.ts: a reload under a new shape resets what the old one wrote, and one under the same shape keeps it.
-export const STATE_SHAPE = 12
+export const STATE_SHAPE = 13
 
 // A reload runs session.start again and keeps the session's state, which an earlier load wrote. Keepalive keeps what still fits, so a
 // reload mid-turn keeps the gap shut and a toggle that was on stays on, and the transcript is kept while it is a path. The unit is left as
@@ -571,10 +535,11 @@ const tallyWrite = async ($: Dollar, change: (t: TallyState) => TallyState) => {
 }
 
 // The cache as keepalive counts it: a cold cache has no live entry to count from until a request touches it again.
+const effectiveOf = (view: CacheView, cold: ColdMark | null): CacheView => cold === null ? view : NO_CACHE
 const effectiveView = async ($: Dollar): Promise<CacheView> => {
   const view = (await $.state.get(VIEW)).value ?? NO_CACHE
   const cold = (await $.state.get(COLD)).value ?? null
-  return cold === null ? view : NO_CACHE
+  return effectiveOf(view, cold)
 }
 
 // A fork's end, as a ping sees it: a reply, a throw, or the TTL lapsing before any reply.
@@ -867,39 +832,45 @@ const settingsOf = (raw: CacheView, run: { leadMs: number; count: number | null 
   ]
 }
 
+// The figures and sentences the bare command's sections state. The clock is read first, then each state key once, in sequence:
+// not an atomic snapshot, so a write that lands between two reads can leave figures from two moments. A surface that states the
+// sections calls it and lays them out with answerOf; only the command calls it today, and the pane will take it too.
+const snapshotNow = async ($: Dollar): Promise<Snapshot> => {
+  const nowMs = await $.clock.now()
+  const held = (await $.state.get(KEEPALIVE)).value ?? INITIAL
+  const live = (await $.state.get(TOUCH)).value ?? null
+  const raw = (await $.state.get(VIEW)).value ?? NO_CACHE
+  const cold = (await $.state.get(COLD)).value ?? null
+  const unitHeld = (await $.state.get(UNIT)).value
+  const view = effectiveOf(raw, cold)
+  const money = moneyFrom(unitHeld, view)
+  const tally = (await $.state.get(TALLY)).value ?? INITIAL_TALLY
+  const stats = (await $.state.get(STATS)).value ?? INITIAL_STATS
+  const rebuild = rebuildOf(raw, money)
+  const reading = readingOf(raw, live, cold, nowMs, rebuild)
+  const judged = (await $.state.get(JUDGED)).value ?? NO_JUDGED
+  const run = runOf(held, defaultRun)
+  const rundown = rundownSections(tally, stats, money)
+  const kept = keptOf(held, view, money, nowMs)
+  return {
+    cache: [warmthOf(reading, raw.kind === 'known' ? raw.ttlLabel : '5m', rebuild)].filter((line) => line !== ''),
+    keepalive: [
+      step(held, view, live, gapOpen(held), nowMs, money).text,
+      ...countLines(held, view, money, nowMs, kept),
+      ...(defaultRun === undefined ? [] : [breakEvenLine(held, view, money, defaultsNow(defaultRun, view, money, nowMs))]),
+      sessionBalanceLine(judged, money.unit),
+      ...rundown.keepalive,
+    ].filter((line) => line !== ''),
+    advice: [sentenceNow(held, view, money), ...ttlAdviceLines(held, view, money), ...rundown.advice, ...unitNotes(money, view, tally, stats)].filter((line) => line !== ''),
+    settings: settingsOf(raw, run, kept, tally, view, money, nowMs, unitPressedNow(unitHeld)),
+  }
+}
+
 const keepaliveCommand = async ($: Dollar, args: string, origin: { kind: string }): Promise<string> => {
   const request = parseRequest(args)
   switch (request.kind) {
-    case 'status': {
-      const nowMs = await $.clock.now()
-      const held = (await $.state.get(KEEPALIVE)).value ?? INITIAL
-      const live = (await $.state.get(TOUCH)).value ?? null
-      const view = await effectiveView($)
-      const money = await moneyOf($, view)
-      const tally = (await $.state.get(TALLY)).value ?? INITIAL_TALLY
-      const stats = (await $.state.get(STATS)).value ?? INITIAL_STATS
-      const cold = (await $.state.get(COLD)).value ?? null
-      const raw = (await $.state.get(VIEW)).value ?? NO_CACHE
-      const rebuild = raw.kind === 'known' ? uponOf(rewriteSpendOf(raw, money), money.unit) : ''
-      const reading = readingOf(raw, live, cold, nowMs, rebuild)
-      const judged = (await $.state.get(JUDGED)).value ?? NO_JUDGED
-      const run = runOf(held, defaultRun)
-      const rundown = rundownSections(tally, stats, money)
-      const kept = keptOf(held, view, money, nowMs)
-      const answer = answerOf({
-        cache: [warmthOf(reading, raw.kind === 'known' ? raw.ttlLabel : '5m', rebuild)].filter((line) => line !== ''),
-        keepalive: [
-          step(held, view, live, gapOpen(held), nowMs, money).text,
-          ...countLines(held, view, money, nowMs, kept),
-          ...(defaultRun === undefined ? [] : [breakEvenLine(held, view, money, defaultsNow(defaultRun, view, money, nowMs))]),
-          sessionBalanceLine(judged, money.unit),
-          ...rundown.keepalive,
-        ].filter((line) => line !== ''),
-        advice: [sentenceNow(held, view, money), ...ttlAdviceLines(held, view, money), ...rundown.advice, ...unitNotes(money, view, tally, stats)].filter((line) => line !== ''),
-        settings: settingsOf(raw, run, kept, tally, view, money, nowMs, unitPressedNow((await $.state.get(UNIT)).value)),
-      })
-      return answer
-    }
+    case 'status':
+      return answerOf(await snapshotNow($))
     case 'usage':
       return 'usage: /keepalive on <lead seconds> [refreshes], /keepalive off, /keepalive default on|off, or /keepalive unit dollars|tokens. Without refreshes, each run sends the count learned from your pauses, else the break-even count. The default is the mode new sessions start in.'
     case 'off':
@@ -959,13 +930,14 @@ const unitNotes = (money: Money, view: CacheView, tally: TallyState, stats: Stat
 const drawOnce = singleFlight()
 
 // Sets the session's unit and draws it at once, or by the next tick when a draw is already running. Keepalive's state is not
-// touched. A switch to dollars after a failed read of the pricing page reads it again at once; the figures redraw when the read
-// lands. `/keepalive unit` switches through here.
+// touched. A switch to dollars from another unit reads the shared record at once; the figures redraw when the read lands.
+// `/keepalive unit` switches through here.
 const setUnit = async ($: Dollar, unit: Unit): Promise<void> => {
+  const before = await unitNow($)
   await $.state.set(UNIT, unit)
   await drawOnce(() => drawStatus($))
-  if (unit === 'dollars' && pricesFailed) {
-    await loadPrices($, true)
+  if (unit === 'dollars' && before !== 'dollars') {
+    await priceCheck(sync, $, true)
     await drawOnce(() => drawStatus($))
   }
 }
@@ -1285,7 +1257,7 @@ const drawStatus = async ($: Dollar) => {
   const held = (await $.state.get(KEEPALIVE)).value ?? INITIAL
   const cost = costOf(held, counted, money)
   // The figure to rebuild an expired cache: what the next prompt pays to write it again, in the unit shown.
-  const rebuild = view.kind === 'known' ? uponOf(rewriteSpendOf(view, money), money.unit) : ''
+  const rebuild = rebuildOf(view, money)
   const reading = readingOf(view, live, cold, nowMs, rebuild)
   // The lifetime a warm reading counts in: a reading is warm only with a known view.
   const ttl = view.kind === 'known' ? view.ttlLabel : '5m'
@@ -1363,7 +1335,7 @@ const lookupStamps = async ($: Dollar) => {
 const runTick = singleFlight()
 
 const tick = ($: Dollar) => {
-  inBackground($, loadPrices($))
+  inBackground($, priceCheck(sync, $))
   inBackground($, drawOnce(() => drawStatus($)).then(() => runTick(() => lookupStamps($))))
   inBackground($, keepaliveTick($))
 }
@@ -1391,6 +1363,7 @@ const stamped = (requestId: string, tree: RenderElement): RenderElement => {
 }
 
 export const register: Register = (on, options) => {
+  sync = priceSync()
   const defaults = defaultsOf(options)
   defaultRun = defaults
   defaultUnit = unitOf(options.cost_unit)
@@ -1424,7 +1397,7 @@ export const register: Register = (on, options) => {
   // A resume restores the model the session's cache was written by, and a switch to the model in use changes nothing: neither
   // forfeits the cache.
   on('classic.PostModelSwitch', async ($, e, next) => {
-    if (e.source !== 'resume' && e.from_model !== e.to_model) await markCold($, 'model switch')
+    if (e.source !== 'resume' && e.from_model !== e.to_model) await markCold($, 'model switch', (atMs) => switchForfeits($, e.prompt_cache_warm, atMs))
     return next(e)
   })
 

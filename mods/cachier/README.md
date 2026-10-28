@@ -38,7 +38,7 @@ click on the time while it is open closes it, as Esc or the person's close does.
 units:
 
 - the cache's warmth: `Prompt cache warm, 3:12 left (5-minute cache)`, or, once the cache has expired or been reset, the
-  figure to rebuild it;
+  figure to rebuild it (the context plus the last reply's output, which the next prompt writes with it);
 - keepalive's state; while it is off or paused, what the pie's colours warn of; while paused, why, and that it resumes
   after your next prompt;
 - what one refresh costs, or while keepalive is off, what one refresh would cost at the lead and count a click on the pie
@@ -76,11 +76,54 @@ and why a figure is in tokens are in the answer to a bare `/keepalive`.
   figure in the hover and in the pane follows it. The `cost_unit` option sets the unit a session starts in; dollars by
   default.
 - Dollars are Anthropic's list prices, read from the official pricing page
-  (`platform.claude.com/docs/en/about-claude/pricing.md`) at session start and every six hours after. A read that fails
-  is tried again after ten minutes, or at once when you switch to dollars; the failure goes to the debug log. Until the
-  page has been read, and whenever it can't be, a built-in table in `hooks/prices.ts` prices the models it lists. A 5 m
-  or 1 h cache write is priced at its own rate, a read at the read rate, and a prompt over a model's size threshold
-  (Haiku 5.5 over 100,000 tokens) at its higher rates.
+  (`platform.claude.com/docs/en/about-claude/pricing.md`), except where your overrides file below sets your own rates. One price list, kept in the plugin store, is shared by every
+  session: a read happens when the newest successful read is seven days old, and at once on every switch to dollars. A
+  session about to read checks the shared record again, so a read another session has already stamped is not repeated.
+  Until the page has been read, the built-in table in `hooks/prices.ts` prices the models it lists; after that the last
+  stored list stays in force, and a failed read falls back to it and goes to the debug log. An unreachable page is tried
+  again an hour later, then once a day; a page with no readable table waits for the next weekly read. A model the page
+  stops listing keeps its last stored rates. A 5 m or 1 h cache write is priced at its own rate, a read at the read
+  rate, and a prompt over a model's size threshold (Haiku 5.5 over 100,000 tokens) at its higher rates.
+- A model id from Amazon Bedrock (`anthropic.claude-opus-4-1-20250805-v1:0`, with or without a region prefix such as
+  `us.`, `eu.`, `apac.` or `global.`) or Google Vertex (`claude-opus-4-1@20250805`) is matched to its list model and
+  priced at that model's list rates. An id the price list holds exactly as given is priced by its own entry first. The
+  partners' own rates aren't known, so a figure for such a session may differ from its bill. Ids in the older Bedrock
+  naming, such as `anthropic.claude-3-5-sonnet-20241022-v2:0`, normalise to `claude-3-5-sonnet`, which the
+  price list does not name, so they show no price; the overrides file below prices them.
+- Your own rates go in an overrides file, `~/.claude/cachier/prices.json` (under `CLAUDE_CONFIG_DIR` when that is set).
+  Cachier reads it and never writes it, so you, or Claude when you ask it to read a pricing page and write the entries,
+  edit it with the ordinary editor. It is read each time cachier re-reads the shared record, about once a minute, so an
+  edit, or deleting the file, is in force in every open session within about two minutes, with no page read and no
+  reload. It holds two kinds of entry:
+
+  ```json
+  {
+    "rates": {
+      "claude-opus-5-5": { "input": 4, "read": 0.4, "write5m": 5, "write1h": 8, "date": "2026-10-26T09:00" }
+    },
+    "mappings": {
+      "anthropic.claude-3-5-sonnet-20241022-v2:0": "claude-sonnet-4-5"
+    }
+  }
+  ```
+
+  - **rates**: a model id and its dollars per million tokens. `input` and `read` are required and must be positive;
+    `write5m` and `write1h` are optional and, when left out, are worked out from `input` as the built-in table does (a
+    5 m write is 1.25 inputs, a 1 h write 2). An optional `above` holds a size tier (`threshold` in tokens, then
+    `input`, `read` and optionally the writes). Every rates entry needs a `date`, when you set it: a calendar date, or a
+    date and time. A date with no time counts as the end of that day, and a date or time with no offset is local time;
+    one with an offset (`2026-10-26T09:00+02:00`, or `Z`) is that instant. The rates must be in the sanity order: read
+    at most input, input at most 5 m write, 5 m write at most 1 h write.
+  - **mappings**: an id as the session reports it, mapped to a model id that has a price (a model on the page, in the
+    built-in table, or a rates entry). The id is matched exactly, so a mapping for an id the page lists wins, and the
+    target may be a dated or partner form of a priced model. A mapping has no date. Mappings do not chain: a target that
+    is itself a mapping key is skipped.
+
+  The last editor wins. A hand rate stands over the built-in table and the page's rates until a page read changes that
+  model's rates after the entry's date; the page's rates are then in force. A first sighting of a model on the page is
+  no change, and a model the page never lists keeps its hand rate. An entry that breaks a rule above, or a mapping to a
+  model with no price, is skipped and written to the debug log; a file that is not JSON or cannot be read is skipped
+  whole and logged as unreadable. An unknown field or section is ignored and named in the debug log.
 - A figure with no price is shown in tokens, and the bare `/keepalive` answer says why (`Shown in tokens: no price for …`). That covers a
   model neither the page nor the built-in table lists, fast mode, and a response that names no model.
 - Tokens name what was done with them (`~19k tokens read`, `~20k tokens written`), since a write costs many reads. The
@@ -196,19 +239,26 @@ settings.json; `FORCE_PROMPT_CACHING_5M` and `CLAUDE_CODE_PROMPT_CACHE_TTL` over
 session picks up the change, so cachier counts a switch as taking effect in sessions started after you set it.
 
 With `--debug` or `--debug-file`, each refresh, lead raise, miss and long pause writes a `cachier` line to
-the debug log.
+the debug log, and each model switch writes a `cachier switch` line holding the engine's `prompt_cache_warm` flag beside
+cachier's own reading of the cache.
 
 Cachier keeps one record per pause your prompt ends, in its plugin store under your config directory: when the pause
 started, how long it ran, the local hour and weekday, the cache TTL, what a rewrite costs over a refresh, and the size of
 the cached context and how much it grew since the session's previous pause. Nothing from the conversation is kept. It
-holds the newest 2,000 or so pauses across all sessions, for keepalive to learn its refresh count from. Nothing else is
-written to disk. The only request cachier makes itself is the pricing page, with nothing sent but the request. Each
-keepalive refresh is a model request.
+holds the newest 2,000 or so pauses across all sessions, for keepalive to learn its refresh count from. It also keeps one
+shared price record under the key `prices`: the rates each read gave every model it listed, when each model's rates last
+changed, whether the newest read dropped it, when the newest successful read landed and when a read last changed any
+rates, and the last read attempt with its outcome and failure count. Nothing else is written to disk. Cachier also reads
+the overrides file `cachier/prices.json` under your config directory, and never writes it. The only request
+cachier makes itself is the pricing page, with nothing sent but the request. Each keepalive refresh is a model request.
 
 ## Known limits
 
 - A miss is a reply that rewrote at least half its context while reading at most half the previous one. The half is a
   chosen threshold, not a measured one.
+- A model switch counts as a reset only when cachier read the cache as warm at the switch. Otherwise (expired, no
+  cache, cleared, an unread view or unknown TTL) the next miss is classified by its gap: a lapse past the TTL, else
+  unexplained. A reset already standing still makes the next miss a reset miss.
 - Pause gaps run between replies' logged times, so they include the next reply's duration, usually a few seconds.
 - Dollars are priced when each figure is counted, so a price change mid-session leaves earlier figures at the old
   price.

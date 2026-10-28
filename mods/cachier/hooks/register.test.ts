@@ -3,6 +3,7 @@ import { assistant, fakeFiles, lines, user } from './fixture'
 import { HISTORY_BOUND, keyOf } from './history'
 import { INITIAL as INITIAL_KEEPALIVE } from './keepalive'
 import { alarmOf, learnTranscript, pressCountdown, pressOnce, restoreState, STATE_SHAPE, unitFrom } from './register'
+import { INITIAL_STATS } from './stats'
 
 const PATH = '/home/test/.claude/projects/p/s1.jsonl'
 const T0 = Date.parse('2026-10-18T10:00:00.000Z')
@@ -140,6 +141,8 @@ const world = (on: any, doc: { text: string; broken?: boolean; exists?: boolean;
     const status = doc.pricingStatus ?? 200
     return { value: { status, ok: status < 300, headers: {}, text: doc.pricing ?? PRICING_PAGE } }
   })
+  // No config dir and no home: cachier finds no overrides file, so these tests' file reads are their own.
+  on('env.get', () => ({ value: undefined }))
   on('fs.exists', (_$: any, e: any) => {
     rec.exists++
     return { value: doc.exists !== false }
@@ -340,7 +343,8 @@ describe('countdown', () => {
     await $.turn.complete({ answer: 'x', durationMs: 1, isAborted: false, turnId: 't', reason: 'answer' } as any)
     await clock.advance(1000)
     expect(await hint($)).toBe('4:59')
-    expect(rec.logs).toEqual([])
+    expect(debugOf(rec, 'cachier switch')).toEqual([{ prompt_cache_warm: false, reading: 'none' }])
+    expect(rec.logs.filter((l) => !l.includes('cachier switch'))).toEqual([])
   })
 
   for (const [what, from, source] of [['a resume restoring the session\'s model', 'a', 'resume'], ['a switch to the model already in use', 'b', 'command']] as const) {
@@ -365,7 +369,7 @@ describe('countdown', () => {
     await $.classic.PostModelSwitch({ from_model: 'a', to_model: 'b', requested_model: 'b', source: 'command', prompt_cache_warm: true, cache_ttl: '5m', context_tokens: 1, estimated_cache_write_usd: 0, pricing: 'catalog' } as any)
     await clock.advance(1000)
     expect(await hint($)).toBe('')
-    expect(rec.logs).toEqual([])
+    expect(rec.logs.filter((l) => !l.includes('cachier switch'))).toEqual([])
     doc.text += lines([user({ uuid: 'u2', parent: 'a1', ts: iso(T0 + 11000) }), assistant({ uuid: 'a2', parent: 'u2', ts: iso(T0 + 11500), read: 9 })])
     await $.turn.complete({ answer: 'x', durationMs: 1, isAborted: false, turnId: 't', reason: 'answer' } as any)
     await clock.advance(1000)
@@ -3369,6 +3373,21 @@ const opusCached = () => ({
   ]),
 })
 
+// The shared price record a session finds in the store, with Opus 5.5's read price and write rates doubled from the built-in
+// table's, so a figure priced from it is distinguishable from one priced at the built-in table.
+const storedPrices = () => ({
+  models: {
+    'claude-opus-5-5': {
+      rates: { input: 4e-6, read: 0.4e-6, write5m: 10e-6, write1h: 16e-6, above: null },
+      changedMs: null,
+      missingSinceMs: null,
+    },
+  },
+  lastSuccessMs: T0,
+  lastChangeMs: null,
+  attempt: { stampMs: T0, outcome: 'success', failures: 0, previous: null },
+})
+
 describe('the cost unit: dollars at list prices, or tokens, switched by /keepalive unit', () => {
   test("a refresh on a priced model is shown in dollars", { options: { keepalive_lead_s: 15, keepalive_count: 3 } }, async ($, on) => {
     kaWorld(on, { ...opusCached() })
@@ -3510,6 +3529,53 @@ describe('the cost unit: dollars at list prices, or tokens, switched by /keepali
     expect(await toggle($, '')).toContain('Shown in tokens: no price for claude-nonesuch-1.')
     await m.unmount()
   })
+
+  test('a stored price record prices the first fold after a reload, without reading the page', { options: { keepalive_lead_s: 15, keepalive_count: 3 } }, async ($, on) => {
+    // The state an earlier load left: the stats counted the first reply, and a cursor stops the first pass at it.
+    const stats = { ...INITIAL_STATS, transcript: PATH, cursor: 'm1', lastAtMs: T0, lastTotal: 18559, lastTtlMs: 300000 }
+    const doc = {
+      text: lines([
+        user({ uuid: 'u1', parent: null, ts: iso(T0) }),
+        assistant({ uuid: 'a1', parent: 'u1', ts: iso(T0), write: 18551, tags: FIVE, msg: 'm1', model: 'claude-opus-5-5', speed: 'standard' }),
+        assistant({ uuid: 'a2', parent: 'a1', ts: iso(T0 + 360000), write: 20000, tags: FIVE, msg: 'm2', model: 'claude-opus-5-5', speed: 'standard' }),
+      ]),
+      store: { prices: storedPrices() },
+    }
+    const rec = kaWorld(on, doc)
+    on('state.get', async (_$: any, e: any, next: any) => {
+      const got = await next(e)
+      return e.plugin === 'cachier' && e.key === 'stats' && got.value?.value === undefined ? { value: { ...got.value, value: stats } } : got
+    })
+    const clock = mock.clock(on, { now: T0 + 360000 })
+    await $.classic.SessionStart({ source: 'startup', transcript_path: PATH })
+    await clock.settle()
+    expect(rec.fetches).toEqual([])
+    // The fold's write is priced at the stored $10 per million, not the built-in $5: 20,000 tokens cost $0.20.
+    expect((await commandText($, '')).replace(/\n\s*/g, ' ')).toContain('Cache misses: 1 (lapse 1), $0.20 rewritten')
+  })
+
+  test('an unreadable price record prices the first fold at the built-in table and logs why', { options: { keepalive_lead_s: 15, keepalive_count: 3 } }, async ($, on) => {
+    const stats = { ...INITIAL_STATS, transcript: PATH, cursor: 'm1', lastAtMs: T0, lastTotal: 18559, lastTtlMs: 300000 }
+    const doc = {
+      text: lines([
+        user({ uuid: 'u1', parent: null, ts: iso(T0) }),
+        assistant({ uuid: 'a1', parent: 'u1', ts: iso(T0), write: 18551, tags: FIVE, msg: 'm1', model: 'claude-opus-5-5', speed: 'standard' }),
+        assistant({ uuid: 'a2', parent: 'a1', ts: iso(T0 + 360000), write: 20000, tags: FIVE, msg: 'm2', model: 'claude-opus-5-5', speed: 'standard' }),
+      ]),
+      getDenied: new Set(['prices']),
+    }
+    const rec = kaWorld(on, doc)
+    on('state.get', async (_$: any, e: any, next: any) => {
+      const got = await next(e)
+      return e.plugin === 'cachier' && e.key === 'stats' && got.value?.value === undefined ? { value: { ...got.value, value: stats } } : got
+    })
+    const clock = mock.clock(on, { now: T0 + 360000 })
+    await $.classic.SessionStart({ source: 'startup', transcript_path: PATH })
+    await clock.settle()
+    expect(rec.fetches).toEqual([])
+    expect(rec.logs.join('\n')).toContain('read refused')
+    expect((await commandText($, '')).replace(/\n\s*/g, ' ')).toContain('Cache misses: 1 (lapse 1), $0.10 rewritten')
+  })
 })
 
 describe("restoreState: a reload's session.start, over the state an earlier version left", () => {
@@ -3520,7 +3586,7 @@ describe("restoreState: a reload's session.start, over the state an earlier vers
       ['hint', { words: '4:41', cost: null, stats: [], armed: false, unit: 'dollars', notes: [] }],
       ['tally', { pause: { pings: 1, tokens: 19000 }, session: { pings: 3, tokens: 57000 }, raisedMs: null, epoch: 4 }],
       ['stats', { transcript: '/t.jsonl', cursor: 'a9' }],
-      ['view', { kind: 'known', touchMs: 1, ttlMs: 300000, ttlLabel: '5m', promptTokens: 19000 }],
+      ['view', { kind: 'known', touchMs: 1, ttlMs: 300000, ttlLabel: '5m', promptTokens: 19000, outputTokens: 0 }],
       ['keepalive', { config: { leadMs: 15000, count: 3 }, remaining: 3, stop: null, last: null, disclosed: true, seq: 2, active: true, gap: false, coldPending: false, lastTurn: 't3', generation: 7, lastUsed: null, pauseEpoch: 4 }],
       ['touch', 123],
       ['cold', { reason: 'cleared', atMs: 100 }],
@@ -3573,7 +3639,7 @@ describe("restoreState: a reload's session.start, over the state an earlier vers
     const stats = { transcript: '/t.jsonl', cursor: 'a9' }
     const judged = { netUsd: 0.42, pauses: 3 }
     const hint = { words: '4:41', cost: null, stats: [], armed: false, unit: 'dollars', notes: [], marker: { verdict: 'par', line: '' }, session: { verdict: 'par', line: '' }, breakEven: '' }
-    const view = { kind: 'known', touchMs: 1, ttlMs: 300000, ttlLabel: '5m', promptTokens: 19000, model: null, speed: null }
+    const view = { kind: 'known', touchMs: 1, ttlMs: 300000, ttlLabel: '5m', promptTokens: 19000, outputTokens: 0, model: null, speed: null }
     const values = new Map<string, unknown>([
       ['shape', STATE_SHAPE],
       ['transcript', '/t.jsonl'],
@@ -3808,14 +3874,14 @@ describe('the pause history: each pause a prompt ends, kept in the store under t
     expect((rec.store.get(KEY) as any[]).length).toBe(1)
   })
 
-  test("a session start deletes the keys that hold only pauses older than the history keeps, and leaves this session's own", async ($, on) => {
+  test("a session start deletes the keys that hold only pauses older than the history keeps, and leaves this session's own and the shared price record", async ($, on) => {
     const old = { startMs: 1, pausedMs: MIN, hour: 0, weekday: 0, ratio: 24, ttlMs: 300000 }
     const recent = Array.from({ length: 2000 }, (_, i) => ({ ...old, startMs: 1000 + i }))
-    const rec = kaWorld(on, { ...cached(), store: { 'pauses/old': [old], 'pauses/recent': recent, other: 1 } })
+    const rec = kaWorld(on, { ...cached(), store: { 'pauses/old': [old], 'pauses/recent': recent, prices: storedPrices() } })
     const clock = mock.clock(on, { now: T0 })
     await $.classic.SessionStart({ source: 'startup', transcript_path: PATH })
     await clock.advance(1000)
-    expect([...rec.store.keys()].sort()).toEqual(['other', 'pauses/recent'])
+    expect([...rec.store.keys()].sort()).toEqual(['pauses/recent', 'prices'])
   })
 
   test("a pause whose write was refused is the one the next pause's growth counts from, though the key never held it", async ($, on) => {
@@ -3838,11 +3904,11 @@ describe('the pause history: each pause a prompt ends, kept in the store under t
     const old = { startMs: 1, pausedMs: MIN, hour: 0, weekday: 0, ratio: 24, ttlMs: 300000 }
     const recent = Array.from({ length: 2000 }, (_, i) => ({ ...old, startMs: 1000 + i }))
     const deleteDenied = new Set(['pauses/old0', 'pauses/old1'])
-    const rec = kaWorld(on, { ...cached(), store: { 'pauses/old0': [old], 'pauses/old1': [old], 'pauses/old2': [old], 'pauses/recent': recent }, deleteDenied })
+    const rec = kaWorld(on, { ...cached(), store: { 'pauses/old0': [old], 'pauses/old1': [old], 'pauses/old2': [old], 'pauses/recent': recent, prices: storedPrices() }, deleteDenied })
     const clock = mock.clock(on, { now: T0 })
     await $.classic.SessionStart({ source: 'startup', transcript_path: PATH })
     await clock.advance(1000)
-    expect([...rec.store.keys()].sort()).toEqual(['pauses/old0', 'pauses/old1', 'pauses/recent'])
+    expect([...rec.store.keys()].sort()).toEqual(['pauses/old0', 'pauses/old1', 'pauses/recent', 'prices'])
     expect(rec.logs.filter((l: string) => l.includes('delete refused'))).toHaveLength(1)
   })
 })
@@ -4256,6 +4322,374 @@ describe('the bare command answers four sections, in order: Cache, Keepalive, Ad
   })
 })
 
+// The bare command's whole answer for fixed states: the text its sections lay out, headings and blank lines included. The cold-mark and
+// shared-price pins take the fixtures of the existing tests of those two scenes and pin their whole answers, not a phrase of them.
+describe('the bare command answers whole: the text its sections lay out, for fixed states', () => {
+  const expired = () => ({
+    text: lines([
+      user({ uuid: 'u1', parent: null, ts: iso(T0) }),
+      assistant({ uuid: 'a1', parent: 'u1', ts: iso(T0), write: 18551, out: 7000, tags: FIVE, model: 'claude-opus-5-5', speed: 'standard' }),
+    ]),
+  })
+
+  test('keepalive on and refreshing: the whole answer, with the next refresh scheduled', async ($, on) => {
+    kaWorld(on, opusCached())
+    const clock = mock.clock(on, { now: T0 })
+    await $.classic.SessionStart({ source: 'startup', transcript_path: PATH })
+    await toggle($, 'on 15')
+    await clock.advance(1000)
+    expect(await commandText($, '')).toBe(
+      [
+        'Cache',
+        '  Prompt cache warm, 4:59 left (5-minute cache)',
+        '',
+        'Keepalive',
+        '  keepalive on · Next refresh: $0.004 (~19k',
+        '    cached tokens read), every 4:45 · next',
+        '    refresh in 4:44, 24 left',
+        '  Each pause sends at most 24 refreshes: the',
+        '    break-even count, the most refreshes that',
+        '    cost no more than the rewrite they avoid.',
+        "  Keepalive pays off if you're back between 5:00",
+        '    and 1:54:00',
+        '',
+        'Settings',
+        '  TTL 5 min (read from the last response): set',
+        '    "promptCacheTtl": "1h" in settings.json for',
+        '    1 h (new sessions).',
+        '  lead 15 s: /keepalive on <lead seconds>.',
+        '  refreshes a pause break-even: /keepalive on',
+        '    <lead seconds> <refreshes>, or',
+        '    keepalive_count.',
+        '  start mode off (keepalive_default option):',
+        '    /keepalive default on|off, for new sessions.',
+        '  unit dollars (cost_unit option): /keepalive',
+        '    unit tokens|dollars.',
+      ].join('\n'),
+    )
+  })
+
+  test('keepalive off: the whole answer', async ($, on) => {
+    kaWorld(on, opusCached())
+    const clock = mock.clock(on, { now: T0 })
+    await $.classic.SessionStart({ source: 'startup', transcript_path: PATH })
+    await clock.advance(1000)
+    expect(await commandText($, '')).toBe(
+      [
+        'Cache',
+        '  Prompt cache warm, 4:59 left (5-minute cache)',
+        '',
+        'Keepalive',
+        '  keepalive off',
+        '  Each pause sends at most 24 refreshes: the',
+        '    break-even count, the most refreshes that',
+        '    cost no more than the rewrite they avoid.',
+        "  Keepalive pays off if you're back between 5:00",
+        '    and 1:54:00',
+        '',
+        'Settings',
+        '  TTL 5 min (read from the last response): set',
+        '    "promptCacheTtl": "1h" in settings.json for',
+        '    1 h (new sessions).',
+        '  lead 15 s: /keepalive on <lead seconds>.',
+        '  refreshes a pause break-even: /keepalive on',
+        '    <lead seconds> <refreshes>, or',
+        '    keepalive_count.',
+        '  start mode off (keepalive_default option):',
+        '    /keepalive default on|off, for new sessions.',
+        '  unit dollars (cost_unit option): /keepalive',
+        '    unit tokens|dollars.',
+      ].join('\n'),
+    )
+  })
+
+  test('a pinned count under a keepalive_count cap: the whole answer gives the pinned count, with no cap line', { options: { keepalive_count: 6 } }, async ($, on) => {
+    kaWorld(on, opusCached())
+    const clock = mock.clock(on, { now: T0 })
+    await $.classic.SessionStart({ source: 'startup', transcript_path: PATH })
+    await toggle($, 'on 60 2')
+    await clock.advance(1000)
+    expect(await commandText($, '')).toBe(
+      [
+        'Cache',
+        '  Prompt cache warm, 4:59 left (5-minute cache)',
+        '',
+        'Keepalive',
+        '  keepalive on · Next refresh: $0.004 (~19k',
+        '    cached tokens read), every 4 min · next',
+        '    refresh in 3:59, 2 left',
+        '  Each pause sends at most 2 refreshes: the',
+        '    count you pinned with /keepalive on.',
+        "  Keepalive pays off if you're back between 5:00",
+        '    and 13:00',
+        '',
+        'Settings',
+        '  TTL 5 min (read from the last response): set',
+        '    "promptCacheTtl": "1h" in settings.json for',
+        '    1 h (new sessions).',
+        '  lead 60 s: /keepalive on <lead seconds>.',
+        '  refreshes a pause 2, pinned: /keepalive on',
+        '    <lead seconds> <refreshes>, or',
+        '    keepalive_count.',
+        '  start mode off (keepalive_default option):',
+        '    /keepalive default on|off, for new sessions.',
+        '  unit dollars (cost_unit option): /keepalive',
+        '    unit tokens|dollars.',
+      ].join('\n'),
+    )
+  })
+
+  test('an expired cache: the whole answer gives the rebuild figure in dollars', async ($, on) => {
+    kaWorld(on, expired())
+    const clock = mock.clock(on, { now: T0 + 400000 })
+    await $.classic.SessionStart({ source: 'startup', transcript_path: PATH })
+    await clock.advance(1000)
+    expect(await commandText($, '')).toBe(
+      [
+        'Cache',
+        '  Prompt cache expired, ~$0.13 to rebuild.',
+        '',
+        'Keepalive',
+        '  keepalive off',
+        '  Each pause sends at most 24 refreshes: the',
+        '    break-even count, the most refreshes that',
+        '    cost no more than the rewrite they avoid.',
+        "  Keepalive pays off if you're back between 5:00",
+        '    and 1:54:00',
+        '',
+        'Settings',
+        '  TTL 5 min (read from the last response): set',
+        '    "promptCacheTtl": "1h" in settings.json for',
+        '    1 h (new sessions).',
+        '  lead 15 s: /keepalive on <lead seconds>.',
+        '  refreshes a pause break-even: /keepalive on',
+        '    <lead seconds> <refreshes>, or',
+        '    keepalive_count.',
+        '  start mode off (keepalive_default option):',
+        '    /keepalive default on|off, for new sessions.',
+        '  unit dollars (cost_unit option): /keepalive',
+        '    unit tokens|dollars.',
+      ].join('\n'),
+    )
+  })
+
+  test('an expired cache: the whole answer gives the rebuild figure in tokens, with the unit switched this session', async ($, on) => {
+    kaWorld(on, expired())
+    const clock = mock.clock(on, { now: T0 + 400000 })
+    await $.classic.SessionStart({ source: 'startup', transcript_path: PATH })
+    await clock.advance(1000)
+    await toggle($, 'unit tokens')
+    expect(await commandText($, '')).toBe(
+      [
+        'Cache',
+        '  Prompt cache expired, ~26k tokens to rebuild.',
+        '',
+        'Keepalive',
+        '  keepalive off',
+        '  Each pause sends at most 24 refreshes: the',
+        '    break-even count, the most refreshes that',
+        '    cost no more than the rewrite they avoid.',
+        "  Keepalive pays off if you're back between 5:00",
+        '    and 1:54:00',
+        '',
+        'Advice',
+        '  A 5-minute cache write costs about 25 cache',
+        '    reads on claude-opus-5-5.',
+        '',
+        'Settings',
+        '  TTL 5 min (read from the last response): set',
+        '    "promptCacheTtl": "1h" in settings.json for',
+        '    1 h (new sessions).',
+        '  lead 15 s: /keepalive on <lead seconds>.',
+        '  refreshes a pause break-even: /keepalive on',
+        '    <lead seconds> <refreshes>, or',
+        '    keepalive_count.',
+        '  start mode off (keepalive_default option):',
+        '    /keepalive default on|off, for new sessions.',
+        '  unit tokens (switched this session):',
+        '    /keepalive unit tokens|dollars.',
+      ].join('\n'),
+    )
+  })
+
+  test('a cold mark being written: the whole answer says the cache reset is being recorded, and gives no next-refresh figure', { options: { keepalive_lead_s: 60, keepalive_count: 2 } }, async ($, on) => {
+    const doc: any = { text: '', exists: false }
+    kaWorld(on, doc)
+    let release: () => void = () => {}
+    const gate = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    let holding = false
+    on('state.set', (_$: any, e: any, next: any) => {
+      if (e.key === 'cold' && e.value !== null && !holding) {
+        holding = true
+        return gate.then(() => next(e))
+      }
+      return next(e)
+    })
+    const clock = mock.clock(on, { now: T0 })
+    await $.classic.SessionStart({ source: 'startup', transcript_path: PATH })
+    await clock.settle()
+    await toggle($, 'on 60 2')
+    doc.exists = undefined
+    doc.text = cached().text
+    await mainStep($)
+    await turnEnd($)
+    const switching = $.classic.PostModelSwitch({ from_model: 'a', to_model: 'b', requested_model: 'b', source: 'command', prompt_cache_warm: true, cache_ttl: '5m', context_tokens: 1, estimated_cache_write_usd: 0, pricing: 'catalog' } as any)
+    await clock.settle()
+    try {
+      expect(holding).toBe(true)
+      expect(await commandText($, '')).toBe(
+        [
+          'Cache',
+          '  Prompt cache warm, 5:00 left (5-minute cache)',
+          '',
+          'Keepalive',
+          '  keepalive on · paused until the cache reset is',
+          '    recorded',
+          '  Each pause sends at most 2 refreshes: the',
+          '    count you pinned with /keepalive on.',
+          '',
+          'Advice',
+          '  Shown in tokens: no price for an unnamed',
+          '    model.',
+          '',
+          'Settings',
+          '  TTL 5 min (read from the last response): set',
+          '    "promptCacheTtl": "1h" in settings.json for',
+          '    1 h (new sessions).',
+          '  lead 60 s: /keepalive on <lead seconds>.',
+          '  refreshes a pause 2, pinned: /keepalive on',
+          '    <lead seconds> <refreshes>, or',
+          '    keepalive_count.',
+          '  start mode off (keepalive_default option):',
+          '    /keepalive default on|off, for new sessions.',
+          '  unit dollars (cost_unit option): /keepalive',
+          '    unit tokens|dollars.',
+        ].join('\n'),
+      )
+    } finally {
+      release()
+    }
+    await switching
+    await clock.advance(1000)
+    await mainStep($)
+    await turnEnd($)
+    await clock.advance(1000)
+  })
+
+  test('a price from the shared price record: the whole answer after the first fold, its misses priced at the stored rate', { options: { keepalive_lead_s: 15, keepalive_count: 3 } }, async ($, on) => {
+    // The state an earlier load left: the stats counted the first reply, and a cursor stops the first pass at it.
+    const stats = { ...INITIAL_STATS, transcript: PATH, cursor: 'm1', lastAtMs: T0, lastTotal: 18559, lastTtlMs: 300000 }
+    const doc = {
+      text: lines([
+        user({ uuid: 'u1', parent: null, ts: iso(T0) }),
+        assistant({ uuid: 'a1', parent: 'u1', ts: iso(T0), write: 18551, tags: FIVE, msg: 'm1', model: 'claude-opus-5-5', speed: 'standard' }),
+        assistant({ uuid: 'a2', parent: 'a1', ts: iso(T0 + 360000), write: 20000, tags: FIVE, msg: 'm2', model: 'claude-opus-5-5', speed: 'standard' }),
+      ]),
+      store: { prices: storedPrices() },
+    }
+    const rec = kaWorld(on, doc)
+    // The staged stats stand in for the state's stats on each read that finds none. The count below checks that one did, so a read shape
+    // that no longer matches fails here, not as a different answer.
+    let injected = 0
+    on('state.get', async (_$: any, e: any, next: any) => {
+      const got = await next(e)
+      if (e.plugin === 'cachier' && e.key === 'stats' && got.value?.value === undefined) {
+        injected += 1
+        return { value: { ...got.value, value: stats } }
+      }
+      return got
+    })
+    const clock = mock.clock(on, { now: T0 + 360000 })
+    await $.classic.SessionStart({ source: 'startup', transcript_path: PATH })
+    await clock.settle()
+    expect(injected).toBeGreaterThan(0)
+    expect(rec.fetches).toEqual([])
+    expect(await commandText($, '')).toBe(
+      [
+        'Cache',
+        '  Prompt cache expired, ~$0.20 to rebuild.',
+        '',
+        'Keepalive',
+        '  keepalive off',
+        '  Each pause sends at most 3 refreshes:',
+        '    keepalive_count, which caps the break-even',
+        '    count of 24.',
+        "  Keepalive pays off if you're back between 5:00",
+        '    and 19:15',
+        '  Long pauses: 1 · p90 6:00 · mean 6:00 · max',
+        '    6:00',
+        '',
+        'Advice',
+        '  Cache misses: 1 (lapse 1), $0.20 rewritten',
+        '',
+        'Settings',
+        '  TTL 5 min (read from the last response): set',
+        '    "promptCacheTtl": "1h" in settings.json for',
+        '    1 h (new sessions).',
+        '  lead 15 s: /keepalive on <lead seconds>.',
+        '  refreshes a pause break-even (keepalive_count',
+        '    caps it): /keepalive on <lead seconds>',
+        '    <refreshes>, or keepalive_count.',
+        '  start mode off (keepalive_default option):',
+        '    /keepalive default on|off, for new sessions.',
+        '  unit dollars (cost_unit option): /keepalive',
+        '    unit tokens|dollars.',
+      ].join('\n'),
+    )
+  })
+
+  test('a cold mark cleared by /clear: the whole answer has no Cache section', async ($, on) => {
+    kaWorld(on, cached())
+    const clock = mock.clock(on, { now: T0 })
+    await $.classic.SessionStart({ source: 'startup', transcript_path: PATH })
+    await clock.settle()
+    await $.classic.SessionStart({ source: 'clear', transcript_path: PATH })
+    await clock.advance(1000)
+    expect(await commandText($, '')).toBe(
+      [
+        'Keepalive',
+        '  keepalive off',
+        '',
+        'Settings',
+        '  TTL 5 min (read from the last response): set',
+        '    "promptCacheTtl": "1h" in settings.json for',
+        '    1 h (new sessions).',
+        '  lead 15 s: /keepalive on <lead seconds>.',
+        '  refreshes a pause break-even: /keepalive on',
+        '    <lead seconds> <refreshes>, or',
+        '    keepalive_count.',
+        '  start mode off (keepalive_default option):',
+        '    /keepalive default on|off, for new sessions.',
+        '  unit dollars (cost_unit option): /keepalive',
+        '    unit tokens|dollars.',
+      ].join('\n'),
+    )
+  })
+})
+
+// The reads a status call makes of the states it states: each is read once per call, so its figures are one reading.
+describe('the bare command reads each state it states once per call', () => {
+  test('one status call reads the cache view, the cold mark and the unit once each', { options: { keepalive_lead_s: 15, keepalive_count: 3 } }, async ($, on) => {
+    kaWorld(on, opusCached())
+    let counting = false
+    const reads: string[] = []
+    on('state.get', (_$: any, e: any, next: any) => {
+      if (counting && e.plugin === 'cachier') reads.push(e.key)
+      return next(e)
+    })
+    const clock = mock.clock(on, { now: T0 })
+    await $.classic.SessionStart({ source: 'startup', transcript_path: PATH })
+    await clock.advance(1000)
+    counting = true
+    await commandText($, '')
+    counting = false
+    const count = (key: string) => reads.filter((read) => read === key).length
+    expect({ view: count('view'), cold: count('cold'), unit: count('unit') }).toEqual({ view: 1, cold: 1, unit: 1 })
+  })
+})
+
 describe('the best setup: one sentence, in the pane and in the bare command, priced over this session or recent pauses', () => {
   // Ten ten-minute pauses, each with a million tokens written: on 5 m keepalive costs $5.04 a pause, off $5.48, 1 h $8.00.
   const pauseOf = (i: number, startMs = 1000 + i) => ({ startMs, pausedMs: 10 * MIN, hour: 10, weekday: 2, ratio: 24, ttlMs: 300000, contextTokens: 100000, grownTokens: 1000000 })
@@ -4521,7 +4955,7 @@ describe('the best setup: one sentence, in the pane and in the bare command, pri
     // The reload: the state still holds the transcript an earlier load learned and the cache it read, and this load has learned no path yet.
     const kept: Record<string, unknown> = {
       transcript: PATH,
-      view: { kind: 'known', touchMs: T0, ttlMs: 300000, ttlLabel: '5m', promptTokens: 18551, model: 'claude-opus-5-5', speed: 'standard' },
+      view: { kind: 'known', touchMs: T0, ttlMs: 300000, ttlLabel: '5m', promptTokens: 18551, outputTokens: 0, model: 'claude-opus-5-5', speed: 'standard' },
     }
     on('state.get', async (_$: any, e: any, next: any) => {
       const got = await next(e)
@@ -4549,7 +4983,7 @@ describe('the best setup: one sentence, in the pane and in the bare command, pri
     // The reload: the state still names the transcript an earlier load learned and the cache it read, and this load has learned no path yet.
     const kept: Record<string, unknown> = {
       transcript: PATH,
-      view: { kind: 'known', touchMs: T0, ttlMs: 300000, ttlLabel: '5m', promptTokens: 18551, model: 'claude-opus-5-5', speed: 'standard' },
+      view: { kind: 'known', touchMs: T0, ttlMs: 300000, ttlLabel: '5m', promptTokens: 18551, outputTokens: 0, model: 'claude-opus-5-5', speed: 'standard' },
     }
     on('state.get', async (_$: any, e: any, next: any) => {
       const got = await next(e)
@@ -4766,5 +5200,209 @@ describe('the best setup: one sentence, in the pane and in the bare command, pri
     await clock.advance(0)
     expect(JSON.stringify(await pane.drawn())).toMatch(/over 10 recent pauses/)
     await pane.unmount()
+  })
+})
+
+describe('the rebuild figure: one figure on the footer, the pane and the bare command, over the prefix and the last reply\'s output', () => {
+  const expired = () => ({
+    text: lines([
+      user({ uuid: 'u1', parent: null, ts: iso(T0) }),
+      assistant({ uuid: 'a1', parent: 'u1', ts: iso(T0), write: 18551, out: 7000, tags: FIVE, model: 'claude-opus-5-5', speed: 'standard' }),
+    ]),
+  })
+  const start = async ($: any, on: any) => {
+    kaWorld(on, expired())
+    const clock = mock.clock(on, { now: T0 + 400000 })
+    await $.classic.SessionStart({ source: 'startup', transcript_path: PATH })
+    await clock.advance(1000)
+  }
+
+  test('in dollars the footer, the pane and the bare /keepalive give the same figure, which prices the output too', async ($, on) => {
+    await start($, on)
+    // 18551 + 7000 tokens at the $5/M 5-minute write rate; the prefix alone would be ~$0.09.
+    expect(await hint($)).toBe('~$0.13 to rebuild')
+    expect(await drawnPane($)).toContain('~$0.13 to rebuild')
+    expect(await toggle($, '')).toContain('Prompt cache expired, ~$0.13 to rebuild.')
+  })
+
+  test('in tokens the three give the same figure, the prefix plus the output', async ($, on) => {
+    await start($, on)
+    await toggle($, 'unit tokens')
+    // 25551 tokens; the prefix alone would be ~19k.
+    expect(await hint($)).toBe('~26k tokens to rebuild')
+    expect(await drawnPane($)).toContain('~26k tokens to rebuild')
+    expect(await toggle($, '')).toContain('Prompt cache expired, ~26k tokens to rebuild.')
+  })
+})
+
+describe('a model switch counts as a reset only on a cache cachier read as warm', () => {
+  const TTL = 300000
+  const SW = { from_model: 'a', to_model: 'b', requested_model: 'b', source: 'command', prompt_cache_warm: true, cache_ttl: '5m', context_tokens: 1, estimated_cache_write_usd: 0, pricing: 'catalog' } as any
+  const at = (s: number) => iso(T0 + s * 1000)
+  // The last value the mod wrote to each state key, and whether the view reads as unread.
+  const wrote: Record<string, any> = {}
+  let unread = false
+  let broken = false
+  const watch = (on: any) => {
+    for (const k of Object.keys(wrote)) delete wrote[k]
+    unread = false
+    broken = false
+    on('state.set', (_$: any, e: any, next: any) => {
+      wrote[e.key] = e.value
+      return next(e)
+    })
+    on('state.get', (_$: any, e: any, next: any) => (broken && e.key === 'view' ? { deny: 'read refused' } : unread && e.key === 'view' ? { value: { kind: 'unread' }, version: 1 } : next(e)))
+  }
+  const held = (key: string): any => wrote[key]
+  let snapshot: number[] = []
+
+  // A first reply, a main-thread request at T0+1s (the live touch), then `setup`, the switch, and a missing reply 400s later.
+  const scenario = async ($: any, on: any, opts: { afterMs: number; engineWarm?: boolean; setup?: (rec: any, doc: any) => Promise<void>; undo?: (rec: any) => void; withReply?: boolean }) => {
+    const doc: any = {
+      text: lines([
+        user({ uuid: 'u0', parent: null, ts: at(-60) }),
+        assistant({ uuid: 'a0', parent: 'u0', ts: at(-59), write: 5, tags: FIVE, msg: 'm0' }),
+        user({ uuid: 'u1', parent: 'a0', ts: at(0) }),
+        assistant({ uuid: 'a1', parent: 'u1', ts: at(0.5), read: 20000, write: 100, tags: FIVE, msg: 'm1' }),
+      ]),
+    }
+    watch(on)
+    const rec = kaWorld(on, doc)
+    const clock = mock.clock(on, { now: T0 + 1000 })
+    await $.classic.SessionStart({ source: 'startup', transcript_path: PATH })
+    await mainStep($)
+    await turnEnd($)
+    await clock.advance(opts.afterMs)
+    await opts.setup?.(rec, doc)
+    await $.classic.PostModelSwitch({ ...SW, prompt_cache_warm: opts.engineWarm ?? true })
+    snapshot = wrote.stats?.coldSince ?? []
+    opts.undo?.(rec)
+    await clock.advance(1000)
+    if (opts.withReply !== false) {
+      await clock.advance(400000)
+      doc.text += lines([
+        user({ uuid: 'u2', parent: 'a1', ts: iso(T0 + 1000 + opts.afterMs + 399000) }),
+        assistant({ uuid: 'b1', parent: 'u2', ts: iso(T0 + 1000 + opts.afterMs + 400500), read: 0, write: 20100, tags: FIVE, msg: 'm2' }),
+      ])
+      await mainStep($)
+      await turnEnd($)
+      await clock.advance(1000)
+    }
+    return { rec, clock, doc }
+  }
+  const causes = (rec: any) => debugOf(rec, 'cachier miss').map((m: any) => m.cause)
+  const lineOf = (rec: any) => debugOf(rec, 'cachier switch')
+
+  test('a cache read as expired at the switch makes the next miss a lapse and adds nothing to the reset times', async ($, on) => {
+    const { rec } = await scenario($, on, { afterMs: TTL + 10000 })
+    expect(snapshot).toEqual([])
+    expect(held('cold')).toBeDefined()
+    expect(causes(rec)).toEqual(['lapse'])
+  })
+
+  test('a cache read as warm makes the next miss a reset miss', async ($, on) => {
+    const { rec } = await scenario($, on, { afterMs: 120000 })
+    expect(snapshot).toHaveLength(1)
+    expect(causes(rec)).toEqual(['cold'])
+  })
+
+  test('the reading decides, not the engine: warm read with the engine saying not warm is a reset', async ($, on) => {
+    const { rec } = await scenario($, on, { afterMs: 120000, engineWarm: false })
+    expect(snapshot).toHaveLength(1)
+    expect(causes(rec)).toEqual(['cold'])
+    expect(lineOf(rec)).toEqual([{ prompt_cache_warm: false, reading: 'warm' }])
+  })
+
+  test('an expired read with the engine saying warm adds nothing', async ($, on) => {
+    const { rec } = await scenario($, on, { afterMs: TTL + 10000, engineWarm: true })
+    expect(snapshot).toEqual([])
+    expect(lineOf(rec)).toEqual([{ prompt_cache_warm: true, reading: 'expired' }])
+  })
+
+  test('the reading is warm one millisecond inside the TTL, counting from the live touch', async ($, on) => {
+    await scenario($, on, { afterMs: TTL - 1, withReply: false })
+    expect(snapshot).toHaveLength(1)
+  })
+
+  test('the reading is not warm at the TTL\'s end', async ($, on) => {
+    const { rec } = await scenario($, on, { afterMs: TTL, withReply: false })
+    expect(snapshot).toEqual([])
+    expect(lineOf(rec)).toEqual([{ prompt_cache_warm: true, reading: 'expired' }])
+  })
+
+  test('a switch with no cache adds nothing', async ($, on) => {
+    watch(on)
+    const rec = world(on, { text: '' })
+    mock.clock(on, { now: T0 })
+    await $.classic.SessionStart({ source: 'startup', transcript_path: PATH })
+    await $.classic.PostModelSwitch(SW)
+    expect(wrote.stats?.coldSince ?? []).toEqual([])
+    expect(held('cold')).toBeDefined()
+    expect(lineOf(rec)).toEqual([{ prompt_cache_warm: true, reading: 'none' }])
+  })
+
+  test('a switch after /clear adds nothing beyond the clear\'s own reset time', async ($, on) => {
+    const { rec } = await scenario($, on, {
+      afterMs: 1000,
+      withReply: false,
+      setup: async () => {
+        await $.classic.SessionStart({ source: 'clear', transcript_path: PATH })
+      },
+    })
+    expect(snapshot.length).toBe(1)
+    expect(lineOf(rec)[0].reading).toBe('none')
+  })
+
+  test('a switch with an unread view adds nothing', async ($, on) => {
+    const { rec } = await scenario($, on, {
+      afterMs: 1000,
+      withReply: false,
+      setup: async () => void (unread = true),
+    })
+    expect(snapshot).toEqual([])
+    expect(lineOf(rec)).toEqual([{ prompt_cache_warm: true, reading: 'none' }])
+  })
+
+  test('a switch while a compaction mark stands adds nothing, and the next miss is still a reset miss', async ($, on) => {
+    const { rec } = await scenario($, on, {
+      afterMs: 1000,
+      setup: async () => {
+        await $.classic.PostCompact({ trigger: 'manual', compact_summary: 's' } as any)
+      },
+    })
+    expect(snapshot).toHaveLength(1)
+    expect(lineOf(rec)).toEqual([{ prompt_cache_warm: true, reading: 'cold' }])
+    expect(causes(rec)).toEqual(['cold'])
+  })
+
+  test('a reading that throws writes the mark, adds nothing and does not fail the hook', async ($, on) => {
+    const { rec } = await scenario($, on, {
+      afterMs: 1000,
+      withReply: false,
+      setup: async () => void (broken = true),
+      undo: () => void (broken = false),
+    })
+    expect(snapshot).toEqual([])
+    expect(lineOf(rec)).toEqual([{ prompt_cache_warm: true, reading: 'unread' }])
+    expect(held('cold')).toBeDefined()
+  })
+
+  for (const [what, from, source] of [['a resume', 'a', 'resume'], ['a switch to the model in use', 'b', 'command']] as const) {
+    test(`${what} writes no debug line`, async ($, on) => {
+      const rec = world(on, { text: '' })
+      mock.clock(on, { now: T0 })
+      await $.classic.SessionStart({ source: 'startup', transcript_path: PATH })
+      await $.classic.PostModelSwitch({ ...SW, from_model: from, source })
+      expect(lineOf(rec)).toEqual([])
+    })
+  }
+
+  test('after a switch no refresh is sent until the next reply', { options: { keepalive_lead_s: 60, keepalive_count: 9 } }, async ($, on) => {
+    const { rec } = await scenario($, on, {
+      afterMs: TTL + 10000,
+      withReply: false,
+      setup: async () => void (await toggle($, 'on 60 3')),
+    })
+    expect(rec.forks).toEqual([])
   })
 })

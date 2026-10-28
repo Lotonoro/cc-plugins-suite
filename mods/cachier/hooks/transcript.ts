@@ -82,6 +82,7 @@ export type Row = {
 // `write5m` and `write1h` split `write` by TTL. A row with no split is a 5 m write, the API's default TTL.
 export type Usage = {
   input: number
+  output: number
   read: number
   write: number
   write5m: number
@@ -127,6 +128,7 @@ export const normalize = (line: string): Row | undefined => {
       ? null
       : {
           input: num(fields.input_tokens),
+          output: num(fields.output_tokens),
           read: num(fields.cache_read_input_tokens),
           write,
           ...splitOf(fields.cache_creation, write),
@@ -226,7 +228,7 @@ export type Reading = { view: CacheView; history: History | null }
 // the time the request that row answered was sent: the row its reply's first block answered, not the time the reply was
 // logged. The TTL is the newest write's tags.
 export const readCache = async (host: Host, path: string, cursor: string | null = null): Promise<Reading> => {
-  let touch: { row: Row; promptTokens: number } | undefined
+  let touch: { row: Row; promptTokens: number; outputTokens: number } | undefined
   let ttl: Usage['ttl'] | undefined
   // The view's stop: the newest row with a write. Set once; no later row changes the view.
   let frozen = false
@@ -258,7 +260,7 @@ export const readCache = async (host: Host, path: string, cursor: string | null 
       }
     }
     if (!frozen && usage !== null && (usage.read !== 0 || usage.write !== 0)) {
-      touch ??= { row, promptTokens: usage.input + usage.read + usage.write }
+      touch ??= { row, promptTokens: usage.input + usage.read + usage.write, outputTokens: usage.output }
       if (usage.write > 0) {
         ttl = usage.ttl
         frozen = true
@@ -281,7 +283,7 @@ export const readCache = async (host: Host, path: string, cursor: string | null 
 const readingOf = async (
   host: Host,
   path: string,
-  touch: { row: Row; promptTokens: number } | undefined,
+  touch: { row: Row; promptTokens: number; outputTokens: number } | undefined,
   ttl: Usage['ttl'] | undefined,
   walk: Walk,
 ): Promise<CacheView> => {
@@ -295,6 +297,7 @@ const readingOf = async (
     ttlMs: TTL_MS[ttl.label],
     ttlLabel: ttl.label,
     promptTokens: touch.promptTokens,
+    outputTokens: touch.outputTokens,
     model: touch.row.model,
     speed: touch.row.speed,
   }

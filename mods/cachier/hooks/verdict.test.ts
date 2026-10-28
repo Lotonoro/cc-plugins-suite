@@ -2,7 +2,7 @@ import { describe, expect, test } from 'claude-code/testing'
 import type { CacheView } from '../types'
 import { INITIAL } from './keepalive'
 import { NO_SPEND, PRICES, type Money } from './prices'
-import { breakEvenLine, countLineOf, judge, runCountOf, sessionBalanceLine, NO_JUDGED, pauseOf, rewriteSpendOf, verdictOf, type Pause } from './verdict'
+import { breakEvenLine, countLineOf, judge, runCountOf, sessionBalanceLine, NO_JUDGED, pauseOf, rebuildOf, rebuildSpendOf, rewriteSpendOf, verdictOf, type Pause } from './verdict'
 
 // A 32k context on Opus 5.5 at list prices: a ping reads it at $0.20 per million, and a rewrite costs the 5 m write
 // ($5 per million) over that read. A rewrite is worth 24 pings. The TTL is 5 m and the lead 15 s, so a ping every 285 s.
@@ -55,7 +55,7 @@ describe('verdictOf: is the toggle saving or wasting money right now, against th
 
 describe('rewriteSpendOf: what the next prompt pays to write an expired cache again', () => {
   test('the view\'s context at its model\'s write rate for the TTL in force, priced in dollars', () => {
-    const view = { kind: 'known' as const, touchMs: 0, ttlMs: 300 * S, ttlLabel: '5m' as const, promptTokens: 1000000, model: 'claude-opus-5-5', speed: null }
+    const view = { kind: 'known' as const, touchMs: 0, ttlMs: 300 * S, ttlLabel: '5m' as const, promptTokens: 1000000, outputTokens: 0, model: 'claude-opus-5-5', speed: null }
     // Opus 5.5 at $4 input: a 5 m write of a million tokens is $5.
     const micro = (usd: number | null) => Math.round((usd ?? -1) * 1e6) / 1e6
     expect(micro(rewriteSpendOf(view, { unit: 'dollars', list: PRICES, model: 'claude-opus-5-5', speed: null, ttl: '5m' }).usd)).toBe(5)
@@ -63,10 +63,35 @@ describe('rewriteSpendOf: what the next prompt pays to write an expired cache ag
   })
 
   test('an unpriced model leaves the rewrite unpriced, and it is written in tokens', () => {
-    const view = { kind: 'known' as const, touchMs: 0, ttlMs: 300 * S, ttlLabel: '5m' as const, promptTokens: 29000, model: 'claude-nonesuch-1', speed: null }
+    const view = { kind: 'known' as const, touchMs: 0, ttlMs: 300 * S, ttlLabel: '5m' as const, promptTokens: 29000, outputTokens: 0, model: 'claude-nonesuch-1', speed: null }
     const spend = rewriteSpendOf(view, { unit: 'dollars', list: PRICES, model: 'claude-nonesuch-1', speed: null, ttl: '5m' })
     expect(spend.usd).toBeNull()
     expect(spend.write5m).toBe(29000)
+  })
+})
+
+describe('rebuildSpendOf and rebuildOf: what the next prompt pays, the last reply\'s output included', () => {
+  const view = { kind: 'known' as const, touchMs: 0, ttlMs: 300 * S, ttlLabel: '5m' as const, promptTokens: 900000, outputTokens: 100000, model: 'claude-opus-5-5', speed: null }
+  const money: Money = { unit: 'dollars', list: PRICES, model: 'claude-opus-5-5', speed: null, ttl: '5m' }
+  const micro = (usd: number | null) => Math.round((usd ?? -1) * 1e6) / 1e6
+
+  test('prices the prefix plus the output at the write rate for the TTL, and the lapse price stays over the prefix', () => {
+    // Opus 5.5: a 5 m write is $5 per million. 900k + 100k is $5; the prefix alone is $4.50.
+    expect(micro(rebuildSpendOf(view, money).usd)).toBe(5)
+    expect(micro(rewriteSpendOf(view, money).usd)).toBe(4.5)
+    expect(micro(rebuildSpendOf({ ...view, ttlLabel: '1h', ttlMs: 3600 * S }, { ...money, ttl: '1h' }).usd)).toBe(8)
+  })
+
+  test('the size tier follows the rebuild\'s own total', () => {
+    const tiered: Money = { unit: 'dollars', list: { ...PRICES, 'claude-opus-5-5': { ...PRICES['claude-opus-5-5']!, above: { threshold: 950000, input: 8e-6, read: 8e-7, write5m: 10e-6, write1h: 16e-6 } } }, model: 'claude-opus-5-5', speed: null, ttl: '5m' }
+    expect(micro(rewriteSpendOf(view, tiered).usd)).toBe(4.5)
+    expect(micro(rebuildSpendOf(view, tiered).usd)).toBe(10)
+  })
+
+  test('rebuildOf words the figure in the unit shown, and gives none for a view that is not known', () => {
+    expect(rebuildOf(view, money)).toBe('~$5.00')
+    expect(rebuildOf(view, { ...money, unit: 'tokens' })).toBe('~1000k tokens')
+    expect(rebuildOf({ kind: 'unread' }, money)).toBe('')
   })
 })
 
@@ -74,7 +99,7 @@ describe("pauseOf: the pause from the session's state", () => {
   const LIST = PRICES
   const money: Money = { unit: 'dollars', list: LIST, model: 'claude-opus-5-5', speed: null, ttl: '5m' }
   const T = 1_800_000_000_000
-  const view: CacheView = { kind: 'known', touchMs: T, ttlMs: 300 * S, ttlLabel: '5m', promptTokens: 32000, model: 'claude-opus-5-5', speed: null }
+  const view: CacheView = { kind: 'known', touchMs: T, ttlMs: 300 * S, ttlLabel: '5m', promptTokens: 32000, outputTokens: 0, model: 'claude-opus-5-5', speed: null }
   const gap = INITIAL
   const defaults = { leadMs: 20 * S, count: null, cap: 4 }
 

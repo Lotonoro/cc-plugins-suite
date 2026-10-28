@@ -44,8 +44,10 @@ export type Conversation = {
   interrupted: boolean
   // Whether a submit another hook dropped holds the notes from submits: they wait for the user's next prompt that is not a slash command, which carries them and clears it. A tool batch still appends them.
   dropped: boolean
-  // Whether the band's button has the reviewer off: no review is dispatched and the record stops collecting.
+  // Whether the toggle has the reviewer off: no review is open or dispatched, no note is held, and the record stops collecting. A note whose submit or append was already under way at the switch still reaches the worker.
   off: boolean
+  // The count of resets (each switch of the toggle, and each session end): a write carrying content taken under an older epoch is dropped, even when a switch was undone since.
+  epoch: number
   // The worker's last message, which each brief names.
   lastMessage: string
   // The session transcript's path from the engine's events; a session end clears it, so a /clear keeps it only if the engine reports it again.
@@ -62,6 +64,8 @@ export type Conversation = {
   deliveredNotes: string[]
   // The reviewer's open review, if it has one.
   review?: OpenReview
+  // Each reviewer spawn still in flight, by the brief it was spawned with, the epoch it was spawned under, the number of the review it serves, the clock's time its dispatch started, and the id and resolved model once the spawn hook has seen it: a dispatch whose spawn result names no agent takes its id from here. No reset clears it, so a spawn a reset dropped still finds the id it is stopped by (`deliverBrief`). A spawn hook matches its spawn's entry by brief (`recordSpawnedId`), and stands the spawn in as the reviewer while its review is open in its epoch and none is stored; a hook that matches no entry only marks its id and name as reviewer traffic. A spawn from an older epoch blocks adoption by name for at most `SPAWN_TIMEOUT_MS` after it started, unless its hook named another id than the caller's (`blocksAdoption`). Its landing takes it out (`releaseSpawn`). A review no reviewer has stood in for `SPAWN_TIMEOUT_MS` after its dispatch fails at the next dispatch (`dispatchIdle`).
+  spawnsInFlight: { brief: string; epoch: number; number: number; startedAt: number; id?: string; model?: string }[]
   // Whether the last review failed and none has succeeded since: no review is dispatched until a turn the user's own prompt started ends.
   failing: boolean
   // What started the worker's latest turn. A turn a reviewer's task notification started records nothing and dispatches nothing at its end.

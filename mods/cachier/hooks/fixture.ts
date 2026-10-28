@@ -15,6 +15,8 @@ export const assistant = (o: {
   ts: string
   read?: number
   write?: number
+  // The reply's output tokens.
+  out?: number
   tags?: Tags
   sidechain?: boolean
   agentId?: string | null
@@ -39,7 +41,7 @@ export const assistant = (o: {
       content: [{ type: 'text', text: 'reply' }],
       usage: {
         input_tokens: 8,
-        output_tokens: 20,
+        output_tokens: o.out ?? 20,
         cache_read_input_tokens: o.read ?? 0,
         cache_creation_input_tokens: o.write ?? 0,
         ...(o.speed === undefined ? {} : { speed: o.speed }),

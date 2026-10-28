@@ -8,7 +8,7 @@
 import type { CacheView, Judged, KeepaliveState, Spend, Unit, Verdict } from '../types'
 import { clockOf, touchOf } from './countdown'
 import type { Defaults } from './keepalive'
-import { dollars, NO_KINDS, spendOf, type Money } from './prices'
+import { dollars, NO_KINDS, spendOf, uponOf, type Money } from './prices'
 
 export type Pause = {
   // Whether keepalive is on: the reality the session is in.
@@ -76,12 +76,25 @@ export const sessionBalanceLine = (j: Judged, unit: Unit): string => {
   return `${over}, keepalive cost ${dollars(-net)} net more than the other setting.`
 }
 
-// What the next prompt pays to write an expired cache again: the view's context at its model's write rate for the TTL in force.
-// Unpriced when the model has no price.
+// What a lapse rewrites over the prefix alone: the view's context at its model's write rate for the TTL in force, for the lapse
+// comparisons. Unpriced when the model has no price.
 export const rewriteSpendOf = (view: Extract<CacheView, { kind: 'known' }>, money: Money): Spend => {
   const write = view.ttlLabel === '1h' ? { ...NO_KINDS, write1h: view.promptTokens } : { ...NO_KINDS, write5m: view.promptTokens }
   return spendOf(money.list, money.model, money.speed, write, view.promptTokens)
 }
+
+// What the next prompt pays to write an expired cache again: the view's context plus the last reply's output, which the
+// next request re-sends and writes with it, at the model's write rate for the TTL in force. A size tier follows that total.
+// The lapse comparisons stay over the prefix alone (rewriteSpendOf): a warm cache writes the output too.
+export const rebuildSpendOf = (view: Extract<CacheView, { kind: 'known' }>, money: Money): Spend => {
+  const total = view.promptTokens + view.outputTokens
+  const write = view.ttlLabel === '1h' ? { ...NO_KINDS, write1h: total } : { ...NO_KINDS, write5m: total }
+  return spendOf(money.list, money.model, money.speed, write, total)
+}
+
+// The rebuild figure in the unit shown, for the footer, the pane's warmth line and the bare `/keepalive` answer; empty for a
+// view that isn't known.
+export const rebuildOf = (view: CacheView, money: Money): string => (view.kind === 'known' ? uponOf(rebuildSpendOf(view, money), money.unit) : '')
 
 // One refresh's dollars, and what a rewrite costs over a read, for the context a warm cache holds; null with no warm cache or no
 // price for either.

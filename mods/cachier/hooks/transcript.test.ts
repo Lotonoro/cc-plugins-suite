@@ -77,12 +77,30 @@ describe('walkBackward', () => {
 })
 
 describe('readCache', () => {
+  test("the view carries the output tokens of the reply row its prefix comes from", async () => {
+    const text = lines([
+      user({ uuid: 'u1', parent: null, ts: T0 }),
+      assistant({ uuid: 'a1', parent: 'u1', ts: T0, write: 18551, tags: FIVE, out: 700 }),
+    ])
+    expect(await readView(hostOver(text), '/t.jsonl')).toMatchObject({ kind: 'known', promptTokens: 18559, outputTokens: 700 })
+  })
+
+  test('a later reply with no cache use leaves the cache-touching reply\'s output on the view', async () => {
+    const text = lines([
+      user({ uuid: 'u1', parent: null, ts: T0 }),
+      assistant({ uuid: 'a1', parent: 'u1', ts: T0, write: 18551, tags: FIVE, out: 700 }),
+      user({ uuid: 'u2', parent: 'a1', ts: T1 }),
+      assistant({ uuid: 'a2', parent: 'u2', ts: T1, out: 9000 }),
+    ])
+    expect(await readView(hostOver(text), '/t.jsonl')).toMatchObject({ kind: 'known', promptTokens: 18559, outputTokens: 700 })
+  })
+
   test('the touch is the time of the row the request answered, not the reply row time (a reply that took minutes)', async () => {
     const text = lines([
       user({ uuid: 'u1', parent: null, ts: T0 }),
       assistant({ uuid: 'a1', parent: 'u1', ts: T1, write: 18551, tags: FIVE }),
     ])
-    expect(await readView(hostOver(text), '/t.jsonl')).toEqual({ kind: 'known', touchMs: ms(T0), ttlMs: 300000, ttlLabel: '5m', promptTokens: 18559, model: null, speed: null })
+    expect(await readView(hostOver(text), '/t.jsonl')).toEqual({ kind: 'known', touchMs: ms(T0), ttlMs: 300000, ttlLabel: '5m', promptTokens: 18559, outputTokens: 20, model: null, speed: null })
   })
 
   test('a newer main-thread response with a cache read and no write moves the touch, the TTL still from the newest write', async () => {
@@ -92,12 +110,12 @@ describe('readCache', () => {
       user({ uuid: 'u2', parent: 'a1', ts: T1 }),
       assistant({ uuid: 'a2', parent: 'u2', ts: T2, read: 14361 }),
     ])
-    expect(await readView(hostOver(text), '/t.jsonl')).toEqual({ kind: 'known', touchMs: ms(T1), ttlMs: 300000, ttlLabel: '5m', promptTokens: 14369, model: null, speed: null })
+    expect(await readView(hostOver(text), '/t.jsonl')).toEqual({ kind: 'known', touchMs: ms(T1), ttlMs: 300000, ttlLabel: '5m', promptTokens: 14369, outputTokens: 20, model: null, speed: null })
   })
 
   test('the prompt size is the touching request\'s uncached input plus its cache read and write, the figure a keepalive ping reads', async () => {
     const text = lines([user({ uuid: 'u1', parent: null, ts: T0 }), assistant({ uuid: 'a1', parent: 'u1', ts: T0, read: 100, write: 50, tags: FIVE })])
-    expect(await readView(hostOver(text), '/t.jsonl')).toMatchObject({ kind: 'known', promptTokens: 158 })
+    expect(await readView(hostOver(text), '/t.jsonl')).toMatchObject({ kind: 'known', promptTokens: 158, outputTokens: 20 })
   })
 
   test('a write carrying both tags reads the shorter TTL', async () => {
@@ -150,7 +168,7 @@ describe('readCache', () => {
       assistant({ uuid: 's1', parent: 'u2', ts: T2, read: 9, sidechain: true }),
       assistant({ uuid: 'g1', parent: 'u2', ts: T2, read: 9, agentId: 'sub7' }),
     ])
-    expect(await readView(hostOver(text), '/t.jsonl')).toEqual({ kind: 'known', touchMs: ms(T0), ttlMs: 300000, ttlLabel: '5m', promptTokens: 13, model: null, speed: null })
+    expect(await readView(hostOver(text), '/t.jsonl')).toEqual({ kind: 'known', touchMs: ms(T0), ttlMs: 300000, ttlLabel: '5m', promptTokens: 13, outputTokens: 20, model: null, speed: null })
   })
 
   test('a transcript over 4 MiB with its newest write at the start is read block by block to that write', async () => {
@@ -161,13 +179,13 @@ describe('readCache', () => {
       ...filler,
     ])
     expect(text.length).toBeGreaterThan(4 * CHUNK_BYTES)
-    expect(await readView(hostOver(text), '/t.jsonl')).toEqual({ kind: 'known', touchMs: ms(T0), ttlMs: 300000, ttlLabel: '5m', promptTokens: 13, model: null, speed: null })
+    expect(await readView(hostOver(text), '/t.jsonl')).toEqual({ kind: 'known', touchMs: ms(T0), ttlMs: 300000, ttlLabel: '5m', promptTokens: 13, outputTokens: 20, model: null, speed: null })
   })
 
   test('a newest write near the tail is found even when older rows exceed 4 MiB', async () => {
     const big = user({ uuid: 'big', parent: null, ts: T0, pad: 5 * CHUNK_BYTES })
     const text = lines([big, user({ uuid: 'u1', parent: null, ts: T1 }), assistant({ uuid: 'a1', parent: 'u1', ts: T2, write: 7, tags: ONE })])
-    expect(await readView(hostOver(text), '/t.jsonl')).toEqual({ kind: 'known', touchMs: ms(T1), ttlMs: 3600000, ttlLabel: '1h', promptTokens: 15, model: null, speed: null })
+    expect(await readView(hostOver(text), '/t.jsonl')).toEqual({ kind: 'known', touchMs: ms(T1), ttlMs: 3600000, ttlLabel: '1h', promptTokens: 15, outputTokens: 20, model: null, speed: null })
   })
 
   test('a row over 4 MiB newer than the newest write shows TTL unread', async () => {
@@ -186,7 +204,7 @@ describe('readCache', () => {
 
   test('a partly written last row is skipped; the reading comes from the rows before it', async () => {
     const text = lines([user({ uuid: 'u1', parent: null, ts: T0 }), assistant({ uuid: 'a1', parent: 'u1', ts: T0, write: 5, tags: FIVE })]) + '{"type":"assis'
-    expect(await readView(hostOver(text), '/t.jsonl')).toEqual({ kind: 'known', touchMs: ms(T0), ttlMs: 300000, ttlLabel: '5m', promptTokens: 13, model: null, speed: null })
+    expect(await readView(hostOver(text), '/t.jsonl')).toEqual({ kind: 'known', touchMs: ms(T0), ttlMs: 300000, ttlLabel: '5m', promptTokens: 13, outputTokens: 20, model: null, speed: null })
   })
 
   test('a file whose only row is partly written has no cache activity', async () => {
@@ -199,7 +217,7 @@ describe('readCache', () => {
       assistant({ uuid: 'b1', parent: 'u1', ts: T1, msg: 'M', write: 18551, tags: FIVE }),
       assistant({ uuid: 'b2', parent: 'b1', ts: T2, msg: 'M', write: 18551, tags: FIVE }),
     ])
-    expect(await readView(hostOver(text), '/t.jsonl')).toEqual({ kind: 'known', touchMs: ms(T0), ttlMs: 300000, ttlLabel: '5m', promptTokens: 18559, model: null, speed: null })
+    expect(await readView(hostOver(text), '/t.jsonl')).toEqual({ kind: 'known', touchMs: ms(T0), ttlMs: 300000, ttlLabel: '5m', promptTokens: 18559, outputTokens: 20, model: null, speed: null })
   })
 
   test('a three-block reply after a tool result is timed from the tool result row', async () => {

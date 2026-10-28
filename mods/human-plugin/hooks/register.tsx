@@ -136,7 +136,7 @@ const handlers = ($: EngineInterface, windowMs: number): Handlers => ({
   copy: (text, surface) => inBackground($, copyText($, text, surface)),
 })
 
-// The tool's answer. A blocking add raises a toast and a sound; the reply stays one short line. While the list is being
+// The tool's answer. A blocking add plays a sound; the reply stays one short line. While the list is being
 // rebuilt from a transcript the call waits for it, so it never numbers or changes items the rebuild has not filled in.
 const answer = async ($: EngineInterface, e: unknown) => {
   const parsed = parseInput(e)
@@ -155,7 +155,6 @@ const answer = async ($: EngineInterface, e: unknown) => {
   if (out.added !== null) await saveCounter($, out.store.next)
   await followShown($, out)
   if (out.added?.blocking) {
-    $.ui.toast(`Blocking: #${out.added.id} ${out.added.title}`)
     inBackground($, $.process.run(['afplay', SOUND]).then(r => $.ui.log(`human-plugin: sound ${SOUND}, afplay exit ${r.exitCode}`, { to: 'debug' })))
   }
   return { result: out.reply }

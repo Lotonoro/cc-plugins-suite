@@ -46,7 +46,7 @@ import { PRICES, TOKENS, type Money } from './prices'
 
 const T = 1_000_000
 const F = 'Next refresh: ~33k cached tokens read, every 4 min'
-const known = { kind: 'known' as const, touchMs: T, ttlMs: 300000, ttlLabel: '5m' as const, promptTokens: 32884, model: 'claude-opus-5-5', speed: 'standard' }
+const known = { kind: 'known' as const, touchMs: T, ttlMs: 300000, ttlLabel: '5m' as const, promptTokens: 32884, outputTokens: 0, model: 'claude-opus-5-5', speed: 'standard' }
 // The tests below word their figures in tokens, as a session with no price list does; the dollar wording has its own tests.
 const step = (k: KeepaliveState, v: CacheView, live: number | null, gap: boolean, now: number) => stepWith(k, v, live, gap, now, TOKENS)
 const costOf = (k: KeepaliveState, v: CacheView) => costWith(k, v, TOKENS)

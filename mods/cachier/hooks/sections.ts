@@ -1,5 +1,5 @@
 // The four sections bare `/keepalive` answers with: Cache, Keepalive, Advice and Settings. A pure builder: the command gathers the figures
-// and sentences into a snapshot, and this turns them into sections and wraps them, so the text reads the same wherever it is drawn. It
+// and sentences into a snapshot, and this turns them into sections and wrapped rows, so the text reads the same wherever it is drawn. It
 // takes no engine handle, so it is tested without one.
 
 // The width a line is wrapped at, counting its indent.
@@ -17,6 +17,10 @@ export type Snapshot = {
 }
 
 export type Section = { title: 'Cache' | 'Keepalive' | 'Advice' | 'Settings'; lines: string[] }
+
+// One row of the laid-out answer. A section's heading row carries the heading mark, so a drawing bolds it without reading its text;
+// no other row is marked.
+export type AnswerRow = { text: string; heading?: boolean }
 
 const settingLine = (s: Setting): string => `${s.name} ${s.value}${s.source === null ? '' : ` (${s.source})`}: ${s.change}.`
 
@@ -47,8 +51,13 @@ export const wrapLine = (text: string, width = WRAP, first = '  ', rest = '    '
   return lines
 }
 
-// The answer: each section named on a line of its own, its lines wrapped beneath it, and a blank line between sections.
-export const answerOf = (snap: Snapshot): string =>
-  sectionsOf(snap)
-    .map((section) => [section.title, ...section.lines.flatMap((line) => wrapLine(line))].join('\n'))
-    .join('\n\n')
+// The answer as rows: each section's heading row, its lines wrapped beneath it, and one blank row between sections.
+export const layoutOf = (snap: Snapshot): AnswerRow[] =>
+  sectionsOf(snap).flatMap((section, i) => [
+    ...(i === 0 ? [] : [{ text: '' }]),
+    { text: section.title, heading: true },
+    ...section.lines.flatMap((line) => wrapLine(line).map((text) => ({ text }))),
+  ])
+
+// The answer: the rows of the layout, joined.
+export const answerOf = (snap: Snapshot): string => layoutOf(snap).map((row) => row.text).join('\n')
