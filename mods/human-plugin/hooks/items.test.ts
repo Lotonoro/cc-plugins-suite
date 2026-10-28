@@ -100,18 +100,126 @@ test('ids are never reused after a remove', () => {
   expect(added(gone.store, 'b').reply).toBe('added #2')
 })
 
-test('update changes fields and reopens a done-pending item only with a note', () => {
+// A list whose one item is sent (done-pending), as the human's reply left it: answered, and read.
+const sentList = (extra: Partial<Item> = {}): Store => {
   const { store } = added(EMPTY, 'Pick a db')
-  const pending = { ...store, items: store.items.map(it => ({ ...it, state: 'done-pending' as const })) }
-  const noNote = act(pending, input({ action: 'update', id: 1, detail: 'postgres' }), MAIN)
-  if ('deny' in noNote) throw new Error(noNote.deny)
-  expect(noNote.store.items[0]?.state).toBe('done-pending')
-  expect(noNote.store.items[0]?.detail).toBe('postgres')
-  const reopened = act(pending, input({ action: 'update', id: 1, note: 'still open' }), MAIN)
-  if ('deny' in reopened) throw new Error(reopened.deny)
-  expect(reopened.store.items[0]?.state).toBe('open')
-  expect(reopened.store.items[0]?.note).toBe('still open')
-  expect(reopened.reply).toBe('updated #1')
+  return { ...store, items: store.items.map(it => ({ ...it, state: 'done-pending' as const, answer: 'Use sqlite', replied: true, unread: false, ...extra })) }
+}
+const changed = (store: Store, raw: Record<string, unknown>) => {
+  const out = act(store, input({ id: 1, ...raw }), MAIN)
+  if ('deny' in out) throw new Error(out.deny)
+  return out
+}
+
+test('an append, and an update that sets a title, detail, blocking, options, a note or a done label, reopen a sent item unread with no answer', () => {
+  const sent = sentList({ detail: 'which store?' })
+  const sets: Record<string, unknown>[] = [
+    { action: 'append', text: 'more context' },
+    { action: 'update', title: 'Pick a cache' },
+    { action: 'update', detail: 'postgres' },
+    { action: 'update', blocking: true },
+    { action: 'update', options: [{ label: 'Use sqlite' }, { label: 'Use postgres' }] },
+    { action: 'update', note: 'still open' },
+    { action: 'update', done: 'Go with sqlite' },
+  ]
+  for (const raw of sets) {
+    const out = changed(sent, raw)
+    expect(out.store.items[0]).toMatchObject({ state: 'open', unread: true, pressedAt: null, answer: null, replied: false })
+    expect(out.reply).toBe(raw.action === 'append' ? 'appended to #1' : 'updated #1')
+    expect(out.changed).toEqual({ id: 1, reopened: true })
+  }
+})
+
+test('an update that changes nothing, a note equal to the current one included, says so and leaves a sent item sent', () => {
+  const sent = sentList({ note: 'recheck', detail: 'postgres' })
+  for (const raw of [{ title: 'Pick a db' },{ note: 'recheck' }, { detail: 'postgres' }, { blocking: false }]) {
+    expect(changed(sent, { action: 'update', ...raw })).toEqual({ store: sent, reply: 'no change to #1', added: null, changed: null })
+  }
+})
+
+test('a whitespace-only edit of the detail or the note is no change, sent or in its undo window: it replies no change and leaves the item as it was', () => {
+  const sent = sentList({ detail: 'postgres', note: 'recheck' })
+  for (const raw of [{ detail: 'postgres ' }, { detail: ' postgres\n' }, { note: 'recheck ' }]) {
+    expect(changed(sent, { action: 'update', ...raw })).toEqual({ store: sent, reply: 'no change to #1', added: null, changed: null })
+  }
+  const bare = sentList()
+  expect(changed(bare, { action: 'update', detail: '  ' })).toEqual({ store: bare, reply: 'no change to #1', added: null, changed: null })
+  const waiting = sentList({ state: 'done-waiting', pressedAt: 500, note: 'recheck' })
+  expect(changed(waiting, { action: 'update', note: 'recheck ' })).toEqual({ store: waiting, reply: 'no change to #1', added: null, changed: null })
+})
+
+test('a whitespace-only edit beside a clear does not make the change set something: it applies without reopening a sent item', () => {
+  const sent = sentList({ detail: 'postgres', note: 'recheck' })
+  const noted = changed(sent, { action: 'update', detail: 'postgres ', note: '' })
+  expect(noted.store.items[0]).toMatchObject({ state: 'done-pending', note: null, answer: 'Use sqlite' })
+  expect(noted.reply).toBe('updated #1')
+  expect(noted.changed).toEqual({ id: 1, reopened: false })
+  const detailed = changed(sent, { action: 'update', detail: '', note: 'recheck ' })
+  expect(detailed.store.items[0]).toMatchObject({ state: 'done-pending', detail: '', answer: 'Use sqlite' })
+  expect(detailed.reply).toBe('updated #1')
+  expect(detailed.changed).toEqual({ id: 1, reopened: false })
+})
+
+test('a field cleared alone applies without reopening a sent item; a clear with a change that sets something reopens it', () => {
+  const sent = sentList({ note: 'recheck', detail: 'postgres', doneLabel: 'Go with sqlite' })
+  for (const [raw, field, value] of [
+    [{ note: '' }, 'note', null],
+    [{ done: '' }, 'doneLabel', null],
+    [{ detail: '' }, 'detail', ''],
+    [{ detail: ' \n ' }, 'detail', ''],
+  ] as const) {
+    const out = changed(sent, { action: 'update', ...raw })
+    expect(out.store.items[0]).toMatchObject({ state: 'done-pending', answer: 'Use sqlite', unread: false, [field]: value })
+    expect(out.reply).toBe('updated #1')
+    expect(out.changed).toEqual({ id: 1, reopened: false })
+  }
+  const both = changed(sent, { action: 'update', note: '', title: 'Pick a cache' })
+  expect(both.store.items[0]).toMatchObject({ state: 'open', note: null, unread: true, answer: null })
+  expect(both.changed).toEqual({ id: 1, reopened: true })
+})
+
+test('a whitespace-only detail is a clear: it applies to a sent item without reopening it, and the list shows no stray line for it', () => {
+  const sent = sentList({ detail: 'postgres' })
+  const cleared = changed(sent, { action: 'update', detail: '   ' })
+  expect(cleared.reply).toBe('updated #1')
+  expect(cleared.changed).toEqual({ id: 1, reopened: false })
+  expect(cleared.store.items[0]).toMatchObject({ state: 'done-pending', answer: 'Use sqlite', replied: true, detail: '' })
+  expect(listText(cleared.store.items)).toBe('#1 non-blocking, done-pending: Pick a db')
+  expect(changed(cleared.store, { action: 'append', text: 'Postgres is simpler.' }).store.items[0]?.detail).toBe('Postgres is simpler.')
+})
+
+test('a whitespace-only note is a clear too: it applies to a sent item without reopening it, and the list shows no note for it', () => {
+  const noted = changed(sentList({ note: 'recheck' }), { action: 'update', note: '   ' })
+  expect(noted.reply).toBe('updated #1')
+  expect(noted.changed).toEqual({ id: 1, reopened: false })
+  expect(noted.store.items[0]).toMatchObject({ state: 'done-pending', answer: 'Use sqlite', note: null })
+  expect(listText(noted.store.items)).toBe('#1 non-blocking, done-pending: Pick a db')
+})
+
+test('a change on an item in its undo window applies its fields and leaves the window running', () => {
+  const waiting = sentList({ state: 'done-waiting', pressedAt: 500 })
+  for (const raw of [{ action: 'update', note: 'recheck', title: 'Pick a cache' }, { action: 'append', text: 'more' }]) {
+    const out = changed(waiting, raw)
+    expect(out.store.items[0]).toMatchObject({ state: 'done-waiting', pressedAt: 500, answer: 'Use sqlite', replied: true })
+    expect(out.changed).toEqual({ id: 1, reopened: false })
+  }
+  expect(changed(waiting, { action: 'update', note: 'recheck' }).store.items[0]?.note).toBe('recheck')
+})
+
+test('a change to an open item leaves its unread mark as it was', () => {
+  const { store } = added(EMPTY, 'Pick a db')
+  const read = { ...store, items: store.items.map(it => ({ ...it, unread: false })) }
+  expect(changed(read, { action: 'append', text: 'more' }).store.items[0]?.unread).toBe(false)
+  expect(changed(store, { action: 'append', text: 'more' }).store.items[0]?.unread).toBe(true)
+})
+
+test('the outcome of a change names the item and says whether it reopened; an add, a list and a remove name none', () => {
+  const { store } = added(EMPTY, 'Pick a db')
+  expect(changed(store, { action: 'update', title: 'Pick a cache' }).changed).toEqual({ id: 1, reopened: false })
+  expect(changed(sentList(), { action: 'append', text: 'more' }).changed).toEqual({ id: 1, reopened: true })
+  expect(added(EMPTY, 'a').changed).toBe(null)
+  expect(act(store, input({ action: 'list' }), MAIN)).toMatchObject({ changed: null })
+  expect(changed(store, { action: 'remove' })).toMatchObject({ changed: null })
 })
 
 test('update and remove of an unknown id are denied', () => {
@@ -259,9 +367,23 @@ test('an update replaces the options; one that repeats them changes nothing', ()
   const made = act(EMPTY, input({ action: 'add', title: 'Pick a db', options }), MAIN)
   if (!('store' in made)) throw new Error('denied')
   expect(made.store.items[0]?.options.map(o => o.label)).toEqual(['Use sqlite', 'Use postgres'])
-  expect(act(made.store, input({ action: 'update', id: 1, options }), MAIN)).toEqual({ store: made.store, reply: 'no change to #1', added: null })
+  expect(act(made.store, input({ action: 'update', id: 1, options }), MAIN)).toEqual({ store: made.store, reply: 'no change to #1', added: null, changed: null })
   const more = act(made.store, input({ action: 'update', id: 1, options: [...options, { label: 'Use a file' }] }), MAIN)
   expect('store' in more && more.reply).toBe('updated #1')
+})
+
+test('an option description edited only by spaces is no change, and a real description change still reopens a sent item', () => {
+  const sent = sentList({ options: [{ label: 'Use sqlite', description: 'Simple', recommended: false }, { label: 'Use postgres', description: '', recommended: false }] })
+  for (const options of [
+    [{ label: 'Use sqlite', description: 'Simple  ' }, { label: 'Use postgres', description: '   ' }],
+    [{ label: 'Use sqlite', description: ' Simple\n' }, { label: 'Use postgres', description: '' }],
+  ]) {
+    expect(changed(sent, { action: 'update', options })).toEqual({ store: sent, reply: 'no change to #1', added: null, changed: null })
+  }
+  const real = changed(sent, { action: 'update', options: [{ label: 'Use sqlite', description: 'Simple and cheap ' }, { label: 'Use postgres' }] })
+  expect(real.store.items[0]).toMatchObject({ state: 'open', unread: true, answer: null })
+  expect(real.store.items[0]?.options[0]?.description).toBe('Simple and cheap ')
+  expect(real.changed).toEqual({ id: 1, reopened: true })
 })
 
 test('the pane\'s item is the selected one, with none selected the first; a selection whose item is gone names none', () => {
@@ -358,7 +480,7 @@ test('an update whose title is blank says the title is empty; a title that is no
   expect(parseInput({ action: 'update', id: 1, title: 3 })).toEqual({ ok: false, reason: 'title must be text' })
 })
 
-test('a blank note is parsed as clearing the note, and clears it without reopening a done item', () => {
+test('a blank note is parsed as clearing the note, and clears it from a sent item without reopening it', () => {
   expect(parseInput({ action: 'update', id: 1, note: '  ' })).toEqual({ ok: true, value: { action: 'update', id: 1, note: null } })
   const { store } = added(EMPTY, 'Pick a db')
   const noted = { ...store, items: store.items.map(it => ({ ...it, note: 'recheck', state: 'done-pending' as const })) }
@@ -366,6 +488,38 @@ test('a blank note is parsed as clearing the note, and clears it without reopeni
   if ('deny' in cleared) throw new Error(cleared.deny)
   expect(cleared.store.items[0]).toMatchObject({ note: null, state: 'done-pending' })
   expect(cleared.reply).toBe('updated #1')
+})
+
+test('a whitespace-only detail parses as an empty one, on add and on update; a real detail is kept as written', () => {
+  expect(parseInput({ action: 'add', title: 'Pick a db', detail: '   ' })).toEqual({
+    ok: true,
+    value: { action: 'add', title: 'Pick a db', detail: '', blocking: false, options: [], yesno: false, doneLabel: null },
+  })
+  expect(parseInput({ action: 'update', id: 1, detail: ' \n ' })).toEqual({ ok: true, value: { action: 'update', id: 1, detail: '' } })
+  expect(parseInput({ action: 'update', id: 1, detail: '  Which store?\n' })).toEqual({
+    ok: true,
+    value: { action: 'update', id: 1, detail: '  Which store?\n' },
+  })
+})
+
+test('a whitespace-only detail on add is stored empty: the new item lists with no stray line, and an append sets its detail alone', () => {
+  const made = act(EMPTY, input({ action: 'add', title: 'Pick a db', detail: '   ' }), MAIN)
+  if (!('store' in made)) throw new Error(made.deny)
+  expect(made.store.items[0]?.detail).toBe('')
+  expect(listText(made.store.items)).toBe('#1 non-blocking, open: Pick a db')
+  const appended = act(made.store, input({ action: 'append', id: 1, text: 'Two options.' }), MAIN)
+  if (!('store' in appended)) throw new Error(appended.deny)
+  expect(appended.store.items[0]?.detail).toBe('Two options.')
+})
+
+test('a stored detail or note of only spaces loads as cleared: an append sets the detail alone, and the list shows no stray line', () => {
+  const loaded = normalizeStore({ items: [{ ...legacy, detail: '   ', note: ' \n ' }], next: 2 })
+  expect(loaded.items[0]).toMatchObject({ detail: '', note: null })
+  expect(listText(loaded.items)).toBe('#1 blocking, open: Pick a db')
+  const appended = act(loaded, input({ action: 'append', id: 1, text: 'Two options.' }), MAIN)
+  if (!('store' in appended)) throw new Error(appended.deny)
+  expect(appended.store.items[0]?.detail).toBe('Two options.')
+  expect(normalizeItem({ ...legacy, detail: '  Which store?  ', note: ' recheck ' })).toMatchObject({ detail: '  Which store?  ', note: ' recheck ' })
 })
 
 test('an undo window with no press time was never pressed, so the item is open; a timed one stays', () => {

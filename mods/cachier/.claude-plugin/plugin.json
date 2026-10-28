@@ -4,7 +4,7 @@
     "name": "Lotonoro"
   },
   "version": "0.0.1",
-  "description": "The prompt cache's time left on the prompt footer as a pie and a time, after its mode labels; a click on the pie switches keepalive, and a click on the time or the rebuild figure opens a details pane (the keepalive cost, its tallies, the session's cache misses, its earlier pauses, its long pauses with the refreshes that cover them); every cost in dollars at Anthropic's list prices or in tokens by kind, switched by /keepalive unit; failures on the status line; each message's time at its top right; and an opt-in keepalive that keeps an idle cache warm (off by default; each refresh costs a cache read).",
+  "description": "The prompt cache's time left on the prompt footer as a pie and a time, after its mode labels; a click on the pie switches keepalive, and a click on the time or the rebuild figure opens a details pane (the keepalive cost, its tallies, the session's cache misses, its earlier pauses, its long pauses with the refreshes that cover them); every cost in dollars at the prices on Anthropic's pricing page, with your own rates where the overrides file sets them, or in tokens by kind, switched by /keepalive unit; failures on the status line; each message's time at its top right; and an opt-in keepalive that keeps an idle cache warm (off by default; each refresh costs a cache read).",
   "types": "./types/index.d.ts",
   "userConfig": {
     "keepalive_lead_s": {
@@ -28,7 +28,7 @@
     "cost_unit": {
       "type": "string",
       "title": "Cost unit",
-      "description": "The unit costs start in: dollars at Anthropic's list prices (a figure with no price is shown in tokens), or tokens by kind (read, written). /keepalive unit dollars|tokens switches it for the session.",
+      "description": "The unit costs start in: dollars at the prices on Anthropic's pricing page, with your own rates where the overrides file sets them (a figure with no price is shown in tokens), or tokens by kind (read, written). /keepalive unit dollars|tokens switches it for the session.",
       "options": [
         "dollars",
         "tokens"

@@ -1,10 +1,16 @@
 import type { Item, ItemOption, ItemState, Store } from '../types'
+import { reopen } from './done'
 
 export const PLUGIN = 'human-plugin'
 export const TOOL = 'mcp__human-plugin__human_items'
 export const EMPTY: Store = { items: [], next: 1 }
 
 const STATES: readonly ItemState[] = ['open', 'done-waiting', 'done-pending']
+
+// Text of only spaces is no detail or note: it is stored cleared, a detail as '' and a note as null, the value listText and the pane read
+// as no note. Stored text (normalizeItem) and text the tool is given (parseInput) are both stored this way.
+const detailOf = (raw: string): string => (raw.trim() === '' ? '' : raw)
+const noteOf = (raw: string): string | null => (raw.trim() === '' ? null : raw)
 
 // One option as stored. An entry with no label is no option, and is dropped.
 const optionOf = (raw: unknown): ItemOption | null => {
@@ -25,13 +31,13 @@ export const normalizeItem = (raw: unknown): Item | null => {
   return {
     id: r.id,
     title: r.title,
-    detail: typeof r.detail === 'string' ? r.detail : '',
+    detail: typeof r.detail === 'string' ? detailOf(r.detail) : '',
     blocking: r.blocking === true,
     createdAt: typeof r.createdAt === 'number' && Number.isFinite(r.createdAt) ? r.createdAt : 0,
     // An undo window with no press time cannot end, so the item was never pressed: it is open.
     state: stored === 'done-waiting' && pressedAt === null ? 'open' : stored,
     pressedAt,
-    note: typeof r.note === 'string' ? r.note : null,
+    note: typeof r.note === 'string' ? noteOf(r.note) : null,
     agent: typeof r.agent === 'string' ? r.agent : null,
     unread: r.unread === true,
     options: Array.isArray(r.options) ? r.options.map(optionOf).filter((o): o is ItemOption => o !== null) : [],
@@ -130,7 +136,7 @@ export const parseInput = (raw: unknown): Parsed => {
         value: {
           action: 'add',
           title,
-          detail: text(r.detail) ?? '',
+          detail: detailOf(text(r.detail) ?? ''),
           blocking: r.blocking === true,
           options: options.value ?? [],
           yesno: r.yesno === true,
@@ -148,8 +154,9 @@ export const parseInput = (raw: unknown): Parsed => {
         value.title = title.trim()
       }
       if (r.detail !== undefined) {
-        if (text(r.detail) === undefined) return { ok: false, reason: 'detail must be text' }
-        value.detail = text(r.detail)
+        const detail = text(r.detail)
+        if (detail === undefined) return { ok: false, reason: 'detail must be text' }
+        value.detail = detailOf(detail)
       }
       if (r.blocking !== undefined) {
         if (typeof r.blocking !== 'boolean') return { ok: false, reason: 'blocking must be true or false' }
@@ -159,7 +166,7 @@ export const parseInput = (raw: unknown): Parsed => {
         const note = text(r.note)
         if (note === undefined) return { ok: false, reason: 'note must be text' }
         // A blank note clears the note, as a blank done label clears the label (parseDone).
-        value.note = note.trim() === '' ? null : note
+        value.note = noteOf(note)
       }
       if (r.options !== undefined) {
         const options = parseOptions(r.options)
@@ -192,12 +199,38 @@ export const parseInput = (raw: unknown): Parsed => {
 // Who asks: null for the main agent, else the subagent's id.
 export type Ctx = { agent: string | null; now: number }
 
+// `changed` names the item an append or an update changed, and whether that change reopened it (null for any other call, and for an
+// update that changed nothing): the pane, and any later consumer, learn of a reopen here and not by diffing lists.
 export type Outcome =
   | { deny: string }
-  | { store: Store; reply: string; added: Item | null }
+  | { store: Store; reply: string; added: Item | null; changed: { id: number; reopened: boolean } | null }
+
+// The fields an agent's change writes, each as the text it compares by: the detail, the note and each option's description by their
+// trimmed text, so a whitespace-only edit is no change, and a field a change empties as ''. `unchanged` is every field equal. `asks` is a
+// field that differs and is not emptied, which sets a title, a blocking mark, options, or text in the detail, note or done label. Both read
+// this one list, so a field added to it is compared by both.
+const FIELDS: readonly ((it: Item) => string)[] = [
+  it => it.title,
+  it => it.detail.trim(),
+  it => String(it.blocking),
+  it => (it.note ?? '').trim(),
+  it => JSON.stringify(it.options.map(o => ({ ...o, description: o.description.trim() }))),
+  it => it.doneLabel ?? '',
+]
+const unchanged = (before: Item, after: Item): boolean => FIELDS.every(field => field(before) === field(after))
+const asks = (before: Item, after: Item): boolean => FIELDS.some(field => field(after) !== field(before) && field(after) !== '')
+
+// An agent's change to `target`, written as `after`. One that leaves the item as it was is no change. One that asks the human something
+// (asks) puts a sent item back to open, with its reply field (done.ts); an item in its undo window keeps the window.
+const change = (store: Store, target: Item, after: Item, reply: string): Outcome => {
+  if (unchanged(target, after)) return { store, reply: `no change to #${target.id}`, added: null, changed: null }
+  const written = { ...store, items: store.items.map(it => (it.id === target.id ? after : it)) }
+  const out = asks(target, after) ? reopen(written, target.id) : { store: written, reopened: false }
+  return { store: out.store, reply, added: null, changed: { id: target.id, reopened: out.reopened } }
+}
 
 export const act = (store: Store, input: ToolInput, ctx: Ctx): Outcome => {
-  if (input.action === 'list') return { store, reply: listText(store.items), added: null }
+  if (input.action === 'list') return { store, reply: listText(store.items), added: null, changed: null }
   if (input.action === 'add') {
     const item: Item = {
       id: store.next,
@@ -216,21 +249,20 @@ export const act = (store: Store, input: ToolInput, ctx: Ctx): Outcome => {
       yesno: input.yesno,
       doneLabel: input.doneLabel,
     }
-    return { store: { items: [...store.items, item], next: store.next + 1 }, reply: `added #${item.id}`, added: item }
+    return { store: { items: [...store.items, item], next: store.next + 1 }, reply: `added #${item.id}`, added: item, changed: null }
   }
   const target = store.items.find(it => it.id === input.id)
   if (target === undefined) return { deny: `no item #${input.id}` }
   if (input.action === 'append') {
     const detail = target.detail === '' ? input.text : `${target.detail}\n\n${input.text}`
-    const items = store.items.map(it => (it.id === target.id ? { ...it, detail } : it))
-    return { store: { ...store, items }, reply: `appended to #${target.id}`, added: null }
+    return change(store, target, { ...target, detail }, `appended to #${target.id}`)
   }
   if (input.action === 'remove') {
     if (ctx.agent !== null && target.agent !== ctx.agent) {
       const who = target.agent === null ? 'the main agent' : 'another agent'
       return { deny: `#${target.id} was filed by ${who}; only ${target.agent === null ? 'it' : 'that agent'} can remove it` }
     }
-    return { store: { ...store, items: store.items.filter(it => it.id !== target.id) }, reply: `removed #${target.id}`, added: null }
+    return { store: { ...store, items: store.items.filter(it => it.id !== target.id) }, reply: `removed #${target.id}`, added: null, changed: null }
   }
   if (input.options !== undefined && target.yesno) return { deny: `#${target.id} is a yes/no question: it takes no options` }
   if (input.doneLabel !== undefined && (target.yesno || target.options.length > 0)) {
@@ -239,7 +271,7 @@ export const act = (store: Store, input: ToolInput, ctx: Ctx): Outcome => {
   if (input.options !== undefined && target.doneLabel !== null) {
     return { deny: `#${target.id} has a done label: it is a to-do, which takes no options; clear the label first with done: ''` }
   }
-  const changed: Item = {
+  return change(store, target, {
     ...target,
     title: input.title ?? target.title,
     detail: input.detail ?? target.detail,
@@ -247,25 +279,7 @@ export const act = (store: Store, input: ToolInput, ctx: Ctx): Outcome => {
     note: input.note !== undefined ? input.note : target.note,
     options: input.options ?? target.options,
     doneLabel: input.doneLabel !== undefined ? input.doneLabel : target.doneLabel,
-    // A note of text reopens a done item; a clear does not.
-    state: input.note !== undefined && input.note !== null && target.state !== 'open' ? 'open' : target.state,
-  }
-  const unchanged =
-    changed.title === target.title &&
-    changed.detail === target.detail &&
-    changed.blocking === target.blocking &&
-    changed.note === target.note &&
-    changed.state === target.state &&
-    changed.doneLabel === target.doneLabel &&
-    JSON.stringify(changed.options) === JSON.stringify(target.options)
-  if (unchanged) return { store, reply: `no change to #${target.id}`, added: null }
-  if (changed.state === 'open') {
-    changed.pressedAt = null
-    changed.answer = null
-    changed.replied = false
-  }
-  const items = store.items.map(it => (it.id === target.id ? changed : it))
-  return { store: { ...store, items }, reply: `updated #${target.id}`, added: null }
+  }, `updated #${target.id}`)
 }
 
 // The item the pane shows: the selected one, or with no selection the first. A selection whose item is gone names none; the pane

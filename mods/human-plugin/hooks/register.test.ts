@@ -1020,6 +1020,27 @@ test('a reply typed in the pane is sent once, through the undo window, with its 
   expect(submitted).toEqual([{ text: '#1 is done: Item 1\nThe human replied on #1: Use sqlite\nAct on that reply, then remove it. Keep it only if the human still has a step of their own to take, updated to name that step; your own follow-up work does not stay on the list.' }])
 })
 
+test('an agent change during a reply\'s undo window leaves the window running: the notice sent at its end carries the reply, and the item is sent, not cancelled', async () => {
+  reset()
+  const { hooks } = wire()
+  const open: string[] = []
+  const submitted: unknown[] = []
+  const timers: Timer[] = []
+  const { env, values, clock } = replyEnv([made(1, { detail: 'Brief 1.' })], open, null, submitted, timers)
+  await (hooks['session.end'] as Handler)(env as never, { reason: 'exit' } as never, next(false) as never)
+  findButton(await band(hooks, env), 'title-1')?.onPress()
+  await settle()
+  findInput(await paneTree(hooks, env), 'reply-1')?.onSubmit('Use sqlite', {})
+  await settle()
+  expect(timers.length).toBe(1)
+  await (hooks['tool.call'] as Handler)(env as never, { tool: TOOL, action: 'append', id: 1, text: 'more' } as never, next(false) as never)
+  await settle()
+  expect((values.list as { items: Item[] }).items[0]).toMatchObject({ state: 'done-waiting', detail: 'Brief 1.\n\nmore', answer: 'Use sqlite', replied: true })
+  await tickAt(timers, clock, 3000)
+  expect(submitted).toEqual([{ text: '#1 is done: Item 1\nThe human replied on #1: Use sqlite\nAct on that reply, then remove it. Keep it only if the human still has a step of their own to take, updated to name that step; your own follow-up work does not stay on the list.' }])
+  expect((values.list as { items: Item[] }).items[0]).toMatchObject({ state: 'done-pending', answer: 'Use sqlite', replied: true })
+})
+
 test('a press on undo cancels a reply: nothing is sent, and the item is open with no reply', async () => {
   reset()
   const { hooks } = wire()
@@ -1151,6 +1172,69 @@ test('a sent item the person views is left alone by a tool call; a tool call tha
   await (hooks['tool.call'] as Handler)(env as never, { tool: TOOL, action: 'remove', id: 2 } as never, next(false) as never)
   await settle()
   expect(values.selection).toBe(3)
+})
+
+// The pane's open requests, recorded as memEnv's pane takes them.
+const recordingOpens = <E extends { ui: { open: (args: { id: string; rows: number }) => Promise<unknown> } }>(plain: E, opened: { id: string; rows: number }[]) => ({
+  ...plain,
+  ui: { ...plain.ui, open: async (args: { id: string; rows: number }) => { opened.push({ id: args.id, rows: args.rows }); return plain.ui.open(args) } },
+})
+
+test('an append that reopens the sent item the pane shows re-asks its rows with the reply field, and the item is not unread', async () => {
+  reset()
+  const { hooks } = wire()
+  const open: string[] = []
+  const { env: plain, values } = memEnv([made(1), made(2, { state: 'done-pending', answer: 'Use sqlite', replied: true })], open, null)
+  const opened: { id: string; rows: number }[] = []
+  const env = recordingOpens(plain, opened)
+  findButton(await band(hooks, env), 'title-2')?.onPress()
+  await settle()
+  expect(values.selection).toBe(2)
+  opened.length = 0
+  await (hooks['tool.call'] as Handler)(env as never, { tool: TOOL, action: 'append', id: 2, text: 'more' } as never, next(false) as never)
+  await settle()
+  const two = (values.list as { items: Item[] }).items.find(it => it.id === 2) as Item
+  expect(two).toMatchObject({ state: 'open', unread: false })
+  expect(opened).toEqual([{ id: 'human-items', rows: paneRows(two) }])
+  expect(opened[0]?.rows).toBe(paneRows({ ...two, state: 'done-pending' }) + 1)
+  expect(values.selection).toBe(2)
+})
+
+test('an append that reopens an item the pane does not show leaves that item unread, and the pane\'s item and request alone', async () => {
+  reset()
+  const { hooks } = wire()
+  const open: string[] = []
+  const { env: plain, values } = memEnv([made(1), made(2, { state: 'done-pending', answer: 'Use sqlite', replied: true })], open, null)
+  const opened: { id: string; rows: number }[] = []
+  const env = recordingOpens(plain, opened)
+  findButton(await band(hooks, env), 'title-1')?.onPress()
+  await settle()
+  opened.length = 0
+  await (hooks['tool.call'] as Handler)(env as never, { tool: TOOL, action: 'append', id: 2, text: 'more' } as never, next(false) as never)
+  await settle()
+  const two = (values.list as { items: Item[] }).items.find(it => it.id === 2)
+  expect(two).toMatchObject({ state: 'open', unread: true })
+  expect(opened).toEqual([])
+  expect(values.selection).toBe(1)
+})
+
+test('an update of the brief to the open item the pane shows re-asks its rows though nothing reopens: the rows follow the brief\'s length', async () => {
+  reset()
+  const { hooks } = wire()
+  const open: string[] = []
+  const { env: plain, values } = memEnv([made(1, { detail: 'One line.' })], open, null)
+  const opened: { id: string; rows: number }[] = []
+  const env = recordingOpens(plain, opened)
+  findButton(await band(hooks, env), 'title-1')?.onPress()
+  await settle()
+  opened.length = 0
+  await (hooks['tool.call'] as Handler)(env as never, { tool: TOOL, action: 'update', id: 1, detail: 'a\nb\nc\nd\ne' } as never, next(false) as never)
+  await settle()
+  const one = (values.list as { items: Item[] }).items[0] as Item
+  expect(one).toMatchObject({ state: 'open', unread: false })
+  expect(opened).toEqual([{ id: 'human-items', rows: paneRows(one) }])
+  expect(paneRows(one)).toBeGreaterThan(paneRows({ ...one, detail: 'One line.' }))
+  expect(values.selection).toBe(1)
 })
 
 // A reload leaves the mod with no record of its pane (paneOpen starts empty) while the engine keeps the pane open and the

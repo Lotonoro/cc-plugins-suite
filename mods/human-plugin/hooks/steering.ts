@@ -34,7 +34,9 @@ export const TOOL_SPEC = {
     'detail, blocking); detail is markdown, for a decision a brief: one-line question, recommendation, options with ' +
     'costs, context. append adds a section to the end of an item\'s detail (text): use it to add to a brief. update ' +
     'changes existing text, the title, blocking or a note, and a detail it is given replaces the whole detail, so use ' +
-    'append to grow one. A note on a done item reopens it, so add one only for a step the human still has to take. remove takes an item off once it no longer applies: the human ' +
+    'append to grow one. Any change to a sent item (an append, or an update that sets something) reopens it for the human, ' +
+    'so change a sent item only when the human has something more to read or answer, and otherwise remove it; clearing a ' +
+    'field alone (a blank note, done or detail) does not reopen it. remove takes an item off once it no longer applies: the human ' +
     'handled it, you resolved it, or it became moot. list returns every item with its state, and is the only action that ' +
     'returns the list. Use it for what the human does outside the chat, what can wait, and a decision that needs a long ' +
     'brief; AskUserQuestion is for a question needed now with a few options. A question you will still need answered after ' +

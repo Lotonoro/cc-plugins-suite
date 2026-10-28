@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'claude-code/testing'
-import { answerOf, sectionsOf, wrapLine, WRAP, type Setting, type Snapshot } from './sections'
+import { answerOf, layoutOf, sectionsOf, wrapLine, WRAP, type Setting, type Snapshot } from './sections'
 
 // The builder takes the figures and sentences as plain values: no engine, no `$`.
 const SETTINGS: Setting[] = [
@@ -67,5 +67,42 @@ describe('answerOf: the sections as the bare command answers them', () => {
     expect(text.indexOf('Keepalive')).toBeLessThan(text.indexOf('Advice'))
     expect(text.indexOf('Advice')).toBeLessThan(text.indexOf('Settings'))
     expect(text).toContain('Next refresh: $0.006')
+  })
+})
+
+describe('layoutOf: the rows the answer is joined from, a heading row marked and no other row', () => {
+  test('the rows, joined, are the answer: each section a heading row then its wrapped lines, and one blank row between sections', () => {
+    expect(layoutOf(FULL).map((row) => row.text).join('\n')).toBe(answerOf(FULL))
+    expect(layoutOf({ ...EMPTY, cache: ['warm'], keepalive: ['off'] }).map((row) => row.text)).toEqual(['Cache', '  warm', '', 'Keepalive', '  off'])
+  })
+
+  test('only the heading rows are marked, in an answer with all four sections and in one with a section left out', () => {
+    expect(layoutOf(FULL).filter((row) => row.heading).map((row) => row.text)).toEqual(['Cache', 'Keepalive', 'Advice', 'Settings'])
+    expect(layoutOf({ ...FULL, keepalive: [] }).filter((row) => row.heading).map((row) => row.text)).toEqual(['Cache', 'Advice', 'Settings'])
+  })
+
+  test('exactly one blank row stands between two sections, and none before the first or after the last', () => {
+    for (const snap of [FULL, { ...FULL, keepalive: [] }]) {
+      const rows = layoutOf(snap)
+      const headings = rows.flatMap((row, i) => (row.heading ? [i] : []))
+      const blanks = rows.flatMap((row, i) => (row.text === '' ? [i] : []))
+      expect(blanks).toEqual(headings.slice(1).map((i) => i - 1))
+      expect(rows[0]?.heading).toBe(true)
+      expect(rows.at(-1)?.text).not.toBe('')
+    }
+  })
+
+  test('a line of several words longer than the wrap is several rows, none marked, each no wider than the wrap unless one word is', () => {
+    const text = 'Over ten pauses this session, keepalive saved $0.42 net against the other setting, and the learned count covers 5:00.'
+    const rows = layoutOf({ ...EMPTY, cache: [text] }).slice(1)
+    expect(rows.length).toBeGreaterThan(1)
+    expect(rows.some((row) => row.heading)).toBe(false)
+    expect(rows.every((row) => row.text.length <= WRAP || !row.text.trim().includes(' '))).toBe(true)
+    expect(rows.map((row) => row.text.trim()).join(' ')).toBe(text)
+  })
+
+  test('an answer with no section lays out no rows, and its answer is empty', () => {
+    expect(layoutOf(EMPTY)).toEqual([])
+    expect(answerOf(EMPTY)).toBe('')
   })
 })

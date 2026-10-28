@@ -138,7 +138,7 @@ test('every add saves the id counter to the plugin store, so a /clear whose carr
   expect(saved).toEqual([2, 3])
 })
 
-test('a blocking add raises a toast and plays the sound; a non-blocking add raises neither', async ($, on) => {
+test('a blocking add plays the sound and raises no toast; a non-blocking add raises neither', async ($, on) => {
   mock.clock(on)
   mock.store(on)
   on('ui.panes', () => ({ value: [] }))
@@ -156,7 +156,7 @@ test('a blocking add raises a toast and plays the sound; a non-blocking add rais
   expect(toasts).toEqual([])
   expect(runs).toEqual([])
   await $.tool.call({ tool: TOOL, action: 'add', title: 'Pick a db', blocking: true })
-  expect(toasts).toEqual(['Blocking: #2 Pick a db'])
+  expect(toasts).toEqual([])
   expect(runs).toEqual([['afplay', SOUND]])
 })
 
@@ -447,6 +447,25 @@ test('a notice the agent removes before its row is appended is not appended: pre
   expect(notices(rows).length).toBe(0)
   await end($)
   expect(submitted).toEqual([])
+})
+
+test('an append that reopens an item whose notice is still owed neither drops nor repeats it, and the reply sent from the reopened item is delivered after it', async ($, on) => {
+  const { rows } = turnEngine(on)
+  const clock = mock.clock(on)
+  mock.store(on)
+  on('ui.panes', () => ({ value: [] }))
+  await pressedMidTurn($, clock)
+  expect((await $.tool.call({ tool: TOOL, action: 'append', id: 1, text: 'one more thing' })).result).toBe('appended to #1')
+  await $.classic.PostToolBatch({ tool_calls: [] })
+  expect(notices(rows).length).toBe(1)
+  const pane = await $.ui.mount({ plugin: 'human-plugin', surface: 'terminal', component: 'Pane', requestId: 'human-items', props: { title: 'Items for you', isFocused: true, bodyColumns: 80, placement: 'inline', scroll: { offset: 0, bodyRows: 20 }, view: {} } })
+  await pane.input({ key: 'reply-1', text: 'use sqlite' })
+  await clock.advance(5000)
+  await $.classic.PostToolBatch({ tool_calls: [] })
+  const texts = notices(rows).map(textOf)
+  expect(texts.length).toBe(2)
+  expect(texts[0]).toContain('The human marked it done.')
+  expect(texts[1]).toContain('The human replied on #1: use sqlite')
 })
 
 test('a notice queued while a turn starts is dropped when its item is removed before the turn\'s first request', async ($, on) => {
