@@ -72,6 +72,12 @@ test('the steering line and the tool description keep one question to an item', 
   expect(TOOL_SPEC.description).toContain('One item asks one question.')
 })
 
+test('the tool description says any change to a sent item reopens it, and a clear alone does not', () => {
+  expect(TOOL_SPEC.description).toContain('Any change to a sent item (an append, or an update that sets something) reopens it for the human, so change a sent item only when the human has something more to read or answer, and otherwise remove it;')
+  expect(TOOL_SPEC.description).toContain('clearing a field alone (a blank note, done or detail) does not reopen it.')
+  expect(TOOL_SPEC.description).not.toContain('A note on a done item reopens it')
+})
+
 test('the done schema asks for a few words, at most 24 columns', () => {
   expect(TOOL_SPEC.inputSchema.properties.done.description).toContain('a few words, at most 24 columns')
 })
