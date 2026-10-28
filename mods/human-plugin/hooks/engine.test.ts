@@ -160,6 +160,30 @@ test('a blocking add plays the sound and raises no toast; a non-blocking add rai
   expect(runs).toEqual([['afplay', SOUND]])
 })
 
+test('an update that makes an open item blocking plays the sound once; an unmark, a no-op and a flip on a sent item play nothing', async ($, on) => {
+  on('prompt.submit', (_$, e) => ({ text: e.text }))
+  const clock = mock.clock(on)
+  mock.store(on)
+  on('ui.panes', () => ({ value: [] }))
+  const runs: string[][] = []
+  on('process.run', (_$, e) => {
+    runs.push([...e.argv])
+    return RAN
+  })
+  await $.tool.call({ tool: TOOL, action: 'add', title: 'Pick a db' })
+  await $.tool.call({ tool: TOOL, action: 'update', id: 1, blocking: true })
+  expect(runs).toEqual([['afplay', SOUND]])
+  await $.tool.call({ tool: TOOL, action: 'update', id: 1, blocking: true })
+  await $.tool.call({ tool: TOOL, action: 'update', id: 1, blocking: false })
+  expect(runs).toEqual([['afplay', SOUND]])
+  const ui = await $.ui.mount({ plugin: 'human-plugin', surface: 'terminal', component: 'AbovePrompt', props: BAND_PROPS })
+  await ui.press({ key: 'done-1' })
+  await clock.advance(5000)
+  expect(await $.tool.call({ tool: TOOL, action: 'list' })).toMatchObject({ result: '#1 non-blocking, done-pending: Pick a db\n  you: pressed done' })
+  await $.tool.call({ tool: TOOL, action: 'update', id: 1, blocking: true })
+  expect(runs).toEqual([['afplay', SOUND]])
+})
+
 test('a new item is unread until its title is pressed or the pane opens', async ($, on) => {
   mock.clock(on)
   mock.store(on)

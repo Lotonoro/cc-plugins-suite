@@ -136,8 +136,8 @@ const handlers = ($: EngineInterface, windowMs: number): Handlers => ({
   copy: (text, surface) => inBackground($, copyText($, text, surface)),
 })
 
-// The tool's answer. A blocking add plays a sound; the reply stays one short line. While the list is being
-// rebuilt from a transcript the call waits for it, so it never numbers or changes items the rebuild has not filled in.
+// The tool's answer. A blocking add, or an update that marks an open item blocking, plays a sound; the reply stays one short line.
+// While the list is being rebuilt from a transcript the call waits for it, so it never numbers or changes items the rebuild has not filled in.
 const answer = async ($: EngineInterface, e: unknown) => {
   const parsed = parseInput(e)
   if (!parsed.ok) return { deny: `human_items: ${parsed.reason}` }
@@ -154,7 +154,7 @@ const answer = async ($: EngineInterface, e: unknown) => {
   if ('deny' in out) return { deny: out.deny }
   if (out.added !== null) await saveCounter($, out.store.next)
   await followShown($, out)
-  if (out.added?.blocking) {
+  if (out.added?.blocking || out.changed?.promoted) {
     inBackground($, $.process.run(['afplay', SOUND]).then(r => $.ui.log(`human-plugin: sound ${SOUND}, afplay exit ${r.exitCode}`, { to: 'debug' })))
   }
   return { result: out.reply }

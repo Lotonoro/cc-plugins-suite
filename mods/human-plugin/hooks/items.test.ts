@@ -127,7 +127,7 @@ test('an append, and an update that sets a title, detail, blocking, options, a n
     const out = changed(sent, raw)
     expect(out.store.items[0]).toMatchObject({ state: 'open', unread: true, pressedAt: null, answer: null, replied: false })
     expect(out.reply).toBe(raw.action === 'append' ? 'appended to #1' : 'updated #1')
-    expect(out.changed).toEqual({ id: 1, reopened: true })
+    expect(out.changed).toEqual({ id: 1, reopened: true, promoted: false })
   }
 })
 
@@ -154,11 +154,11 @@ test('a whitespace-only edit beside a clear does not make the change set somethi
   const noted = changed(sent, { action: 'update', detail: 'postgres ', note: '' })
   expect(noted.store.items[0]).toMatchObject({ state: 'done-pending', note: null, answer: 'Use sqlite' })
   expect(noted.reply).toBe('updated #1')
-  expect(noted.changed).toEqual({ id: 1, reopened: false })
+  expect(noted.changed).toEqual({ id: 1, reopened: false, promoted: false })
   const detailed = changed(sent, { action: 'update', detail: '', note: 'recheck ' })
   expect(detailed.store.items[0]).toMatchObject({ state: 'done-pending', detail: '', answer: 'Use sqlite' })
   expect(detailed.reply).toBe('updated #1')
-  expect(detailed.changed).toEqual({ id: 1, reopened: false })
+  expect(detailed.changed).toEqual({ id: 1, reopened: false, promoted: false })
 })
 
 test('a field cleared alone applies without reopening a sent item; a clear with a change that sets something reopens it', () => {
@@ -172,18 +172,18 @@ test('a field cleared alone applies without reopening a sent item; a clear with 
     const out = changed(sent, { action: 'update', ...raw })
     expect(out.store.items[0]).toMatchObject({ state: 'done-pending', answer: 'Use sqlite', unread: false, [field]: value })
     expect(out.reply).toBe('updated #1')
-    expect(out.changed).toEqual({ id: 1, reopened: false })
+    expect(out.changed).toEqual({ id: 1, reopened: false, promoted: false })
   }
   const both = changed(sent, { action: 'update', note: '', title: 'Pick a cache' })
   expect(both.store.items[0]).toMatchObject({ state: 'open', note: null, unread: true, answer: null })
-  expect(both.changed).toEqual({ id: 1, reopened: true })
+  expect(both.changed).toEqual({ id: 1, reopened: true, promoted: false })
 })
 
 test('a whitespace-only detail is a clear: it applies to a sent item without reopening it, and the list shows no stray line for it', () => {
   const sent = sentList({ detail: 'postgres' })
   const cleared = changed(sent, { action: 'update', detail: '   ' })
   expect(cleared.reply).toBe('updated #1')
-  expect(cleared.changed).toEqual({ id: 1, reopened: false })
+  expect(cleared.changed).toEqual({ id: 1, reopened: false, promoted: false })
   expect(cleared.store.items[0]).toMatchObject({ state: 'done-pending', answer: 'Use sqlite', replied: true, detail: '' })
   expect(listText(cleared.store.items)).toBe('#1 non-blocking, done-pending: Pick a db\n  you: Use sqlite')
   expect(changed(cleared.store, { action: 'append', text: 'Postgres is simpler.' }).store.items[0]).toMatchObject({
@@ -195,7 +195,7 @@ test('a whitespace-only detail is a clear: it applies to a sent item without reo
 test('a whitespace-only note is a clear too: it applies to a sent item without reopening it, and the list shows no note for it', () => {
   const noted = changed(sentList({ note: 'recheck' }), { action: 'update', note: '   ' })
   expect(noted.reply).toBe('updated #1')
-  expect(noted.changed).toEqual({ id: 1, reopened: false })
+  expect(noted.changed).toEqual({ id: 1, reopened: false, promoted: false })
   expect(noted.store.items[0]).toMatchObject({ state: 'done-pending', answer: 'Use sqlite', note: null })
   expect(listText(noted.store.items)).toBe('#1 non-blocking, done-pending: Pick a db\n  you: Use sqlite')
 })
@@ -205,7 +205,7 @@ test('a change on an item in its undo window applies its fields and leaves the w
   for (const raw of [{ action: 'update', note: 'recheck', title: 'Pick a cache' }, { action: 'append', text: 'more' }]) {
     const out = changed(waiting, raw)
     expect(out.store.items[0]).toMatchObject({ state: 'done-waiting', pressedAt: 500, answer: 'Use sqlite', replied: true })
-    expect(out.changed).toEqual({ id: 1, reopened: false })
+    expect(out.changed).toEqual({ id: 1, reopened: false, promoted: false })
   }
   expect(changed(waiting, { action: 'update', note: 'recheck' }).store.items[0]?.note).toBe('recheck')
   expect(changed(waiting, { action: 'append', text: 'more' }).store.items[0]?.windowTurns).toEqual([{ speaker: 'agent', words: 'more' }])
@@ -218,13 +218,25 @@ test('a change to an open item leaves its unread mark as it was', () => {
   expect(changed(store, { action: 'append', text: 'more' }).store.items[0]?.unread).toBe(true)
 })
 
-test('the outcome of a change names the item and says whether it reopened; an add, a list and a remove name none', () => {
+test('the outcome of a change names the item and says whether it reopened or promoted it; an add, a list and a remove name none', () => {
   const { store } = added(EMPTY, 'Pick a db')
-  expect(changed(store, { action: 'update', title: 'Pick a cache' }).changed).toEqual({ id: 1, reopened: false })
-  expect(changed(sentList(), { action: 'append', text: 'more' }).changed).toEqual({ id: 1, reopened: true })
+  expect(changed(store, { action: 'update', title: 'Pick a cache' }).changed).toEqual({ id: 1, reopened: false, promoted: false })
+  expect(changed(sentList(), { action: 'append', text: 'more' }).changed).toEqual({ id: 1, reopened: true, promoted: false })
   expect(added(EMPTY, 'a').changed).toBe(null)
   expect(act(store, input({ action: 'list' }), MAIN)).toMatchObject({ changed: null })
   expect(changed(store, { action: 'remove' })).toMatchObject({ changed: null })
+})
+
+test('an update that makes an open item blocking says it promoted it; an unmark, a change to an item already blocking, a no-op and a change to an item not open do not', () => {
+  const { store } = added(EMPTY, 'Pick a db')
+  const promoted = changed(store, { action: 'update', blocking: true })
+  expect(promoted.store.items[0]).toMatchObject({ blocking: true, state: 'open' })
+  expect(promoted.changed).toEqual({ id: 1, reopened: false, promoted: true })
+  expect(changed(promoted.store, { action: 'update', blocking: false }).changed).toEqual({ id: 1, reopened: false, promoted: false })
+  expect(changed(promoted.store, { action: 'update', blocking: true }).changed).toBe(null)
+  expect(changed(promoted.store, { action: 'update', blocking: true, title: 'Pick a cache' }).changed).toEqual({ id: 1, reopened: false, promoted: false })
+  expect(changed(sentList(), { action: 'update', blocking: true }).changed).toEqual({ id: 1, reopened: true, promoted: false })
+  expect(changed(sentList({ state: 'done-waiting', pressedAt: 500 }), { action: 'update', blocking: true }).changed).toEqual({ id: 1, reopened: false, promoted: false })
 })
 
 test('update and remove of an unknown id are denied', () => {
@@ -388,7 +400,7 @@ test('an option description edited only by spaces is no change, and a real descr
   const real = changed(sent, { action: 'update', options: [{ label: 'Use sqlite', description: 'Simple and cheap ' }, { label: 'Use postgres' }] })
   expect(real.store.items[0]).toMatchObject({ state: 'open', unread: true, answer: null })
   expect(real.store.items[0]?.options[0]?.description).toBe('Simple and cheap ')
-  expect(real.changed).toEqual({ id: 1, reopened: true })
+  expect(real.changed).toEqual({ id: 1, reopened: true, promoted: false })
 })
 
 test('the pane\'s item is the selected one, with none selected the first; a selection whose item is gone names none', () => {
@@ -596,7 +608,7 @@ test('an append in a reply\'s undo window is an agent turn after the reply: the 
   const waiting = reply(added(EMPTY, 'Pick a db').store, 1, 1000, 'Use sqlite')
   const appended = changed(waiting, { action: 'append', text: 'It needs a file.' })
   expect(appended.store.items[0]).toMatchObject({ state: 'done-waiting', pressedAt: 1000, detail: '', windowTurns: [{ speaker: 'agent', words: 'It needs a file.' }] })
-  expect(appended.changed).toEqual({ id: 1, reopened: false })
+  expect(appended.changed).toEqual({ id: 1, reopened: false, promoted: false })
   expect(turnsOf(expire(appended.store, 1, 1000).store.items[0] as Item)).toEqual([
     { speaker: 'human', words: 'Use sqlite' },
     { speaker: 'agent', words: 'It needs a file.' },
@@ -607,7 +619,7 @@ test('an update in a reply\'s undo window changes the item and the window runs o
   const waiting = reply(added(EMPTY, 'Pick a db').store, 1, 1000, 'Use sqlite')
   const updated = changed(waiting, { action: 'update', detail: 'Postgres or sqlite?' })
   expect(updated.store.items[0]).toMatchObject({ state: 'done-waiting', pressedAt: 1000, detail: 'Postgres or sqlite?', windowTurns: [] })
-  expect(updated.changed).toEqual({ id: 1, reopened: false })
+  expect(updated.changed).toEqual({ id: 1, reopened: false, promoted: false })
   expect(listText(updated.store.items)).toBe('#1 non-blocking, done-waiting: Pick a db - Postgres or sqlite?\n  you: Use sqlite')
   const out = expire(updated.store, 1, 1000)
   expect(out.sent).toMatchObject({ state: 'done-pending', answer: 'Use sqlite', replied: true })

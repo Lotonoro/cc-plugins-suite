@@ -216,11 +216,12 @@ export const parseInput = (raw: unknown): Parsed => {
 // Who asks: null for the main agent, else the subagent's id.
 export type Ctx = { agent: string | null; now: number }
 
-// `changed` names the item an append or an update changed, and whether that change reopened it (null for any other call, and for an
-// update that changed nothing): the pane, and any later consumer, learn of a reopen here and not by diffing lists.
+// `changed` names the item an append or an update changed, whether that change reopened it, and whether it promoted it, marking an
+// open item blocking (null for any other call, and for an update that changed nothing): the pane, the chime and any later consumer
+// learn of a reopen or a promotion here and not by diffing lists.
 export type Outcome =
   | { deny: string }
-  | { store: Store; reply: string; added: Item | null; changed: { id: number; reopened: boolean } | null }
+  | { store: Store; reply: string; added: Item | null; changed: { id: number; reopened: boolean; promoted: boolean } | null }
 
 // The fields an agent's change writes, each as the text it compares by: the detail, the note and each option's description by their
 // trimmed text, so a whitespace-only edit is no change, and a field a change empties as ''. `unchanged` is every field equal. `asks` is a
@@ -245,7 +246,8 @@ const change = (store: Store, target: Item, after: Item, reply: string): Outcome
   const marked = asked && target.state === 'done-waiting' ? { ...after, windowChanged: true } : after
   const written = { ...store, items: store.items.map(it => (it.id === target.id ? marked : it)) }
   const out = asked ? reopen(written, target.id) : { store: written, reopened: false }
-  return { store: out.store, reply, added: null, changed: { id: target.id, reopened: out.reopened } }
+  const promoted = target.state === 'open' && !target.blocking && after.blocking
+  return { store: out.store, reply, added: null, changed: { id: target.id, reopened: out.reopened, promoted } }
 }
 
 // An agent addition to an item the human has answered is a turn after the answer, not a change to the brief. A sent answer is archived first, so
@@ -259,7 +261,7 @@ const appendTurn = (store: Store, target: Item, text: string): Outcome => {
     store: { ...store, items: store.items.map(it => (it.id === target.id ? after : it)) },
     reply: `appended to #${target.id}`,
     added: null,
-    changed: { id: target.id, reopened: target.state === 'done-pending' },
+    changed: { id: target.id, reopened: target.state === 'done-pending', promoted: false },
   }
 }
 
