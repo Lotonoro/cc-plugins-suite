@@ -285,7 +285,7 @@ describe('adviceLine and adviceOf: the one sentence, in the unit shown', () => {
 })
 
 describe('ratesOfView: the rates a known cache pays, and none for a model with no price', () => {
-  const view = { kind: 'known' as const, touchMs: 0, ttlMs: 300 * S, ttlLabel: '5m' as const, promptTokens: 1000, model: 'claude-opus-5-5', speed: 'standard' }
+  const view = { kind: 'known' as const, touchMs: 0, ttlMs: 300 * S, ttlLabel: '5m' as const, promptTokens: 1000, outputTokens: 0, model: 'claude-opus-5-5', speed: 'standard' }
 
   test('a priced model gives its read and write rates', () => {
     const money = { unit: 'dollars' as const, list: PRICES, model: 'claude-opus-5-5', speed: 'standard', ttl: '5m' as const }

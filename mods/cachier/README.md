@@ -38,7 +38,7 @@ click on the time while it is open closes it, as Esc or the person's close does.
 units:
 
 - the cache's warmth: `Prompt cache warm, 3:12 left (5-minute cache)`, or, once the cache has expired or been reset, the
-  figure to rebuild it;
+  figure to rebuild it (the context plus the last reply's output, which the next prompt writes with it);
 - keepalive's state; while it is off or paused, what the pie's colours warn of; while paused, why, and that it resumes
   after your next prompt;
 - what one refresh costs, or while keepalive is off, what one refresh would cost at the lead and count a click on the pie
@@ -196,7 +196,8 @@ settings.json; `FORCE_PROMPT_CACHING_5M` and `CLAUDE_CODE_PROMPT_CACHE_TTL` over
 session picks up the change, so cachier counts a switch as taking effect in sessions started after you set it.
 
 With `--debug` or `--debug-file`, each refresh, lead raise, miss and long pause writes a `cachier` line to
-the debug log.
+the debug log, and each model switch writes a `cachier switch` line holding the engine's `prompt_cache_warm` flag beside
+cachier's own reading of the cache.
 
 Cachier keeps one record per pause your prompt ends, in its plugin store under your config directory: when the pause
 started, how long it ran, the local hour and weekday, the cache TTL, what a rewrite costs over a refresh, and the size of
@@ -209,6 +210,9 @@ keepalive refresh is a model request.
 
 - A miss is a reply that rewrote at least half its context while reading at most half the previous one. The half is a
   chosen threshold, not a measured one.
+- A model switch counts as a reset only when cachier read the cache as warm at the switch. Otherwise (expired, no
+  cache, cleared, an unread view or unknown TTL) the next miss is classified by its gap: a lapse past the TTL, else
+  unexplained. A reset already standing still makes the next miss a reset miss.
 - Pause gaps run between replies' logged times, so they include the next reply's duration, usually a few seconds.
 - Dollars are priced when each figure is counted, so a price change mid-session leaves earlier figures at the old
   price.
