@@ -122,8 +122,8 @@ export async function followShown($: EngineInterface, out: Exclude<Outcome, { de
   else if (out.changed?.id === shown) inBackground($, switchPane($, shown, items))
 }
 
-// After a window ends and sends `id`: the pane moves on only when it shows that item. A window whose end reopened the item (an agent turn it took:
-// done.ts, expire) leaves the item open, so the pane stays on it and re-asks its rows, as a change does.
+// After a window ends and sends `id`: the pane moves on only when it shows that item. A window whose end reopened the item (an agent turn
+// or an update it took: done.ts, expire) leaves the item open, so the pane stays on it and re-asks its rows, as a change does.
 export async function followSent($: EngineInterface, items: readonly Item[], id: number): Promise<void> {
   const shown = await shownId($)
   if (!paneOpen || shown !== id) return
