@@ -283,7 +283,7 @@ const turnBody = (t: Table, h: Handlers, id: string, turn: Turn, folded: boolean
 }
 
 // The thread as the pane draws it: each turn a keyed row, the last four whole and each older one as one dim line, so every turn stays listed and
-// the reply field stays near the newest. A sent answer still awaiting the agent is its newest human turn (turnsOf).
+// the reply field stays near the newest. The answer, while its undo window runs or once sent and awaiting the agent, is the newest human turn (turnsOf).
 const threadOf = (t: Table, h: Handlers, item: Item): RenderElement[] => {
   const turns = turnsOf(item)
   return turns.map((turn, k) => {

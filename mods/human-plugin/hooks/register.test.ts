@@ -1200,7 +1200,8 @@ test('an append that reopens the sent item the pane shows re-asks its rows with 
   const two = (values.list as { items: Item[] }).items.find(it => it.id === 2) as Item
   expect(two).toMatchObject({ state: 'open', unread: false })
   expect(opened).toEqual([{ id: 'human-items', rows: paneRows(two) }])
-  expect(opened[0]?.rows).toBe(paneRows({ ...two, state: 'done-waiting' }) + 1)
+  // The reply field's row and a bare press's 'pressed done' turn are one row each, so the open item and its done-waiting view ask for the same rows.
+  expect(opened[0]?.rows).toBe(paneRows({ ...two, state: 'done-waiting' }))
   expect(values.selection).toBe(2)
 })
 

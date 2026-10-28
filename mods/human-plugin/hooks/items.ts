@@ -1,5 +1,5 @@
 import type { Item, ItemOption, ItemState, Store, Turn } from '../types'
-import { answered, archive, labelOf, reopen, turnsOf } from './done'
+import { answered, archive, cancelWindow, labelOf, reopen, turnsOf, withSection } from './done'
 
 export const PLUGIN = 'human-plugin'
 export const TOOL = 'mcp__human-plugin__human_items'
@@ -40,14 +40,13 @@ export const normalizeItem = (raw: unknown): Item | null => {
   if (typeof r.id !== 'number' || !Number.isInteger(r.id) || r.id < 1 || typeof r.title !== 'string') return null
   const pressedAt = typeof r.pressedAt === 'number' && Number.isFinite(r.pressedAt) ? r.pressedAt : null
   const stored = STATES.find(s => s === r.state) ?? 'open'
-  return {
+  const item: Item = {
     id: r.id,
     title: r.title,
     detail: typeof r.detail === 'string' ? detailOf(r.detail) : '',
     blocking: r.blocking === true,
     createdAt: typeof r.createdAt === 'number' && Number.isFinite(r.createdAt) ? r.createdAt : 0,
-    // An undo window with no press time cannot end, so the item was never pressed: it is open.
-    state: stored === 'done-waiting' && pressedAt === null ? 'open' : stored,
+    state: stored,
     pressedAt,
     note: typeof r.note === 'string' ? noteOf(r.note) : null,
     agent: typeof r.agent === 'string' ? r.agent : null,
@@ -60,6 +59,9 @@ export const normalizeItem = (raw: unknown): Item | null => {
     thread: turnsStored(r.thread),
     windowTurns: turnsStored(r.windowTurns),
   }
+  // An undo window with no press time cannot end, so the item was never pressed: it is open, and its window's turns are given to it as a
+  // cancelled window gives them (cancelWindow).
+  return stored === 'done-waiting' && pressedAt === null ? cancelWindow(item) : item
 }
 
 // The whole list as stored: its items normalized (the garbage ones dropped), and the id counter kept at least one above the highest
@@ -285,7 +287,7 @@ export const act = (store: Store, input: ToolInput, ctx: Ctx): Outcome => {
   if (target === undefined) return { deny: `no item #${input.id}` }
   if (input.action === 'append') {
     if (answered(target)) return appendTurn(store, target, input.text)
-    const detail = target.detail === '' ? input.text : `${target.detail}\n\n${input.text}`
+    const detail = withSection(target.detail, input.text)
     return change(store, target, { ...target, detail }, `appended to #${target.id}`)
   }
   if (input.action === 'remove') {
@@ -344,10 +346,14 @@ export const mergeRestored = (live: Store, replayed: Store, known: readonly numb
   return { items: [...replayed.items, ...added], next: Math.max(live.next, replayed.next) }
 }
 
-// One turn as `list` prints it: labelled with who spoke, and every line of it indented, so no line of a turn reads as an item's header.
-const turnLines = (turn: Turn): string[] => {
-  const [first = '', ...rest] = turn.words.split('\n')
-  return [`  ${labelOf(turn)}: ${first}`, ...rest.map(line => `  ${line}`)]
+// A line break as the tool row's `^` takes one: a carriage return, a line feed, a Unicode line or paragraph separator, or a CRLF pair as one.
+const LINE_BREAK = /\r\n|[\r\n\u2028\u2029]/
+
+// An entry's text as `list` prints it: its first line as it is, and every later line indented, so no later line of an entry reads as an item's
+// header in the tool row's count (ui.ts). Each break is printed as a line feed.
+const entryLines = (text: string): string[] => {
+  const [first = '', ...rest] = text.split(LINE_BREAK)
+  return [first, ...rest.map(line => `  ${line}`)]
 }
 
 export const listText = (items: readonly Item[]): string => {
@@ -357,7 +363,8 @@ export const listText = (items: readonly Item[]): string => {
       const detail = it.detail === '' ? '' : ` - ${it.detail}`
       const note = it.note === null ? '' : ` (note: ${it.note})`
       const header = `#${it.id} ${it.blocking ? 'blocking' : 'non-blocking'}, ${it.state}: ${it.title}${detail}${note}`
-      return [header, ...turnsOf(it).flatMap(turnLines)].join('\n')
+      // Each turn is labelled with who spoke, and its lines are indented as the header's later lines are.
+      return [...entryLines(header), ...turnsOf(it).flatMap(turn => entryLines(`  ${labelOf(turn)}: ${turn.words}`))].join('\n')
     })
     .join('\n')
 }

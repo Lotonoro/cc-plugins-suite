@@ -8,7 +8,7 @@ export type ItemOption = { label: string; description: string; recommended: bool
 // `done-waiting` is the undo window after a done press: nothing is sent yet. `done-pending` is sent, until the agent acts.
 export type ItemState = 'open' | 'done-waiting' | 'done-pending'
 
-// One turn of an item's exchange: who spoke, and the words. A human turn is an answer the human sent (done.ts derives it).
+// One turn of an item's exchange: who spoke, and the words. A human turn is the answer the human pressed or sent (done.ts derives it).
 export type Turn = { speaker: 'human' | 'agent'; words: string }
 
 export type Item = {
@@ -39,7 +39,7 @@ export type Item = {
   // addition after it.
   thread: Turn[]
   // The agent's additions made while the item's answer is in its undo window. They follow that answer, which joins the thread when the
-  // window ends; a cancelled window moves them into the thread (done.ts).
+  // window ends; a cancelled window gives them to the brief, or to the thread after a human turn (done.ts).
   windowTurns: Turn[]
 }
 

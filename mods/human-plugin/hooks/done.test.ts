@@ -1,7 +1,7 @@
 import { expect, test } from 'claude-code/testing'
 import { doneNotice, expire, pointerText, press, reopen, reply, turnsOf } from './done'
 import { act, parseInput } from './items'
-import type { Item, Store } from '../types'
+import type { Item, Store, Turn } from '../types'
 
 const item: Item = {
   id: 3,
@@ -230,9 +230,17 @@ test('a sent answer reads as the human turn of its kind: a reply\'s words, an op
   expect(turnsOf(sentWith({ answer: null }))).toEqual([{ speaker: 'human', words: 'pressed done' }])
 })
 
-test('an answer still in its undo window is no turn yet, and an item with no answer has none', () => {
+test('an answer in its undo window is the newest human turn while the window runs, a bare press\'s included; an item with no press has none', () => {
   expect(turnsOf(item)).toEqual([])
-  expect(turnsOf(press(store, 3, 1000, 'Use postgres').items[0] as Item)).toEqual([])
+  expect(turnsOf(press(store, 3, 1000, 'Use postgres').items[0] as Item)).toEqual([{ speaker: 'human', words: 'Use postgres' }])
+  expect(turnsOf(press(store, 3, 1000, null).items[0] as Item)).toEqual([{ speaker: 'human', words: 'pressed done' }])
+})
+
+test('while a reply\'s window runs, its turns read as the thread, then the reply, then the agent turns the window took', () => {
+  const agentTurn = { speaker: 'agent' as const, words: 'The sqlite file is in data/.' }
+  const earlier = { speaker: 'human' as const, words: 'Use postgres' }
+  const waiting = { ...item, state: 'done-waiting' as const, pressedAt: 1000, answer: 'Use sqlite', replied: true, thread: [earlier], windowTurns: [agentTurn] }
+  expect(turnsOf(waiting)).toEqual([earlier, { speaker: 'human', words: 'Use sqlite' }, agentTurn])
 })
 
 test('reopen archives the sent answer as the thread\'s human turn before it clears the answer: the item is open and unread', () => {
@@ -256,10 +264,32 @@ test('the words of each kind of answer stay on the item after a reopen: an optio
   }
 })
 
-test('an undo press on a window the agent added a turn to keeps that turn on the item, which is open again', () => {
+test('an undo press on a window the agent added a turn to folds that turn into the brief, as an append would add it: with no human turn in the thread, the thread gains nothing', () => {
   const agentTurn = { speaker: 'agent' as const, words: 'The sqlite file is in data/.' }
   const waiting: Store = { items: [{ ...item, state: 'done-waiting', pressedAt: 1000, answer: 'Use sqlite', replied: true, windowTurns: [agentTurn] }], next: 4 }
-  expect(press(waiting, 3, 2000, null).items[0]).toMatchObject({ state: 'open', answer: null, replied: false, thread: [agentTurn], windowTurns: [] })
+  expect(press(waiting, 3, 2000, null).items[0]).toMatchObject({
+    state: 'open', answer: null, replied: false, detail: 'postgres or sqlite\n\nThe sqlite file is in data/.', thread: [], windowTurns: [],
+  })
+})
+
+test('after an undo the item has no human turn, so the window\'s turn and the next append both grow the brief, in order', () => {
+  const waiting = applied(press(store, 3, 1000, 'Use sqlite'), { action: 'append', id: 3, text: 'It needs a file.' })
+  const grown = applied(press(waiting, 3, 2000, null), { action: 'append', id: 3, text: 'Two files.' })
+  expect(grown.items[0]).toMatchObject({ state: 'open', detail: 'postgres or sqlite\n\nIt needs a file.\n\nTwo files.', thread: [] })
+})
+
+test('an undo into an empty brief sets it to the window\'s turn alone, as an append onto an empty brief does', () => {
+  const blank: Store = { items: [{ ...item, detail: '' }], next: 4 }
+  const waiting = applied(press(blank, 3, 1000, 'Use sqlite'), { action: 'append', id: 3, text: 'It needs a file.' })
+  expect(press(waiting, 3, 2000, null).items[0]).toMatchObject({ detail: 'It needs a file.', thread: [] })
+})
+
+test('an undo gives the window\'s turns to the brief while the thread holds no human turn, and to the thread after its last turn once it holds one', () => {
+  const agentTurn = { speaker: 'agent' as const, words: 'The sqlite file is in data/.' }
+  const earlier = { speaker: 'human' as const, words: 'Use postgres' }
+  const windowed = (thread: Turn[]): Store => ({ items: [{ ...item, thread, state: 'done-waiting', pressedAt: 1000, answer: 'Use sqlite', replied: true, windowTurns: [agentTurn] }], next: 4 })
+  expect(press(windowed([]), 3, 2000, null).items[0]).toMatchObject({ detail: 'postgres or sqlite\n\nThe sqlite file is in data/.', thread: [] })
+  expect(press(windowed([earlier]), 3, 2000, null).items[0]).toMatchObject({ detail: 'postgres or sqlite', thread: [earlier, agentTurn] })
 })
 
 test('a window the agent added a turn to ends by sending the reply and reopening the item: the reply first, the agent\'s turn after, and the notice carries the reply', () => {

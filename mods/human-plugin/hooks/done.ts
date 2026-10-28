@@ -50,9 +50,10 @@ const BARE_DONE = 'pressed done'
 // The human's turn for the answer an item carries: the words the press or the reply sent, or the phrase of a bare done.
 const humanTurn = (item: Item): Turn => ({ speaker: 'human', words: item.answer ?? BARE_DONE })
 
-// The item's exchange as it reads: its thread, then the sent answer while it awaits the agent (the newest human turn), then the agent's turns
-// its undo window took (none once sent, since the window's end reopens the item with them: expire). The list, the pane and `/asks` read it here.
-export const turnsOf = (item: Item): Turn[] => [...item.thread, ...(item.state === 'done-pending' ? [humanTurn(item)] : []), ...item.windowTurns]
+// The item's exchange as it reads: its thread, then the human's answer while its undo window runs or once it is sent and awaits the agent (the
+// newest human turn), then the agent's turns its window took (none once sent, since the window's end reopens the item with them: expire). The
+// list, the pane and `/asks` read it here.
+export const turnsOf = (item: Item): Turn[] => [...item.thread, ...(item.state === 'open' ? [] : [humanTurn(item)]), ...item.windowTurns]
 
 // The label a turn is listed and drawn under: who spoke.
 export const labelOf = (turn: Turn): string => (turn.speaker === 'human' ? 'you' : 'agent')
@@ -60,6 +61,18 @@ export const labelOf = (turn: Turn): string => (turn.speaker === 'human' ? 'you'
 // Whether the human has answered the item, so an agent addition is a turn and not a change to the brief: a human turn is in the thread, or an
 // answer is out (in its undo window, or sent).
 export const answered = (item: Item): boolean => item.state !== 'open' || item.thread.some(turn => turn.speaker === 'human')
+
+// The brief with an agent's text added as a section at its end, after a blank line; the text alone when the brief is empty.
+export const withSection = (detail: string, text: string): string => (detail === '' ? text : `${detail}\n\n${text}`)
+
+// An item whose undo window is cancelled, or was never pressed (items.ts's normalizer): the answer is gone, so the agent's turns the window took
+// are no longer waiting on it. With a human turn in the thread they follow it there; with none, each is a section of the brief, as an append made
+// while no answer is out would add it.
+export const cancelWindow = (item: Item): Item => {
+  const open: Item = { ...item, state: 'open', pressedAt: null, answer: null, replied: false, windowTurns: [] }
+  if (answered(open)) return { ...open, thread: [...open.thread, ...item.windowTurns] }
+  return { ...open, detail: item.windowTurns.reduce((detail, turn) => withSection(detail, turn.words), open.detail) }
+}
 
 // A sent item's answer becomes the thread's next human turn, the agent's turns its window took follow it, and the item is open again, unread.
 export const archive = (item: Item): Item => ({
@@ -75,13 +88,11 @@ export const archive = (item: Item): Item => ({
 
 // A done press, or the press of an option or of a labelled to-do's ✓ (`answer`, its label). Open starts the undo window (nothing is sent yet) with that
 // answer. Inside the window only the undo press (`answer` null) cancels it: an answer pressed there is a button drawn while the item
-// was open, and changes nothing. The cancelled window's agent turns stay on the item, in its thread. A sent item is left as it is.
+// was open, and changes nothing. A cancelled window's agent turns are given to the item (cancelWindow). A sent item is left as it is.
 export const press = (store: Store, id: number, now: number, answer: string | null): Store =>
   mapItem(store, id, it => {
     if (it.state === 'open') return { ...it, state: 'done-waiting', pressedAt: now, answer }
-    if (it.state === 'done-waiting' && answer === null) {
-      return { ...it, state: 'open', pressedAt: null, answer: null, replied: false, thread: [...it.thread, ...it.windowTurns], windowTurns: [] }
-    }
+    if (it.state === 'done-waiting' && answer === null) return cancelWindow(it)
     return it
   })
 

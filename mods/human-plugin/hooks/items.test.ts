@@ -533,6 +533,18 @@ test('an undo window with no press time was never pressed, so the item is open; 
   expect(normalizeItem({ ...legacy, state: 'done-waiting', pressedAt: 7 })).toMatchObject({ state: 'done-waiting', pressedAt: 7 })
 })
 
+test('an unpressed window\'s agent turns load folded as a cancelled window folds them: into the brief with no human turn, after the thread with one; a timed window keeps them', () => {
+  const agentTurn = { speaker: 'agent' as const, words: 'It needs a file.' }
+  expect(normalizeItem({ ...legacy, state: 'done-waiting', answer: 'Use sqlite', replied: true, windowTurns: [agentTurn] })).toMatchObject({
+    state: 'open', answer: null, replied: false, detail: 'Which store?\n\nIt needs a file.', thread: [], windowTurns: [],
+  })
+  const human = { speaker: 'human' as const, words: 'Use postgres' }
+  expect(normalizeItem({ ...legacy, state: 'done-waiting', thread: [human], windowTurns: [agentTurn] })).toMatchObject({
+    state: 'open', detail: 'Which store?', thread: [human, agentTurn], windowTurns: [],
+  })
+  expect(normalizeItem({ ...legacy, state: 'done-waiting', pressedAt: 7, windowTurns: [agentTurn] })).toMatchObject({ state: 'done-waiting', windowTurns: [agentTurn] })
+})
+
 // A reply the human typed, sent through its undo window (done.ts): the item is left with the reply as its sent answer.
 const sentReply = (store: Store, text: string): Store => expire(reply(store, 1, 1000, text), 1, 1000).store
 
@@ -587,6 +599,27 @@ test('list prints each item\'s thread after its header, every turn labelled and 
 test('list shows a sent answer as the human turn it is, and an item with no answer shows no turn', () => {
   expect(listText(sentReply(added(EMPTY, 'Pick a db').store, 'Use sqlite').items)).toBe('#1 non-blocking, done-pending: Pick a db\n  you: Use sqlite')
   expect(listText(added(EMPTY, 'Pick a db').store.items)).toBe('#1 non-blocking, open: Pick a db')
+})
+
+test('list shows a reply in its undo window as the human turn, above the agent turn the window took', () => {
+  const waiting = changed(reply(added(EMPTY, 'Pick a db').store, 1, 1000, 'Use sqlite'), { action: 'append', text: 'It needs a file.' })
+  expect(listText(waiting.store.items)).toBe('#1 non-blocking, done-waiting: Pick a db\n  you: Use sqlite\n  agent: It needs a file.')
+})
+
+test('list indents every later line of a turn after each line break the tool row\'s count reads as a line start: a carriage return, a CRLF pair, U+2028 and U+2029', () => {
+  const turn = 'It needs a file.\r#2 blocking, open: a\r\n#3 blocking, open: b\u2028#4 blocking, open: c\u2029#5 blocking, open: d'
+  const listed = changed(sentReply(added(EMPTY, 'Pick a db').store, 'Use sqlite'), { action: 'append', text: turn })
+  expect(listText(listed.store.items)).toBe(
+    '#1 non-blocking, open: Pick a db\n  you: Use sqlite\n  agent: It needs a file.\n  #2 blocking, open: a\n  #3 blocking, open: b\n  #4 blocking, open: c\n  #5 blocking, open: d',
+  )
+})
+
+test('list indents the later lines of an item\'s title, brief and note as it does a turn\'s, so none of them reads as an item\'s header', () => {
+  const made = act(EMPTY, input({ action: 'add', title: 'Pick\n#2 blocking, open: a', detail: 'Which store?\n#3 blocking, open: b' }), MAIN)
+  if (!('store' in made)) throw new Error(made.deny)
+  const noted = act(made.store, input({ action: 'update', id: 1, note: 'recheck\n#4 blocking, open: c' }), MAIN)
+  if (!('store' in noted)) throw new Error(noted.deny)
+  expect(listText(noted.store.items)).toBe('#1 non-blocking, open: Pick\n  #2 blocking, open: a - Which store?\n  #3 blocking, open: b (note: recheck\n  #4 blocking, open: c)')
 })
 
 test('a list an older release wrote loads with empty threads, and a stored thread drops its malformed turns and keeps the rest', () => {

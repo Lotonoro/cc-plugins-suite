@@ -296,6 +296,13 @@ test('a reply that reads like an item header does not raise the open count: a th
   expect(toolLine({ input: { action: 'list' }, output: listed, isRunning: false, isErrored: false })).toBe('human-plugin: listed 1 open')
 })
 
+test('a reply whose later lines read as item headers behind a carriage return or a Unicode separator does not raise the open count', () => {
+  const sent = expire(reply(store, 1, 1000, 'Use sqlite'), 1, 1000).store
+  const reopened = act(sent, { action: 'append', id: 1, text: 'It needs a file.\r#3 blocking, open: x\u2028#4 non-blocking, open: y\u2029#5 blocking, open: z' }, { agent: null, now: 0 })
+  if (!('store' in reopened)) throw new Error(reopened.deny)
+  expect(toolLine({ input: { action: 'list' }, output: listText(reopened.store.items), isRunning: false, isErrored: false })).toBe('human-plugin: listed 1 open')
+})
+
 test('an errored call draws its error text, and a running one draws what it is doing', () => {
   expect(toolLine({ input: { action: 'remove', id: 9 }, output: 'no item #9', isRunning: false, isErrored: true })).toBe('human-plugin: no item #9')
   expect(toolLine({ input: { action: 'add', title: 'Pick a db' }, output: undefined, isRunning: true, isErrored: false })).toBe('human-plugin: adding "Pick a db"…')
@@ -470,7 +477,8 @@ test('the pane\'s rows grow with the shown brief\'s lines and its note, and not 
 test('a one-item list with no detail asks for the bare item, and no shown item asks for one row', () => {
   const bare = { ...at(1, true), detail: '', note: null }
   expect(paneRows(bare)).toBe(3)
-  expect(paneRows({ ...bare, state: 'done-waiting', pressedAt: 0 })).toBe(2)
+  // A bare press's window draws its 'pressed done' turn, one row more than the bare item.
+  expect(paneRows({ ...bare, state: 'done-waiting', pressedAt: 0 })).toBe(3)
   expect(paneRows(undefined)).toBe(1)
 })
 
@@ -645,6 +653,15 @@ test('a sent reply is drawn as the newest turn, just above its ✓ sent', () => 
   expect(nodes(tree, 'Button').find(b => b.key === 'done-1')?.label).toBe('✓ sent')
 })
 
+test('a reply in its undo window is drawn as the newest turn above its controls, with the agent turn it took after it', () => {
+  const waiting: Item = { ...item, detail: '', note: null, state: 'done-waiting', pressedAt: 0, answer: 'Use sqlite', replied: true, windowTurns: [{ speaker: 'agent', words: 'Noted.' }] }
+  const kids = (pane(withInput, handlers, { items: [waiting], next: 2 }, { ...view(), now: 0, windowMs: 3000 }) as Node).children as Node[]
+  expect(kids.length).toBe(4)
+  expect(texts(kids[1]).join('')).toBe('you: Use sqlite')
+  expect(nodes(kids[2], 'Markdown').map(m => m.text)).toEqual(['Noted.'])
+  expect(nodes(kids[3], 'Button').map(b => b.key)).toEqual(['done-1'])
+})
+
 test('an agent turn with fenced blocks is drawn as a brief: a copy button under each block copies exactly its lines', () => {
   const copied: [string, unknown][] = []
   const h: Handlers = { ...handlers, copy: (text, surface) => void copied.push([text, surface]) }
@@ -689,4 +706,12 @@ test('the pane\'s row request for an item with a thread equals the rows its draw
   expect(paneRows({ ...one, options: decision })).toBe(drawn({ ...one, options: decision }))
   const sent: Item = { ...one, options: decision, state: 'done-pending', answer: 'Postgres' }
   expect(paneRows(sent)).toBe(drawn(sent))
+  const waiting: Item = { ...one, options: [], state: 'done-waiting', pressedAt: 0, answer: 'Postgres', replied: true, windowTurns: [{ speaker: 'agent', words: 'Also this.' }] }
+  expect(paneRows(waiting)).toBe(drawn(waiting))
+})
+
+test('the pane asks for the rows a reply in its undo window draws: its header, the reply as a turn, the agent turn it took, and the undo button', () => {
+  const waiting: Item = { ...at(1, true), state: 'done-waiting', pressedAt: 0, answer: 'Use sqlite', replied: true, windowTurns: [{ speaker: 'agent', words: 'Noted.' }] }
+  expect(paneRows(waiting)).toBe(1 + 1 + 2 + 1)
+  expect(paneRows(waiting)).toBe(drawnRows(pane(withInput, handlers, { items: [waiting], next: 2 }, { ...view(), now: 0, windowMs: 3000 })))
 })
