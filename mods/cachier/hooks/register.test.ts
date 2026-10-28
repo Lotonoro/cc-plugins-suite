@@ -203,7 +203,7 @@ const expectCountdownOnly = async ($: any, state: 'off' | 'stopped' | 'paused') 
   expect(drawn).toContain('"key":"pie"')
   expect(drawn).not.toContain('ping')
   expect(drawn).not.toContain('"color":"success"')
-  expect(await toggle($, '')).toContain(`Keepalive keepalive ${state}`)
+  expect(await toggle($, '')).toContain(`Keepalive  ${state}`)
 }
 // The details pane, as a click on the line opens it: its id and the props its mount takes, the title the plugin gives it.
 const PANE_ID = 'cachier-details'
@@ -953,13 +953,13 @@ describe('keepalive', () => {
     await mainStep($)
     await turnEnd($)
     await clock.advance(241000)
-    expect(await toggle($, '')).toContain('Keepalive keepalive on')
+    expect(await toggle($, '')).toContain('Keepalive  on, refreshing')
     doc.fork = { isAnswered: false, reason: 'empty-reply', usage: { ...ZERO, cache_read_input_tokens: 336000 } }
     await clock.advance(241000)
     expect(lastStatus(rec)).toBeUndefined()
     expect(debugOf(rec, 'cachier ping').at(-1).usage).toMatchObject({ read: 336000 })
     const text = await toggle($, '')
-    expect(text).toContain('Keepalive keepalive on')
+    expect(text).toContain('Keepalive  on, refreshing')
     expect(text).toContain('next refresh in')
     expect(text).toMatch(/Prompt cache warm, (4:\d\d|5:00) left/)
   })
@@ -977,7 +977,7 @@ describe('keepalive', () => {
     doc.fork = { isAnswered: false, reason: 'empty-reply', usage: { ...ZERO, cache_read_input_tokens: 336000 } }
     await clock.advance(241000)
     expect(debugOf(rec, 'cachier ping').at(-1)).toMatchObject({ outcome: 'empty reply', usage: { read: 336000 } })
-    expect(await toggle($, '')).toContain('Keepalive keepalive on')
+    expect(await toggle($, '')).toContain('Keepalive  on, refreshing')
   })
 
   test('a response stamped 20 s ahead of the clock counts as now: the countdown and the next refresh read the same time', { options: { keepalive_lead_s: 60, keepalive_count: 2 } }, async ($, on) => {
@@ -1074,7 +1074,7 @@ describe('keepalive', () => {
     expect(rec.forks.length).toBe(2)
     await clock.advance(600000)
     expect(rec.forks.length).toBe(2)
-    expect(await toggle($, '')).toContain('keepalive paused: its refreshes for this pause are used up; it resumes after your next prompt')
+    expect(await toggle($, '')).toContain('Keepalive  paused its refreshes for this pause are used up; it resumes after your next prompt')
   })
 
   test('no fork starts during a turn: a due ping waits for the turn to end', async ($, on) => {
@@ -1115,7 +1115,7 @@ describe('keepalive', () => {
     await turnEnd($)
     await clock.advance(1000)
     expect(rec.forks).toEqual([])
-    expect(await toggle($, '')).toContain('keepalive paused: the cache expired; it resumes after your next prompt')
+    expect(await toggle($, '')).toContain('Keepalive  paused the cache expired; it resumes after your next prompt')
   })
 
   test('a failed ping shows its reason and sends no further fork until a user prompt re-arms it with the full count', async ($, on) => {
@@ -1183,7 +1183,7 @@ describe('keepalive', () => {
     await toggle($, 'on 60 2')
     await clock.advance(600000)
     expect(rec.forks).toEqual([])
-    expect(await toggle($, '')).toContain('no live cache to count from, nothing scheduled')
+    expect(await toggle($, '')).toContain('Keepalive  on, no count no live cache to count from, nothing scheduled')
   })
 
   test('enabling with no transcript path shows no cost and sends no fork', async ($, on) => {
@@ -1205,7 +1205,7 @@ describe('keepalive', () => {
     await turnEnd($)
     await clock.advance(600000)
     expect(rec.forks).toEqual([])
-    expect(await toggle($, '')).toContain('no live cache to count from, nothing scheduled')
+    expect(await toggle($, '')).toContain('Keepalive  on, no count no live cache to count from, nothing scheduled')
   })
 
   test('a TTL change that leaves the lead at or above the TTL pauses keepalive and says why', async ($, on) => {
@@ -1217,14 +1217,15 @@ describe('keepalive', () => {
     await mainStep($)
     await turnEnd($)
     await clock.advance(1000)
-    expect(await toggle($, '')).toContain('keepalive on · Next refresh: ~19k cached tokens read, every')
+    expect(await toggle($, '')).toContain('Keepalive  on, refreshing Next refresh: ~19k cached tokens read, every')
     await clock.advance(1000)
-    expect(await toggle($, '')).toContain('· next refresh in')
+    expect(await toggle($, '')).toContain('next refresh in')
     doc.text = cached().text
     await mainStep($)
     await turnEnd($)
     await clock.advance(1000)
     expect(lastStatus(rec)).toContain('keepalive paused: lead 400 s is not below the 300 s TTL')
+    expect(await toggle($, '')).toContain('Keepalive  paused lead 400 s is not below the 300 s TTL')
     await clock.advance(600000)
     expect(rec.forks).toEqual([])
   })
@@ -1239,7 +1240,7 @@ describe('keepalive', () => {
     await $.classic.PostModelSwitch({ from_model: 'a', to_model: 'b', requested_model: 'b', source: 'command', prompt_cache_warm: true, cache_ttl: '5m', context_tokens: 1, estimated_cache_write_usd: 0, pricing: 'catalog' } as any)
     await clock.advance(240000)
     expect(rec.forks).toEqual([])
-    expect(await toggle($, '')).toContain('keepalive on · no live cache to count from, nothing scheduled')
+    expect(await toggle($, '')).toContain('Keepalive  on, no count no live cache to count from, nothing scheduled')
   })
 
   test('a compaction leaves the cache cold: no ping is sent until a main-thread write lands', async ($, on) => {
@@ -1253,7 +1254,7 @@ describe('keepalive', () => {
     await $.classic.PostCompact({ trigger: 'manual', compact_summary: 's' } as any)
     await clock.advance(240000)
     expect(rec.forks).toEqual([])
-    expect(await toggle($, '')).toContain('keepalive on · no live cache to count from, nothing scheduled')
+    expect(await toggle($, '')).toContain('Keepalive  on, no count no live cache to count from, nothing scheduled')
     await mainStep($)
     await turnEnd($)
     await clock.advance(240000)
@@ -1293,6 +1294,66 @@ describe('keepalive', () => {
     release()
     await clock.advance(1000)
     expect(rec.forks.length).toBe(1)
+  })
+
+  test('a refresh sent now reads on, refreshing on the heading with the running figure beneath it, while its fork is in flight with a refresh still left', async ($, on) => {
+    let release: () => void = () => {}
+    const doc: any = cached()
+    doc.forkHold = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    const rec = kaWorld(on, doc)
+    const clock = mock.clock(on, { now: T0 })
+    await $.classic.SessionStart({ source: 'startup', transcript_path: PATH })
+    await clock.settle()
+    await toggle($, 'on 60 2')
+    await mainStep($)
+    await turnEnd($)
+    await clock.advance(240000 + 30000)
+    expect(rec.forks.length).toBe(1)
+    const text = await commandText($, '')
+    expect(text).toContain('\nKeepalive  on, refreshing\n  Next refresh: ~19k cached tokens read, every')
+    expect(text.split('\n').filter((line: string) => line.startsWith('Keepalive'))).toEqual(['Keepalive  on, refreshing'])
+    expect(text).not.toContain('refresh due')
+    expect(text).not.toContain('next refresh in')
+    release()
+    await clock.advance(1000)
+  })
+
+  test('between the last refresh\'s count and its count-used stop being recorded, the heading reads paused while the pie is still green', async ($, on) => {
+    const rec = kaWorld(on, cached())
+    let release: () => void = () => {}
+    const gate = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    let holding = false
+    on('state.set', (_$: any, e: any, next: any) => {
+      if (e.key === 'keepalive' && e.value?.stop === 'count used' && !holding) {
+        holding = true
+        return gate.then(() => next(e))
+      }
+      return next(e)
+    })
+    const clock = mock.clock(on, { now: T0 })
+    await $.classic.SessionStart({ source: 'startup', transcript_path: PATH })
+    await clock.settle()
+    await toggle($, 'on 60 1')
+    await mainStep($)
+    await turnEnd($)
+    await clock.advance(240000 + 500)
+    expect(rec.forks.length).toBe(1)
+    const advancing = clock.advance(1000)
+    await clock.settle()
+    try {
+      expect(holding).toBe(true)
+      expect(await toggle($, '')).toContain('Keepalive  paused its refreshes for this pause are used up; it resumes after your next prompt')
+      expect(await drawnHint($)).toContain('"color":"success"')
+    } finally {
+      release()
+    }
+    await advancing
+    await clock.advance(1000)
+    expect(await drawnHint($)).not.toContain('"color":"success"')
   })
 
   test('a competing write to the keepalive state between a tick\'s read and its commit fails that commit: no fork then, and the next tick forks', async ($, on) => {
@@ -1381,7 +1442,7 @@ describe('keepalive', () => {
     await $.classic.SessionStart({ source: 'clear', transcript_path: PATH })
     await clock.advance(600000)
     expect(rec.forks).toEqual([])
-    expect(await toggle($, '')).toContain('Keepalive keepalive off')
+    expect(await toggle($, '')).toContain('Keepalive  off')
     expect(await hint($)).toBe('')
   })
 })
@@ -1449,7 +1510,7 @@ describe('keepalive: the queue and the race', () => {
     await $.classic.SessionStart({ source: 'startup', transcript_path: PATH })
     await clock.settle()
     await toggle($, 'on 60 2')
-    expect(await toggle($, '')).toContain('no live cache to count from')
+    expect(await toggle($, '')).toContain('Keepalive  on, no count no live cache to count from')
     doc.exists = undefined
     doc.text = cached().text
     await mainStep($)
@@ -2156,7 +2217,7 @@ describe('keepalive: the queue and the race', () => {
     const rec = kaWorld(on, cached())
     const clock = mock.clock(on, { now: T0 })
     await $.classic.SessionStart({ source: 'startup', transcript_path: PATH })
-    expect(await toggle($, '')).toContain('Keepalive keepalive off')
+    expect(await toggle($, '')).toContain('Keepalive  off')
     await clock.settle()
     await toggle($, 'on 60 2')
     expect(await toggle($, '')).toContain('keepalive on')
@@ -2331,13 +2392,13 @@ describe('the low-key UI: the footer line, the click, the gutter, and what the s
     await clock.advance(285000)
     expect(rec.forks.length).toBe(1)
     await clock.advance(2000)
-    expect(await toggle($, '')).toContain('keepalive paused: its refreshes for this pause are used up')
+    expect(await toggle($, '')).toContain('Keepalive  paused its refreshes for this pause are used up')
     expect(lastStatus(rec)).toBeUndefined()
     const m = await mountHint($)
     expect(await drawnPane($)).toContain('Keepalive is paused: its refreshes for this pause are used up')
     await pressPie($)
     await clock.advance(1000)
-    expect(await toggle($, '')).toContain('Keepalive keepalive off')
+    expect(await toggle($, '')).toContain('Keepalive  off')
     await m.unmount()
   })
 
@@ -2352,7 +2413,7 @@ describe('the low-key UI: the footer line, the click, the gutter, and what the s
     await clock.advance(285000)
     expect(rec.forks.length).toBe(1)
     await clock.advance(2000)
-    expect(await toggle($, '')).toContain('keepalive paused: its refreshes for this pause are used up')
+    expect(await toggle($, '')).toContain('Keepalive  paused its refreshes for this pause are used up')
     await userPrompt($)
     expect(await toggle($, '')).not.toContain('paused')
     expect(await toggle($, '')).toContain('keepalive on')
@@ -2388,9 +2449,10 @@ describe('the low-key UI: the footer line, the click, the gutter, and what the s
     expect(rec.toasts).toEqual([])
     expect(await drawnPane($)).toContain('Keepalive is paused: ')
     expect(lastStatus(rec)).toContain('keepalive paused: lead 300 s is not below the 300 s TTL')
+    expect(await toggle($, '')).toContain('Keepalive  paused lead 300 s is not below the 300 s TTL')
     await pressPie($)
     await clock.advance(1000)
-    expect(await toggle($, '')).toContain('Keepalive keepalive off')
+    expect(await toggle($, '')).toContain('Keepalive  off')
     await m.unmount()
   })
 
@@ -2555,7 +2617,7 @@ describe('the low-key UI: the footer line, the click, the gutter, and what the s
     expect(JSON.stringify(await m.drawn())).toContain('"color":"success"')
     await pressPie($)
     await clock.advance(1000)
-    expect(await toggle($, '')).toContain('Keepalive keepalive off')
+    expect(await toggle($, '')).toContain('Keepalive  off')
     expect(JSON.stringify(await m.drawn())).not.toContain('"color":"success"')
     await m.unmount()
   })
@@ -2857,6 +2919,7 @@ describe('the low-key UI: the footer line, the click, the gutter, and what the s
     expect(rec.forks.length).toBe(1)
     expect(lastStatus(rec)).toContain('keepalive stopped: nothing to fork yet')
     await expectCountdownOnly($, 'stopped')
+    expect(await toggle($, '')).toContain('Keepalive  stopped nothing to fork yet; your next prompt restarts it')
     doc.fork = ANSWERED
     await userPrompt($)
     await mainStep($)
@@ -2891,7 +2954,7 @@ describe('the details pane: a click on the time opens it at its size, a second c
     const rows = await paneRows($)
     expect(rec.opens[0].rows).toBe(rows.length)
     expect(rec.opens[0].columns).toBe(widthOf(rows))
-    expect(await toggle($, '')).toContain('Keepalive keepalive off')
+    expect(await toggle($, '')).toContain('Keepalive  off')
     await m.unmount()
   })
 
@@ -3008,7 +3071,7 @@ describe('the details pane: a click on the time opens it at its size, a second c
     expect(await pane.find({ type: 'Button', key: 'keepalive' })).toBeUndefined()
     await pane.unmount()
     await pressPie($)
-    expect(await toggle($, '')).toContain('Keepalive keepalive off')
+    expect(await toggle($, '')).toContain('Keepalive  off')
   })
 
   test('while keepalive is off the pane states the figures of the run a press would start, at the lead the last run used', async ($, on) => {
@@ -3138,9 +3201,10 @@ describe('the words the user reads: no /keepalive answer, status line or pane sa
     said.push(await toggle($, ''))
     said.push(await drawnHint($))
     // Each state was reached, so the scan below covers it.
-    expect(said[0]).toMatch(/Keepalive keepalive off/)
+    expect(said[0]).toMatch(/Keepalive {2}off/)
     expect(said[2]).toContain('its refreshes for this pause are used up')
     expect(said[3]).toContain('keepalive stopped: API error 529 (overloaded)')
+    expect(said[4]).toContain('Keepalive  stopped API error 529 (overloaded); your next prompt restarts it')
     expect(said[8]).toContain('Prompt cache reset')
     for (const s of said) expect(s).not.toMatch(/ping|armed|cold|\bpar\b/i)
   })
@@ -3306,7 +3370,7 @@ describe('long pauses: the debug line, and the pane ping count from the lead in 
     await toggle($, 'on 60 2')
     await clock.advance(1000)
     expect(rec.forks).toEqual([])
-    expect(await toggle($, '')).toContain('keepalive paused: the cache expired; it resumes after your next prompt · each refresh reads ~19k cached tokens')
+    expect(await toggle($, '')).toContain('Keepalive  paused the cache expired; it resumes after your next prompt each refresh reads ~19k cached tokens')
   })
 
 })
@@ -3753,7 +3817,7 @@ describe('the default mode: the one a session starts in, set by /keepalive defau
     const clock = mock.clock(on, { now: T0 })
     await $.classic.SessionStart({ source: 'startup', transcript_path: PATH })
     await clock.advance(1000)
-    expect(await toggle($, '')).toMatch(/Keepalive keepalive on/)
+    expect(await toggle($, '')).toMatch(/Keepalive {2}on, refreshing/)
     await mainStep($)
     await turnEnd($)
     const m = await mountHint($)
@@ -3789,10 +3853,10 @@ describe('the default mode: the one a session starts in, set by /keepalive defau
     expect(await toggle($, 'off')).toBe('keepalive off')
     await $.classic.SessionStart({ source: 'compact', transcript_path: PATH })
     await clock.advance(1000)
-    expect(await toggle($, '')).toMatch(/Keepalive keepalive off/)
+    expect(await toggle($, '')).toMatch(/Keepalive {2}off/)
     await $.classic.SessionStart({ source: 'startup', transcript_path: PATH })
     await clock.advance(1000)
-    expect(await toggle($, '')).toMatch(/Keepalive keepalive on/)
+    expect(await toggle($, '')).toMatch(/Keepalive {2}on, refreshing/)
     expect(sets).toEqual([])
   })
 
@@ -3808,7 +3872,7 @@ describe('the default mode: the one a session starts in, set by /keepalive defau
     await clock.advance(1000)
     expect(await toggle($, '')).toMatch(/start mode off \(keepalive_default option\)/)
     expect(await toggle($, 'default on')).toBe('keepalive default: on. Sessions started from now on start with keepalive on; this one stays as it is.')
-    expect(await toggle($, '')).toMatch(/Keepalive keepalive off/)
+    expect(await toggle($, '')).toMatch(/Keepalive {2}off/)
     expect(await toggle($, 'default off')).toBe('keepalive default unchanged: policy')
     expect(sets).toEqual([['cachier.keepalive_default', 'on'], ['cachier.keepalive_default', 'off']])
   })
@@ -4031,7 +4095,7 @@ describe('the learned count: an unpinned run sends what the stored pauses say, a
     await mainStep($)
     await turnEnd($)
     await clock.advance(1000)
-    expect(await toggle($, '')).toContain('no refreshes this pause')
+    expect(await toggle($, '')).toContain('Keepalive  paused no refreshes this pause: your pauses rarely outlast the cache')
     expect(await toggle($, '')).toContain('Learned from your pauses: no refreshes, as 0 of your 10 pauses ended within the 5:00 TTL.')
     await clock.advance(10 * MIN)
     expect(rec.forks).toEqual([])
@@ -4212,7 +4276,7 @@ describe("the TTL advice: the bare command names the other TTL once the recorded
     await toggle($, 'on 60 2')
     await clock.advance(1000)
     const text = await toggle($, '')
-    expect(text).toContain('Keepalive keepalive on')
+    expect(text).toContain('Keepalive  on, refreshing')
     expect(text).not.toContain('A 1-hour cache would have saved')
   })
 
@@ -4238,7 +4302,7 @@ describe("the TTL advice: the bare command names the other TTL once the recorded
     await toggle($, 'on 15')
     await clock.advance(1000)
     const text = await toggle($, '')
-    expect(text).toContain('Keepalive keepalive on')
+    expect(text).toContain('Keepalive  paused')
     expect(text).not.toContain('A 1-hour cache would have saved')
   })
 
@@ -4259,8 +4323,8 @@ describe('the bare command answers four sections, in order: Cache, Keepalive, Ad
     await $.classic.SessionStart({ source: 'startup', transcript_path: PATH })
     await clock.advance(1000)
     const text = await commandText($, '')
-    const headings = text.split('\n').filter((line: string) => ['Cache', 'Keepalive', 'Advice', 'Settings'].includes(line))
-    expect(headings).toEqual(['Cache', 'Keepalive', 'Advice', 'Settings'])
+    const headings = text.split('\n').filter((line: string) => ['Cache', 'Advice', 'Settings'].includes(line) || line.startsWith('Keepalive'))
+    expect(headings).toEqual(['Cache', 'Keepalive  off', 'Advice', 'Settings'])
     expect(text.startsWith('Cache\n  Prompt cache warm, ')).toBe(true)
   })
 
@@ -4307,7 +4371,7 @@ describe('the bare command answers four sections, in order: Cache, Keepalive, Ad
     await userPrompt($)
     const text = await toggle($, '')
     expect(text).toMatch(/Over 1 pause this session, keepalive (saved|cost)/)
-    expect(text.indexOf('Keepalive keepalive')).toBeLessThan(text.indexOf('Over 1 pause this session'))
+    expect(text.indexOf('Keepalive  on, refreshing')).toBeLessThan(text.indexOf('Over 1 pause this session'))
     expect(text.indexOf('Over 1 pause this session')).toBeLessThan(text.indexOf('Settings'))
   })
 
@@ -4343,10 +4407,10 @@ describe('the bare command answers whole: the text its sections lay out, for fix
         'Cache',
         '  Prompt cache warm, 4:59 left (5-minute cache)',
         '',
-        'Keepalive',
-        '  keepalive on · Next refresh: $0.004 (~19k',
-        '    cached tokens read), every 4:45 · next',
-        '    refresh in 4:44, 24 left',
+        'Keepalive  on, refreshing',
+        '  Next refresh: $0.004 (~19k cached tokens',
+        '    read), every 4:45',
+        '  next refresh in 4:44, 24 left',
         '  Each pause sends at most 24 refreshes: the',
         '    break-even count, the most refreshes that',
         '    cost no more than the rewrite they avoid.',
@@ -4379,8 +4443,7 @@ describe('the bare command answers whole: the text its sections lay out, for fix
         'Cache',
         '  Prompt cache warm, 4:59 left (5-minute cache)',
         '',
-        'Keepalive',
-        '  keepalive off',
+        'Keepalive  off',
         '  Each pause sends at most 24 refreshes: the',
         '    break-even count, the most refreshes that',
         '    cost no more than the rewrite they avoid.',
@@ -4414,10 +4477,10 @@ describe('the bare command answers whole: the text its sections lay out, for fix
         'Cache',
         '  Prompt cache warm, 4:59 left (5-minute cache)',
         '',
-        'Keepalive',
-        '  keepalive on · Next refresh: $0.004 (~19k',
-        '    cached tokens read), every 4 min · next',
-        '    refresh in 3:59, 2 left',
+        'Keepalive  on, refreshing',
+        '  Next refresh: $0.004 (~19k cached tokens',
+        '    read), every 4 min',
+        '  next refresh in 3:59, 2 left',
         '  Each pause sends at most 2 refreshes: the',
         '    count you pinned with /keepalive on.',
         "  Keepalive pays off if you're back between 5:00",
@@ -4449,8 +4512,7 @@ describe('the bare command answers whole: the text its sections lay out, for fix
         'Cache',
         '  Prompt cache expired, ~$0.13 to rebuild.',
         '',
-        'Keepalive',
-        '  keepalive off',
+        'Keepalive  off',
         '  Each pause sends at most 24 refreshes: the',
         '    break-even count, the most refreshes that',
         '    cost no more than the rewrite they avoid.',
@@ -4484,8 +4546,7 @@ describe('the bare command answers whole: the text its sections lay out, for fix
         'Cache',
         '  Prompt cache expired, ~26k tokens to rebuild.',
         '',
-        'Keepalive',
-        '  keepalive off',
+        'Keepalive  off',
         '  Each pause sends at most 24 refreshes: the',
         '    break-even count, the most refreshes that',
         '    cost no more than the rewrite they avoid.',
@@ -4544,9 +4605,8 @@ describe('the bare command answers whole: the text its sections lay out, for fix
           'Cache',
           '  Prompt cache warm, 5:00 left (5-minute cache)',
           '',
-          'Keepalive',
-          '  keepalive on · paused until the cache reset is',
-          '    recorded',
+          'Keepalive  paused',
+          '  until the cache reset is recorded',
           '  Each pause sends at most 2 refreshes: the',
           '    count you pinned with /keepalive on.',
           '',
@@ -4568,6 +4628,8 @@ describe('the bare command answers whole: the text its sections lay out, for fix
           '    unit tokens|dollars.',
         ].join('\n'),
       )
+      // The accepted window: the heading reads paused while the reset is being recorded, and the pie is still green with keepalive on.
+      expect(await drawnHint($)).toContain('"color":"success"')
     } finally {
       release()
     }
@@ -4611,8 +4673,7 @@ describe('the bare command answers whole: the text its sections lay out, for fix
         'Cache',
         '  Prompt cache expired, ~$0.20 to rebuild.',
         '',
-        'Keepalive',
-        '  keepalive off',
+        'Keepalive  off',
         '  Each pause sends at most 3 refreshes:',
         '    keepalive_count, which caps the break-even',
         '    count of 24.',
@@ -4649,8 +4710,7 @@ describe('the bare command answers whole: the text its sections lay out, for fix
     await clock.advance(1000)
     expect(await commandText($, '')).toBe(
       [
-        'Keepalive',
-        '  keepalive off',
+        'Keepalive  off',
         '',
         'Settings',
         '  TTL 5 min (read from the last response): set',
@@ -4803,7 +4863,7 @@ describe('the best setup: one sentence, in the pane and in the bare command, pri
     await commandText($, 'on 15')
     await clock.advance(1000)
     const text = (await commandText($, '')).replace(/\n\s*/g, ' ')
-    expect(text).toContain('Keepalive keepalive on')
+    expect(text).toContain('Keepalive  paused')
     expect(text).toContain('A 1-hour cache with keepalive on would have saved $4.40 over 10 recent pauses: set "promptCacheTtl": "1h" in settings.json and, in the new session, click the pie on.')
   })
 

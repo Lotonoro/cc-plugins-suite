@@ -852,15 +852,20 @@ const snapshotNow = async ($: Dollar): Promise<Snapshot> => {
   const run = runOf(held, defaultRun)
   const rundown = rundownSections(tally, stats, money)
   const kept = keptOf(held, view, money, nowMs)
+  const verdict = step(held, view, live, gapOpen(held), nowMs, money)
   return {
     cache: [warmthOf(reading, raw.kind === 'known' ? raw.ttlLabel : '5m', rebuild)].filter((line) => line !== ''),
-    keepalive: [
-      step(held, view, live, gapOpen(held), nowMs, money).text,
-      ...countLines(held, view, money, nowMs, kept),
-      ...(defaultRun === undefined ? [] : [breakEvenLine(held, view, money, defaultsNow(defaultRun, view, money, nowMs))]),
-      sessionBalanceLine(judged, money.unit),
-      ...rundown.keepalive,
-    ].filter((line) => line !== ''),
+    keepalive: {
+      state: verdict.heading,
+      lines: [
+        ...(verdict.why === null ? [] : [verdict.why]),
+        ...verdict.lines,
+        ...countLines(held, view, money, nowMs, kept),
+        ...(defaultRun === undefined ? [] : [breakEvenLine(held, view, money, defaultsNow(defaultRun, view, money, nowMs))]),
+        sessionBalanceLine(judged, money.unit),
+        ...rundown.keepalive,
+      ].filter((line) => line !== ''),
+    },
     advice: [sentenceNow(held, view, money), ...ttlAdviceLines(held, view, money), ...rundown.advice, ...unitNotes(money, view, tally, stats)].filter((line) => line !== ''),
     settings: settingsOf(raw, run, kept, tally, view, money, nowMs, unitPressedNow(unitHeld)),
   }

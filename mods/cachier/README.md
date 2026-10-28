@@ -64,8 +64,8 @@ and why a figure is in tokens are in the answer to a bare `/keepalive`.
   (see [How many refreshes](#how-many-refreshes)). Then keepalive is paused until your next prompt. It is paused too if
   you turn it on after the cache has expired. A message from another session or a finished background task doesn't
   resume it.
-- A refresh that fails stops keepalive, and the status line says what broke in one clause, such as
-  `keepalive stopped: API error 529 (overloaded)`. Your next prompt restarts it.
+- A refresh that fails stops keepalive, and the Keepalive heading reads `stopped` and the first line beneath it says what broke in one clause, such as
+  `API error 529 (overloaded); your next prompt restarts it`.
 - The lead (how long before expiry a refresh is sent) starts at 15 s. A refresh slower than half the lead raises it to
   twice that round trip for the session. It is never lowered, and keepalive stops instead of raising it past half the
   TTL.
@@ -136,13 +136,15 @@ Each message has its time at its top right, so you can see how long each phase t
 ## `/keepalive`
 
 `on <lead_s> [count]`, `off`, `default on|off`, `unit dollars|tokens`, or no argument for the state and the full
-rundown, in four sections: Cache (the warmth, with the figure to rebuild an expired or reset cache), Keepalive (its
-state and the refresh cost, how many refreshes a pause gets and why, when it pays off, this session and your pauses),
-Advice (the best setup's sentence, the one-hour cache advice, the misses by cause, why figures are in tokens) and
-Settings (the TTL, lead, refresh count, start mode and unit: each value, where it came from when that is known, and what
-changes it; the TTL and start mode apply to new sessions). A section with nothing to say is left out. The text wraps at
-48 columns. A count pins the refreshes per pause for the session; without one, each pause sends the learned count, else
-the break-even count.
+rundown, in four sections: Cache (the warmth, with the figure to rebuild an expired or reset cache), Keepalive (the
+refresh cost, how many refreshes a pause gets and why, when it pays off, this session and your pauses), Advice (the best
+setup's sentence, the one-hour cache advice, the misses by cause, why figures are in tokens) and Settings (the TTL, lead,
+refresh count, start mode and unit: each value, where it came from when that is known, and what changes it; the TTL and
+start mode apply to new sessions). The Keepalive heading names keepalive's state, one of `off`, `on, refreshing`,
+`on, no count`, `paused` and `stopped`; the reason for a pause or stop is the first line beneath it. The Keepalive
+section is always shown, as its heading alone when it has nothing else to say. Cache, Advice and Settings are left out
+when they have nothing to say. The text wraps at 48 columns. A count pins the refreshes per pause for the session;
+without one, each pause sends the learned count, else the break-even count.
 
 Options: `keepalive_lead_s` (default 15), the lead the pie uses until a command sets one; `keepalive_count` (unset by default), a cap on the
 break-even count; `keepalive_default` (`off` or `on`, default `off`), the mode a session starts in, which
