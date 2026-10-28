@@ -10,6 +10,8 @@ import { isPaneOpen, paneAlarm, PANE, readPane, resizePane, syncPane, togglePane
 const engine = (doc: { refuse?: boolean; unplaced?: boolean; listed?: string[]; refuseClose?: boolean; keepOnClose?: boolean; unplacedList?: boolean; panesThrow?: boolean; gate?: Promise<void>; holdOpens?: Promise<void>[]; holdCloses?: Promise<void>[] } = {}) => {
   const rec = { opens: [] as any[], closes: [] as any[], logs: [] as string[] }
   const shown = new Set<string>(doc.listed ?? [])
+  // Panes the engine holds open but has not drawn: an unplaced open puts its pane here, and the test clears it when the engine places it.
+  const undrawn = new Set<string>()
   const $ = {
     ui: {
       log: (text: string) => rec.logs.push(text),
@@ -17,7 +19,11 @@ const engine = (doc: { refuse?: boolean; unplaced?: boolean; listed?: string[]; 
         rec.opens.push(e)
         await doc.holdOpens?.shift()
         if (doc.refuse === true) throw new Error('open refused')
-        if (doc.unplaced === true) return { isPlaced: false, reason: 'no room' }
+        if (doc.unplaced === true) {
+          shown.add(e.id)
+          undrawn.add(e.id)
+          return { isPlaced: false, reason: 'no room' }
+        }
         shown.add(e.id)
         return { isPlaced: true }
       },
@@ -29,7 +35,7 @@ const engine = (doc: { refuse?: boolean; unplaced?: boolean; listed?: string[]; 
       },
       panes: async () => {
         if (doc.panesThrow === true) throw new Error('read refused')
-        const record = [...shown].map((id) => ({ id, title: id, isShown: true, isFocused: false, isPlaced: doc.unplacedList !== true }))
+        const record = [...shown].map((id) => ({ id, title: id, isShown: true, isFocused: false, isPlaced: doc.unplacedList !== true && !undrawn.has(id) }))
         const gate = doc.gate
         doc.gate = undefined
         if (gate !== undefined) await gate
@@ -37,7 +43,7 @@ const engine = (doc: { refuse?: boolean; unplaced?: boolean; listed?: string[]; 
       },
     },
   }
-  return { $: $ as any, rec, shown }
+  return { $: $ as any, rec, shown, undrawn }
 }
 
 // A promise the test releases by hand, for a read the engine answers late.
@@ -380,12 +386,65 @@ test('an open the engine refuses clears the flag, is named until an open lands, 
   expect(rec.opens.length).toBe(2)
 })
 
-test('an open the engine does not place is named the same way', async () => {
-  const { $ } = engine({ unplaced: true })
+test('an open answered unplaced names no failure, and the next toggle asks the pane open', async () => {
+  const { $, rec } = engine({ unplaced: true })
+  await syncPane($)
+  await togglePane($, SIZE)
+  expect(isPaneOpen()).toBe(false)
+  expect(paneAlarm()).toBeNull()
+  await togglePane($, SIZE)
+  expect(rec.opens.length).toBe(2)
+  expect(rec.closes).toEqual([])
+})
+
+test('an unplaced answer throws nothing and reports nothing', async () => {
+  const { $, rec } = engine({ unplaced: true })
+  await syncPane($)
+  await expect(togglePane($, SIZE)).resolves.toBeUndefined()
+  expect(rec.logs).toEqual([])
+})
+
+test('after an open that was refused has been named, an open answered unplaced leaves no failure named', async () => {
+  const doc = { refuse: true, unplaced: false }
+  const { $ } = engine(doc)
   await syncPane($)
   await togglePane($, SIZE).catch(() => {})
-  expect(isPaneOpen()).toBe(false)
   expect(paneAlarm()).toBe(REFUSED)
+  doc.refuse = false
+  doc.unplaced = true
+  await togglePane($, SIZE)
+  expect(paneAlarm()).toBeNull()
+})
+
+test('after an unplaced answer the next toggle asks the pane open even when the read of the record fails, and nothing is reported for the answer', async () => {
+  const { $, rec } = engine({ unplaced: true, panesThrow: true })
+  await syncPane($).catch(() => {})
+  await togglePane($, SIZE)
+  expect(isPaneOpen()).toBe(false)
+  expect(rec.logs.filter((l) => !l.includes('read refused'))).toEqual([])
+  expect(rec.logs.length).toBe(1)
+  await togglePane($, SIZE)
+  expect(rec.opens.length).toBe(2)
+  expect(rec.closes).toEqual([])
+})
+
+test('a pane that waits undrawn is not re-sized by a resize; once placed, a toggle closes it and a resize re-opens it only at a different size', async () => {
+  const doc = { unplaced: true }
+  const { $, rec, undrawn } = engine(doc)
+  await syncPane($)
+  await togglePane($, SIZE)
+  await resizePane($, WIDER)
+  expect(rec.opens.length).toBe(1)
+  doc.unplaced = false
+  undrawn.clear()
+  await readPane($)
+  expect(isPaneOpen()).toBe(true)
+  await resizePane($, SIZE)
+  expect(rec.opens.length).toBe(1)
+  await resizePane($, WIDER)
+  expect(rec.opens.length).toBe(2)
+  await togglePane($, WIDER)
+  expect(rec.closes).toEqual([{ id: PANE }])
 })
 
 test('a close that is refused leaves the pane counted open, so the next toggle closes it again', async () => {

@@ -3160,7 +3160,7 @@ describe('the details pane: a click on the time opens it at its size, a second c
     await m.unmount()
   })
 
-  test('an open the engine does not place is named on the status line the same way', async ($, on) => {
+  test('an open the engine does not place names no failure, and the next press asks the pane open', async ($, on) => {
     const rec = kaWorld(on, { ...cached(), openUnplaced: true })
     const clock = mock.clock(on, { now: T0 })
     await $.classic.SessionStart({ source: 'startup', transcript_path: PATH })
@@ -3168,7 +3168,28 @@ describe('the details pane: a click on the time opens it at its size, a second c
     const m = await mountHint($)
     await m.press({ key: 'details' })
     await clock.advance(1000)
+    expect(lastStatus(rec)).toBeUndefined()
+    await m.press({ key: 'details' })
+    expect(rec.opens.length).toBe(2)
+    expect(rec.closes).toEqual([])
+    await m.unmount()
+  })
+
+  test('after a refused open has been named, an open the engine does not place leaves no failure on the status line', async ($, on) => {
+    const doc = { ...cached(), openThrows: true, openUnplaced: false }
+    const rec = kaWorld(on, doc)
+    const clock = mock.clock(on, { now: T0 })
+    await $.classic.SessionStart({ source: 'startup', transcript_path: PATH })
+    await clock.advance(1000)
+    const m = await mountHint($)
+    await m.press({ key: 'details' })
+    await clock.advance(1000)
     expect(lastStatus(rec)).toBe('the details pane did not open; see the debug log')
+    doc.openThrows = false
+    doc.openUnplaced = true
+    await m.press({ key: 'details' })
+    await clock.advance(1000)
+    expect(lastStatus(rec)).toBeUndefined()
     await m.unmount()
   })
 

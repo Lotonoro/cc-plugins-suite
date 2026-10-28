@@ -58,8 +58,8 @@ async function readAfterCall($: EngineInterface): Promise<void> {
 }
 
 // The open, made at once: the flag is set before the open is awaited, so a press made while it runs is counted as an open of a pane already
-// open. A failure, or an open the engine does not place, clears the flag and is named until an open lands; the read that follows puts the
-// flag right where the pane stays open.
+// open. A failure clears the flag and is named until an open is answered; an open answered unplaced clears the flag and names nothing. The read
+// that follows puts the flag right where the pane stays open and drawn.
 function openAt($: EngineInterface, size: PaneSize): Promise<unknown> {
   writes++
   inFlight++
@@ -68,8 +68,13 @@ function openAt($: EngineInterface, size: PaneSize): Promise<unknown> {
   return $.ui
     .open({ id: PANE, title: PANE_TITLE, ...size, closeOnEscape: true })
     .then((r) => {
-      if (!r.isPlaced) throw new Error(`the details pane was not placed: ${r.reason}`)
+      // Any answer clears the note. An open the engine holds but has not drawn (a narrow terminal) is no failure: the flag clears so a press asks
+      // it open again, and the read that follows sets it once the engine places the pane.
       failure = null
+      if (!r.isPlaced) {
+        writes++
+        paneOpen = false
+      }
     })
     .catch((err: unknown) => {
       writes++
