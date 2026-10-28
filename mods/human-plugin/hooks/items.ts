@@ -7,6 +7,11 @@ export const EMPTY: Store = { items: [], next: 1 }
 
 const STATES: readonly ItemState[] = ['open', 'done-waiting', 'done-pending']
 
+// Text of only spaces is no detail or note: it is stored cleared, a detail as '' and a note as null, the value listText and the pane read
+// as no note. Stored text (normalizeItem) and text the tool is given (parseInput) are both stored this way.
+const detailOf = (raw: string): string => (raw.trim() === '' ? '' : raw)
+const noteOf = (raw: string): string | null => (raw.trim() === '' ? null : raw)
+
 // One option as stored. An entry with no label is no option, and is dropped.
 const optionOf = (raw: unknown): ItemOption | null => {
   if (typeof raw !== 'object' || raw === null) return null
@@ -26,13 +31,13 @@ export const normalizeItem = (raw: unknown): Item | null => {
   return {
     id: r.id,
     title: r.title,
-    detail: typeof r.detail === 'string' ? r.detail : '',
+    detail: typeof r.detail === 'string' ? detailOf(r.detail) : '',
     blocking: r.blocking === true,
     createdAt: typeof r.createdAt === 'number' && Number.isFinite(r.createdAt) ? r.createdAt : 0,
     // An undo window with no press time cannot end, so the item was never pressed: it is open.
     state: stored === 'done-waiting' && pressedAt === null ? 'open' : stored,
     pressedAt,
-    note: typeof r.note === 'string' ? r.note : null,
+    note: typeof r.note === 'string' ? noteOf(r.note) : null,
     agent: typeof r.agent === 'string' ? r.agent : null,
     unread: r.unread === true,
     options: Array.isArray(r.options) ? r.options.map(optionOf).filter((o): o is ItemOption => o !== null) : [],
@@ -131,7 +136,7 @@ export const parseInput = (raw: unknown): Parsed => {
         value: {
           action: 'add',
           title,
-          detail: text(r.detail) ?? '',
+          detail: detailOf(text(r.detail) ?? ''),
           blocking: r.blocking === true,
           options: options.value ?? [],
           yesno: r.yesno === true,
@@ -149,8 +154,9 @@ export const parseInput = (raw: unknown): Parsed => {
         value.title = title.trim()
       }
       if (r.detail !== undefined) {
-        if (text(r.detail) === undefined) return { ok: false, reason: 'detail must be text' }
-        value.detail = text(r.detail)
+        const detail = text(r.detail)
+        if (detail === undefined) return { ok: false, reason: 'detail must be text' }
+        value.detail = detailOf(detail)
       }
       if (r.blocking !== undefined) {
         if (typeof r.blocking !== 'boolean') return { ok: false, reason: 'blocking must be true or false' }
@@ -160,7 +166,7 @@ export const parseInput = (raw: unknown): Parsed => {
         const note = text(r.note)
         if (note === undefined) return { ok: false, reason: 'note must be text' }
         // A blank note clears the note, as a blank done label clears the label (parseDone).
-        value.note = note.trim() === '' ? null : note
+        value.note = noteOf(note)
       }
       if (r.options !== undefined) {
         const options = parseOptions(r.options)
@@ -199,16 +205,16 @@ export type Outcome =
   | { deny: string }
   | { store: Store; reply: string; added: Item | null; changed: { id: number; reopened: boolean } | null }
 
-// The fields an agent's change writes, each as the text it compares by: the detail and the note by their trimmed text, so a whitespace-only
-// edit is no change, and a field a change empties as ''. `unchanged` is every field equal. `asks` is a field that differs and is not emptied,
-// which sets a title, a blocking mark, options, or text in the detail, note or done label. Both read this one list, so a field added to it
-// is compared by both.
+// The fields an agent's change writes, each as the text it compares by: the detail, the note and each option's description by their
+// trimmed text, so a whitespace-only edit is no change, and a field a change empties as ''. `unchanged` is every field equal. `asks` is a
+// field that differs and is not emptied, which sets a title, a blocking mark, options, or text in the detail, note or done label. Both read
+// this one list, so a field added to it is compared by both.
 const FIELDS: readonly ((it: Item) => string)[] = [
   it => it.title,
   it => it.detail.trim(),
   it => String(it.blocking),
   it => (it.note ?? '').trim(),
-  it => JSON.stringify(it.options),
+  it => JSON.stringify(it.options.map(o => ({ ...o, description: o.description.trim() }))),
   it => it.doneLabel ?? '',
 ]
 const unchanged = (before: Item, after: Item): boolean => FIELDS.every(field => field(before) === field(after))
