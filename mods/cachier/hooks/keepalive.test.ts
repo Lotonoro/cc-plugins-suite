@@ -262,6 +262,10 @@ describe('enable: a new run starts on, stopped only by its cache', () => {
     expect(enableText(known, 60000, 3, 'cache expired')).toContain('Paused: the cache expired; it resumes after your next prompt.')
   })
 
+  test('the toggle text names a failure stop as given, and says the next prompt restarts it', () => {
+    expect(enableText(known, 60000, 3, 'API error 529 (overloaded)')).toContain('Stopped: API error 529 (overloaded); your next prompt restarts it.')
+  })
+
   test('a user prompt refills the count and clears the stop; a prompt when off changes nothing', () => {
     expect(rearm(on(60000, 3, { remaining: 0, stop: 'count used' }), 3)).toMatchObject({ remaining: 3, runCount: 3, stop: null, pauseEpoch: 1 })
     // The count is the one the caller resolved for this run: a break-even count can differ from the last run's.
