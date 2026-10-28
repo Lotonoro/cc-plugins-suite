@@ -84,6 +84,12 @@ and why a figure is in tokens are in the answer to a bare `/keepalive`.
   again an hour later, then once a day; a page with no readable table waits for the next weekly read. A model the page
   stops listing keeps its last stored rates. A 5 m or 1 h cache write is priced at its own rate, a read at the read
   rate, and a prompt over a model's size threshold (Haiku 5.5 over 100,000 tokens) at its higher rates.
+- A model id from Amazon Bedrock (`anthropic.claude-opus-4-1-20250805-v1:0`, with or without a region prefix such as
+  `us.`, `eu.`, `apac.` or `global.`) or Google Vertex (`claude-opus-4-1@20250805`) is matched to its list model and
+  priced at that model's list rates. An id the price list holds exactly as given is priced by its own entry first. The
+  partners' own rates aren't known, so a figure for such a session may differ from its bill. Ids in the older Bedrock
+  naming, such as `anthropic.claude-3-5-sonnet-20241022-v2:0`, normalise to `claude-3-5-sonnet`, which the
+  price list does not name, so they show no price; an overrides file will be the way to price them.
 - A figure with no price is shown in tokens, and the bare `/keepalive` answer says why (`Shown in tokens: no price for …`). That covers a
   model neither the page nor the built-in table lists, fast mode, and a response that names no model.
 - Tokens name what was done with them (`~19k tokens read`, `~20k tokens written`), since a write costs many reads. The

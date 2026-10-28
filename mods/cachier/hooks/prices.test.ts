@@ -11,6 +11,62 @@ describe('the price table', () => {
     expect(ratesFor(PRICES, 'claude-haiku-4-5-20251001')).toBe(PRICES['claude-haiku-4-5'])
   })
 
+  test('a Bedrock id, with or without a region prefix and with a version suffix with or without its :M, finds its list model', () => {
+    const opus = PRICES['claude-opus-4-1']
+    for (const id of [
+      'anthropic.claude-opus-4-1-20250805-v1:0',
+      'anthropic.claude-opus-4-1-20250805-v1',
+      'us.anthropic.claude-opus-4-1-20250805-v1:0',
+      'eu.anthropic.claude-opus-4-1-20250805-v2',
+      'apac.anthropic.claude-opus-4-1-20250805-v1:0',
+      'global.anthropic.claude-opus-4-1-20250805-v1:0',
+    ]) expect(ratesFor(PRICES, id)).toBe(opus)
+  })
+
+  test('a Bedrock id with a region prefix no list names is priced too', () => {
+    expect(ratesFor(PRICES, 'zz.anthropic.claude-sonnet-4-5-20250929-v1:0')).toBe(PRICES['claude-sonnet-4-5'])
+    expect(ratesFor(PRICES, 'us-gov.anthropic.claude-sonnet-4-5-20250929-v1:0')).toBe(PRICES['claude-sonnet-4-5'])
+  })
+
+  test('a Vertex @date id finds its list model', () => {
+    expect(ratesFor(PRICES, 'claude-opus-4-1@20250805')).toBe(PRICES['claude-opus-4-1'])
+  })
+
+  test('a -vN suffix is Bedrock\'s alone: an id without the anthropic. prefix keeps it, and is not priced as its list model', () => {
+    for (const id of ['claude-opus-4-1-v2', 'claude-opus-4-1-v1:0']) expect(ratesFor(PRICES, id)).toBeNull()
+  })
+
+  test('an id in the list exactly as given is priced by its own entry, even when its normalised form is listed too', () => {
+    const own = { ...PRICES['claude-opus-4-1']!, input: 1 }
+    const list = { ...PRICES, 'anthropic.claude-opus-4-1-20250805-v1:0': own, 'claude-opus-4-1@20250805': own }
+    expect(ratesFor(list, 'anthropic.claude-opus-4-1-20250805-v1:0')).toBe(own)
+    expect(ratesFor(list, 'claude-opus-4-1@20250805')).toBe(own)
+    expect(ratesFor(list, 'us.anthropic.claude-opus-4-1-20250805-v1:0')).toBe(PRICES['claude-opus-4-1'])
+  })
+
+  test('an id that matches nothing after normalising has no price, and says so', () => {
+    expect(ratesFor(PRICES, 'anthropic.claude-nothing-9-20250805-v1:0')).toBeNull()
+    expect(ratesFor(PRICES, 'claude-nothing-9@20250805')).toBeNull()
+    expect(ratesFor(PRICES, 'someone.claude-opus-4-1-20250805-v1:0')).toBeNull()
+    const spend = spendOf(PRICES, 'anthropic.claude-nothing-9-20250805-v1:0', null, { ...NO_KINDS, input: 5 })
+    expect(spend.usd).toBeNull()
+    expect(spend.why).toBe('no price for anthropic.claude-nothing-9-20250805-v1:0')
+  })
+
+  test('an id that names an Object.prototype member, such as constructor or __proto__, is no model: it has no price, and says so', () => {
+    for (const id of ['constructor', 'toString', '__proto__']) {
+      expect(ratesFor(PRICES, id)).toBeNull()
+      expect(writeReadRatio(PRICES, id, '5m')).toBeNull()
+      expect(spendOf(PRICES, id, null, { ...NO_KINDS, input: 5 })).toMatchObject({ usd: null, why: `no price for ${id}` })
+    }
+  })
+
+  test('every figure goes through the same lookup: a Bedrock id costs what its list model costs', () => {
+    const kinds = { ...NO_KINDS, input: 1000, read: 2000 }
+    expect(spendOf(PRICES, 'us.anthropic.claude-opus-4-1-20250805-v1:0', null, kinds)).toEqual(spendOf(PRICES, 'claude-opus-4-1', null, kinds))
+    expect(writeReadRatio(PRICES, 'claude-opus-4-1@20250805', '5m')).toBe(writeReadRatio(PRICES, 'claude-opus-4-1', '5m'))
+  })
+
   test('a spend is priced by kind, and a model the table lacks, fast mode or no model has no dollars and says why', () => {
     const kinds = { ...NO_KINDS, read: 1_000_000, write5m: 1_000_000 }
     expect(Math.round(spendOf(PRICES, 'claude-opus-5-5', 'standard', kinds).usd! * 1e6)).toBe(5200000)
