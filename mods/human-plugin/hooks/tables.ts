@@ -2,18 +2,9 @@
 
 type Table = { headers: string[]; rows: string[][]; end: number }
 
-// An opening fence, at most three spaces in, whose backtick info string holds no backtick (so ```x``` is no fence). The closing one
-// repeats the opening marker's character, at least as long (closesFence). Exported for restatement.ts, which skips fenced code the same way.
-export const FENCE = /^ {0,3}(`{3,}(?!.*`)|~{3,})/
-const CLOSE = /^ {0,3}(`{3,}|~{3,})\s*$/
 const DELIMITER_CELL = /^:?-+:?$/
 // Four spaces or a tab: an indented code block, which holds no table.
 const INDENTED = /^( {4}|\t)/
-
-export const closesFence = (line: string, opening: string): boolean => {
-  const marker = CLOSE.exec(line)?.[1] ?? ''
-  return marker !== '' && marker.charAt(0) === opening.charAt(0) && marker.length >= opening.length
-}
 
 // A row's cells: a pipe splits them unless escaped, and the optional leading and trailing pipes are no cells.
 const splitRow = (line: string): string[] => {
@@ -39,7 +30,7 @@ const splitRow = (line: string): string[] => {
 }
 
 // The table that starts at `start`, if one does: a header row with a pipe, a delimiter row of as many cells, then the body rows
-// up to a blank line, a fence, or a line with no pipe, which is prose and is left as it is.
+// up to a blank line or a line with no pipe, which is prose and is left as it is.
 const tableAt = (lines: string[], start: number): Table | null => {
   const header = lines[start] ?? ''
   const delimiter = lines[start + 1]
@@ -51,7 +42,7 @@ const tableAt = (lines: string[], start: number): Table | null => {
   const rows: string[][] = []
   let end = start + 2
   let row = lines[end]
-  while (row !== undefined && row.includes('|') && !FENCE.test(row)) {
+  while (row !== undefined && row.includes('|')) {
     rows.push(splitRow(row))
     end++
     row = lines[end]
@@ -74,26 +65,13 @@ const listOf = ({ headers, rows }: Table): string[] => {
   })
 }
 
+// The prose of a brief, its tables drawn as lists. Its input has no fenced code: fences.ts cuts the blocks out before this sees the text.
 export const tablesAsLists = (markdown: string): string => {
   const lines = markdown.split('\n')
   const out: string[] = []
-  let fence: string | null = null
   let i = 0
   while (i < lines.length) {
     const line = lines[i] ?? ''
-    if (fence !== null) {
-      if (closesFence(line, fence)) fence = null
-      out.push(line)
-      i++
-      continue
-    }
-    const opening = FENCE.exec(line)?.[1]
-    if (opening !== undefined) {
-      fence = opening
-      out.push(line)
-      i++
-      continue
-    }
     const table = tableAt(lines, i)
     if (table === null) {
       out.push(line)
@@ -106,42 +84,4 @@ export const tablesAsLists = (markdown: string): string => {
     if (i < lines.length && (lines[i] ?? '').trim() !== '') out.push('')
   }
   return out.join('\n')
-}
-
-// A brief cut at its fenced code blocks, so the pane can draw a copy button under each block. A code part's `text` is the block as
-// written, fences included, for the drawing; its `body` is the lines inside the fences, less the fence's indent, what a copy puts on the clipboard. A fence
-// left open runs to the end, as markdown draws it. Prose parts lose their blank edge lines, and a blank one is dropped.
-export type BriefPart = { kind: 'prose'; text: string } | { kind: 'code'; text: string; body: string }
-
-export const briefParts = (markdown: string): BriefPart[] => {
-  const parts: BriefPart[] = []
-  const pushProse = (lines: string[]): void => {
-    const text = lines.join('\n').replace(/^(\s*\n)+/, '').replace(/(\n\s*)+$/, '')
-    if (text.trim() !== '') parts.push({ kind: 'prose', text })
-  }
-  const lines = markdown.split('\n')
-  let prose: string[] = []
-  let i = 0
-  while (i < lines.length) {
-    const line = lines[i] ?? ''
-    const opening = FENCE.exec(line)?.[1]
-    if (opening === undefined) {
-      prose.push(line)
-      i++
-      continue
-    }
-    pushProse(prose)
-    prose = []
-    let end = i + 1
-    while (end < lines.length && !closesFence(lines[end] ?? '', opening)) end++
-    const closed = end < lines.length
-    // A fence indented n spaces (at most three, as FENCE has it) takes up to n spaces off each line inside it, as markdown draws the block.
-    const indent = line.length - line.trimStart().length
-    const outdent = new RegExp(`^ {0,${indent}}`)
-    const body = lines.slice(i + 1, end).map(inner => inner.replace(outdent, ''))
-    parts.push({ kind: 'code', text: lines.slice(i, closed ? end + 1 : end).join('\n'), body: body.join('\n') })
-    i = closed ? end + 1 : end
-  }
-  pushProse(prose)
-  return parts
 }

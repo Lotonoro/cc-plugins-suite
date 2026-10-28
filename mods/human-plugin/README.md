@@ -36,7 +36,7 @@ To do for you 3 open
   A press on a title, or on the summary row, opens the pane on that item; the summary opens on the first item it folds, a blocking one first. The pane shows the
   one item you have selected: its note, its full detail, and its buttons last. Click an item in the band to show it, and click
   the shown item again to close the pane. When the item you are shown is removed, or its answer or reply is sent, the pane moves to the next open item, and closes when none is left. A decision comes as a brief: the
-  question, the agent's recommendation, the options with their costs, and the context. The pane draws any table in a brief as a list, so it fits the narrow pane. Each code block in a brief, except one inside a nested list item, has a `[copy]` button under it that puts just that block's lines on your clipboard, with no frame characters; a toast says whether it took. Ask for more and the agent adds
+  question, the agent's recommendation, the options with their costs, and the context. The pane draws any table in a brief as a list, so it fits the narrow pane. Each fenced block (backtick or tilde) in a brief has a `[copy]` button under it that puts just that block's lines on your clipboard, with no frame characters; a toast says whether it took. A fence gets no button when it is inside a block quote, when it is indented four or more columns past its list item's text, or when it is four or more columns from the margin under a list item whose wrapped line is not indented. Ask for more and the agent adds
   to the brief instead of burying the answer in chat.
 - When the agent works out the answer itself, it tells you why in one line.
 
