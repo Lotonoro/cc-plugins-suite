@@ -2,6 +2,7 @@
 export type TtlLabel = '5m' | '1h'
 
 // `model` and `speed` are the touch row's, as the transcript names them: what a refresh on this cache is priced at.
+// `outputTokens` is the output of the reply row `promptTokens` comes from: the next request re-sends it with the prefix.
 export type CacheView =
   | {
       kind: 'known'
@@ -9,6 +10,7 @@ export type CacheView =
       ttlMs: number
       ttlLabel: TtlLabel
       promptTokens: number
+      outputTokens: number
       model: string | null
       speed: string | null
     }

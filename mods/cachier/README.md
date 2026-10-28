@@ -38,7 +38,7 @@ click on the time while it is open closes it, as Esc or the person's close does.
 units:
 
 - the cache's warmth: `Prompt cache warm, 3:12 left (5-minute cache)`, or, once the cache has expired or been reset, the
-  figure to rebuild it;
+  figure to rebuild it (the context plus the last reply's output, which the next prompt writes with it);
 - keepalive's state; while it is off or paused, what the pie's colours warn of; while paused, why, and that it resumes
   after your next prompt;
 - what one refresh costs, or while keepalive is off, what one refresh would cost at the lead and count a click on the pie

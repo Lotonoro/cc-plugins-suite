@@ -3520,7 +3520,7 @@ describe("restoreState: a reload's session.start, over the state an earlier vers
       ['hint', { words: '4:41', cost: null, stats: [], armed: false, unit: 'dollars', notes: [] }],
       ['tally', { pause: { pings: 1, tokens: 19000 }, session: { pings: 3, tokens: 57000 }, raisedMs: null, epoch: 4 }],
       ['stats', { transcript: '/t.jsonl', cursor: 'a9' }],
-      ['view', { kind: 'known', touchMs: 1, ttlMs: 300000, ttlLabel: '5m', promptTokens: 19000 }],
+      ['view', { kind: 'known', touchMs: 1, ttlMs: 300000, ttlLabel: '5m', promptTokens: 19000, outputTokens: 0 }],
       ['keepalive', { config: { leadMs: 15000, count: 3 }, remaining: 3, stop: null, last: null, disclosed: true, seq: 2, active: true, gap: false, coldPending: false, lastTurn: 't3', generation: 7, lastUsed: null, pauseEpoch: 4 }],
       ['touch', 123],
       ['cold', { reason: 'cleared', atMs: 100 }],
@@ -3573,7 +3573,7 @@ describe("restoreState: a reload's session.start, over the state an earlier vers
     const stats = { transcript: '/t.jsonl', cursor: 'a9' }
     const judged = { netUsd: 0.42, pauses: 3 }
     const hint = { words: '4:41', cost: null, stats: [], armed: false, unit: 'dollars', notes: [], marker: { verdict: 'par', line: '' }, session: { verdict: 'par', line: '' }, breakEven: '' }
-    const view = { kind: 'known', touchMs: 1, ttlMs: 300000, ttlLabel: '5m', promptTokens: 19000, model: null, speed: null }
+    const view = { kind: 'known', touchMs: 1, ttlMs: 300000, ttlLabel: '5m', promptTokens: 19000, outputTokens: 0, model: null, speed: null }
     const values = new Map<string, unknown>([
       ['shape', STATE_SHAPE],
       ['transcript', '/t.jsonl'],
@@ -4521,7 +4521,7 @@ describe('the best setup: one sentence, in the pane and in the bare command, pri
     // The reload: the state still holds the transcript an earlier load learned and the cache it read, and this load has learned no path yet.
     const kept: Record<string, unknown> = {
       transcript: PATH,
-      view: { kind: 'known', touchMs: T0, ttlMs: 300000, ttlLabel: '5m', promptTokens: 18551, model: 'claude-opus-5-5', speed: 'standard' },
+      view: { kind: 'known', touchMs: T0, ttlMs: 300000, ttlLabel: '5m', promptTokens: 18551, outputTokens: 0, model: 'claude-opus-5-5', speed: 'standard' },
     }
     on('state.get', async (_$: any, e: any, next: any) => {
       const got = await next(e)
@@ -4549,7 +4549,7 @@ describe('the best setup: one sentence, in the pane and in the bare command, pri
     // The reload: the state still names the transcript an earlier load learned and the cache it read, and this load has learned no path yet.
     const kept: Record<string, unknown> = {
       transcript: PATH,
-      view: { kind: 'known', touchMs: T0, ttlMs: 300000, ttlLabel: '5m', promptTokens: 18551, model: 'claude-opus-5-5', speed: 'standard' },
+      view: { kind: 'known', touchMs: T0, ttlMs: 300000, ttlLabel: '5m', promptTokens: 18551, outputTokens: 0, model: 'claude-opus-5-5', speed: 'standard' },
     }
     on('state.get', async (_$: any, e: any, next: any) => {
       const got = await next(e)
@@ -4766,5 +4766,37 @@ describe('the best setup: one sentence, in the pane and in the bare command, pri
     await clock.advance(0)
     expect(JSON.stringify(await pane.drawn())).toMatch(/over 10 recent pauses/)
     await pane.unmount()
+  })
+})
+
+describe('the rebuild figure: one figure on the footer, the pane and the bare command, over the prefix and the last reply\'s output', () => {
+  const expired = () => ({
+    text: lines([
+      user({ uuid: 'u1', parent: null, ts: iso(T0) }),
+      assistant({ uuid: 'a1', parent: 'u1', ts: iso(T0), write: 18551, out: 7000, tags: FIVE, model: 'claude-opus-5-5', speed: 'standard' }),
+    ]),
+  })
+  const start = async ($: any, on: any) => {
+    kaWorld(on, expired())
+    const clock = mock.clock(on, { now: T0 + 400000 })
+    await $.classic.SessionStart({ source: 'startup', transcript_path: PATH })
+    await clock.advance(1000)
+  }
+
+  test('in dollars the footer, the pane and the bare /keepalive give the same figure, which prices the output too', async ($, on) => {
+    await start($, on)
+    // 18551 + 7000 tokens at the $5/M 5-minute write rate; the prefix alone would be ~$0.09.
+    expect(await hint($)).toBe('~$0.13 to rebuild')
+    expect(await drawnPane($)).toContain('~$0.13 to rebuild')
+    expect(await toggle($, '')).toContain('Prompt cache expired, ~$0.13 to rebuild.')
+  })
+
+  test('in tokens the three give the same figure, the prefix plus the output', async ($, on) => {
+    await start($, on)
+    await toggle($, 'unit tokens')
+    // 25551 tokens; the prefix alone would be ~19k.
+    expect(await hint($)).toBe('~26k tokens to rebuild')
+    expect(await drawnPane($)).toContain('~26k tokens to rebuild')
+    expect(await toggle($, '')).toContain('Prompt cache expired, ~26k tokens to rebuild.')
   })
 })

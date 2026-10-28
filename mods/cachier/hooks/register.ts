@@ -51,12 +51,12 @@ import { closedPane, isPaneOpen, paneAlarm, PANE, resizePane, syncPane, togglePa
 import { appended, HISTORY_BOUND, keyOf, KEY_PREFIX, merged, recordOf, recordsOf, staleKeys, type PauseRecord } from './history'
 import { adviceOf, ratesOfView, type Inputs } from './advice'
 import { learnedLine, learnedOf, ttlAdviceLine, ttlAdviceOf, ttlSwitchOf, type Learned } from './learn'
-import { breakEvenLine, countLineOf, judge, KEPT_COUNT, ratioOf, rewriteSpendOf, runCountOf, sessionBalanceLine, NO_JUDGED, pauseOf, type Pause } from './verdict'
+import { breakEvenLine, countLineOf, judge, KEPT_COUNT, ratioOf, rebuildOf, runCountOf, sessionBalanceLine, NO_JUDGED, pauseOf, type Pause } from './verdict'
 import { answerOf, type Setting } from './sections'
 import { stampLabel, withStamp } from './stamp'
 import { foldStatsEvents, INITIAL_STATS, pendingFor, rundownSections, sessionLineOf, type MissEvent, type LongPauseEvent } from './stats'
 import { lookupRows, readCache, type History, type Host, type Row } from './transcript'
-import { dollars, NO_KINDS, parsePricing, PRICES, PRICING_URL, spendOf, TTL_WORDS, unitOf, uponOf, writeReadRatio, type Money, type PriceList } from './prices'
+import { dollars, NO_KINDS, parsePricing, PRICES, PRICING_URL, spendOf, TTL_WORDS, unitOf, writeReadRatio, type Money, type PriceList } from './prices'
 
 type Dollar = EngineInterface
 
@@ -521,7 +521,7 @@ const resetKeepalive = async ($: Dollar): Promise<void> => {
 
 // The shape of the values this code keeps in the session's state. Bump it with any change to a value's shape in
 // types/index.d.ts: a reload under a new shape resets what the old one wrote, and one under the same shape keeps it.
-export const STATE_SHAPE = 12
+export const STATE_SHAPE = 13
 
 // A reload runs session.start again and keeps the session's state, which an earlier load wrote. Keepalive keeps what still fits, so a
 // reload mid-turn keeps the gap shut and a toggle that was on stays on, and the transcript is kept while it is a path. The unit is left as
@@ -880,7 +880,7 @@ const keepaliveCommand = async ($: Dollar, args: string, origin: { kind: string 
       const stats = (await $.state.get(STATS)).value ?? INITIAL_STATS
       const cold = (await $.state.get(COLD)).value ?? null
       const raw = (await $.state.get(VIEW)).value ?? NO_CACHE
-      const rebuild = raw.kind === 'known' ? uponOf(rewriteSpendOf(raw, money), money.unit) : ''
+      const rebuild = rebuildOf(raw, money)
       const reading = readingOf(raw, live, cold, nowMs, rebuild)
       const judged = (await $.state.get(JUDGED)).value ?? NO_JUDGED
       const run = runOf(held, defaultRun)
@@ -1285,7 +1285,7 @@ const drawStatus = async ($: Dollar) => {
   const held = (await $.state.get(KEEPALIVE)).value ?? INITIAL
   const cost = costOf(held, counted, money)
   // The figure to rebuild an expired cache: what the next prompt pays to write it again, in the unit shown.
-  const rebuild = view.kind === 'known' ? uponOf(rewriteSpendOf(view, money), money.unit) : ''
+  const rebuild = rebuildOf(view, money)
   const reading = readingOf(view, live, cold, nowMs, rebuild)
   // The lifetime a warm reading counts in: a reading is warm only with a known view.
   const ttl = view.kind === 'known' ? view.ttlLabel : '5m'

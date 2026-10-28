@@ -30,7 +30,7 @@ const w = (write5m: number): Spend => ({ ...NO_SPEND, write5m, usd: null, why: '
 const NONE = { count: 0, spend: NO_SPEND }
 // Whether a section's lines carry a line with this text. The rundown is read by section: the pauses under Keepalive, the misses under Advice.
 const carries = (lines: string[], text: string) => lines.some((line) => line.includes(text))
-const known = (touchMs: number): CacheView => ({ kind: 'known', touchMs, ttlMs: TTL, ttlLabel: '5m', promptTokens: 1, model: null, speed: null })
+const known = (touchMs: number): CacheView => ({ kind: 'known', touchMs, ttlMs: TTL, ttlLabel: '5m', promptTokens: 1, outputTokens: 0, model: null, speed: null })
 // The rundown in tokens; the dollar wording has its own tests.
 const tally = (pings: number, tokens: number): TallyState => ({
   pause: { pings, spend: r(tokens) },

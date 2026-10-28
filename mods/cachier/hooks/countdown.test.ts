@@ -2,7 +2,7 @@ import { describe, expect, test } from 'claude-code/testing'
 import { footerOf, readingOf, refreshingOf, settleCold, warmthOf } from './countdown'
 
 const T = 1_000_000
-const known = { kind: 'known' as const, touchMs: T, ttlMs: 300000, ttlLabel: '5m' as const, promptTokens: 1, model: null, speed: null }
+const known = { kind: 'known' as const, touchMs: T, ttlMs: 300000, ttlLabel: '5m' as const, promptTokens: 1, outputTokens: 0, model: null, speed: null }
 const hour = { ...known, ttlMs: 3600000, ttlLabel: '1h' as const }
 const COLD = { reason: 'model switch' as const, atMs: T }
 const UPON = '~$0.42'
