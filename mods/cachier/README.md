@@ -76,7 +76,7 @@ and why a figure is in tokens are in the answer to a bare `/keepalive`.
   figure in the hover and in the pane follows it. The `cost_unit` option sets the unit a session starts in; dollars by
   default.
 - Dollars are Anthropic's list prices, read from the official pricing page
-  (`platform.claude.com/docs/en/about-claude/pricing.md`). One price list, kept in the plugin store, is shared by every
+  (`platform.claude.com/docs/en/about-claude/pricing.md`), except where your overrides file below sets your own rates. One price list, kept in the plugin store, is shared by every
   session: a read happens when the newest successful read is seven days old, and at once on every switch to dollars. A
   session about to read checks the shared record again, so a read another session has already stamped is not repeated.
   Until the page has been read, the built-in table in `hooks/prices.ts` prices the models it lists; after that the last
@@ -89,7 +89,41 @@ and why a figure is in tokens are in the answer to a bare `/keepalive`.
   priced at that model's list rates. An id the price list holds exactly as given is priced by its own entry first. The
   partners' own rates aren't known, so a figure for such a session may differ from its bill. Ids in the older Bedrock
   naming, such as `anthropic.claude-3-5-sonnet-20241022-v2:0`, normalise to `claude-3-5-sonnet`, which the
-  price list does not name, so they show no price; an overrides file will be the way to price them.
+  price list does not name, so they show no price; the overrides file below prices them.
+- Your own rates go in an overrides file, `~/.claude/cachier/prices.json` (under `CLAUDE_CONFIG_DIR` when that is set).
+  Cachier reads it and never writes it, so you, or Claude when you ask it to read a pricing page and write the entries,
+  edit it with the ordinary editor. It is read each time cachier re-reads the shared record, about once a minute, so an
+  edit, or deleting the file, is in force in every open session within about two minutes, with no page read and no
+  reload. It holds two kinds of entry:
+
+  ```json
+  {
+    "rates": {
+      "claude-opus-5-5": { "input": 4, "read": 0.4, "write5m": 5, "write1h": 8, "date": "2026-10-26T09:00" }
+    },
+    "mappings": {
+      "anthropic.claude-3-5-sonnet-20241022-v2:0": "claude-sonnet-4-5"
+    }
+  }
+  ```
+
+  - **rates**: a model id and its dollars per million tokens. `input` and `read` are required and must be positive;
+    `write5m` and `write1h` are optional and, when left out, are worked out from `input` as the built-in table does (a
+    5 m write is 1.25 inputs, a 1 h write 2). An optional `above` holds a size tier (`threshold` in tokens, then
+    `input`, `read` and optionally the writes). Every rates entry needs a `date`, when you set it: a calendar date, or a
+    date and time. A date with no time counts as the end of that day, and a date or time with no offset is local time;
+    one with an offset (`2026-10-26T09:00+02:00`, or `Z`) is that instant. The rates must be in the sanity order: read
+    at most input, input at most 5 m write, 5 m write at most 1 h write.
+  - **mappings**: an id as the session reports it, mapped to a model id that has a price (a model on the page, in the
+    built-in table, or a rates entry). The id is matched exactly, so a mapping for an id the page lists wins, and the
+    target may be a dated or partner form of a priced model. A mapping has no date. Mappings do not chain: a target that
+    is itself a mapping key is skipped.
+
+  The last editor wins. A hand rate stands over the built-in table and the page's rates until a page read changes that
+  model's rates after the entry's date; the page's rates are then in force. A first sighting of a model on the page is
+  no change, and a model the page never lists keeps its hand rate. An entry that breaks a rule above, or a mapping to a
+  model with no price, is skipped and written to the debug log; a file that is not JSON or cannot be read is skipped
+  whole and logged as unreadable. An unknown field or section is ignored and named in the debug log.
 - A figure with no price is shown in tokens, and the bare `/keepalive` answer says why (`Shown in tokens: no price for …`). That covers a
   model neither the page nor the built-in table lists, fast mode, and a response that names no model.
 - Tokens name what was done with them (`~19k tokens read`, `~20k tokens written`), since a write costs many reads. The
@@ -214,7 +248,8 @@ the cached context and how much it grew since the session's previous pause. Noth
 holds the newest 2,000 or so pauses across all sessions, for keepalive to learn its refresh count from. It also keeps one
 shared price record under the key `prices`: the rates each read gave every model it listed, when each model's rates last
 changed, whether the newest read dropped it, when the newest successful read landed and when a read last changed any
-rates, and the last read attempt with its outcome and failure count. Nothing else is written to disk. The only request
+rates, and the last read attempt with its outcome and failure count. Nothing else is written to disk. Cachier also reads
+the overrides file `cachier/prices.json` under your config directory, and never writes it. The only request
 cachier makes itself is the pricing page, with nothing sent but the request. Each keepalive refresh is a model request.
 
 ## Known limits

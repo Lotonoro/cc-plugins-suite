@@ -1,7 +1,8 @@
 // The shared price record: the rates a page read last supplied for each model, when each last changed, what the newest
 // read dropped, the newest success, and the last attempt. Pure: the store and the page are `pricesync.ts`'s.
 import type { Kinds } from '../types'
-import { PRICES, type PriceList, type Rates } from './prices'
+import type { Overrides, Skip } from './overrides'
+import { PRICES, ratesFor, type PriceList, type Rates } from './prices'
 
 // The store key, outside the pause history's `pauses/` prefix, so its trim never reads or deletes the record.
 export const PRICE_KEY = 'prices'
@@ -183,4 +184,24 @@ export const pricesOf = (record: PriceRecord | null): PriceList => {
   const list: PriceList = { ...PRICES }
   if (record !== null) for (const [id, model] of Object.entries(record.models)) list[id] = model.rates
   return list
+}
+
+// The prices in force with the overrides over them, and the entries left out. The last editor wins: a hand rate stands over
+// the built-in table and the stored rates until a page read changed that model after the entry's date; a first sighting is no
+// change. A mapping then prices its key at its target's rates, written into the list under that key so one lookup finds it;
+// one whose target has no price is skipped. The skips are the file's, then the merge's, beside the list.
+export const pricesInForce = (record: PriceRecord | null, overrides: Overrides | null): { list: PriceList; skips: Skip[] } => {
+  const list = pricesOf(record)
+  if (overrides === null) return { list, skips: [] }
+  for (const entry of overrides.rates) {
+    const changedMs = record?.models[entry.id]?.changedMs ?? null
+    if (changedMs === null || changedMs <= entry.setMs) list[entry.id] = entry.rates
+  }
+  const skips = [...overrides.skips]
+  const mapped = overrides.mappings.map((m) => ({ key: m.key, target: m.target, rates: ratesFor(list, m.target) }))
+  for (const m of mapped) {
+    if (m.rates === null) skips.push({ id: m.key, kind: 'mapping', reason: `target ${m.target} has no price` })
+    else list[m.key] = m.rates
+  }
+  return { list, skips }
 }

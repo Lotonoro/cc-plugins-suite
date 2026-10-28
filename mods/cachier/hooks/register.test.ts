@@ -141,6 +141,8 @@ const world = (on: any, doc: { text: string; broken?: boolean; exists?: boolean;
     const status = doc.pricingStatus ?? 200
     return { value: { status, ok: status < 300, headers: {}, text: doc.pricing ?? PRICING_PAGE } }
   })
+  // No config dir and no home: cachier finds no overrides file, so these tests' file reads are their own.
+  on('env.get', () => ({ value: undefined }))
   on('fs.exists', (_$: any, e: any) => {
     rec.exists++
     return { value: doc.exists !== false }

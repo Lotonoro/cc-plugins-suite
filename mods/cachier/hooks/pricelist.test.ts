@@ -1,10 +1,12 @@
 import { describe, expect, test } from 'claude-code/testing'
-import { PRICES, type Rates } from './prices'
+import type { Overrides } from './overrides'
+import { PRICES, ratesFor, type Rates } from './prices'
 import {
   dueAtMs,
   failedOf,
   isDue,
   landedOf,
+  pricesInForce,
   pricesOf,
   recordOf,
   stampedOf,
@@ -215,5 +217,82 @@ describe('when a read is due', () => {
       attempt: { stampMs: T - DAY, outcome: 'unreachable', failures: 2, previous: 'unreachable' },
     })
     expect(dueAtMs(held)).toBe(T + WEEK)
+  })
+})
+
+const hand = (id: string, r: Rates, setMs: number) => ({ id, rates: r, setMs })
+const overrides = (o: Partial<Overrides> = {}): Overrides => ({ rates: [], mappings: [], skips: [], warnings: [], ...o })
+
+describe('the prices in force with the overrides: the last editor wins', () => {
+  test('no overrides leaves the prices as the record gives them, and no skips', () => {
+    const held = record({ m: model(R1) })
+    expect(pricesInForce(held, null)).toEqual({ list: pricesOf(held), skips: [] })
+  })
+
+  test('a hand rate beats the built-in table', () => {
+    const { list } = pricesInForce(null, overrides({ rates: [hand('claude-opus-5-5', R2, T)] }))
+    expect(list['claude-opus-5-5']).toEqual(R2)
+  })
+
+  test('a hand rate for a model whose page rates never changed is in force, right after its first sighting too', () => {
+    const first = landedOf(null, page('m', R1), T + DAY, T + DAY)
+    expect(first.models.m!.changedMs).toBeNull()
+    expect(pricesInForce(first, overrides({ rates: [hand('m', R2, T)] })).list.m).toEqual(R2)
+  })
+
+  test('a page read that changed the model after the hand entry date puts the page rates in force', () => {
+    const changed = record({ m: model(R1, T + DAY) })
+    expect(pricesInForce(changed, overrides({ rates: [hand('m', R2, T)] })).list.m).toEqual(R1)
+  })
+
+  test('a hand rate dated after the page last change, or at it, is in force', () => {
+    const changed = record({ m: model(R1, T) })
+    expect(pricesInForce(changed, overrides({ rates: [hand('m', R2, T + DAY)] })).list.m).toEqual(R2)
+    expect(pricesInForce(changed, overrides({ rates: [hand('m', R2, T)] })).list.m).toEqual(R2)
+  })
+
+  test('a hand rate for a model the page never listed stays in force', () => {
+    const held = record({ other: model(R1, T + DAY) })
+    expect(pricesInForce(held, overrides({ rates: [hand('mine', R2, T)] })).list.mine).toEqual(R2)
+  })
+})
+
+describe('the prices in force with the overrides: mappings', () => {
+  test('a mapping prices its key at its target rates, with a hand-priced target too', () => {
+    const { list, skips } = pricesInForce(null, overrides({ rates: [hand('mine', R2, T)], mappings: [{ key: 'anthropic.claude-x-v1:0', target: 'mine' }] }))
+    expect(list['anthropic.claude-x-v1:0']).toEqual(R2)
+    expect(ratesFor(list, 'anthropic.claude-x-v1:0')).toEqual(R2)
+    expect(skips).toEqual([])
+  })
+
+  test('a mapping wins over the page for a key the page lists', () => {
+    const held = record({ 'claude-opus-5-5': model(R1, T + DAY) })
+    const { list } = pricesInForce(held, overrides({ mappings: [{ key: 'claude-opus-5-5', target: 'claude-haiku-4-5' }] }))
+    expect(list['claude-opus-5-5']).toEqual(PRICES['claude-haiku-4-5'])
+  })
+
+  test('a target that is a dated or partner form of a priced model resolves through the normalised id', () => {
+    const { list } = pricesInForce(null, overrides({ mappings: [{ key: 'weird', target: 'anthropic.claude-opus-4-1-20250805-v1:0' }] }))
+    expect(list.weird).toEqual(PRICES['claude-opus-4-1'])
+  })
+
+  test('a mapping to an unpriced model is skipped, and the skip names the target', () => {
+    const { list, skips } = pricesInForce(null, overrides({ mappings: [{ key: 'k', target: 'claude-unknown-9' }] }))
+    expect(Object.hasOwn(list, 'k')).toBe(false)
+    expect(skips).toHaveLength(1)
+    expect(skips[0]).toMatchObject({ id: 'k', kind: 'mapping' })
+    expect(skips[0]!.reason).toContain('claude-unknown-9')
+  })
+
+  test('the file skips come first and the merge skips after, in one list beside the prices', () => {
+    const fileSkip = { id: 'bad', kind: 'rates' as const, reason: 'no valid date' }
+    const { skips } = pricesInForce(null, overrides({ skips: [fileSkip], mappings: [{ key: 'a', target: 'nope' }, { key: 'b', target: 'nada' }] }))
+    expect(skips.map((s) => s.id)).toEqual(['bad', 'a', 'b'])
+  })
+
+  test('a mapping key that is an Object.prototype name is written as an own entry', () => {
+    const { list } = pricesInForce(null, overrides({ mappings: [{ key: 'constructor', target: 'claude-opus-5-5' }] }))
+    expect(Object.hasOwn(list, 'constructor')).toBe(true)
+    expect(ratesFor(list, 'constructor')).toEqual(PRICES['claude-opus-5-5'])
   })
 })

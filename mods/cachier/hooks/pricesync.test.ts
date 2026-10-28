@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'claude-code/testing'
 import { PRICES, PRICING_URL, type Rates } from './prices'
 import { dueAtMs, type PriceRecord } from './pricelist'
-import { priceCheck, priceList, priceReady, priceSync } from './pricesync'
+import { priceCheck, priceList, priceReady, priceSkips, priceSync } from './pricesync'
 
 const HOUR = 3600000
 const DAY = 24 * HOUR
@@ -64,7 +64,9 @@ const until = async (condition: () => boolean) => {
 }
 
 // The engine's store, clock, page and debug log, as pricesync reads them.
-const makeWorld = (o: { store?: Record<string, unknown>; fetch?: Config['fetch']; getThrows?: boolean } = {}) => {
+const makeWorld = (
+  o: { store?: Record<string, unknown>; fetch?: Config['fetch']; getThrows?: boolean; files?: Record<string, string>; env?: Record<string, string> } = {},
+) => {
   let now = T
   const values = new Map<string, unknown>(Object.entries(o.store ?? {}))
   const gets: string[] = []
@@ -72,6 +74,11 @@ const makeWorld = (o: { store?: Record<string, unknown>; fetch?: Config['fetch']
   const logs: string[] = []
   const fetches: string[] = []
   const timers = new Set<{ cb: () => void }>()
+  // The overrides file's disk: a path to its text, and the paths whose read is refused.
+  const files = new Map<string, string>(Object.entries(o.files ?? {}))
+  const refused = new Set<string>()
+  const env = new Map<string, string>(Object.entries(o.env ?? { HOME: '/home/u' }))
+  const reads: string[] = []
   let setCount = 0
   const config: Config = {
     fetch: o.fetch ?? (async () => answer(PAGE_OPUS)),
@@ -108,9 +115,22 @@ const makeWorld = (o: { store?: Record<string, unknown>; fetch?: Config['fetch']
       },
     },
     ui: { log: (text: string) => void logs.push(text) },
+    fs: {
+      exists: async (path: string) => files.has(path),
+      read: async (path: string) => {
+        reads.push(path)
+        const text = files.get(path)
+        if (text === undefined || refused.has(path)) throw new Error('file read refused')
+        return text
+      },
+    },
+    env: { get: async (name: string) => env.get(name) },
   }
   return {
     dollar,
+    files,
+    refused,
+    reads,
     values,
     gets,
     writes,
@@ -777,5 +797,192 @@ describe('overlapping loads and a check that throws', () => {
     expect(w.stored()!.models).toEqual({ m: model(R1) })
     expect(w.stored()!.lastSuccessMs).toBe(T - WEEK)
     expect(sync.reading).toBeNull()
+  })
+})
+
+const FILE = '/home/u/.claude/cachier/prices.json'
+const MINE = { rates: { 'claude-mine': { input: 3, read: 0.3, date: '2026-10-26' } } }
+const nowIso = (ms: number) => new Date(ms).toISOString()
+
+describe('the overrides file: read with the record, in force in every session', () => {
+  test('with no file there are no skips, nothing is logged, and the prices are the record\'s', async () => {
+    const w = makeWorld()
+    const sync = priceSync()
+    await priceReady(sync, w.dollar as any)
+    expect(priceSkips(sync)).toEqual([])
+    expect(w.logs).toEqual([])
+    expect(w.reads).toEqual([])
+    expect(priceList(sync)).toEqual(PRICES)
+  })
+
+  test('a rates entry in the file is in force, and a mapping prices an id at its target', async () => {
+    const w = makeWorld({ files: { [FILE]: JSON.stringify({ ...MINE, mappings: { 'anthropic.claude-q-v1:0': 'claude-mine' } }) } })
+    const sync = priceSync()
+    await priceReady(sync, w.dollar as any)
+    expect(perBillion(priceList(sync)['claude-mine']!.input)).toBe(3000)
+    expect(priceList(sync)['anthropic.claude-q-v1:0']).toEqual(priceList(sync)['claude-mine'])
+    expect(priceSkips(sync)).toEqual([])
+  })
+
+  test('with CLAUDE_CONFIG_DIR set the file is read from under it', async () => {
+    const w = makeWorld({ env: { HOME: '/home/u', CLAUDE_CONFIG_DIR: '/cfg' }, files: { '/cfg/cachier/prices.json': JSON.stringify(MINE), [FILE]: '{}' } })
+    const sync = priceSync()
+    await priceReady(sync, w.dollar as any)
+    expect(w.reads).toEqual(['/cfg/cachier/prices.json'])
+    expect(priceList(sync)['claude-mine']).toBeDefined()
+  })
+
+  test('a hand rate stands over a page read that lists the model for the first time, and loses to a later page change', async () => {
+    const hand = { rates: { 'claude-opus-5-5': { input: 9, read: 0.9, date: nowIso(T - DAY) } } }
+    const w = makeWorld({ files: { [FILE]: JSON.stringify(hand) }, store: { prices: record({}, { lastSuccessMs: T - WEEK }) } })
+    const sync = priceSync()
+    await priceReady(sync, w.dollar as any)
+    await priceCheck(sync, w.dollar as any)
+    expect(w.fetches.length).toBe(1)
+    expect(perBillion(priceList(sync)['claude-opus-5-5']!.input)).toBe(9000)
+    w.advance(WEEK)
+    w.config.fetch = async () => answer(page([['Opus 5.5', '6', '0.60']]))
+    await priceCheck(sync, w.dollar as any)
+    expect(w.fetches.length).toBe(2)
+    expect(perBillion(priceList(sync)['claude-opus-5-5']!.input)).toBe(6000)
+  })
+
+  test('an edit to the file is in force in a second open session within about two minutes, with no page read', async () => {
+    const w = makeWorld({ files: { [FILE]: JSON.stringify(MINE) }, store: { prices: record({}, { lastSuccessMs: T }) } })
+    const sync = priceSync()
+    await priceReady(sync, w.dollar as any)
+    expect(perBillion(priceList(sync)['claude-mine']!.input)).toBe(3000)
+    w.files.set(FILE, JSON.stringify({ rates: { 'claude-mine': { input: 5, read: 0.5, date: '2026-10-26' } } }))
+    w.advance(61000)
+    await priceCheck(sync, w.dollar as any)
+    expect(w.fetches).toEqual([])
+    expect(perBillion(priceList(sync)['claude-mine']!.input)).toBe(5000)
+  })
+
+  test('deleting the file takes its entries out of force within about two minutes, and nothing is reported', async () => {
+    const w = makeWorld({ files: { [FILE]: JSON.stringify(MINE) }, store: { prices: record({}, { lastSuccessMs: T }) } })
+    const sync = priceSync()
+    await priceReady(sync, w.dollar as any)
+    expect(priceList(sync)['claude-mine']).toBeDefined()
+    w.files.delete(FILE)
+    w.advance(61000)
+    await priceCheck(sync, w.dollar as any)
+    expect(priceList(sync)['claude-mine']).toBeUndefined()
+    expect(priceSkips(sync)).toEqual([])
+  })
+
+  test('a file that is not JSON, or whose read is refused, is one unreadable item and nothing applies', async () => {
+    for (const refuse of [false, true]) {
+      const w = makeWorld({ files: { [FILE]: refuse ? JSON.stringify(MINE) : '{ nope' } })
+      if (refuse) w.refused.add(FILE)
+      const sync = priceSync()
+      await priceReady(sync, w.dollar as any)
+      expect(priceSkips(sync)).toEqual([{ id: null, kind: 'file', reason: 'unreadable' }])
+      expect(priceList(sync)).toEqual(PRICES)
+    }
+  })
+
+  test('a file the check cannot look up is the unreadable item too, and the reason is logged', async () => {
+    const w = makeWorld({ files: { [FILE]: JSON.stringify(MINE) } })
+    w.dollar.fs.exists = async () => {
+      throw new Error('exists refused')
+    }
+    const sync = priceSync()
+    await priceReady(sync, w.dollar as any)
+    expect(priceSkips(sync)).toEqual([{ id: null, kind: 'file', reason: 'unreadable' }])
+    expect(priceList(sync)).toEqual(PRICES)
+    expect(w.logs.join('\n')).toContain('exists refused')
+  })
+
+  test('a rates skip from the file and a mapping skip from the merge are one list, the file first', async () => {
+    const text = JSON.stringify({ rates: { bad: { input: 3, read: 0.3 } }, mappings: { k: 'no-such-model' } })
+    const w = makeWorld({ files: { [FILE]: text } })
+    const sync = priceSync()
+    await priceReady(sync, w.dollar as any)
+    expect(priceSkips(sync).map((s) => [s.id, s.kind])).toEqual([['bad', 'rates'], ['k', 'mapping']])
+  })
+
+  test('skip reasons reach the debug log once while the file is unchanged, and again when the list changes', async () => {
+    const w = makeWorld({ files: { [FILE]: JSON.stringify({ rates: { bad: { input: 3, read: 0.3 } } }) }, store: { prices: record({}, { lastSuccessMs: T }) } })
+    const sync = priceSync()
+    await priceReady(sync, w.dollar as any)
+    const named = () => w.logs.filter((l) => l.includes('date')).length
+    expect(named()).toBe(1)
+    for (let i = 0; i < 3; i++) {
+      w.advance(61000)
+      await priceCheck(sync, w.dollar as any)
+    }
+    expect(w.reads.length).toBe(4)
+    expect(named()).toBe(1)
+    w.files.set(FILE, JSON.stringify({ rates: { worse: { input: 3, read: 0.3 } } }))
+    w.advance(61000)
+    await priceCheck(sync, w.dollar as any)
+    expect(named()).toBe(2)
+  })
+
+  test('an earlier load whose file read lands after a newer load applies neither its overrides nor its skip reasons', async () => {
+    const w = makeWorld({ files: { [FILE]: JSON.stringify({ rates: { old: { input: 3, read: 0.3 } } }) }, store: { prices: record({}, { lastSuccessMs: T }) } })
+    const late = deferred<void>()
+    let reads = 0
+    const slow = {
+      ...w.dollar,
+      fs: {
+        ...w.dollar.fs,
+        read: async (path: string) => {
+          reads++
+          if (reads > 1) return w.dollar.fs.read(path)
+          const seen = w.files.get(path)
+          await late.promise
+          return seen!
+        },
+      },
+    }
+    const sync = priceSync()
+    const ready = priceReady(sync, slow as any)
+    await until(() => reads === 1)
+    w.files.set(FILE, JSON.stringify({ rates: { fresh: { input: 3, read: 0.3 } } }))
+    const check = priceCheck(sync, slow as any)
+    late.resolve()
+    await Promise.all([ready, check])
+    expect(reads).toBe(2)
+    expect(priceSkips(sync).map((s) => s.id)).toEqual(['fresh'])
+    expect(w.logs.filter((l) => l.includes('skipped rates old')).length).toBe(0)
+    expect(w.logs.filter((l) => l.includes('skipped rates fresh')).length).toBe(1)
+  })
+
+  test('a page read that changes which mappings are skipped logs the skip list again, without a reload', async () => {
+    const w = makeWorld({
+      files: { [FILE]: JSON.stringify({ mappings: { k1: 'claude-sonnet-9-9', k2: 'claude-ghost' } }) },
+      store: { prices: record({}, { lastSuccessMs: T - WEEK }) },
+      fetch: async () => answer(page([['Sonnet 9.9', '2', '0.10']])),
+    })
+    const sync = priceSync()
+    await priceReady(sync, w.dollar as any)
+    const named = (id: string) => w.logs.filter((l) => l.includes(`skipped mapping ${id}:`)).length
+    expect(named('k2')).toBe(1)
+    await priceCheck(sync, w.dollar as any)
+    expect(w.fetches.length).toBe(1)
+    expect(priceSkips(sync).map((s) => s.id)).toEqual(['k2'])
+    expect(named('k2')).toBe(2)
+  })
+
+  test('an ignored field is named in the debug log once while the file is unchanged, and again when the file names another', async () => {
+    const w = makeWorld({ files: { [FILE]: JSON.stringify({ rates: { m: { input: 3, read: 0.3, write1H: 5, date: '2026-10-26' } } }) }, store: { prices: record({}, { lastSuccessMs: T }) } })
+    const sync = priceSync()
+    await priceReady(sync, w.dollar as any)
+    const named = (field: string) => w.logs.filter((l) => l.includes(`unknown field ${field}`)).length
+    expect(priceSkips(sync)).toEqual([])
+    expect(named('write1H')).toBe(1)
+    for (let i = 0; i < 3; i++) {
+      w.advance(61000)
+      await priceCheck(sync, w.dollar as any)
+    }
+    expect(w.reads.length).toBe(4)
+    expect(named('write1H')).toBe(1)
+    w.files.set(FILE, JSON.stringify({ rates: { m: { input: 3, read: 0.3, write5M: 4, date: '2026-10-26' } } }))
+    w.advance(61000)
+    await priceCheck(sync, w.dollar as any)
+    expect(named('write5M')).toBe(1)
+    expect(named('write1H')).toBe(1)
   })
 })

@@ -2,13 +2,14 @@
 // and the page read in flight; a tick re-reads a copy over a minute old, and a due read stamps the record before it
 // fetches and writes its outcome and list onto a fresh re-read.
 import type { EngineInterface, HttpResponse } from 'claude-code'
+import { overridesPath, parseOverrides, UNREADABLE, type Overrides, type Skip } from './overrides'
 import { parsePricing, PRICING_URL, type PriceList } from './prices'
 import {
   failedOf,
   isDue,
   landedOf,
   PRICE_KEY,
-  pricesOf,
+  pricesInForce,
   recordOf,
   stampedOf,
   type PriceOutcome,
@@ -25,10 +26,15 @@ type ReadOutcome =
   | { kind: 'unreachable'; err: unknown }
   | { kind: 'format'; err: Error }
 
-// A session's copy of the record, when it was read, and the page read in flight.
+// A session's copy of the record, when it was read, the overrides file as last read, and the page read in flight.
 // The fields are what make one session's copy its own.
 export type PriceSync = {
   record: PriceRecord | null
+  // The overrides file as last read; null with no file.
+  overrides: Overrides | null
+  // The skip list and the file's warnings last written to the debug log, as text, so a list that has not changed is not logged again.
+  loggedSkips: string
+  loggedWarnings: string
   readAtMs: number
   loaded: boolean
   readable: boolean
@@ -46,11 +52,42 @@ export function report($: Dollar, err: unknown) {
   $.ui.log(`cachier: ${err instanceof Error ? (err.stack ?? err.message) : String(err)}`, { to: 'debug' })
 }
 
-// Adopts a record as this session's copy: a newer state than any load still in flight.
-function adopt(state: PriceSync, record: PriceRecord | null, atMs: number) {
+// Adopts a record as this session's copy: a newer state than any load still in flight. Its skips are logged again when the
+// merge changed them.
+function adopt(state: PriceSync, $: Dollar, record: PriceRecord | null, atMs: number) {
   state.generation++
   state.record = record
   state.readAtMs = atMs
+  noteOverrides(state, $)
+}
+
+// Reads the overrides file with the record: none when it does not exist, an unreadable item when it exists and cannot be read.
+// Never throws.
+async function readOverrides($: Dollar): Promise<Overrides | null> {
+  try {
+    const path = overridesPath(await $.env.get('CLAUDE_CONFIG_DIR'), await $.env.get('HOME'))
+    if (path === null || !(await $.fs.exists(path))) return null
+    return parseOverrides(await $.fs.read(path))
+  } catch (err) {
+    report($, err)
+    return UNREADABLE
+  }
+}
+
+// Writes each skip reason, and each warning about the file, to the debug log when its list is not the one last written.
+function noteOverrides(state: PriceSync, $: Dollar) {
+  const skips = priceSkips(state)
+  const text = JSON.stringify(skips)
+  if (text !== state.loggedSkips) {
+    state.loggedSkips = text
+    for (const s of skips) $.ui.log(`cachier: price overrides skipped ${s.kind}${s.id === null ? '' : ` ${s.id}`}: ${s.reason}`, { to: 'debug' })
+  }
+  const warnings = state.overrides?.warnings ?? []
+  const warningText = JSON.stringify(warnings)
+  if (warningText !== state.loggedWarnings) {
+    state.loggedWarnings = warningText
+    for (const w of warnings) $.ui.log(`cachier: price overrides warning: ${w}`, { to: 'debug' })
+  }
 }
 
 // Reads the record. A failure keeps the last list in force and leaves the copy marked unreadable; the next check past
@@ -71,25 +108,28 @@ async function loadRecord(state: PriceSync, $: Dollar): Promise<boolean> {
 
 async function loadOnce(state: PriceSync, $: Dollar, generation: number): Promise<boolean> {
   const atMs = await $.clock.now()
+  let record: PriceRecord | null = null
+  let overrides: Overrides | null = null
+  let readable = true
   try {
-    const record = recordOf(await $.store.get(PRICE_KEY))
-    if (generation === state.generation) {
-      state.record = record
-      state.readAtMs = atMs
-      state.readable = true
-    }
-    return true
+    overrides = await readOverrides($)
+    record = recordOf(await $.store.get(PRICE_KEY))
   } catch (err) {
-    if (generation === state.generation) {
-      state.readAtMs = atMs
-      state.readable = false
-    }
+    readable = false
     report($, err)
-    return false
   } finally {
     // Set once the store has answered, so a caller that finds it set never prices from a record still being read.
     state.loaded = true
   }
+  // The file and the record land together, and only if no newer load or write began since.
+  if (generation === state.generation) {
+    if (readable) state.record = record
+    state.overrides = overrides
+    state.readAtMs = atMs
+    state.readable = readable
+    noteOverrides(state, $)
+  }
+  return readable
 }
 
 async function readyOf(state: PriceSync, $: Dollar): Promise<void> {
@@ -138,7 +178,7 @@ async function readPage(state: PriceSync, $: Dollar, switched: boolean): Promise
   if (pending !== base) {
     try {
       await $.store.set(PRICE_KEY, pending)
-      adopt(state, pending, stampMs)
+      adopt(state, $, pending, stampMs)
     } catch (err) {
       stamped = false
       report($, err)
@@ -164,7 +204,7 @@ async function readPage(state: PriceSync, $: Dollar, switched: boolean): Promise
     const next = landedOf(held, outcome.list, atMs, stampMs)
     try {
       await $.store.set(PRICE_KEY, next)
-      adopt(state, next, atMs)
+      adopt(state, $, next, atMs)
       return true
     } catch (err) {
       // A refused list write lands nothing: the stored list stays in force, and the retry is an unreachable failure's.
@@ -196,7 +236,7 @@ async function writeFailure(
       report($, err)
     }
   }
-  adopt(state, next, atMs)
+  adopt(state, $, next, atMs)
 }
 
 // Waits for the read in flight. True when the check is done: the run fetched, or the check is no switch. A switch whose
@@ -245,6 +285,9 @@ async function checkOf(state: PriceSync, $: Dollar, switched: boolean): Promise<
 // A session's price record and page read. Each load of the plugin makes a new one, so a reload starts with none of it.
 export const priceSync = (): PriceSync => ({
   record: null,
+  overrides: null,
+  loggedSkips: '[]',
+  loggedWarnings: '[]',
   readAtMs: 0,
   loaded: false,
   readable: false,
@@ -261,7 +304,12 @@ export function priceReady(sync: PriceSync, $: Dollar): Promise<void> {
 }
 
 export function priceList(sync: PriceSync): PriceList {
-  return pricesOf(sync.record)
+  return pricesInForce(sync.record, sync.overrides).list
+}
+
+// The overrides entries left out, beside the prices in force: the file's skips, then the merge's.
+export function priceSkips(sync: PriceSync): Skip[] {
+  return pricesInForce(sync.record, sync.overrides).skips
 }
 
 // Never rejects: a failure is logged and the check ends, so a caller's command is not broken by it.

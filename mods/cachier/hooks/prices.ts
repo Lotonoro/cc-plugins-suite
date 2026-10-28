@@ -15,13 +15,17 @@ export const NO_KINDS: Kinds = { input: 0, read: 0, write5m: 0, write1h: 0 }
 export const NO_SPEND: Spend = { ...NO_KINDS, usd: 0, why: null }
 
 // A 5 m write costs 1.25 inputs and a 1 h write 2, on every model.
-const kindsOf = (inputPerM: number, readPerM: number): Kinds => ({
+export const kindsOf = (inputPerM: number, readPerM: number): Kinds => ({
   input: inputPerM / 1e6,
   read: readPerM / 1e6,
   write5m: (inputPerM * 1.25) / 1e6,
   write1h: (inputPerM * 2) / 1e6,
 })
 const ratesOf = (inputPerM: number, readPerM: number, above: Rates['above'] = null): Rates => ({ ...kindsOf(inputPerM, readPerM), above })
+
+// The parser's sanity order: a read costs no more than an input, which costs no more than a 5 m write, which costs no more
+// than a 1 h write.
+export const inOrder = (k: Kinds): boolean => k.read <= k.input && k.input <= k.write5m && k.write5m <= k.write1h
 
 // What is priced until the page has been read, and when it cannot be: per million tokens, input then cache read, as the
 // pricing page lists them. A model the list lacks is shown in tokens, not guessed at.
@@ -85,7 +89,7 @@ export const parsePricing = (markdown: string): PriceList | null => {
     const rates = cells.slice(1, 5).map((c) => CELL_RATE.exec(c)?.[1]).map((v) => (v === undefined ? NaN : Number(v.replace(/,/g, '')) / 1e6))
     if (name === null || rates.length < 4 || !rates.every((r) => Number.isFinite(r) && r >= 0)) continue
     const [input, write5m, write1h, read] = rates as [number, number, number, number]
-    if (!(read <= input && input <= write5m && write5m <= write1h)) continue
+    if (!inOrder({ input, read, write5m, write1h })) continue
     const id = `claude-${name[1]!.toLowerCase()}-${name[2]!.replace('.', '-')}`
     const over = OVER.exec(name[3] ?? '')
     if (over === null) list[id] = { input, read, write5m, write1h, above: null }
