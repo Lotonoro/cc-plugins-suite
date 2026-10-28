@@ -1,4 +1,5 @@
-import type { EngineInterface, PaneCloseOrigin } from 'claude-code'
+import type { EngineInterface } from 'claude-code'
+import { report } from './pricesync'
 
 // The details pane: its flag, the open, close and re-open the footer's presses and the tick make, and the note on an open that failed.
 // A press decides on the flag synchronously, because the open must be made inside the press: an open made after an await is not counted
@@ -11,32 +12,57 @@ const PANE_FAILED = 'the details pane did not open; see the debug log'
 // The rows and columns the pane asks for: one row per line, and the columns of the longest.
 export type PaneSize = { rows: number; columns: number }
 
-// Whether the pane is open, as the mod last knows it. Set when its open is made; cleared by its own close, and by a close the mod hears
-// that it did not make (`closedPane`). A reload loses this, so the engine's record is read once at session.start (`syncPane`).
+// Whether the pane is open and drawn, as the mod last knows it. The mod's own open sets it and its own close clears it; a read of the engine's
+// record of panes (`readPane`) puts it right after each event that can leave it wrong: the mod's own open or close settling, a close of the
+// pane, the tick, and session.start.
 let paneOpen = false
-// The size the pane was last opened at; null when it is open but its size is not known (after a sync).
+// The size the pane was last asked to open at; null when it is open but its size is not known (after a sync). A failed open or a close leaves
+// it: a re-open another plugin refuses leaves the pane open at its old size, and asking again each tick would be refused each time.
 let paneSize: PaneSize | null = null
 // Why the last open failed, named on the status line until an open lands.
 let failure: string | null = null
 
+// Counts the starts of the mod's own opens and closes and the failure write-backs, so a read can tell that a call began while it was out.
+let writes = 0
+// The mod's own opens and closes still out, counted from the call's start to just before its post-call read begins.
+let inFlight = 0
+
 export const isPaneOpen = (): boolean => paneOpen
 export const paneAlarm = (): string | null => failure
 
-// The engine's record of the pane, read once at a session's start: a reload keeps the pane, and the flag says so.
-export async function syncPane($: EngineInterface): Promise<void> {
-  paneOpen = (await $.ui.panes()).some((pane) => pane.id === PANE)
-  paneSize = null
+// The engine's record of the pane: open when it lists the pane and has placed it, shut otherwise. A read that fails throws and leaves the
+// flag as it stands. One rule: a read out across the mod's own open or close is dropped, so it cannot undo that call's write. The read
+// applies only if no call was out when it started, none was started while it was out (`writes` unchanged), and none is out when it
+// returns. Nothing else shortens that window. A call's own post-call read starts after the call is counted off, so it applies unless
+// another call overlaps it; then that call's own post-call read puts the flag right.
+export async function readPane($: EngineInterface): Promise<void> {
+  const before = writes
+  const clear = inFlight === 0
+  const open = (await $.ui.panes()).some((pane) => pane.id === PANE && pane.isPlaced)
+  if (clear && writes === before && inFlight === 0) paneOpen = open
 }
 
-// A close the mod hears (`origin`, as the engine stamps it): the flag clears for the pane's id. The mod's own close ('plugin') cleared it
-// when it was made, and an open made since must not be undone by the report of that earlier close.
-export function closedPane(id: string, origin: PaneCloseOrigin['kind']): void {
-  if (id === PANE && origin !== 'plugin') paneOpen = false
+// The record read once at a session's start: a reload keeps the pane, and the flag says so. The size the pane was asked at is not known.
+export async function syncPane($: EngineInterface): Promise<void> {
+  paneSize = null
+  await readPane($)
+}
+
+// The read after the mod's own open or close settles, however it settled, started once the call is counted off. A failure is reported here, through the debug log, apart from the call's own error.
+async function readAfterCall($: EngineInterface): Promise<void> {
+  try {
+    await readPane($)
+  } catch (err) {
+    report($, err)
+  }
 }
 
 // The open, made at once: the flag is set before the open is awaited, so a press made while it runs is counted as an open of a pane already
-// open. A failure, or an open the engine does not place, clears the flag and is named until an open lands.
+// open. A failure, or an open the engine does not place, clears the flag and is named until an open lands; the read that follows puts the
+// flag right where the pane stays open.
 function openAt($: EngineInterface, size: PaneSize): Promise<unknown> {
+  writes++
+  inFlight++
   paneOpen = true
   paneSize = size
   return $.ui
@@ -46,22 +72,34 @@ function openAt($: EngineInterface, size: PaneSize): Promise<unknown> {
       failure = null
     })
     .catch((err: unknown) => {
+      writes++
       paneOpen = false
-      paneSize = null
       failure = PANE_FAILED
       throw err
+    })
+    .finally(() => {
+      inFlight--
+      return readAfterCall($)
     })
 }
 
 // The close: the flag clears before the close is awaited, so an open made while it runs counts as open.
 function closePane($: EngineInterface): Promise<unknown> {
+  writes++
+  inFlight++
   paneOpen = false
-  paneSize = null
-  // A close that is refused leaves the pane open, so the flag goes back to open, its size unknown.
-  return $.ui.close({ id: PANE }).catch((err: unknown) => {
-    paneOpen = true
-    throw err
-  })
+  // A close that rejects leaves the pane open, so the flag goes back to open; a close another plugin refuses is told by the read.
+  return $.ui
+    .close({ id: PANE })
+    .catch((err: unknown) => {
+      writes++
+      paneOpen = true
+      throw err
+    })
+    .finally(() => {
+      inFlight--
+      return readAfterCall($)
+    })
 }
 
 // A press on the details: a shut pane opens at `size`, an open one closes.

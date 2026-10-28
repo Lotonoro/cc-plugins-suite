@@ -47,7 +47,7 @@ import {
 } from './keepalive'
 import { singleFlight } from './guard'
 import { adviceRowsOf, footerLine, paneLines, paneOf, paneSize } from './hint'
-import { closedPane, isPaneOpen, paneAlarm, PANE, resizePane, syncPane, togglePane } from './pane'
+import { isPaneOpen, paneAlarm, PANE, readPane, resizePane, syncPane, togglePane } from './pane'
 import { appended, HISTORY_BOUND, keyOf, KEY_PREFIX, merged, recordOf, recordsOf, staleKeys, type PauseRecord } from './history'
 import { adviceOf, ratesOfView, type Inputs } from './advice'
 import { learnedLine, learnedOf, ttlAdviceLine, ttlAdviceOf, ttlSwitchOf, type Learned } from './learn'
@@ -136,6 +136,9 @@ let sessionReading: { path: string } | undefined
 // The transcript whose key's read has failed and been reported since its last learn or landed read: the tick's retries of it are not
 // reported again.
 let sessionFailed: string | undefined
+// Whether the tick's last read of the engine's record of the pane failed and was reported: the ticks that fail after it are not reported
+// again, and a tick read that returns a record ends the run.
+let paneTickFailed = false
 // A value memoised on the arrays it read and a key of its other inputs. `history`, the appended pauses and each read's records are replaced
 // on every change, never changed in place, so the arrays themselves say whether the pauses changed.
 type Memo<T> = { pauses: readonly (readonly unknown[])[]; key: string; value: T }
@@ -1394,7 +1397,20 @@ const lookupStamps = async ($: Dollar) => {
 // A tick that finds a pass still running is skipped; the running pass is not waited on. Each process run carries its own timeout.
 const runTick = singleFlight()
 
+// The tick's read of the engine's record of the pane, which catches a close the mod never hears within about a second. A run of failed
+// reads is reported once.
+const paneTick = async ($: Dollar) => {
+  try {
+    await readPane($)
+    paneTickFailed = false
+  } catch (err) {
+    if (!paneTickFailed) report($, err)
+    paneTickFailed = true
+  }
+}
+
 const tick = ($: Dollar) => {
+  inBackground($, paneTick($))
   inBackground($, priceCheck(sync, $))
   inBackground($, drawOnce(() => drawStatus($)).then(() => runTick(() => lookupStamps($))))
   inBackground($, keepaliveTick($))
@@ -1425,6 +1441,7 @@ const stamped = (requestId: string, tree: RenderElement): RenderElement => {
 
 export const register: Register = (on, options) => {
   sync = priceSync()
+  paneTickFailed = false
   const defaults = defaultsOf(options)
   defaultRun = defaults
   defaultUnit = unitOf(options.cost_unit)
@@ -1634,10 +1651,20 @@ export const register: Register = (on, options) => {
     return paneOf($.ui.resolve(e), await paneLinesNow($))
   })
 
-  // A close of the pane the mod did not make clears the flag the press reads.
-  on('ui.close', (_$, e, next) => {
-    closedPane(e.id, e.origin.kind)
-    return next(e)
+  // Every close of the pane, whoever made it and whether or not another plugin keeps it open: the engine's record is read once the close has
+  // settled, and the flag the press reads follows it. A failed read is reported and does not hold the close back.
+  on('ui.close', async ($, e, next) => {
+    try {
+      return await next(e)
+    } finally {
+      if (e.id === PANE) {
+        try {
+          await readPane($)
+        } catch (err) {
+          report($, err)
+        }
+      }
+    }
   })
 
 }

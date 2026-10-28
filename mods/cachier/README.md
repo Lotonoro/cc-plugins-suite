@@ -39,7 +39,9 @@ lifetime is left, and next to it the time left, or a word where there is no time
 ## The details pane
 
 A click on the time, the rebuild figure, `reset` or `no count` opens the pane, sized to its lines: one row per line, as wide as the longest. A
-click on that word while it is open closes it, as Esc or the person's close does. The pane says, in short lines with their
+click on that word while it is open closes it, as Esc or the person's close does. The click acts on the pane as the engine
+lists it: a pane closed some way cachier did not hear of (a reload, another plugin) is opened by the next click after a second,
+and a close another plugin refuses leaves the pane open to be closed by the next click. The pane says, in short lines with their
 units:
 
 - the cache's warmth: `Prompt cache warm, 3:12 left (5-minute cache)`, or, once the cache has expired or been reset, the

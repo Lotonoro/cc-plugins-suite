@@ -24,7 +24,7 @@ const PRICING_PAGE = [
 
 // The engine's answers beneath the plugin: the transcript (its text read from `doc`, so a test can grow it), the status
 // line, the debug log, and each host read the reader makes. `runs` counts the reads.
-const world = (on: any, doc: { text: string; broken?: boolean; exists?: boolean; hold?: Promise<void>; deny?: string; pricing?: string; pricingStatus?: number; pricingHold?: Promise<void>; fork?: unknown; forkHold?: Promise<void>; switchHold?: Promise<void>; compactHold?: Promise<void>; forkThrows?: boolean; dropPrompt?: boolean; promptThrows?: boolean; store?: Record<string, unknown>; auditor?: boolean; markdown?: boolean; engineNode?: boolean; openThrows?: boolean; openUnplaced?: boolean; keysThrows?: boolean; keysHold?: Promise<void>; getHold?: { key: string; hold: Promise<void>; nth?: number }; getHeldDenied?: { key: string; hold: Promise<void>; deny: string }; setHold?: { key: string; hold: Promise<void> }; getDenied?: Set<string>; setDenied?: Set<string>; deleteDenied?: Set<string>; getGate?: (key: string, nth: number) => Promise<string | undefined> | undefined }) => {
+const world = (on: any, doc: { text: string; broken?: boolean; exists?: boolean; hold?: Promise<void>; deny?: string; pricing?: string; pricingStatus?: number; pricingHold?: Promise<void>; fork?: unknown; forkHold?: Promise<void>; switchHold?: Promise<void>; compactHold?: Promise<void>; forkThrows?: boolean; dropPrompt?: boolean; promptThrows?: boolean; store?: Record<string, unknown>; auditor?: boolean; markdown?: boolean; engineNode?: boolean; openThrows?: boolean; openUnplaced?: boolean; closeKeeps?: boolean; closeThrows?: boolean; panesThrow?: boolean; listUnplaced?: boolean; keysThrows?: boolean; keysHold?: Promise<void>; getHold?: { key: string; hold: Promise<void>; nth?: number }; getHeldDenied?: { key: string; hold: Promise<void>; deny: string }; setHold?: { key: string; hold: Promise<void> }; getDenied?: Set<string>; setDenied?: Set<string>; deleteDenied?: Set<string>; getGate?: (key: string, nth: number) => Promise<string | undefined> | undefined }) => {
   const rec = {
     status: [] as (string | undefined)[],
     logs: [] as string[],
@@ -133,10 +133,15 @@ const world = (on: any, doc: { text: string; broken?: boolean; exists?: boolean;
   })
   on('ui.close', (_$: any, e: any) => {
     rec.closes.push(e)
-    rec.panes.delete(e.id)
+    if (doc.closeThrows === true) throw new Error('close broke')
+    // A close another plugin refuses leaves the pane open and the call resolved.
+    if (doc.closeKeeps !== true) rec.panes.delete(e.id)
     return { value: undefined }
   })
-  on('ui.panes', () => ({ value: [...rec.panes].map((id) => ({ id, title: id, isShown: true, isFocused: false, isPlaced: true })) }))
+  on('ui.panes', () => {
+    if (doc.panesThrow === true) return { deny: 'panes refused' }
+    return { value: [...rec.panes].map((id) => ({ id, title: id, isShown: true, isFocused: false, isPlaced: doc.listUnplaced !== true })) }
+  })
   // The pricing page: the rows these tests read, unless the doc serves another body or status.
   on('http.fetch', async (_$: any, e: any) => {
     rec.fetches.push(e.url)
@@ -3179,6 +3184,165 @@ describe('the details pane: a click on the time opens it at its size, a second c
     await m.unmount()
     expect(drawn).not.toContain('absolute')
     expect(JSON.stringify(await drawnPane($))).not.toContain('hover')
+  })
+})
+
+describe('the details pane: the flag follows the engine\'s record of the pane', () => {
+  // The pane opened by a click and left to settle, with the footer still drawn for the next press.
+  const opened = async ($: any, on: any, doc: any = cached()) => {
+    const rec = kaWorld(on, doc)
+    const clock = mock.clock(on, { now: T0 })
+    await $.classic.SessionStart({ source: 'startup', transcript_path: PATH })
+    await clock.advance(1000)
+    const m = await mountHint($)
+    await m.press({ key: 'details' })
+    return { rec, clock, m }
+  }
+  const panesRefused = (rec: any) => rec.logs.filter((l: string) => l.includes('panes refused')).length
+
+  test('after the person closes the pane, the next press after the next tick opens it', async ($, on) => {
+    const { rec, clock, m } = await opened($, on)
+    // The kit cannot raise the person's close: the engine\'s record drops the pane, and the tick\'s read is what tells the mod.
+    rec.panes.delete(PANE_ID)
+    await clock.advance(1000)
+    await m.press({ key: 'details' })
+    expect(rec.opens.length).toBe(2)
+    expect(rec.closes).toEqual([])
+    await m.unmount()
+  })
+
+  test('after another plugin refuses the mod\'s own close, the pane stays open and the next press closes it', async ($, on) => {
+    const doc = { ...cached(), closeKeeps: true }
+    const { rec, m } = await opened($, on, doc)
+    await m.press({ key: 'details' })
+    expect(rec.panes.size).toBe(1)
+    doc.closeKeeps = false
+    await m.press({ key: 'details' })
+    expect(rec.closes.length).toBe(2)
+    expect(rec.opens.length).toBe(1)
+    expect(rec.panes.size).toBe(0)
+    await m.unmount()
+  })
+
+  test('after the mod\'s own close call rejects, the next press closes the pane', async ($, on) => {
+    const doc = { ...cached(), closeThrows: true }
+    const { rec, clock, m } = await opened($, on, doc)
+    await m.press({ key: 'details' })
+    await clock.settle()
+    doc.closeThrows = false
+    await m.press({ key: 'details' })
+    expect(rec.closes.length).toBe(2)
+    expect(rec.opens.length).toBe(1)
+    expect(rec.panes.size).toBe(0)
+    await m.unmount()
+  })
+
+  test('after a close the mod never hears, such as an earlier load\'s, the next press after the next tick opens the pane', async ($, on) => {
+    const { rec, clock, m } = await opened($, on)
+    // An earlier load\'s close: the engine\'s record drops the pane and no ui.close reaches this load.
+    rec.panes.delete(PANE_ID)
+    await clock.advance(1000)
+    await m.press({ key: 'details' })
+    expect(rec.opens.length).toBe(2)
+    expect(rec.closes).toEqual([])
+    await m.unmount()
+  })
+
+  test('a pane the engine lists but has not placed leaves the next press asking it open; once placed, the next press after the next tick closes it', async ($, on) => {
+    const doc = { ...cached(), listUnplaced: true }
+    const { rec, clock, m } = await opened($, on, doc)
+    await m.press({ key: 'details' })
+    expect(rec.opens.length).toBe(2)
+    expect(rec.closes).toEqual([])
+    doc.listUnplaced = false
+    await clock.advance(1000)
+    await m.press({ key: 'details' })
+    expect(rec.closes.length).toBe(1)
+    await m.unmount()
+  })
+
+  test('a read of the record that fails after a press is reported, and the next press acts as the mod last knew the pane', async ($, on) => {
+    const doc = { ...cached(), panesThrow: false }
+    const { rec, m } = await opened($, on, doc)
+    doc.panesThrow = true
+    await m.press({ key: 'details' })
+    expect(panesRefused(rec)).toBe(1)
+    expect(rec.panes.size).toBe(0)
+    await m.press({ key: 'details' })
+    expect(rec.opens.length).toBe(2)
+    await m.unmount()
+  })
+
+  test('a read that fails after the mod\'s own close is reported once, and the close goes ahead', async ($, on) => {
+    const doc = { ...cached(), panesThrow: false }
+    const { rec, m } = await opened($, on, doc)
+    doc.panesThrow = true
+    await m.press({ key: 'details' })
+    expect(panesRefused(rec)).toBe(1)
+    expect(rec.panes.size).toBe(0)
+    await m.unmount()
+  })
+
+  test('two failed tick reads in a row make one report; a failed, a successful and a failed one make two', async ($, on) => {
+    const doc = { ...cached(), panesThrow: false }
+    const { rec, clock, m } = await opened($, on, doc)
+    doc.panesThrow = true
+    await clock.advance(1000)
+    await clock.advance(1000)
+    expect(panesRefused(rec)).toBe(1)
+    doc.panesThrow = false
+    await clock.advance(1000)
+    doc.panesThrow = true
+    await clock.advance(1000)
+    expect(panesRefused(rec)).toBe(2)
+    await m.unmount()
+  })
+
+  test('failed reads after two closes are reported for each close, whatever the ticks between them reported', async ($, on) => {
+    const doc = { ...cached(), panesThrow: true }
+    const { rec, clock, m } = await opened($, on, doc)
+    await clock.advance(1000)
+    await clock.advance(1000)
+    const before = panesRefused(rec)
+    // The reads fail, so the flag stays as the mod's own calls left it; each press still reads once.
+    await m.press({ key: 'details' })
+    expect(panesRefused(rec) - before).toBe(1)
+    await m.press({ key: 'details' })
+    expect(panesRefused(rec) - before).toBe(2)
+    await m.unmount()
+  })
+
+  test('after a re-open another plugin refuses on a pane that stays open, later ticks asking the same size do not re-open it', { options: { keepalive_lead_s: 15, keepalive_count: 3 } }, async ($, on) => {
+    const doc = { ...cached(), openThrows: false }
+    const { rec, clock, m } = await opened($, on, doc)
+    await m.unmount()
+    doc.openThrows = true
+    expect(await toggle($, 'on 15 3')).toContain('keepalive on')
+    await clock.advance(1000)
+    const refused = rec.opens.length
+    expect(refused).toBe(2)
+    await clock.advance(1000)
+    await clock.advance(1000)
+    expect(rec.opens.length).toBe(refused)
+  })
+
+  test('after a session start with the pane open, the pane is re-opened at the size it asks for, once per size, and later ticks asking the same size do not re-open it', { options: { keepalive_lead_s: 15, keepalive_count: 3 } }, async ($, on) => {
+    const { rec, clock, m } = await opened($, on)
+    await m.unmount()
+    const before = rec.opens.length
+    await $.session.start({ cwd: '/home/test', surface: 'terminal', isInteractive: true } as any)
+    await $.classic.SessionStart({ source: 'resume', transcript_path: PATH })
+    // The start made the size unknown, so the tick the start runs asks again, once, at the size the pane asked before.
+    expect(rec.opens.length).toBe(before + 1)
+    expect(rec.opens[before]).toMatchObject({ id: PANE_ID, rows: rec.opens[0].rows, columns: rec.opens[0].columns })
+    // The start also empties the hint, so the pane's lines shrink: that is one different size, asked once, and the ticks after it ask nothing.
+    await clock.advance(1000)
+    const rows = await paneRows($)
+    expect(rec.opens.length).toBe(before + 2)
+    expect(rec.opens[before + 1]).toMatchObject({ id: PANE_ID, rows: rows.length, columns: widthOf(rows) })
+    await clock.advance(1000)
+    await clock.advance(1000)
+    expect(rec.opens.length).toBe(before + 2)
   })
 })
 
