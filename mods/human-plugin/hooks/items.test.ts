@@ -137,6 +137,29 @@ test('an update that changes nothing, a note equal to the current one included, 
   }
 })
 
+test('a whitespace-only edit of the detail or the note is no change, sent or in its undo window: it replies no change and leaves the item as it was', () => {
+  const sent = sentList({ detail: 'postgres', note: 'recheck' })
+  for (const raw of [{ detail: 'postgres ' }, { detail: ' postgres\n' }, { note: 'recheck ' }]) {
+    expect(changed(sent, { action: 'update', ...raw })).toEqual({ store: sent, reply: 'no change to #1', added: null, changed: null })
+  }
+  const bare = sentList()
+  expect(changed(bare, { action: 'update', detail: '  ' })).toEqual({ store: bare, reply: 'no change to #1', added: null, changed: null })
+  const waiting = sentList({ state: 'done-waiting', pressedAt: 500, note: 'recheck' })
+  expect(changed(waiting, { action: 'update', note: 'recheck ' })).toEqual({ store: waiting, reply: 'no change to #1', added: null, changed: null })
+})
+
+test('a whitespace-only edit beside a clear does not make the change set something: it applies without reopening a sent item', () => {
+  const sent = sentList({ detail: 'postgres', note: 'recheck' })
+  const noted = changed(sent, { action: 'update', detail: 'postgres ', note: '' })
+  expect(noted.store.items[0]).toMatchObject({ state: 'done-pending', note: null, answer: 'Use sqlite' })
+  expect(noted.reply).toBe('updated #1')
+  expect(noted.changed).toEqual({ id: 1, reopened: false })
+  const detailed = changed(sent, { action: 'update', detail: '', note: 'recheck ' })
+  expect(detailed.store.items[0]).toMatchObject({ state: 'done-pending', detail: '', answer: 'Use sqlite' })
+  expect(detailed.reply).toBe('updated #1')
+  expect(detailed.changed).toEqual({ id: 1, reopened: false })
+})
+
 test('a field cleared alone applies without reopening a sent item; a clear with a change that sets something reopens it', () => {
   const sent = sentList({ note: 'recheck', detail: 'postgres', doneLabel: 'Go with sqlite' })
   for (const [raw, field, value] of [

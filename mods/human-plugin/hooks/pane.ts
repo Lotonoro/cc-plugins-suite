@@ -106,8 +106,8 @@ async function shownId($: EngineInterface): Promise<number | undefined> {
 }
 
 // After a tool call: an empty list closes the pane, whatever it last showed. Otherwise the pane moves on only when its item has left
-// the list. A sent item the person is viewing stays, and a change to the item shown re-asks its rows as a switch does: a reopen adds the
-// reply field's row, which the pane's request did not count, and the item is being looked at, so it is read.
+// the list. A sent item the person is viewing stays. A change to the item shown re-asks its rows as a switch does, and reads it: its rows
+// follow the brief's length, so a change that does not reopen the item needs the re-ask too; a reopen adds the reply field's row.
 export async function followShown($: EngineInterface, out: Exclude<Outcome, { deny: string }>): Promise<void> {
   if (!paneOpen) return
   const items = out.store.items

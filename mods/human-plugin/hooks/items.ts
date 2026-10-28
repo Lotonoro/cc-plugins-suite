@@ -199,27 +199,25 @@ export type Outcome =
   | { deny: string }
   | { store: Store; reply: string; added: Item | null; changed: { id: number; reopened: boolean } | null }
 
-// Whether a change leaves the human something new to read or answer: it sets a title, a blocking mark, options, or text in the detail,
-// note or done label. A change that only empties one of those (an update cannot empty the options) asks nothing.
-const asks = (before: Item, after: Item): boolean =>
-  after.title !== before.title ||
-  after.blocking !== before.blocking ||
-  JSON.stringify(after.options) !== JSON.stringify(before.options) ||
-  (after.detail !== before.detail && after.detail.trim() !== '') ||
-  (after.note !== before.note && after.note !== null) ||
-  (after.doneLabel !== before.doneLabel && after.doneLabel !== null)
+// The fields an agent's change writes, each as the text it compares by: the detail and the note by their trimmed text, so a whitespace-only
+// edit is no change, and a field a change empties as ''. `unchanged` is every field equal. `asks` is a field that differs and is not emptied,
+// which sets a title, a blocking mark, options, or text in the detail, note or done label. Both read this one list, so a field added to it
+// is compared by both.
+const FIELDS: readonly ((it: Item) => string)[] = [
+  it => it.title,
+  it => it.detail.trim(),
+  it => String(it.blocking),
+  it => (it.note ?? '').trim(),
+  it => JSON.stringify(it.options),
+  it => it.doneLabel ?? '',
+]
+const unchanged = (before: Item, after: Item): boolean => FIELDS.every(field => field(before) === field(after))
+const asks = (before: Item, after: Item): boolean => FIELDS.some(field => field(after) !== field(before) && field(after) !== '')
 
 // An agent's change to `target`, written as `after`. One that leaves the item as it was is no change. One that asks the human something
 // (asks) puts a sent item back to open, with its reply field (done.ts); an item in its undo window keeps the window.
 const change = (store: Store, target: Item, after: Item, reply: string): Outcome => {
-  const unchanged =
-    after.title === target.title &&
-    after.detail === target.detail &&
-    after.blocking === target.blocking &&
-    after.note === target.note &&
-    after.doneLabel === target.doneLabel &&
-    JSON.stringify(after.options) === JSON.stringify(target.options)
-  if (unchanged) return { store, reply: `no change to #${target.id}`, added: null, changed: null }
+  if (unchanged(target, after)) return { store, reply: `no change to #${target.id}`, added: null, changed: null }
   const written = { ...store, items: store.items.map(it => (it.id === target.id ? after : it)) }
   const out = asks(target, after) ? reopen(written, target.id) : { store: written, reopened: false }
   return { store: out.store, reply, added: null, changed: { id: target.id, reopened: out.reopened } }
