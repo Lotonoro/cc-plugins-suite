@@ -1,7 +1,7 @@
 import { atom, read, update, type EngineInterface, type PaneCloseOrigin } from 'claude-code'
 import type { Item } from '../types'
 import { successorOf, type Outcome } from './items'
-import { inBackground, updateList } from './shared'
+import { inBackground, readList, updateList } from './shared'
 import { paneRows } from './ui'
 
 export const PANE = 'human-items'
@@ -123,9 +123,12 @@ export async function followShown($: EngineInterface, out: Exclude<Outcome, { de
 }
 
 // After a window ends and sends `id`: the pane moves on only when it shows that item. A window whose end reopened the item (an agent turn
-// or an update it took: done.ts, expire) leaves the item open, so the pane stays on it and re-asks its rows, as a change does.
-export async function followSent($: EngineInterface, items: readonly Item[], id: number): Promise<void> {
+// or an update it took: done.ts, expire) leaves the item open, so the pane stays on it and re-asks its rows, as a change does. The list is read
+// here, after the shown item, since an agent change made after the end wrote the item sent may have reopened it.
+export async function followSent($: EngineInterface, id: number): Promise<void> {
   const shown = await shownId($)
+  const { items } = await readList($)
+  // Checked after the reads: the person may have closed the pane meanwhile, and a move would then reopen it.
   if (!paneOpen || shown !== id) return
   if (items.some(it => it.id === id && it.state === 'open')) inBackground($, switchPane($, id, items))
   else moveOn($, items, id)

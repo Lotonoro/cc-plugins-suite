@@ -1169,6 +1169,41 @@ test('the window ending on an item the pane does not show leaves the pane where 
   expect(values.selection).toBe(1)
 })
 
+test('a window that ends on the item the pane shows, with an agent append reopening it before the pane decides, leaves the pane on it, open', async () => {
+  reset()
+  const { hooks } = wire()
+  const open: string[] = []
+  const timers: Timer[] = []
+  const { env, values, clock } = memEnv([made(1, { detail: '' })], open, null, [], timers)
+  await (hooks['session.end'] as Handler)(env as never, { reason: 'exit' } as never, next(false) as never)
+  findButton(await band(hooks, env), 'title-1')?.onPress()
+  await settle()
+  findButton(await band(hooks, env), 'done-1')?.onPress()
+  await settle()
+  // The first read of the selection after the window's end is the pane's own, made once the end has written the item sent. It is held
+  // until an agent append has reopened the item.
+  let release: () => void = () => {}
+  let holding = true
+  const get = env.state.get
+  env.state.get = (async (ref: { key: string }) => {
+    if (ref.key === 'selection' && holding) {
+      holding = false
+      await new Promise<void>(done => (release = done))
+    }
+    return get(ref)
+  }) as typeof env.state.get
+  await tickAt(timers, clock, 3000)
+  expect(holding).toBe(false)
+  await (hooks['tool.call'] as Handler)(env as never, { tool: TOOL, action: 'append', id: 1, text: 'It needs a file.' } as never, next(false) as never)
+  await settle()
+  release()
+  await settle()
+  expect((values.list as { items: Item[] }).items[0]).toMatchObject({ state: 'open' })
+  expect(open).toEqual(['human-items'])
+  expect(values.selection).toBe(1)
+  expect(JSON.stringify(await paneTree(hooks, env))).toContain('#1 non-blocking, open: Item 1')
+})
+
 test('removing the shown item moves the pane to the next open item, skipping one already sent', async () => {
   reset()
   const { hooks } = wire()

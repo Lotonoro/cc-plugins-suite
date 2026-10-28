@@ -57,7 +57,7 @@ export const normalizeItem = (raw: unknown): Item | null => {
     replied: r.replied === true,
     doneLabel: typeof r.doneLabel === 'string' ? r.doneLabel : null,
     thread: turnsStored(r.thread),
-    windowTurns: turnsStored(r.windowTurns),
+    windowTurns: stored === 'done-waiting' ? turnsStored(r.windowTurns) : [],
     windowChanged: stored === 'done-waiting' && r.windowChanged === true,
   }
   // An undo window with no press time cannot end, so the item was never pressed: it is open, and its window's turns are given to it as a
@@ -250,10 +250,11 @@ const change = (store: Store, target: Item, after: Item, reply: string): Outcome
 
 // An agent addition to an item the human has answered is a turn after the answer, not a change to the brief. A sent answer is archived first, so
 // the turn follows it, and the item reopens; an answer in its undo window keeps the window, and the turn waits in it for the window's end (done.ts).
+// A turn outside a window is unread, as a reopen is: the person may have read the item since its last turn.
 const appendTurn = (store: Store, target: Item, text: string): Outcome => {
   const turn: Turn = { speaker: 'agent', words: text }
   const base = target.state === 'done-pending' ? archive(target) : target
-  const after = target.state === 'done-waiting' ? { ...base, windowTurns: [...base.windowTurns, turn] } : { ...base, thread: [...base.thread, turn] }
+  const after = target.state === 'done-waiting' ? { ...base, windowTurns: [...base.windowTurns, turn] } : { ...base, unread: true, thread: [...base.thread, turn] }
   return {
     store: { ...store, items: store.items.map(it => (it.id === target.id ? after : it)) },
     reply: `appended to #${target.id}`,

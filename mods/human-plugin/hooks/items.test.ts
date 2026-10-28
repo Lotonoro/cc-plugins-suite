@@ -432,6 +432,13 @@ test('a stored window\'s update mark is kept while the window runs, and dropped 
   expect(normalizeItem({ ...legacy, state: 'done-waiting', pressedAt: 7, windowChanged: 'yes' })?.windowChanged).toBe(false)
 })
 
+test('a stored window\'s agent turns are kept while the window runs, and dropped from an item in no window', () => {
+  const agentTurn = { speaker: 'agent' as const, words: 'It needs a file.' }
+  expect(normalizeItem({ ...legacy, state: 'done-waiting', pressedAt: 7, windowTurns: [agentTurn] })?.windowTurns).toEqual([agentTurn])
+  expect(normalizeItem({ ...legacy, state: 'done-pending', windowTurns: [agentTurn] })?.windowTurns).toEqual([])
+  expect(normalizeItem({ ...legacy, state: 'open', windowTurns: [agentTurn] })?.windowTurns).toEqual([])
+})
+
 test('an item stored without a done label, a stored label kept, and a label of the wrong type is null', () => {
   expect(normalizeItem(legacy)?.doneLabel).toBe(null)
   expect(normalizeItem({ ...legacy, doneLabel: 'Go with sqlite' })?.doneLabel).toBe('Go with sqlite')
@@ -575,6 +582,14 @@ test('a reply sent and then an append before the agent has read the notice puts 
   const out = changed(sentReply(added(EMPTY, 'Pick a db').store, 'Use sqlite'), { action: 'append', text: 'It needs a file.' })
   expect(out.store.items[0]).toMatchObject({ state: 'open', unread: true })
   expect(turnsOf(out.store.items[0] as Item)).toEqual([{ speaker: 'human', words: 'Use sqlite' }, { speaker: 'agent', words: 'It needs a file.' }])
+})
+
+test('an agent turn added to an open item the human has answered is unread, though the human has read the item since', () => {
+  const archived = changed(sentReply(added(EMPTY, 'Pick a db').store, 'Use sqlite'), { action: 'append', text: 'It needs a file.' }).store
+  const seen = { ...archived, items: archived.items.map(it => ({ ...it, unread: false })) }
+  const again = changed(seen, { action: 'append', text: 'Or a server?' })
+  expect(again.store.items[0]).toMatchObject({ state: 'open', unread: true })
+  expect(turnsOf(again.store.items[0] as Item).map(turn => turn.words)).toEqual(['Use sqlite', 'It needs a file.', 'Or a server?'])
 })
 
 test('an append in a reply\'s undo window is an agent turn after the reply: the window runs on, and its end leaves the reply first, recorded once', () => {

@@ -93,7 +93,7 @@ async function expireWindow($: EngineInterface, id: number, token: number, windo
     $.ui.log(`human-plugin: the window of press ${token} on #${id} ended with nothing sent`, { to: 'debug' })
     return store
   }
-  await followSent($, store.items, id)
+  await followSent($, id)
   await send($, sent, token)
   return store
 }
