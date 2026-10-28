@@ -26,6 +26,11 @@ type ReadOutcome =
   | { kind: 'unreachable'; err: unknown }
   | { kind: 'format'; err: Error }
 
+// What a page read reports to the session's sink: it began its fetch, then ended with its list written (landed) or any
+// other way (failed). Every `started` is followed by exactly one of the other two.
+export type PriceEvent = 'started' | 'landed' | 'failed'
+export type PriceSink = (event: PriceEvent) => void
+
 // A session's copy of the record, when it was read, the overrides file as last read, and the page read in flight.
 // The fields are what make one session's copy its own.
 export type PriceSync = {
@@ -45,6 +50,8 @@ export type PriceSync = {
   // The newest load started.
   newest: Promise<boolean>
   readyPromise: Promise<void> | null
+  // Where every read this session runs reports, whoever started it; null before one is registered.
+  sink: PriceSink | null
 }
 
 // A failure is logged with its stack; the caller carries on without it.
@@ -169,7 +176,16 @@ async function fetchPage($: Dollar): Promise<ReadOutcome> {
   }
 }
 
-// Returns whether it fetched the page.
+// A report never breaks the read: a sink that throws is logged and the read goes on.
+function emit(state: PriceSync, $: Dollar, event: PriceEvent) {
+  try {
+    state.sink?.(event)
+  } catch (err) {
+    report($, err)
+  }
+}
+
+// Returns whether it fetched the page. Reports `started` as the fetch begins and exactly one end after it.
 async function readPage(state: PriceSync, $: Dollar, switched: boolean): Promise<boolean> {
   const stampMs = await $.clock.now()
   const base = state.record
@@ -187,6 +203,18 @@ async function readPage(state: PriceSync, $: Dollar, switched: boolean): Promise
   // A refused stamp means this session does not read; a switch reads anyway, since the user asked for it.
   if (!stamped && !switched) return false
 
+  emit(state, $, 'started')
+  let landed = false
+  try {
+    landed = await fetchAndWrite(state, $, stampMs)
+  } finally {
+    emit(state, $, landed ? 'landed' : 'failed')
+  }
+  return true
+}
+
+// The fetch and the write of its outcome. Returns whether the list landed.
+async function fetchAndWrite(state: PriceSync, $: Dollar, stampMs: number): Promise<boolean> {
   const outcome = await fetchPage($)
   const atMs = await $.clock.now()
   if (outcome.kind !== 'success') report($, outcome.err)
@@ -197,7 +225,7 @@ async function readPage(state: PriceSync, $: Dollar, switched: boolean): Promise
     // No write without a fresh re-read: this session's copy may predate a newer stamp, and a write would overwrite it.
     // The stamp already stored stands as a pending failure on the schedule.
     report($, err)
-    return true
+    return false
   }
 
   if (outcome.kind === 'success') {
@@ -211,11 +239,11 @@ async function readPage(state: PriceSync, $: Dollar, switched: boolean): Promise
       report($, err)
     }
     await writeFailure(state, $, held, 'unreachable', stampMs, atMs)
-    return true
+    return false
   }
 
   await writeFailure(state, $, held, outcome.kind, stampMs, atMs)
-  return true
+  return false
 }
 
 // Writes a read's failure onto the record as it is stored now, so every session follows one retry schedule. A write refused
@@ -295,12 +323,18 @@ export const priceSync = (): PriceSync => ({
   generation: 0,
   newest: Promise.resolve(true),
   readyPromise: null,
+  sink: null,
 })
 
 // The engine lets `$` be passed only to a top-level function, or one imported from the module's own files, whose body is
 // kept as written. These wrappers keep the per-session object and give register.ts a function declaration to call.
 export function priceReady(sync: PriceSync, $: Dollar): Promise<void> {
   return readyOf(sync, $)
+}
+
+// Registers the one sink the session's reads report to. Called once, when the session starts.
+export function priceSink(sync: PriceSync, sink: PriceSink): void {
+  sync.sink = sink
 }
 
 export function priceList(sync: PriceSync): PriceList {

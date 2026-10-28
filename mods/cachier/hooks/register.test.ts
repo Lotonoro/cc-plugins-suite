@@ -24,7 +24,7 @@ const PRICING_PAGE = [
 
 // The engine's answers beneath the plugin: the transcript (its text read from `doc`, so a test can grow it), the status
 // line, the debug log, and each host read the reader makes. `runs` counts the reads.
-const world = (on: any, doc: { text: string; broken?: boolean; exists?: boolean; hold?: Promise<void>; deny?: string; pricing?: string; pricingStatus?: number; fork?: unknown; forkHold?: Promise<void>; switchHold?: Promise<void>; compactHold?: Promise<void>; forkThrows?: boolean; dropPrompt?: boolean; promptThrows?: boolean; store?: Record<string, unknown>; auditor?: boolean; markdown?: boolean; engineNode?: boolean; openThrows?: boolean; openUnplaced?: boolean; keysThrows?: boolean; keysHold?: Promise<void>; getHold?: { key: string; hold: Promise<void>; nth?: number }; getHeldDenied?: { key: string; hold: Promise<void>; deny: string }; setHold?: { key: string; hold: Promise<void> }; getDenied?: Set<string>; setDenied?: Set<string>; deleteDenied?: Set<string>; getGate?: (key: string, nth: number) => Promise<string | undefined> | undefined }) => {
+const world = (on: any, doc: { text: string; broken?: boolean; exists?: boolean; hold?: Promise<void>; deny?: string; pricing?: string; pricingStatus?: number; pricingHold?: Promise<void>; fork?: unknown; forkHold?: Promise<void>; switchHold?: Promise<void>; compactHold?: Promise<void>; forkThrows?: boolean; dropPrompt?: boolean; promptThrows?: boolean; store?: Record<string, unknown>; auditor?: boolean; markdown?: boolean; engineNode?: boolean; openThrows?: boolean; openUnplaced?: boolean; keysThrows?: boolean; keysHold?: Promise<void>; getHold?: { key: string; hold: Promise<void>; nth?: number }; getHeldDenied?: { key: string; hold: Promise<void>; deny: string }; setHold?: { key: string; hold: Promise<void> }; getDenied?: Set<string>; setDenied?: Set<string>; deleteDenied?: Set<string>; getGate?: (key: string, nth: number) => Promise<string | undefined> | undefined }) => {
   const rec = {
     status: [] as (string | undefined)[],
     logs: [] as string[],
@@ -89,6 +89,8 @@ const world = (on: any, doc: { text: string; broken?: boolean; exists?: boolean;
     return { value: [...rec.store.keys()] }
   })
   on('session.end', (_$: any, e: any) => ({ sessionId: e.sessionId }))
+  on('session.start', (_$: any, e: any) => ({ cwd: e.cwd }))
+  on('command.register', () => ({ value: undefined }))
   on('ui.invalidate', (_$: any, e: any, next: any) => {
     rec.invalidations.push(e.event)
     return next(e)
@@ -136,8 +138,9 @@ const world = (on: any, doc: { text: string; broken?: boolean; exists?: boolean;
   })
   on('ui.panes', () => ({ value: [...rec.panes].map((id) => ({ id, title: id, isShown: true, isFocused: false, isPlaced: true })) }))
   // The pricing page: the rows these tests read, unless the doc serves another body or status.
-  on('http.fetch', (_$: any, e: any) => {
+  on('http.fetch', async (_$: any, e: any) => {
     rec.fetches.push(e.url)
+    if (doc.pricingHold !== undefined) await doc.pricingHold
     const status = doc.pricingStatus ?? 200
     return { value: { status, ok: status < 300, headers: {}, text: doc.pricing ?? PRICING_PAGE } }
   })
@@ -3549,6 +3552,250 @@ describe('the cost unit: dollars at list prices, or tokens, switched by /keepali
     expect(await toggle($, 'unit dollars')).toBe('figures show in dollars for this session.')
     expect(rec.fetches.length).toBe(2)
     await m.unmount()
+  })
+
+  describe('the price cue: a read running, landed or failed, after the footer words', () => {
+    const tokensToDollars = async ($: any, on: any, extra: Record<string, unknown> = {}) => {
+      let release: () => void = () => {}
+      const hold = new Promise<void>((resolve) => {
+        release = resolve
+      })
+      // A fresh stored record: no scheduled read runs, so only the switch reads.
+      const doc: any = { ...opusCached(), store: { prices: storedPrices() }, pricingHold: hold, ...extra }
+      const rec = kaWorld(on, doc)
+      const clock = mock.clock(on, { now: T0 })
+      await $.classic.SessionStart({ source: 'startup', transcript_path: PATH })
+      await clock.advance(1000)
+      await toggle($, 'unit tokens')
+      return { rec, clock, doc, release }
+    }
+    const opts = { options: { keepalive_lead_s: 15, keepalive_count: 3 } }
+    // Each write to the cue's state, in order, from a hook on the state: the cue it leaves is the last one written, or null before any.
+    const watchCue = (on: any): unknown[] => {
+      const writes: unknown[] = []
+      on('state.set', (_$: any, e: any, next: any) => {
+        if (e.plugin === 'cachier' && e.key === 'cue') writes.push(e.value)
+        return next(e)
+      })
+      return writes
+    }
+    const cueStanding = (writes: unknown[]) => writes[writes.length - 1] ?? null
+
+    test('while a read from /keepalive unit dollars runs, a dim glyph follows the words; once it lands a check mark does, and 3 seconds later it is gone', opts, async ($, on) => {
+      const { rec, clock, release } = await tokensToDollars($, on)
+      const m = await mountHint($)
+      expect(JSON.stringify(await m.drawn())).not.toMatch(/[⟳✓!]/)
+      const switching = toggle($, 'unit dollars')
+      await clock.advance(10)
+      expect(rec.fetches.length).toBe(1)
+      const running = JSON.stringify(await m.drawn())
+      expect(running).toContain('⟳')
+      expect(running).not.toContain('✓')
+      // The footer's words stay dim and clickable beside the cue.
+      expect(await m.find({ type: 'Button', key: 'details' })).toBeTruthy()
+      release()
+      await switching
+      await clock.advance(10)
+      const landed = JSON.stringify(await m.drawn())
+      expect(landed).toContain('✓')
+      expect(landed).not.toContain('⟳')
+      await clock.advance(2500)
+      expect(JSON.stringify(await m.drawn())).toContain('✓')
+      await clock.advance(600)
+      expect(JSON.stringify(await m.drawn())).not.toMatch(/[⟳✓]/)
+      expect(rec.toasts).toEqual([])
+      await m.unmount()
+    })
+
+    test('a failed read shows an amber mark and no check mark, then clears', opts, async ($, on) => {
+      const { clock, release } = await tokensToDollars($, on, { pricing: 'oops', pricingStatus: 500 })
+      const m = await mountHint($)
+      const switching = toggle($, 'unit dollars')
+      release()
+      await switching
+      await clock.advance(10)
+      const failed = JSON.stringify(await m.drawn())
+      expect(failed).toContain('"color":"warning"')
+      expect(failed).toContain(' !')
+      expect(failed).not.toContain('✓')
+      await clock.advance(3100)
+      const after = JSON.stringify(await m.drawn())
+      expect(after).not.toContain(' !')
+      await m.unmount()
+    })
+
+    test('a new read while a check mark shows replaces it with the running glyph', opts, async ($, on) => {
+      const { rec, clock, doc, release } = await tokensToDollars($, on)
+      const m = await mountHint($)
+      release()
+      await toggle($, 'unit dollars')
+      await clock.advance(10)
+      expect(JSON.stringify(await m.drawn())).toContain('✓')
+      let release2: () => void = () => {}
+      doc.pricingHold = new Promise<void>((resolve) => {
+        release2 = resolve
+      })
+      await toggle($, 'unit tokens')
+      const again = toggle($, 'unit dollars')
+      await clock.advance(10)
+      expect(rec.fetches.length).toBe(2)
+      const running = JSON.stringify(await m.drawn())
+      expect(running).toContain('⟳')
+      expect(running).not.toContain('✓')
+      release2()
+      await again
+      await m.unmount()
+    })
+
+    test('on a reset cache the cue follows the reset word', opts, async ($, on) => {
+      const { clock, release } = await tokensToDollars($, on)
+      await $.classic.PostModelSwitch({ from_model: 'a', to_model: 'b', requested_model: 'b', source: 'command', prompt_cache_warm: false, cache_ttl: '5m', context_tokens: 1, estimated_cache_write_usd: 0, pricing: 'catalog' } as any)
+      await clock.advance(1000)
+      const m = await mountHint($)
+      expect(await hintOf(m)).toBe('reset')
+      const switching = toggle($, 'unit dollars')
+      await clock.advance(10)
+      expect(JSON.stringify(await m.drawn())).toContain('⟳')
+      release()
+      await switching
+      await m.unmount()
+    })
+
+    test('with no footer drawn there is no cue', async ($, on) => {
+      // Keepalive off and nothing to count: the footer draws nothing, and a read draws no cue.
+      const { clock, release } = await tokensToDollars($, on, { text: '' })
+      const m = await mountHint($)
+      const switching = toggle($, 'unit dollars')
+      await clock.advance(10)
+      expect(JSON.stringify(await m.drawn())).not.toMatch(/[⟳✓!]/)
+      release()
+      await switching
+      await m.unmount()
+    })
+
+    test('a reload during a check mark leaves no cue standing', opts, async ($, on) => {
+      const { clock, release } = await tokensToDollars($, on)
+      const m = await mountHint($)
+      release()
+      await toggle($, 'unit dollars')
+      await clock.advance(10)
+      expect(JSON.stringify(await m.drawn())).toContain('✓')
+      await $.session.start({ cwd: '/work', surface: 'terminal', isInteractive: true })
+      await clock.advance(10)
+      expect(JSON.stringify(await m.drawn())).not.toContain('✓')
+      await m.unmount()
+    })
+
+    test('a session end during a check mark clears the cue and its timer', opts, async ($, on) => {
+      const { clock, release } = await tokensToDollars($, on)
+      release()
+      await toggle($, 'unit dollars')
+      await clock.advance(10)
+      const m = await mountHint($)
+      expect(JSON.stringify(await m.drawn())).toContain('✓')
+      await $.session.end({ reason: 'exit', sessionId: 's' } as any)
+      await m.unmount()
+      // The next start redraws the footer well inside the 3 seconds; the cue is not on it.
+      await $.classic.SessionStart({ source: 'startup', transcript_path: PATH })
+      await clock.advance(1000)
+      const again = await mountHint($)
+      expect(JSON.stringify(await again.drawn())).not.toContain('✓')
+      await again.unmount()
+    })
+
+    test('a read still in flight when the session ends leaves no cue and arms no timer', opts, async ($, on) => {
+      const writes = watchCue(on)
+      const { rec, clock, release } = await tokensToDollars($, on)
+      const switching = toggle($, 'unit dollars')
+      await clock.advance(10)
+      expect(rec.fetches.length).toBe(1)
+      expect(cueStanding(writes)).toBe('reading')
+      await $.session.end({ reason: 'exit', sessionId: 's' } as any)
+      expect(cueStanding(writes)).toBe(null)
+      const writesAtEnd = writes.length
+      // The page answers after the session has ended: the read's end writes no cue and arms no timer.
+      release()
+      await switching
+      await clock.advance(10)
+      expect(cueStanding(writes)).toBe(null)
+      await clock.advance(3500)
+      expect(writes.slice(writesAtEnd)).toEqual([])
+    })
+
+    test('a session end whose hint write throws still clears a standing reading cue', opts, async ($, on) => {
+      const writes = watchCue(on)
+      let refuseHint = false
+      on('state.set', { plugin: 'cachier', key: 'hint' }, (_$: any, e: any, next: any) => (refuseHint ? { deny: 'hint refused' } : next(e)))
+      const { rec, clock, release } = await tokensToDollars($, on)
+      const switching = toggle($, 'unit dollars')
+      await clock.advance(10)
+      expect(cueStanding(writes)).toBe('reading')
+      // The end's hint write throws; the cue the read left standing must still be cleared by the steps after it.
+      refuseHint = true
+      await $.session.end({ reason: 'exit', sessionId: 's' } as any)
+      refuseHint = false
+      expect(rec.logs.filter((l: string) => l.includes('hint refused')).length).toBe(1)
+      expect(cueStanding(writes)).toBe(null)
+      release()
+      await switching
+      await clock.advance(10)
+      expect(cueStanding(writes)).toBe(null)
+    })
+
+    test('after a new session start, a read shows its cue again', opts, async ($, on) => {
+      const writes = watchCue(on)
+      const { clock, doc } = await tokensToDollars($, on)
+      await $.session.end({ reason: 'exit', sessionId: 's' } as any)
+      await $.session.start({ cwd: '/work', surface: 'terminal', isInteractive: true })
+      // The page is held again, so the read is seen running before it lands.
+      let release: () => void = () => {}
+      doc.pricingHold = new Promise<void>((resolve) => {
+        release = resolve
+      })
+      await toggle($, 'unit tokens')
+      const reading = toggle($, 'unit dollars')
+      await clock.advance(10)
+      expect(cueStanding(writes)).toBe('reading')
+      release()
+      await reading
+      await clock.advance(10)
+      expect(cueStanding(writes)).toBe('landed')
+    })
+
+    test('after a /clear, a read in the new conversation shows its cue', opts, async ($, on) => {
+      const writes = watchCue(on)
+      const { clock, doc } = await tokensToDollars($, on)
+      // A /clear ends the conversation and starts the new one with classic.SessionStart; no session.start fires for it.
+      await $.session.end({ reason: 'clear', sessionId: 's' } as any)
+      await $.classic.SessionStart({ source: 'clear', transcript_path: PATH })
+      let release: () => void = () => {}
+      doc.pricingHold = new Promise<void>((resolve) => {
+        release = resolve
+      })
+      await toggle($, 'unit tokens')
+      const reading = toggle($, 'unit dollars')
+      await clock.advance(10)
+      expect(cueStanding(writes)).toBe('reading')
+      release()
+      await reading
+      await clock.advance(10)
+      expect(cueStanding(writes)).toBe('landed')
+    })
+
+    test('the pie and the words stay pressable while a cue shows', opts, async ($, on) => {
+      const { rec, clock, release } = await tokensToDollars($, on)
+      const switching = toggle($, 'unit dollars')
+      await clock.advance(10)
+      const m = await mountHint($)
+      expect(JSON.stringify(await m.drawn())).toContain('⟳')
+      await m.press({ key: 'details' })
+      expect(rec.opens.map((o: any) => o.id)).toEqual([PANE_ID])
+      await m.press({ key: 'pie' })
+      expect(await toggle($, '')).toContain('Keepalive  on')
+      release()
+      await switching
+      await m.unmount()
+    })
   })
 
   test('a bad /keepalive unit argument answers the usage and changes nothing', { options: { keepalive_lead_s: 15, keepalive_count: 3 } }, async ($, on) => {

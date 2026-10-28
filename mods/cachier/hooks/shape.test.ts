@@ -74,6 +74,7 @@ const SAMPLE = {
     longGaps: [1],
   },
   unit: 'dollars',
+  cue: 'reading',
 } satisfies PluginState['cachier']
 
 // The view's other variants, which SAMPLE's one cannot show.
@@ -107,7 +108,7 @@ const fingerprint = () => fnv(shapeOf({ sample: SAMPLE, views: VIEWS, defaults: 
 // and 8 kept the details' first line in the stored hint as its warmth, and dropped the history sentences, the unit notes, the marker and the bar from it,
 // and 9 dropped the keepalive generation from the stored hint, which nothing read, and 10 kept in keepalive's state whether its cost was stated,
 // and 11 gave keepalive a run id that only an enable advances, so a run's cost is stated once for that run, and 12 dropped
-// keepalive's record of a cost shown (its disclosed and stated flags and the run id), with the gate that held a refresh until then, and 13 added the output tokens of the reply the view's prefix comes from.
+// keepalive's record of a cost shown (its disclosed and stated flags and the run id), with the gate that held a refresh until then, and 13 added the output tokens of the reply the view's prefix comes from, and 14 added the price read's cue.
 const SHAPES: Record<number, string> = {
   2: 'd13a40b8',
   3: 'ce6161ac',
@@ -121,6 +122,7 @@ const SHAPES: Record<number, string> = {
   11: 'f67817dd',
   12: '684c6cf5',
   13: 'ba479bff',
+  14: 'bc521d0f',
 }
 
 describe('the state shape: a change to a state type moves STATE_SHAPE', () => {

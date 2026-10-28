@@ -56,6 +56,10 @@ export type HintState = {
   breakEven: string
 }
 
+// The price read's phase on the footer: running, or just landed or failed. The footer draws a cue for it after its words; it clears
+// about 3 seconds after the read ends.
+export type PriceCue = 'reading' | 'landed' | 'failed'
+
 // The counts of one kind: the pings or misses, and what they spent.
 export type StatCount = { count: number; spend: Spend }
 // The cause a cache miss is given: the gap since the last response passed the TTL, a cold mark fell in the gap, or neither.
@@ -143,6 +147,8 @@ declare module 'claude-code' {
       stats: StatsState
       // The unit costs are shown in this session; unset until the countdown's unit button is pressed, the option's then.
       unit: Unit
+      // This session's price read, while it runs and for a few seconds after it ends; null otherwise. Only the session that ran the read has one.
+      cue: PriceCue | null
     }
   }
 }

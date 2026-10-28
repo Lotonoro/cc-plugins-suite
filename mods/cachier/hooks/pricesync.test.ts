@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'claude-code/testing'
 import { PRICES, PRICING_URL, type Rates } from './prices'
 import { dueAtMs, type PriceRecord } from './pricelist'
-import { priceCheck, priceList, priceReady, priceSkips, priceSync } from './pricesync'
+import { priceCheck, priceList, priceReady, priceSink, priceSkips, priceSync, type PriceEvent } from './pricesync'
 
 const HOUR = 3600000
 const DAY = 24 * HOUR
@@ -797,6 +797,186 @@ describe('overlapping loads and a check that throws', () => {
     expect(w.stored()!.models).toEqual({ m: model(R1) })
     expect(w.stored()!.lastSuccessMs).toBe(T - WEEK)
     expect(sync.reading).toBeNull()
+  })
+})
+
+// A session whose reads report to a list of events.
+const reporting = () => {
+  const sync = priceSync()
+  const events: PriceEvent[] = []
+  priceSink(sync, (event) => void events.push(event))
+  return { sync, events }
+}
+
+describe('the read reports its start and its end to the session sink', () => {
+  test('a due read that succeeds reports started, then landed', async () => {
+    const w = makeWorld({ store: { prices: record({}, { lastSuccessMs: T - WEEK }) } })
+    const { sync, events } = reporting()
+    await priceReady(sync, w.dollar as any)
+    await priceCheck(sync, w.dollar as any)
+    expect(events).toEqual(['started', 'landed'])
+  })
+
+  test('started is reported before the fetch answers, and the end after the list is written', async () => {
+    const gate = deferred<ReturnType<typeof answer>>()
+    const w = makeWorld({ store: { prices: record({}, { lastSuccessMs: T - WEEK }) }, fetch: () => gate.promise })
+    const { sync, events } = reporting()
+    await priceReady(sync, w.dollar as any)
+    const reading = priceCheck(sync, w.dollar as any)
+    await until(() => w.fetches.length === 1)
+    expect(events).toEqual(['started'])
+    gate.resolve(answer(PAGE_OPUS))
+    await reading
+    expect(events).toEqual(['started', 'landed'])
+  })
+
+  test('unreachable, the ten-second timeout included, reports started, then failed', async () => {
+    const w = makeWorld({ fetch: async () => answer('nope', 500) })
+    const one = reporting()
+    await priceCheck(one.sync, w.dollar as any)
+    expect(one.events).toEqual(['started', 'failed'])
+
+    const never = deferred<ReturnType<typeof answer>>()
+    const slow = makeWorld({ fetch: () => never.promise })
+    const two = reporting()
+    await priceReady(two.sync, slow.dollar as any)
+    const reading = priceCheck(two.sync, slow.dollar as any)
+    await until(() => slow.fetches.length === 1)
+    slow.fireTimers()
+    await reading
+    expect(two.events).toEqual(['started', 'failed'])
+  })
+
+  test('a page with no readable table reports started, then failed', async () => {
+    const w = makeWorld({ fetch: async () => answer(NO_TABLE) })
+    const { sync, events } = reporting()
+    await priceCheck(sync, w.dollar as any)
+    expect(events).toEqual(['started', 'failed'])
+  })
+
+  test('a refused write of the outcome and list reports started, then failed, and never landed', async () => {
+    const w = makeWorld({ store: { prices: record({}, { lastSuccessMs: T - WEEK }) } })
+    w.config.denySet = ({ value }) => (value as PriceRecord).attempt?.outcome !== null
+    const { sync, events } = reporting()
+    await priceReady(sync, w.dollar as any)
+    await priceCheck(sync, w.dollar as any)
+    expect(w.fetches.length).toBe(1)
+    expect(events).toEqual(['started', 'failed'])
+  })
+
+  test('a fetch that throws while its page is read still ends with failed', async () => {
+    const w = makeWorld({
+      store: { prices: record({ m: model(R1) }, { lastSuccessMs: T - WEEK }) },
+      fetch: async () => ({
+        status: 200,
+        ok: true,
+        headers: {},
+        get text(): string {
+          throw new Error('page text unreadable')
+        },
+      }),
+    })
+    const { sync, events } = reporting()
+    await priceReady(sync, w.dollar as any)
+    await priceCheck(sync, w.dollar as any, true)
+    expect(events).toEqual(['started', 'failed'])
+  })
+
+  test('a read whose re-read after the fetch is refused reports started, then failed', async () => {
+    const w = makeWorld({ store: { prices: record({}, { lastSuccessMs: T - WEEK }) } })
+    const { sync, events } = reporting()
+    await priceReady(sync, w.dollar as any)
+    // The load, the due re-read and the stamp's checks come first; the re-read after the fetch is the first read made past the fetch.
+    w.config.fetch = async () => {
+      w.config.getThrows = true
+      return answer(PAGE_OPUS)
+    }
+    await priceCheck(sync, w.dollar as any)
+    expect(events).toEqual(['started', 'failed'])
+  })
+
+  test('a check with no read due reports nothing', async () => {
+    const w = makeWorld({ store: { prices: record({}, { lastSuccessMs: T }) } })
+    const { sync, events } = reporting()
+    await priceCheck(sync, w.dollar as any)
+    expect(w.fetches).toEqual([])
+    expect(events).toEqual([])
+  })
+
+  test("a read skipped because another session's stamp stands reports nothing", async () => {
+    const w = makeWorld({ store: { prices: record({}, { lastSuccessMs: T - WEEK }) } })
+    const { sync, events } = reporting()
+    await priceReady(sync, w.dollar as any)
+    w.values.set('prices', record({}, { lastSuccessMs: T - WEEK, attempt: { stampMs: T, outcome: null, failures: 0, previous: null } }))
+    await priceCheck(sync, w.dollar as any)
+    expect(w.fetches).toEqual([])
+    expect(events).toEqual([])
+  })
+
+  test("a scheduled read skipped because the session's own stamp write is refused reports nothing", async () => {
+    const w = makeWorld({ store: { prices: record({}, { lastSuccessMs: T - WEEK }) } })
+    w.config.denySet = ({ value }) => (value as PriceRecord).attempt?.outcome === null
+    const { sync, events } = reporting()
+    await priceReady(sync, w.dollar as any)
+    await priceCheck(sync, w.dollar as any)
+    expect(w.fetches).toEqual([])
+    expect(events).toEqual([])
+  })
+
+  test('a second call that joins a read in flight reports no second started, and the end once', async () => {
+    const gate = deferred<ReturnType<typeof answer>>()
+    const w = makeWorld({ store: { prices: record({}, { lastSuccessMs: T - WEEK }) }, fetch: () => gate.promise })
+    const { sync, events } = reporting()
+    await priceReady(sync, w.dollar as any)
+    const scheduled = priceCheck(sync, w.dollar as any)
+    await until(() => w.fetches.length === 1)
+    const switched = priceCheck(sync, w.dollar as any, true)
+    gate.resolve(answer(PAGE_OPUS))
+    await Promise.all([scheduled, switched])
+    expect(events).toEqual(['started', 'landed'])
+  })
+
+  test('a read from a caller that passes no report still reaches the sink registered once', async () => {
+    const w = makeWorld({ store: { prices: record({}, { lastSuccessMs: T }) } })
+    const { sync, events } = reporting()
+    await priceReady(sync, w.dollar as any)
+    // The switch passes nothing but its flag: the report is the session's, not the call's.
+    await priceCheck(sync, w.dollar as any, true)
+    expect(events).toEqual(['started', 'landed'])
+  })
+
+  test('a switch whose stamp write is refused still reports started, then its end', async () => {
+    const w = makeWorld({ store: { prices: record({}, { lastSuccessMs: T - WEEK }) } })
+    w.config.denySet = ({ value }) => (value as PriceRecord).attempt?.outcome === null
+    const { sync, events } = reporting()
+    await priceReady(sync, w.dollar as any)
+    await priceCheck(sync, w.dollar as any, true)
+    expect(w.fetches.length).toBe(1)
+    expect(events).toEqual(['started', 'landed'])
+  })
+
+  test('a session with no sink reads as before, and a sink that throws does not break the read', async () => {
+    const w = makeWorld({ store: { prices: record({}, { lastSuccessMs: T - WEEK }) } })
+    const sync = priceSync()
+    await priceReady(sync, w.dollar as any)
+    priceSink(sync, () => {
+      throw new Error('sink broke')
+    })
+    await priceCheck(sync, w.dollar as any)
+    expect(w.stored()!.attempt).toMatchObject({ outcome: 'success' })
+    expect(w.logs.join('\n')).toContain('sink broke')
+  })
+
+  test("another session's read reports nothing to this session's sink", async () => {
+    const w = makeWorld({ store: { prices: record({}, { lastSuccessMs: T - WEEK }) } })
+    const reader = reporting()
+    const other = reporting()
+    await priceReady(reader.sync, w.dollar as any)
+    await priceReady(other.sync, w.dollar as any)
+    await priceCheck(reader.sync, w.dollar as any)
+    await priceCheck(other.sync, w.dollar as any)
+    expect(reader.events).toEqual(['started', 'landed'])
+    expect(other.events).toEqual([])
   })
 })
 

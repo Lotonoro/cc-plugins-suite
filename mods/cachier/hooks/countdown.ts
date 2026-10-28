@@ -1,4 +1,4 @@
-import type { CacheView, ColdMark, Reading } from '../types'
+import type { CacheView, ColdMark, PriceCue, Reading } from '../types'
 import { TTL_WORDS } from './prices'
 
 const pad = (n: number) => String(n).padStart(2, '0')
@@ -62,6 +62,15 @@ export const footerOf = (reading: Reading | null, on: boolean, refreshing: boole
   if (reading.state === 'expired') return { quarter: 0, words: reading.words, tone: on ? 'alarm' : 'gone' }
   return { quarter: reading.quarter, words: reading.words, tone: refreshing ? 'on' : WARN_TONE[reading.warn] }
 }
+
+// The cue after the footer's words for a price read's phase: a glyph and its tone. Running is dim, landed the normal text colour, failed amber.
+export type CueMark = { glyph: string; tone: 'dim' | 'plain' | 'warning' }
+const CUES: Record<PriceCue, CueMark> = {
+  reading: { glyph: '⟳', tone: 'dim' },
+  landed: { glyph: '✓', tone: 'plain' },
+  failed: { glyph: '!', tone: 'warning' },
+}
+export const cueOf = (cue: PriceCue | null): CueMark | null => (cue === null ? null : CUES[cue])
 
 // Whether keepalive refreshes as the pie and its time show it: on, with a refresh figure, and a warm cache to refresh.
 export const refreshingOf = (on: boolean, reading: Reading | null, refresh: string | null): boolean =>

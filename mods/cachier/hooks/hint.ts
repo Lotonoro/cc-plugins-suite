@@ -1,6 +1,6 @@
 import type { ButtonProps, BoxProps, ElementConstructor, RenderElement, TextProps } from 'claude-code'
-import type { HintState } from '../types'
-import { COLOUR_SENTENCE, pieOf, refreshingOf, type Tone } from './countdown'
+import type { HintState, PriceCue } from '../types'
+import { COLOUR_SENTENCE, cueOf, pieOf, refreshingOf, type CueMark, type Tone } from './countdown'
 import type { PaneSize } from './pane'
 import { WRAP, wrapLine } from './sections'
 
@@ -22,6 +22,13 @@ const TONE_PROPS: Record<Tone, Partial<TextProps>> = {
   gone: { dimColor: true },
 }
 
+// The cue's text props by tone: running dim, landed in the normal text colour, failed amber (a theme token).
+const CUE_PROPS: Record<CueMark['tone'], Partial<TextProps>> = {
+  dim: { dimColor: true },
+  plain: {},
+  warning: { color: 'warning' },
+}
+
 // The pie's hover popup: keepalive's state. Off is off; on with a refresh coming, or with no cache yet, is on; on and sending no more is paused.
 export const pieHoverOf = (state: HintState | null, on: boolean): string => {
   if (!on) return 'cache keepalive is off'
@@ -41,10 +48,11 @@ const popup = (t: Table, text: string): RenderElement =>
     children: [t.Text({ dimColor: true, wrap: 'truncate-end', children: [text] })],
   })
 
-// The footer line: the pie, which a click switches keepalive with, and beside it the time, the rebuild figure, `reset` or `no count`, which a click opens the
-// details with. The refresh cost shows on hover, in a popup above the time, for reference at any time. `on` is whether keepalive is on.
-// Null when there is no line to show.
-export const footerLine = (t: Table, state: HintState | null, on: boolean, onToggle: () => void, onDetails: () => void): RenderElement | null => {
+// The footer line: the pie, which a click switches keepalive with, and beside it the time, the rebuild figure, `reset` or `no count`, which a click
+// opens the details with. After them, the price read's cue when one stands (`cue`): `⟳` while it runs, `✓` once it landed, an amber `!` once it
+// failed; none without a line. The refresh cost shows on hover, in a popup above the time, for reference at any time. `on` is whether keepalive is
+// on. Null when there is no line to show.
+export const footerLine = (t: Table, state: HintState | null, on: boolean, onToggle: () => void, onDetails: () => void, cue: PriceCue | null = null): RenderElement | null => {
   const { footer } = pieOf(state?.reading ?? null, on, state?.cost?.label ?? null)
   if (footer === null) return null
   const pie = t.Button({
@@ -66,7 +74,9 @@ export const footerLine = (t: Table, state: HintState | null, on: boolean, onTog
       ...(cost === null ? [] : [popup(t, cost.label)]),
     ],
   })
-  return t.Box({ flexDirection: 'row', children: [pieBox, t.Text({ dimColor: true, children: [' '] }), time] })
+  const mark = cueOf(cue)
+  const cueText = mark === null ? [] : [t.Box({ key: 'cue', children: [t.Text({ ...CUE_PROPS[mark.tone], children: [` ${mark.glyph}`] })] })]
+  return t.Box({ flexDirection: 'row', children: [pieBox, t.Text({ dimColor: true, children: [' '] }), time, ...cueText] })
 }
 
 // The details pane's lines: the cache's warmth, keepalive's state, and the cost it states. While it refreshes, the cost of its refreshes and

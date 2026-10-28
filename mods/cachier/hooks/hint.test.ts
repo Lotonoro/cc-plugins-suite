@@ -35,6 +35,58 @@ const glyphOf = (pie: any) => pie.props.children[0].children[0]
 const toneOf = (pie: any) => pie.props.children[0].props
 const revealOf = (line: any) => timeOf(line).children[1]
 
+describe('footerLine: the price read cue after the words', () => {
+  const cueOf = (line: any) => line.children[3]
+  const glyph = (line: any) => cueOf(line).children[0].children[0]
+  const props = (line: any) => cueOf(line).children[0].props
+
+  test('with no read there is no cue, and the line has the pie, the separator and the words only', () => {
+    expect((footerLine(t, state(), false, noop, noop) as any).children).toHaveLength(3)
+    expect((footerLine(t, state(), false, noop, noop, null) as any).children).toHaveLength(3)
+  })
+
+  test('a running read draws a dim glyph after the words, which stay a dim details button', () => {
+    const line = footerLine(t, state(), false, noop, noop, 'reading') as any
+    expect(line.children).toHaveLength(4)
+    expect(glyph(line)).toBe(' ⟳')
+    expect(props(line)).toEqual({ dimColor: true })
+    expect(timeOf(line).children[0].props).toMatchObject({ key: 'details', dimColor: true, children: ['3:12'] })
+  })
+
+  test('a landed read draws a check mark in the normal text colour', () => {
+    const line = footerLine(t, state(), false, noop, noop, 'landed') as any
+    expect(glyph(line)).toBe(' ✓')
+    expect(props(line)).toEqual({})
+  })
+
+  test('a failed read draws an amber exclamation mark, not a check mark', () => {
+    const line = footerLine(t, state(), false, noop, noop, 'failed') as any
+    expect(glyph(line)).toBe(' !')
+    expect(props(line)).toEqual({ color: 'warning' })
+    expect(JSON.stringify(line)).not.toContain('✓')
+  })
+
+  test('the cue follows the reset and no-count words too', () => {
+    const cold = { words: '', state: 'cold', quarter: 0, warn: 'calm' } as const
+    expect(glyph(footerLine(t, state({ reading: cold }), true, noop, noop, 'reading') as any)).toBe(' ⟳')
+    expect(glyph(footerLine(t, state({ reading: null }), true, noop, noop, 'landed') as any)).toBe(' ✓')
+  })
+
+  test('with no footer drawn there is no cue', () => {
+    expect(footerLine(t, state({ reading: null }), false, noop, noop, 'reading')).toBeNull()
+    expect(footerLine(t, null, false, noop, noop, 'failed')).toBeNull()
+  })
+
+  test('the pie and the words stay pressable with a cue showing', () => {
+    let toggles = 0
+    let details = 0
+    const line = footerLine(t, state(), false, () => toggles++, () => details++, 'reading') as any
+    pieOf(line).props.onPress({ plugin: 'cachier', element: 'pie' })
+    timeOf(line).children[0].props.onPress({ plugin: 'cachier', element: 'details' })
+    expect([toggles, details]).toEqual([1, 1])
+  })
+})
+
 describe('footerLine: the pie, and its words', () => {
   test('with no line to show, there is no element', () => {
     expect(footerLine(t, null, false, noop, noop)).toBeNull()
