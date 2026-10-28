@@ -4746,7 +4746,221 @@ describe('the bare command reads each state it states once per call', () => {
     await commandText($, '')
     counting = false
     const count = (key: string) => reads.filter((read) => read === key).length
-    expect({ view: count('view'), cold: count('cold'), unit: count('unit') }).toEqual({ view: 1, cold: 1, unit: 1 })
+    expect({ view: count('view'), cold: count('cold'), unit: count('unit'), hint: count('hint') }).toEqual({ view: 1, cold: 1, unit: 1, hint: 0 })
+  })
+})
+
+// The pie's colour sentence in the Keepalive section: it words the pie's warning only while the pie is amber or red on a warm cache.
+// The answer's rows are joined, since the sentence wraps at 48 columns.
+describe('the Keepalive section words the pie\'s warning only while the pie warns on a warm cache', () => {
+  const SENTENCE = "The pie turns amber in the cache's last quarter and red in its last tenth: the cache is about to lapse."
+  const LONG = { 'pauses/old': Array.from({ length: 10 }, (_, i) => ({ startMs: 1000 + i, pausedMs: 3 * 3600000, hour: 10, weekday: 2, ratio: 24, ttlMs: 300000 })) }
+  const started = async ($: any, on: any, doc: any = opusCached()) => {
+    kaWorld(on, doc)
+    const clock = mock.clock(on, { now: T0 })
+    await $.classic.SessionStart({ source: 'startup', transcript_path: PATH })
+    await clock.advance(1000)
+    return clock
+  }
+
+  test('keepalive off, in the last quarter: the sentence follows the heading, ahead of the section\'s other lines', async ($, on) => {
+    const clock = await started($, on)
+    await clock.advance(240000)
+    expect(await toggle($, '')).toContain(`Keepalive  off ${SENTENCE} Each pause sends at most 24 refreshes`)
+  })
+
+  test('keepalive off, in the last tenth: the sentence is there', async ($, on) => {
+    const clock = await started($, on)
+    await clock.advance(280000)
+    expect(await toggle($, '')).toContain(`Keepalive  off ${SENTENCE} `)
+  })
+
+  test('keepalive off, before the last quarter: no sentence, since the pie is the normal colour and "about to lapse" would mislead', async ($, on) => {
+    const clock = await started($, on)
+    await clock.advance(100000)
+    expect(await toggle($, '')).not.toContain('about to lapse')
+  })
+
+  test('keepalive on and refreshing, in the last quarter: no sentence, the pie is green', async ($, on) => {
+    const clock = await started($, on)
+    await toggle($, 'on 15')
+    await clock.advance(240000)
+    expect(await drawnHint($)).toContain('"color":"success"')
+    const text = await toggle($, '')
+    expect(text).toContain('Keepalive  on, refreshing')
+    expect(text).not.toContain('about to lapse')
+  })
+
+  test('keepalive on with a lead at the TTL, in the last quarter: the sentence follows the reason line', async ($, on) => {
+    const clock = await started($, on)
+    await toggle($, 'on 300')
+    await clock.advance(240000)
+    expect(await drawnHint($)).not.toContain('"color":"success"')
+    expect(await toggle($, '')).toContain(`Keepalive  paused lead 300 s is not below the 300 s TTL ${SENTENCE}`)
+  })
+
+  test('keepalive stopped with its count used, in the last quarter: the sentence sits between the reason and the last-refresh line', async ($, on) => {
+    const clock = await started($, on)
+    await toggle($, 'on 60 1')
+    await mainStep($)
+    await turnEnd($)
+    await clock.advance(240000 + 500)
+    await clock.advance(1000)
+    await clock.advance(240000)
+    expect(await drawnHint($)).not.toContain('"color":"success"')
+    const text = await toggle($, '')
+    expect(text).toMatch(new RegExp(`Keepalive  paused its refreshes for this pause are used up; it resumes after your next prompt ${SENTENCE} \\S`))
+  })
+
+  test('keepalive on with a learned count of none, in the last quarter: the sentence sits between the reason and the figure', async ($, on) => {
+    const clock = await started($, on, { ...opusCached(), store: LONG })
+    await toggle($, 'on 60')
+    await mainStep($)
+    await turnEnd($)
+    await clock.advance(250000)
+    expect(await drawnHint($)).not.toContain('"color":"success"')
+    expect(await toggle($, '')).toContain(`Keepalive  paused no refreshes this pause: your pauses rarely outlast the cache ${SENTENCE} Next refresh: `)
+  })
+
+  test('an expired cache with keepalive on: the pie is red and the section has no sentence', async ($, on) => {
+    const clock = await started($, on)
+    await toggle($, 'on 60 1')
+    await mainStep($)
+    await turnEnd($)
+    await clock.advance(20 * MIN)
+    const text = await toggle($, '')
+    expect(text).toContain('Prompt cache expired')
+    expect(text).not.toContain('about to lapse')
+    expect(await drawnHint($)).toContain('"color":"error"')
+  })
+
+  test('an expired cache with keepalive off: no sentence', async ($, on) => {
+    const clock = await started($, on)
+    await clock.advance(20 * MIN)
+    const text = await toggle($, '')
+    expect(text).toContain('Prompt cache expired')
+    expect(text).not.toContain('about to lapse')
+  })
+
+  test('with no reading to count from: no sentence', async ($, on) => {
+    await started($, on, { text: '', exists: false })
+    const text = await toggle($, '')
+    expect(text).not.toContain('Prompt cache')
+    expect(text).not.toContain('about to lapse')
+  })
+
+  test('a cold mark being written in the last quarter, before the reset record lands: the pie is green and the section has no sentence', { options: { keepalive_lead_s: 20, keepalive_count: 2 } }, async ($, on) => {
+    const doc: any = { text: '', exists: false }
+    kaWorld(on, doc)
+    let release: () => void = () => {}
+    const gate = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    let holding = false
+    on('state.set', (_$: any, e: any, next: any) => {
+      if (e.key === 'cold' && e.value !== null && !holding) {
+        holding = true
+        return gate.then(() => next(e))
+      }
+      return next(e)
+    })
+    const clock = mock.clock(on, { now: T0 })
+    await $.classic.SessionStart({ source: 'startup', transcript_path: PATH })
+    await clock.settle()
+    await toggle($, 'on 20 2')
+    doc.exists = undefined
+    doc.text = cached().text
+    await mainStep($)
+    await turnEnd($)
+    await clock.advance(250000)
+    const switching = $.classic.PostModelSwitch({ from_model: 'a', to_model: 'b', requested_model: 'b', source: 'command', prompt_cache_warm: true, cache_ttl: '5m', context_tokens: 1, estimated_cache_write_usd: 0, pricing: 'catalog' } as any)
+    await clock.settle()
+    try {
+      expect(holding).toBe(true)
+      const text = await toggle($, '')
+      expect(text).toContain('Prompt cache warm, 0:50 left')
+      expect(text).toContain('Keepalive  paused until the cache reset is recorded')
+      expect(text).not.toContain('about to lapse')
+      expect(await drawnHint($)).toContain('"color":"success"')
+    } finally {
+      release()
+    }
+    await switching
+  })
+
+  test('a cold mark being written in the last quarter, after it is set and before its write finishes: the reading is cold, the pie green, and no sentence', { options: { keepalive_lead_s: 20, keepalive_count: 2 } }, async ($, on) => {
+    const doc: any = { text: '', exists: false }
+    kaWorld(on, doc)
+    let release: () => void = () => {}
+    const gate = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    let holding = false
+    on('state.set', (_$: any, e: any, next: any) => {
+      if (e.key === 'stats' && e.value?.coldSince?.length > 0 && !holding) {
+        holding = true
+        return gate.then(() => next(e))
+      }
+      return next(e)
+    })
+    const clock = mock.clock(on, { now: T0 })
+    await $.classic.SessionStart({ source: 'startup', transcript_path: PATH })
+    await clock.settle()
+    await toggle($, 'on 20 2')
+    doc.exists = undefined
+    doc.text = cached().text
+    await mainStep($)
+    await turnEnd($)
+    await clock.advance(250000)
+    const switching = $.classic.PostModelSwitch({ from_model: 'a', to_model: 'b', requested_model: 'b', source: 'command', prompt_cache_warm: true, cache_ttl: '5m', context_tokens: 1, estimated_cache_write_usd: 0, pricing: 'catalog' } as any)
+    await clock.settle()
+    try {
+      expect(holding).toBe(true)
+      const text = await toggle($, '')
+      expect(text).toContain('Prompt cache reset')
+      expect(text).toContain('Keepalive  paused until the cache reset is recorded')
+      expect(text).not.toContain('about to lapse')
+      expect(await drawnHint($)).toContain('"color":"success"')
+    } finally {
+      release()
+    }
+    await switching
+  })
+
+  test('between the last refresh\'s count and its count-used stop being recorded, in the last quarter: the pie is green and the section has no sentence', async ($, on) => {
+    kaWorld(on, cached())
+    let release: () => void = () => {}
+    const gate = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    let holding = false
+    on('state.set', (_$: any, e: any, next: any) => {
+      if (e.key === 'keepalive' && e.value?.stop === 'count used' && !holding) {
+        holding = true
+        return gate.then(() => next(e))
+      }
+      return next(e)
+    })
+    const clock = mock.clock(on, { now: T0 })
+    await $.classic.SessionStart({ source: 'startup', transcript_path: PATH })
+    await clock.settle()
+    await toggle($, 'on 60 1')
+    await mainStep($)
+    await turnEnd($)
+    await clock.advance(240000 + 500)
+    // The refresh's reply touched the cache anew: run on to its last quarter, with the stop not yet recorded.
+    const advancing = clock.advance(240000 + 1000)
+    await clock.settle()
+    try {
+      expect(holding).toBe(true)
+      const text = await toggle($, '')
+      expect(text).toContain('Keepalive  paused its refreshes for this pause are used up')
+      expect(text).not.toContain('about to lapse')
+      expect(await drawnHint($)).toContain('"color":"success"')
+    } finally {
+      release()
+    }
+    await advancing
   })
 })
 

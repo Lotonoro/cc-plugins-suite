@@ -1,6 +1,6 @@
 import type { ButtonProps, BoxProps, ElementConstructor, RenderElement, TextProps } from 'claude-code'
 import type { HintState } from '../types'
-import { footerOf, refreshingOf, type Tone } from './countdown'
+import { COLOUR_SENTENCE, pieOf, refreshingOf, type Tone } from './countdown'
 import type { PaneSize } from './pane'
 import { WRAP, wrapLine } from './sections'
 
@@ -45,7 +45,7 @@ const popup = (t: Table, text: string): RenderElement =>
 // details with. The refresh cost shows on hover, in a popup above the time, for reference at any time. `on` is whether keepalive is on.
 // Null when there is no line to show.
 export const footerLine = (t: Table, state: HintState | null, on: boolean, onToggle: () => void, onDetails: () => void): RenderElement | null => {
-  const footer = footerOf(state?.reading ?? null, on, refreshingOf(on, state?.reading ?? null, state?.cost?.label ?? null))
+  const { footer } = pieOf(state?.reading ?? null, on, state?.cost?.label ?? null)
   if (footer === null) return null
   const pie = t.Button({
     key: 'pie',
@@ -70,21 +70,18 @@ export const footerLine = (t: Table, state: HintState | null, on: boolean, onTog
   return t.Box({ flexDirection: 'row', children: [pieBox, t.Text({ dimColor: true, children: [' '] }), time] })
 }
 
-// Where no refresh is coming, off or paused or spent, the pie's colours are the only word on the cache: what amber and red warn of.
-const WARNING_SENTENCE = "The pie turns amber in the cache's last quarter and red in its last tenth: the cache is about to lapse."
-
 // The details pane's lines: the cache's warmth, keepalive's state, and the cost it states. While it refreshes, the cost of its refreshes and
 // their interval; while it is off, `offer`, the cost a press would turn it on at. Then the break-even line and this session's tally, which
 // `session` carries. A line with no text is left out.
 export const paneLines = (state: HintState | null, on: boolean, session: string): string[] => {
   const refreshing = refreshingOf(on, state?.reading ?? null, state?.cost?.label ?? null)
   const status = !on
-    ? `Keepalive is off. ${WARNING_SENTENCE}`
+    ? `Keepalive is off. ${COLOUR_SENTENCE}`
     : refreshing
       ? 'Keepalive is on and refreshing the cache.'
       : state?.reading == null
         ? 'Keepalive is on, with no cache to count from yet.'
-        : `Keepalive is paused: ${state.paused ?? 'no refresh is due'}. ${WARNING_SENTENCE}`
+        : `Keepalive is paused: ${state.paused ?? 'no refresh is due'}. ${COLOUR_SENTENCE}`
   const figure = refreshing ? state?.cost : !on ? state?.offer : null
   return [
     ...(state === null ? [] : [state.warmth]),

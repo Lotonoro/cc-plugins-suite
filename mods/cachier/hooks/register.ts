@@ -1,7 +1,7 @@
 import type { EngineInterface, Register, RenderElement } from 'claude-code'
 import type { ModelForkResult, ModelUsage } from 'claude-code'
 import type { CacheView, ColdMark, HintCost, HintState, Judged, KeepaliveState, Spend, StatsState, TallyState, Unit } from '../types'
-import { readingOf, refreshingOf, settleCold, touchedAt, warmthOf } from './countdown'
+import { pieOf, readingOf, refreshingOf, settleCold, touchedAt, warmthOf } from './countdown'
 import {
   coldBegun,
   coldLanded,
@@ -853,12 +853,15 @@ const snapshotNow = async ($: Dollar): Promise<Snapshot> => {
   const rundown = rundownSections(tally, stats, money)
   const kept = keptOf(held, view, money, nowMs)
   const verdict = step(held, view, live, gapOpen(held), nowMs, money)
+  // The pie's own judgement, from the held state and the view under the cold mark, so the sentence agrees with the heading above it.
+  const { colour } = pieOf(reading, held.config !== null, costOf(held, view, money)?.label ?? null)
   return {
     cache: [warmthOf(reading, raw.kind === 'known' ? raw.ttlLabel : '5m', rebuild)].filter((line) => line !== ''),
     keepalive: {
       state: verdict.heading,
       lines: [
         ...(verdict.why === null ? [] : [verdict.why]),
+        ...(colour === null ? [] : [colour]),
         ...verdict.lines,
         ...countLines(held, view, money, nowMs, kept),
         ...(defaultRun === undefined ? [] : [breakEvenLine(held, view, money, defaultsNow(defaultRun, view, money, nowMs))]),

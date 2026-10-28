@@ -141,7 +141,10 @@ refresh cost, how many refreshes a pause gets and why, when it pays off, this se
 setup's sentence, the one-hour cache advice, the misses by cause, why figures are in tokens) and Settings (the TTL, lead,
 refresh count, start mode and unit: each value, where it came from when that is known, and what changes it; the TTL and
 start mode apply to new sessions). The Keepalive heading names keepalive's state, one of `off`, `on, refreshing`,
-`on, no count`, `paused` and `stopped`; the reason for a pause or stop is the first line beneath it. The Keepalive
+`on, no count`, `paused` and `stopped`; the reason for a pause or stop is the first line beneath it. When no refresh is
+coming, the Keepalive section words the pie's warning (the pie turns amber in the cache's last quarter and red in its last
+tenth: the cache is about to lapse) just below that reason, but only while the pie is amber or red on a warm cache: not
+earlier in the lifetime, not while it refreshes, and not on a reset or expired cache. The Keepalive
 section is always shown, as its heading alone when it has nothing else to say. Cache, Advice and Settings are left out
 when they have nothing to say. The text wraps at 48 columns. A count pins the refreshes per pause for the session;
 without one, each pause sends the learned count, else the break-even count.
