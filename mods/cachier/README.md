@@ -24,6 +24,10 @@ lifetime is left, and next to it the time left, or a word where there is no time
   or on but paused or spent) it is the normal text colour, then amber in the cache's last quarter, and red in its last
   tenth (1:15 and 0:30 on a 5-minute cache, 15 and 6 minutes on an hour's). An expired cache is red with keepalive on and
   dim with it off.
+- The price cue: after the words (not after a footer that is not drawn), `⟳` (dim) shows while this session reads Anthropic's pricing
+  page, whoever started the read (the weekly schedule, a switch to dollars). When the read lands a `✓` takes its place, and when it
+  fails an amber `!` does, each for about 3 seconds; then the footer is as before. Only the session that ran the read shows it, a
+  reload or a session end clears it, and no toast is raised. The pie and the words stay clickable.
 - A click on the pie switches keepalive, as `/keepalive on` with the last-used lead and count (else the defaults) or
   `/keepalive off` does. A click on the time, the rebuild figure, `reset` or `no count` opens the details pane, at any terminal width. Esc closes it.
 - Hovering the time or the figure shows the refresh cost in a popup just above it (`$0.006/refresh`); nothing on the

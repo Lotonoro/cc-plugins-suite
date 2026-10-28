@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'claude-code/testing'
-import { COLOUR_SENTENCE, footerOf, pieOf, readingOf, refreshingOf, settleCold, warmthOf, type Tone } from './countdown'
+import { COLOUR_SENTENCE, cueOf, footerOf, pieOf, readingOf, refreshingOf, settleCold, warmthOf, type Tone } from './countdown'
 
 const T = 1_000_000
 const known = { kind: 'known' as const, touchMs: T, ttlMs: 300000, ttlLabel: '5m' as const, promptTokens: 1, outputTokens: 0, model: null, speed: null }
@@ -213,5 +213,14 @@ describe('pieOf: the pie\'s tone and the colour sentence, from the reading, keep
     expect(COLOUR_SENTENCE).toBe(pieOf(quarter, false, null).colour)
     expect(pieOf(quarter, true, FIGURE).footer).toEqual(footerOf(quarter, true, refreshingOf(true, quarter, FIGURE)))
     expect(pieOf(null, false, null)).toEqual({ footer: null, colour: null })
+  })
+})
+
+describe('cueOf: the glyph and tone after the footer words', () => {
+  test('a running read is a dim cycle arrow, a landed one a check mark, a failed one an amber exclamation mark, and none is none', () => {
+    expect(cueOf('reading')).toEqual({ glyph: '⟳', tone: 'dim' })
+    expect(cueOf('landed')).toEqual({ glyph: '✓', tone: 'plain' })
+    expect(cueOf('failed')).toEqual({ glyph: '!', tone: 'warning' })
+    expect(cueOf(null)).toBeNull()
   })
 })
