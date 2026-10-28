@@ -45,15 +45,20 @@ export const readingOf = (view: CacheView, liveMs: number | null, cold: ColdMark
 // left to the person: the normal text, then amber in the TTL's last quarter and red in its last tenth, where a prompt can still keep it
 // warm. An expired cache is red with keepalive on (only a click or a prompt resumes it) and dim off, where nothing is left to act on.
 export type Tone = 'on' | 'quiet' | 'warning' | 'alarm' | 'gone'
-// What the footer draws: the pie's quarter step, the words beside it (empty for none), and the pie's tone.
+// The word for a reset cache: the footer's cold word and the warmth line's `Prompt cache reset` read this one constant.
+const RESET = 'reset'
+// The footer's word with keepalive on and no reading: nothing is counted, which is true of every no-reading state.
+const NO_COUNT = 'no count'
+// What the footer draws: the pie's quarter step, the words beside it (the time, the rebuild figure, or one of the two words), and the pie's tone.
 export type Footer = { quarter: number; words: string; tone: Tone }
 const WARN_TONE: Record<Reading['warn'], Tone> = { calm: 'quiet', quarter: 'warning', tenth: 'alarm' }
 
-// What the footer draws for a reading, or null for nothing: with nothing to count, an empty pie only while keepalive is on. `refreshing`
+// What the footer draws for a reading, or null for nothing: with nothing to count, the empty pie and `no count`, only while keepalive is on;
+// a cold reading is the empty pie and `reset`. `refreshing`
 // is whether keepalive will send the next refresh (`refreshingOf`).
 export const footerOf = (reading: Reading | null, on: boolean, refreshing: boolean): Footer | null => {
-  if (reading === null) return on ? { quarter: 0, words: '', tone: 'on' } : null
-  if (reading.state === 'cold') return { quarter: 0, words: '', tone: on ? 'on' : 'gone' }
+  if (reading === null) return on ? { quarter: 0, words: NO_COUNT, tone: 'on' } : null
+  if (reading.state === 'cold') return { quarter: 0, words: RESET, tone: on ? 'on' : 'gone' }
   if (reading.state === 'expired') return { quarter: 0, words: reading.words, tone: on ? 'alarm' : 'gone' }
   return { quarter: reading.quarter, words: reading.words, tone: refreshing ? 'on' : WARN_TONE[reading.warn] }
 }
@@ -62,13 +67,27 @@ export const footerOf = (reading: Reading | null, on: boolean, refreshing: boole
 export const refreshingOf = (on: boolean, reading: Reading | null, refresh: string | null): boolean =>
   on && refresh !== null && reading?.state === 'warm'
 
+// What the pie's colours warn of where no refresh is coming: the bare words, which the details pane and the colour sentence share.
+export const COLOUR_SENTENCE = "The pie turns amber in the cache's last quarter and red in its last tenth: the cache is about to lapse."
+
+// The pie's whole judgement from its inputs: the reading, whether keepalive is on, and the label of the refresh figure (null when none
+// holds). `footer` is what the pie draws, tone included, null exactly where `footerOf` gives none. `colour` is the sentence wording the
+// pie's warning, present only while the pie is amber or red on a warm cache: the calm tone, a green pie, no reading, and a cold or
+// expired cache have none.
+export type Pie = { footer: Footer | null; colour: string | null }
+export const pieOf = (reading: Reading | null, on: boolean, refresh: string | null): Pie => {
+  const footer = footerOf(reading, on, refreshingOf(on, reading, refresh))
+  const warns = reading?.state === 'warm' && (footer?.tone === 'warning' || footer?.tone === 'alarm')
+  return { footer, colour: warns ? COLOUR_SENTENCE : null }
+}
+
 // The details pane's first line: the cache's warmth, its time left in the lifetime `ttl` names, or cold or expired with the figure to rebuild
 // it (`rebuild`, empty for none). Empty when there is no reading to count from.
 export const warmthOf = (reading: Reading | null, ttl: '1h' | '5m', rebuild: string): string => {
   if (reading === null) return ''
   const life = `${TTL_WORDS[ttl]} cache`
   if (reading.state === 'warm') return `Prompt cache warm, ${reading.words} left (${life})`
-  const state = reading.state === 'expired' ? 'expired' : 'reset'
+  const state = reading.state === 'expired' ? 'expired' : RESET
   return rebuild === '' ? `Prompt cache ${state}.` : `Prompt cache ${state}, ${rebuild} to rebuild.`
 }
 

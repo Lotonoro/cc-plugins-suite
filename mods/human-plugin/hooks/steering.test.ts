@@ -98,6 +98,12 @@ test('the tool description says any change to a sent item reopens it, and a clea
   expect(TOOL_SPEC.description).not.toContain('A note on a done item reopens it')
 })
 
+test('blocking means a workstream is blocked, and the agent promotes an item with update once a workstream waits on it', () => {
+  expect(STEERING.text).toContain('Mark it blocking when any workstream cannot go on without the human; once a workstream has reached a point where it waits on a non-blocking item, mark that item blocking with update.')
+  expect(TOOL_SPEC.inputSchema.properties.blocking.description).toBe('True when any workstream cannot go on without the human. Set it with update once a workstream has reached a point where it waits on a non-blocking item.')
+  expect(STEERING.text).not.toContain('when the work cannot go on')
+})
+
 test('the done schema asks for a few words, at most 24 columns', () => {
   expect(TOOL_SPEC.inputSchema.properties.done.description).toContain('a few words, at most 24 columns')
 })

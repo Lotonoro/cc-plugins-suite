@@ -2,7 +2,6 @@ import { expect, test } from 'claude-code/testing'
 import { act, listText, normalizeItem } from './items'
 import { expire, reply } from './done'
 import { band, pane, paneRows, toolLine, type Handlers, type Table, type View } from './ui'
-import { FENCE } from './tables'
 import type { Item, Store, Turn } from '../types'
 
 // A table whose constructors return their props, so a test reads the tree the drawing built.
@@ -674,6 +673,9 @@ test('an agent turn with fenced blocks is drawn as a brief: a copy button under 
   expect(copied).toEqual([['ls -la\ncd /tmp', 'terminal'], ['make test', 'terminal']])
 })
 
+// A Markdown text that opens with a fence (up to three columns in, as a block in a list item is cut) is drawn as code.
+const FENCE = /^ {0,3}(`{3,}|~{3,})/
+
 // The rows a drawn tree takes, counted from the tree as the surface lays it out: a column stacks its children and a row is as tall as its
 // tallest; a text is a row a line; a Markdown block a row a line and one more under each heading, but a fenced block is code and has none;
 // a button or a field is one row.
@@ -710,8 +712,81 @@ test('the pane\'s row request for an item with a thread equals the rows its draw
   expect(paneRows(waiting)).toBe(drawn(waiting))
 })
 
+test('the pane\'s row request equals the drawn rows for fenced blocks in list items, in the brief and in a thread turn', () => {
+  const nested = '# Options\n\n- a\n  - b\n    ```sh\n    # not a heading\n    ls\n    ```\n  - c\n\n1. step\n   ~~~\n   make\n   ~~~\n\nAfter.'
+  const withTurn: Item = { ...item, detail: nested, note: null, thread: [{ speaker: 'human', words: 'Ok' }, { speaker: 'agent', words: nested }] }
+  const drawn = (shown: Item): number => drawnRows(pane(withInput, handlers, { items: [shown], next: 2 }, view()))
+  expect(paneRows(withTurn)).toBe(drawn(withTurn))
+  expect(paneRows({ ...withTurn, thread: [] })).toBe(drawn({ ...withTurn, thread: [] }))
+})
+
 test('the pane asks for the rows a reply in its undo window draws: its header, the reply as a turn, the agent turn it took, and the undo button', () => {
   const waiting: Item = { ...at(1, true), state: 'done-waiting', pressedAt: 0, answer: 'Use sqlite', replied: true, windowTurns: [{ speaker: 'agent', words: 'Noted.' }] }
   expect(paneRows(waiting)).toBe(1 + 1 + 2 + 1)
   expect(paneRows(waiting)).toBe(drawnRows(pane(withInput, handlers, { items: [waiting], next: 2 }, { ...view(), now: 0, windowMs: 3000 })))
+})
+
+test('a fence in a second-level list item has a copy button, its block is drawn without the item\'s indent, and the pane asks for its row', () => {
+  const copied: [string, unknown][] = []
+  const h: Handlers = { ...handlers, copy: (text, surface) => void copied.push([text, surface]) }
+  const brief = '- a\n  - b\n    ```sh\n    ls\n    ```'
+  const tree = pane(table, h, { items: [{ ...item, detail: brief, note: null }], next: 2 }, view())
+  expect(nodes(tree, 'Markdown').map(n => n.text)).toEqual(['- a\n  - b', '```sh\nls\n```'])
+  const copies = nodes(tree, 'Button').filter(b => String(b.key).startsWith('copy-'))
+  expect(copies.map(b => [b.key, b.label, b.plain])).toEqual([['copy-1-1', '[copy]', true]])
+  for (const b of copies) (b.onPress as (press: { surface: string }) => void)({ surface: 'terminal' })
+  expect(copied).toEqual([['ls', 'terminal']])
+  const plain = { ...item, detail: '- a\n  - b\n    one\n    two\n    three', note: null }
+  expect(paneRows({ ...item, detail: brief, note: null })).toBe(paneRows(plain) + 1)
+})
+
+test('a fence on a list marker\'s own line reaches the pane as one block that starts with its marker, and its copy holds only the lines inside', () => {
+  const copied: [string, unknown][] = []
+  const h: Handlers = { ...handlers, copy: (text, surface) => void copied.push([text, surface]) }
+  const brief = '1. x\n   - ```sh\n     ls\n     ```\nafter'
+  const tree = pane(table, h, { items: [{ ...item, detail: brief, note: null }], next: 2 }, view())
+  expect(nodes(tree, 'Markdown').map(n => n.text)).toEqual(['1. x', '- ```sh\n  ls\n  ```', 'after'])
+  const copies = nodes(tree, 'Button').filter(b => String(b.key).startsWith('copy-'))
+  expect(copies.map(b => b.key)).toEqual(['copy-1-1'])
+  for (const b of copies) (b.onPress as (press: { surface: string }) => void)({ surface: 'terminal' })
+  expect(copied).toEqual([['ls', 'terminal']])
+})
+
+test('a fence indented four spaces outside a list is no fence: no copy button, and a table after it is drawn as a list', () => {
+  const brief = '    ```sh\n    ls\n    ```\n\n| a | b |\n|---|---|\n| 1 | 2 |'
+  const tree = pane(table, handlers, { items: [{ ...item, detail: brief, note: null }], next: 2 }, view())
+  expect(nodes(tree, 'Markdown').map(n => n.text)).toEqual(['    ```sh\n    ls\n    ```\n\n- **1**: b: 2'])
+  expect(nodes(tree, 'Button').filter(b => String(b.key).startsWith('copy-'))).toEqual([])
+})
+
+test('a fence four or more columns past its list item\'s content column is no fence: no copy button, and its lines stay prose', () => {
+  const brief = '- a\n      ```sh\n      ls\n      ```'
+  const tree = pane(table, handlers, { items: [{ ...item, detail: brief, note: null }], next: 2 }, view())
+  expect(nodes(tree, 'Markdown').map(n => n.text)).toEqual([brief])
+  expect(nodes(tree, 'Button').filter(b => String(b.key).startsWith('copy-'))).toEqual([])
+})
+
+test('a backtick run with a backtick in its info string is no fence: no copy button, and the table after it is drawn as a list', () => {
+  const brief = '```x```\n| a | b |\n|---|---|\n| 1 | 2 |'
+  const tree = pane(table, handlers, { items: [{ ...item, detail: brief, note: null }], next: 2 }, view())
+  expect(nodes(tree, 'Markdown').map(n => n.text)).toEqual(['```x```\n\n- **1**: b: 2'])
+  expect(nodes(tree, 'Button').filter(b => String(b.key).startsWith('copy-'))).toEqual([])
+})
+
+test('a tilde fence with a backtick line inside has one copy button, and a table after its close is drawn as a list', () => {
+  const copied: [string, unknown][] = []
+  const h: Handlers = { ...handlers, copy: (text, surface) => void copied.push([text, surface]) }
+  const brief = '~~~\n```\n| a | b |\n|---|---|\n| 1 | 2 |\n~~~\n| c | d |\n|---|---|\n| 3 | 4 |'
+  const tree = pane(table, h, { items: [{ ...item, detail: brief, note: null }], next: 2 }, view())
+  expect(nodes(tree, 'Markdown').map(n => n.text)).toEqual(['~~~\n```\n| a | b |\n|---|---|\n| 1 | 2 |\n~~~', '- **3**: d: 4'])
+  const copies = nodes(tree, 'Button').filter(b => String(b.key).startsWith('copy-'))
+  expect(copies.map(b => b.key)).toEqual(['copy-1-0'])
+  for (const b of copies) (b.onPress as (press: { surface: string }) => void)({ surface: 'terminal' })
+  expect(copied).toEqual([['```\n| a | b |\n|---|---|\n| 1 | 2 |', 'terminal']])
+})
+
+test('a table after a fence in a second-level list item is drawn as a list, with no indent of four or more columns', () => {
+  const brief = '- a\n  - b\n    ```sh\n    ls\n    ```\n    | x | y |\n    |---|---|\n    | 1 | 2 |'
+  const tree = pane(table, handlers, { items: [{ ...item, detail: brief, note: null }], next: 2 }, view())
+  expect(nodes(tree, 'Markdown').map(n => n.text)).toEqual(['- a\n  - b', '```sh\nls\n```', '- **1**: y: 2'])
 })

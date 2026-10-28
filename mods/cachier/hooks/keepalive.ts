@@ -225,15 +225,20 @@ export const enable = (
   generation: k.generation + 1,
 })
 
-// What the bare command and the status line's failures say about the state, and what the tick does with it. A `ping` is the only way
-// a fork starts, and only while the idle gap is open, a count is left and nothing has stopped it.
-export type Step =
-  | { kind: 'ping'; text: string }
-  | { kind: 'stop'; reason: string; text: string }
-  | { kind: 'wait'; text: string }
+// The word the bare command's Keepalive heading carries: keepalive's state, one of five.
+export type Heading = 'off' | 'on, refreshing' | 'on, no count' | 'paused' | 'stopped'
 
-// The last refresh's read and write, named in the keepalive status text, so a live session can check the served threshold.
-const lastOf = (k: KeepaliveState) => (k.last === null ? '' : `; last refresh read ${k.last.read}, wrote ${k.last.write}`)
+// What the bare command says about the state, and what the tick does with it. The heading word, the reason line (why keepalive is
+// paused or stopped, when it is) and the lines beneath it are what the command shows; the kind and a stop's reason are what the tick
+// reads. A `ping` is the only way a fork starts, and only while the idle gap is open, a count is left and nothing has stopped it.
+type Shown = { heading: Heading; why: string | null; lines: string[] }
+export type Step =
+  | ({ kind: 'ping' } & Shown)
+  | ({ kind: 'stop'; reason: string } & Shown)
+  | ({ kind: 'wait' } & Shown)
+
+// The last refresh's read and write, a line of its own after the figures, so a live session can check the served threshold.
+const lastOf = (k: KeepaliveState): string[] => (k.last === null ? [] : [`last refresh read ${k.last.read}, wrote ${k.last.write}`])
 
 type KnownView = Extract<CacheView, { kind: 'known' }>
 
@@ -244,7 +249,7 @@ const intervalOf = (ms: number): string => {
   return seconds === 0 ? `${Math.floor(s / 60)} min` : `${Math.floor(s / 60)}:${String(seconds).padStart(2, '0')}`
 }
 
-// The cost figures keepalive's status text names while it runs: the context each ping reads, and how often.
+// The running figure the bare command's Keepalive lines name: the context each ping reads, and how often.
 // Null where there is no known TTL with a lead below it, so no figure is real.
 const figuresOf = (view: CacheView, leadMs: number, money: Money): string | null =>
   view.kind === 'known' && leadMs < view.ttlMs ? `${nextPing(view, money)}, every ${intervalOf(view.ttlMs - leadMs)}` : null
@@ -256,6 +261,10 @@ export const armedOf = (k: KeepaliveState): boolean => k.config !== null && k.st
 const WHY: Record<string, string> = { 'count used': 'its refreshes for this pause are used up', 'cache expired': 'the cache expired' }
 const whyOf = (stop: string): string => WHY[stop] ?? stop
 
+// The two stop sentences, each written once here: every wording of a stop reads one of them.
+const byDesignSentence = (stop: string): string => `${whyOf(stop)}; it resumes after your next prompt`
+const failureSentence = (stop: string): string => `${stop}; your next prompt restarts it`
+
 // What an enabled keepalive says a refresh would cost when it resumes: the context each refresh reads, not a run's interval.
 const rereadFigure = (view: CacheView, money: Money): string | null => {
   if (view.kind !== 'known') return null
@@ -264,40 +273,40 @@ const rereadFigure = (view: CacheView, money: Money): string | null => {
   return usd === null ? `each refresh reads ${read}` : `each refresh costs ${dollars(usd)} (reads ${read})`
 }
 
-const armedText = (k: KeepaliveState, reason: string, figures: string | null) =>
-  `keepalive paused: ${whyOf(reason)}; it resumes after your next prompt${figures === null ? '' : ` · ${figures}`}${lastOf(k)}`
-
-const stopped = (k: KeepaliveState, reason: string, figures: string | null) =>
-  `keepalive stopped: ${reason}; your next prompt restarts it${figures === null ? '' : ` · ${figures}`}${lastOf(k)}`
+// A paused-by-design verdict: the stop's by-design sentence, and what a refresh would read once it resumes.
+const pausedBy = (k: KeepaliveState, view: CacheView, money: Money, reason: string): Shown => {
+  const reread = rereadFigure(view, money)
+  return { heading: 'paused', why: byDesignSentence(reason), lines: [...(reread === null ? [] : [reread]), ...lastOf(k)] }
+}
 
 // `gap` is whether the main thread is idle: no turn running.
 export const step = (k: KeepaliveState, view: CacheView, liveMs: number | null, gap: boolean, nowMs: number, money: Money): Step => {
-  if (k.config === null) return { kind: 'wait', text: 'keepalive off' }
+  if (k.config === null) return { kind: 'wait', heading: 'off', why: null, lines: [] }
   const { leadMs } = k.config
   const figures = figuresOf(view, leadMs, money)
-  if (armedOf(k)) return { kind: 'wait', text: armedText(k, k.stop ?? '', rereadFigure(view, money)) }
-  if (k.stop !== null) return { kind: 'wait', text: stopped(k, k.stop, figures) }
-  if (k.coldPending) return { kind: 'wait', text: `keepalive on · paused until the cache reset is recorded${lastOf(k)}` }
+  const running = figures === null ? [] : [figures]
+  if (armedOf(k)) return { kind: 'wait', ...pausedBy(k, view, money, k.stop ?? '') }
+  if (k.stop !== null) return { kind: 'wait', heading: 'stopped', why: failureSentence(k.stop), lines: [...running, ...lastOf(k)] }
+  if (k.coldPending) return { kind: 'wait', heading: 'paused', why: 'until the cache reset is recorded', lines: lastOf(k) }
   const r = readiness(view, leadMs, liveMs, nowMs)
   if (r.kind === 'not-ready' || figures === null) {
     if (view.kind === 'known' && leadMs >= view.ttlMs) {
-      return {
-        kind: 'wait',
-        text: `keepalive paused: lead ${secs(leadMs)} is not below the ${secs(view.ttlMs)} TTL${lastOf(k)}`,
-      }
+      return { kind: 'wait', heading: 'paused', why: `lead ${secs(leadMs)} is not below the ${secs(view.ttlMs)} TTL`, lines: lastOf(k) }
     }
-    return { kind: 'wait', text: `keepalive on · no live cache to count from, nothing scheduled${lastOf(k)}` }
+    return { kind: 'wait', heading: 'on, no count', why: null, lines: ['no live cache to count from, nothing scheduled', ...lastOf(k)] }
   }
-  const head = `keepalive on · ${figures}`
-  if (r.expired) return { kind: 'stop', reason: 'cache expired', text: armedText(k, 'cache expired', rereadFigure(view, money)) }
+  if (r.expired) return { kind: 'stop', reason: 'cache expired', ...pausedBy(k, view, money, 'cache expired') }
   // A learned count of no pings: nothing is sent, and the run stays on, so a prompt that learns otherwise can still ping.
-  if (k.runCount === 0) return { kind: 'wait', text: `${head} · no refreshes this pause: your pauses rarely outlast the cache${lastOf(k)}` }
-  if (k.remaining <= 0) return { kind: 'stop', reason: 'count used', text: armedText(k, 'count used', rereadFigure(view, money)) }
-  if (nowMs < r.dueMs) {
-    return { kind: 'wait', text: `${head} · next refresh in ${clock(r.dueMs - nowMs)}, ${k.remaining} left${lastOf(k)}` }
+  if (k.runCount === 0) {
+    return { kind: 'wait', heading: 'paused', why: 'no refreshes this pause: your pauses rarely outlast the cache', lines: [figures, ...lastOf(k)] }
   }
-  if (!gap) return { kind: 'wait', text: `${head} · refresh due, waits for the turn to end${lastOf(k)}` }
-  return { kind: 'ping', text: `${head} · refreshing${lastOf(k)}` }
+  if (k.remaining <= 0) return { kind: 'stop', reason: 'count used', ...pausedBy(k, view, money, 'count used') }
+  const refreshing = { heading: 'on, refreshing' as const, why: null }
+  if (nowMs < r.dueMs) {
+    return { kind: 'wait', ...refreshing, lines: [figures, `next refresh in ${clock(r.dueMs - nowMs)}, ${k.remaining} left`, ...lastOf(k)] }
+  }
+  if (!gap) return { kind: 'wait', ...refreshing, lines: [figures, 'refresh due, waits for the turn to end', ...lastOf(k)] }
+  return { kind: 'ping', ...refreshing, lines: [figures, ...lastOf(k)] }
 }
 
 // What one ping on the current cache costs: a read of its whole context, at the model and speed that wrote it.
@@ -352,10 +361,10 @@ export const failureOf = (k: KeepaliveState, view: CacheView): string | null => 
 // A lead at or above the TTL is no prompt's to fix, so its sentence does not say it resumes.
 export const pausedWhy = (k: KeepaliveState, view: CacheView, expired: boolean): string | null => {
   if (k.config === null) return null
-  if (k.stop !== null) return ENDED_BY_DESIGN.includes(k.stop) ? `${whyOf(k.stop)}; it resumes after your next prompt` : `${k.stop}; your next prompt restarts it`
+  if (k.stop !== null) return ENDED_BY_DESIGN.includes(k.stop) ? byDesignSentence(k.stop) : failureSentence(k.stop)
   if (view.kind !== 'known') return 'there is no cache until the next reply'
   if (k.config.leadMs >= view.ttlMs) return `the lead ${secs(k.config.leadMs)} is not below the ${secs(view.ttlMs)} TTL`
-  if (expired) return `${whyOf('cache expired')}; it resumes after your next prompt`
+  if (expired) return byDesignSentence('cache expired')
   if (k.runCount === 0) return 'your pauses rarely outlast the cache, so no refresh is sent; it resumes after your next prompt'
   return null
 }
@@ -449,7 +458,7 @@ export const costText = (view: KnownView, leadMs: number, count: number, money: 
 export const enableText = (view: CacheView, leadMs: number, count: number, stop: string | null, money: Money): string => {
   const head = `keepalive on: lead ${secs(leadMs)}, ${refreshesOf(count)}.`
   const armed = stop !== null && ENDED_BY_DESIGN.includes(stop)
-  const tail = stop === null ? '' : armed ? ` Paused: ${whyOf(stop)}; it resumes after your next prompt.` : ` Stopped: ${stop}; your next prompt restarts it.`
+  const tail = stop === null ? '' : armed ? ` Paused: ${byDesignSentence(stop)}.` : ` Stopped: ${failureSentence(stop)}.`
   if (view.kind !== 'known') return `${head} No live cache to count from yet, so nothing is scheduled until there is one.${tail}`
   if (leadMs >= view.ttlMs) return `${head} Paused: lead ${secs(leadMs)} is not below the ${secs(view.ttlMs)} TTL.${tail}`
   return `${head} ${armed ? `${capital(rereadFigure(view, money) ?? '')}.` : costText(view, leadMs, count, money)}${tail}`

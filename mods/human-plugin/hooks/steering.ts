@@ -6,7 +6,7 @@ export const STEERING: PromptComposeSection = {
   scope: 'session',
   text: [
     'The human-plugin list is a live view, pinned above the prompt, that the human reads and you own through the human_items tool. It always shows exactly what you currently need from the human: no more, no less.',
-    '- Add an item the moment a need comes up. Mark it blocking when the work cannot go on without the human.',
+    '- Add an item the moment a need comes up. Mark it blocking when any workstream cannot go on without the human; once a workstream has reached a point where it waits on a non-blocking item, mark that item blocking with update.',
     '- Any question you will still need answered after this turn goes on the list the moment you would write it; a closing recap of open questions is the restatement the list replaces.',
     '- A proposal that waits on the human\'s word is an ask: "say go", "unless you veto", "your call" or "yes or no?" each files it the moment it comes up, not appended to a report.',
     '- Mention a new item once in prose ("added #3"), then refer to it by its id. Never restate its ask.',
@@ -66,7 +66,7 @@ export const TOOL_SPEC = {
         },
       },
       yesno: { type: 'boolean', description: 'True for a yes/no question: the band and the pane offer a yes and a no. Takes no options.' },
-      blocking: { type: 'boolean', description: 'True when the work cannot go on without the human.' },
+      blocking: { type: 'boolean', description: 'True when any workstream cannot go on without the human. Set it with update once a workstream has reached a point where it waits on a non-blocking item.' },
       done: { type: 'string', description: 'What pressing ✓ means on a to-do, e.g. "Go with sqlite": a few words, at most 24 columns. Not for a yes/no or a decision.' },
       note: { type: 'string', description: 'A note on the item; a blank one clears it.' },
     },

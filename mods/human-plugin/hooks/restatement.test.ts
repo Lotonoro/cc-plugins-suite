@@ -198,3 +198,7 @@ test('an item already named in a correction is not named again', () => {
 test('a fence of four backticks is closed only by a fence at least as long: a three-backtick line inside it is code', () => {
   expect(restatedIds('````\n```\nRetry limit: I left it as TBD.\n````', [RUN1_ITEM])).toEqual([])
 })
+
+test('a line indented four spaces that shows a fence still opens one for restatement, so the bullet after it is skipped', () => {
+  expect(restatedIds('    ```\n- Retry limit for the sync client: I left it as TBD.', [SYNC_RETRY])).toEqual([])
+})

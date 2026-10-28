@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'claude-code/testing'
-import { footerOf, readingOf, refreshingOf, settleCold, warmthOf } from './countdown'
+import { COLOUR_SENTENCE, footerOf, pieOf, readingOf, refreshingOf, settleCold, warmthOf, type Tone } from './countdown'
 
 const T = 1_000_000
 const known = { kind: 'known' as const, touchMs: T, ttlMs: 300000, ttlLabel: '5m' as const, promptTokens: 1, outputTokens: 0, model: null, speed: null }
@@ -70,16 +70,16 @@ describe('readingOf: the countdown the pie and its time show', () => {
   })
 })
 
-describe('footerOf: the pie and its time, and the tone the pie is drawn in', () => {
+describe('footerOf: the pie and its words, and the tone the pie is drawn in', () => {
   const warm = readingOf(known, null, null, T + 108000, UPON)
   const quarter = readingOf(known, null, null, T + 240000, UPON)
   const tenth = readingOf(known, null, null, T + 280000, UPON)
   const expired = readingOf(known, null, null, T + 300000, UPON)
   const cold = readingOf(known, null, COLD, T, UPON)
 
-  test('with nothing to count, nothing is drawn unless keepalive is on, and then the pie alone, in green', () => {
+  test('with nothing to count, nothing is drawn unless keepalive is on, and then the pie with `no count`, in green', () => {
     expect(footerOf(null, false, false)).toBeNull()
-    expect(footerOf(null, true, false)).toEqual({ quarter: 0, words: '', tone: 'on' })
+    expect(footerOf(null, true, false)).toEqual({ quarter: 0, words: 'no count', tone: 'on' })
   })
 
   test('a warm cache that keepalive will refresh is green at every quarter, the time after the pie', () => {
@@ -104,9 +104,9 @@ describe('footerOf: the pie and its time, and the tone the pie is drawn in', () 
     expect(footerOf(expired, false, false)).toEqual({ quarter: 0, words: '~$0.42 to rebuild', tone: 'gone' })
   })
 
-  test('a cold cache is an empty pie with no words: green with keepalive on, dim off', () => {
-    expect(footerOf(cold, true, false)).toEqual({ quarter: 0, words: '', tone: 'on' })
-    expect(footerOf(cold, false, false)).toEqual({ quarter: 0, words: '', tone: 'gone' })
+  test('a cold cache is an empty pie with `reset`: green with keepalive on, dim off', () => {
+    expect(footerOf(cold, true, false)).toEqual({ quarter: 0, words: 'reset', tone: 'on' })
+    expect(footerOf(cold, false, false)).toEqual({ quarter: 0, words: 'reset', tone: 'gone' })
   })
 })
 
@@ -170,5 +170,48 @@ describe('the reading and a live request start', () => {
 
   test('a transcript touch later than the live start is what counts', () => {
     expect(readingOf(known, T - 60000, null, T + 1000, UPON)).toMatchObject({ words: '4:59', quarter: 4 })
+  })
+})
+
+// The pie's whole judgement from its three inputs. Each reading is taken through readingOf from a view, a touch, a clock and a cold mark, so
+// the quarter and tenth boundaries are readingOf's own. The expected tone and whether the sentence shows are literals, not derived from
+// footerOf or from the entry. Each case lists, in order: keepalive off with no refresh figure, off with a figure, on with none, on with one.
+describe('pieOf: the pie\'s tone and the colour sentence, from the reading, keepalive, and the refresh figure', () => {
+  const FIGURE = '$0.004/refresh'
+  const COMBOS = [
+    { on: false, refresh: null },
+    { on: false, refresh: FIGURE },
+    { on: true, refresh: null },
+    { on: true, refresh: FIGURE },
+  ]
+  type Expected = [tone: Tone | null, sentence: boolean]
+  const cases: { name: string; reading: ReturnType<typeof readingOf>; expected: [Expected, Expected, Expected, Expected] }[] = [
+    { name: 'no cache', reading: readingOf({ kind: 'no-cache' }, null, null, T, UPON), expected: [[null, false], [null, false], ['on', false], ['on', false]] },
+    { name: 'cold', reading: readingOf(known, null, COLD, T + 1000, UPON), expected: [['gone', false], ['gone', false], ['on', false], ['on', false]] },
+    { name: 'expired', reading: readingOf(known, null, null, T + 300000, UPON), expected: [['gone', false], ['gone', false], ['alarm', false], ['alarm', false]] },
+    { name: 'warm, calm', reading: readingOf(known, null, null, T + 100000, UPON), expected: [['quiet', false], ['quiet', false], ['quiet', false], ['on', false]] },
+    { name: 'warm, just above a quarter left', reading: readingOf(known, null, null, T + 224999, UPON), expected: [['quiet', false], ['quiet', false], ['quiet', false], ['on', false]] },
+    { name: 'warm, exactly a quarter left', reading: readingOf(known, null, null, T + 225000, UPON), expected: [['warning', true], ['warning', true], ['warning', true], ['on', false]] },
+    { name: 'warm, inside the last quarter', reading: readingOf(known, null, null, T + 250000, UPON), expected: [['warning', true], ['warning', true], ['warning', true], ['on', false]] },
+    { name: 'warm, just above a tenth left', reading: readingOf(known, null, null, T + 269999, UPON), expected: [['warning', true], ['warning', true], ['warning', true], ['on', false]] },
+    { name: 'warm, exactly a tenth left', reading: readingOf(known, null, null, T + 270000, UPON), expected: [['alarm', true], ['alarm', true], ['alarm', true], ['on', false]] },
+    { name: 'warm, inside the last tenth', reading: readingOf(known, null, null, T + 290000, UPON), expected: [['alarm', true], ['alarm', true], ['alarm', true], ['on', false]] },
+  ]
+  for (const { name, reading, expected } of cases) {
+    test(`${name}: the tone and the sentence for keepalive off and on, with and without a refresh figure`, () => {
+      const drawn = COMBOS.map(({ on, refresh }) => {
+        const pie = pieOf(reading, on, refresh)
+        return [pie.footer?.tone ?? null, pie.colour !== null]
+      })
+      expect(drawn).toEqual(expected)
+    })
+  }
+
+  test('the sentence is the pane\'s words, and the footer is footerOf\'s over refreshingOf', () => {
+    const quarter = readingOf(known, null, null, T + 250000, UPON)
+    expect(pieOf(quarter, false, null).colour).toBe("The pie turns amber in the cache's last quarter and red in its last tenth: the cache is about to lapse.")
+    expect(COLOUR_SENTENCE).toBe(pieOf(quarter, false, null).colour)
+    expect(pieOf(quarter, true, FIGURE).footer).toEqual(footerOf(quarter, true, refreshingOf(true, quarter, FIGURE)))
+    expect(pieOf(null, false, null)).toEqual({ footer: null, colour: null })
   })
 })

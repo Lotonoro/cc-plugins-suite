@@ -1,9 +1,10 @@
 import type { ButtonProps, BoxProps, ElementConstructor, InputProps, MarkdownProps, RenderElement, TextProps, UiCopyArgs } from 'claude-code'
 import type { Item, Store, Turn } from '../types'
 import { labelOf, oneLine, turnsOf } from './done'
+import { briefParts } from './fences'
 import { parseInput, selectedItem, type ToolInput } from './items'
 import { bandRows } from './layout'
-import { briefParts, tablesAsLists } from './tables'
+import { tablesAsLists } from './tables'
 
 // The elements the band and the pane are built from, as the surface's table hands them out. The constructors take the
 // props with `children`, as JSX would pass them; the mod has no JSX factory in an imported module.

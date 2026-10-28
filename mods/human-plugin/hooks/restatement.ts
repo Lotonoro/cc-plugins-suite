@@ -1,5 +1,4 @@
 import type { Item, ItemOption } from '../types'
-import { FENCE, closesFence } from './tables'
 
 // The constants of the restatement rule, in one place. A change to any of them must keep restatement.test.ts green: its
 // corpus pins every cue and branch. A block asks when it addresses the human's pending part: an addressed phrase, a question
@@ -17,6 +16,16 @@ const STOP_WORDS = new Set([
 
 const HEADING = /^#{1,6}\s/
 const LIST_ITEM = /^([-*+]|\d+[.)])\s/
+
+// A fence as restatement reads it: a trimmed line opens one at any indent, and it closes only on its own marker character, in a run at least
+// as long as the opening one. fences.ts holds the pane's copy, which is relative to list items; the marker rule is the same in both, so a
+// change to it touches both modules.
+const FENCE = /^(`{3,}(?!.*`)|~{3,})/
+const CLOSE = /^(`{3,}|~{3,})$/
+const closesFence = (line: string, opening: string): boolean => {
+  const marker = CLOSE.exec(line)?.[1] ?? ''
+  return marker !== '' && marker.charAt(0) === opening.charAt(0) && marker.length >= opening.length
+}
 
 // A block of the answer: a paragraph, a heading or a list item, with the lead-in line of the list it sits in (null outside one).
 type Block = { text: string; leadIn: string | null }

@@ -13,11 +13,11 @@ To do for you 3 open
   +2 more […]
 ```
 
-- **The band above your prompt** appears whenever the agent needs something from you. Blocking items, meaning the agent is
-  stuck until you act, come first, one row each, and their arrival plays a chime (macOS only). Then come the rest, by
+- **The band above your prompt** appears whenever the agent needs something from you. Blocking items, meaning some of the agent's
+  work is stuck until you act, come first, one row each, and their arrival plays a chime (macOS only). Then come the rest, by
   item number, while the rows last. When they don't all fit, the last row summarises what is left out: `+N blocking` for
   the blocking items and `+N more` for the others. The header turns amber while anything blocking is open, so its colour
-  alone tells you whether the agent is stuck.
+  alone tells you whether any of the agent's work is stuck.
 - **`[✓]`** says you've done it. You get three seconds to change your mind (`[↶ 3s]`; the window ends on the
   countdown's next one-second tick, so up to a second later), then the agent is told, checks, and removes the item. You can also say so in chat. Only the agent removes items, because it is the one that knows
   when an ask is settled; when it adds to a sent item instead, the item comes back open, with its reply field, marked `•`. A choice (a decision with options) gets answer buttons in the pane instead (see below).
@@ -36,7 +36,7 @@ To do for you 3 open
   A press on a title, or on the summary row, opens the pane on that item; the summary opens on the first item it folds, a blocking one first. The pane shows the
   one item you have selected: its note, its full detail, its thread (`you` and `agent`, the last four turns whole and each older one as one dim line), and its buttons last. Click an item in the band to show it, and click
   the shown item again to close the pane. When the item you are shown is removed, or its answer or reply is sent, the pane moves to the next open item, and closes when none is left. A decision comes as a brief: the
-  question, the agent's recommendation, the options with their costs, and the context. The pane draws any table in a brief as a list, so it fits the narrow pane. Each code block in a brief, except one inside a nested list item, has a `[copy]` button under it that puts just that block's lines on your clipboard, with no frame characters; a toast says whether it took. Ask for more and the agent adds
+  question, the agent's recommendation, the options with their costs, and the context. The pane draws any table in a brief as a list, so it fits the narrow pane. Each fenced block (backtick or tilde) in a brief has a `[copy]` button under it that puts just that block's lines on your clipboard, with no frame characters; a toast says whether it took. A fence gets no button when it is inside a block quote, when it is indented four or more columns past its list item's text, or when it is four or more columns from the margin under a list item whose wrapped line is not indented. Ask for more and the agent adds
   to the item (to the brief, or to the thread once you have answered) instead of burying the answer in chat.
 - When the agent works out the answer itself, it tells you why in one line.
 

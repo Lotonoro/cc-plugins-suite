@@ -6,14 +6,15 @@ for it.
 ## The footer line
 
 In the prompt footer, at the right after the mode labels (`auditor is on`, say), a pie shows how much of the prompt cache's
-lifetime is left, and beside it the time left:
+lifetime is left, and next to it the time left, or a word where there is no time:
 
 | State | Footer |
 | --- | --- |
 | Warm | `◕ 3:12` (the time dim) |
 | Expired, the model priced | `○ ~$0.42 to rebuild` (dim; `~29k tokens to rebuild` in the token unit, or unpriced) |
-| No cache after a model switch or compaction | `○` |
-| Keepalive on, nothing to count yet (before the first reply, after `/clear`) | `○` |
+| Cache reset by a model switch or compaction | `○ reset` (dim) |
+| Keepalive on, nothing to count yet (before the first reply, after `/clear`) | `○ no count` (dim) |
+| Keepalive on, a model switch or compaction before any reply has written the cache | `○ no count` (dim) |
 | Keepalive off, nothing to count | nothing: the footer's labels alone |
 
 - The pie's shape is the time left in quarters of the cache's lifetime, rounded up: `●` above three quarters, then `◕`,
@@ -24,7 +25,7 @@ lifetime is left, and beside it the time left:
   tenth (1:15 and 0:30 on a 5-minute cache, 15 and 6 minutes on an hour's). An expired cache is red with keepalive on and
   dim with it off.
 - A click on the pie switches keepalive, as `/keepalive on` with the last-used lead and count (else the defaults) or
-  `/keepalive off` does. A click on the time or the rebuild figure opens the details pane, at any terminal width. Esc closes it.
+  `/keepalive off` does. A click on the time, the rebuild figure, `reset` or `no count` opens the details pane, at any terminal width. Esc closes it.
 - Hovering the time or the figure shows the refresh cost in a popup just above it (`$0.006/refresh`); nothing on the
   line moves, so the time stays clickable.
 - Hovering the pie shows keepalive's state in a popup just above it: `cache keepalive is on`, `cache keepalive is paused`
@@ -33,8 +34,8 @@ lifetime is left, and beside it the time left:
 
 ## The details pane
 
-A click on the time or the rebuild figure opens the pane, sized to its lines: one row per line, as wide as the longest. A
-click on the time while it is open closes it, as Esc or the person's close does. The pane says, in short lines with their
+A click on the time, the rebuild figure, `reset` or `no count` opens the pane, sized to its lines: one row per line, as wide as the longest. A
+click on that word while it is open closes it, as Esc or the person's close does. The pane says, in short lines with their
 units:
 
 - the cache's warmth: `Prompt cache warm, 3:12 left (5-minute cache)`, or, once the cache has expired or been reset, the
@@ -64,8 +65,8 @@ and why a figure is in tokens are in the answer to a bare `/keepalive`.
   (see [How many refreshes](#how-many-refreshes)). Then keepalive is paused until your next prompt. It is paused too if
   you turn it on after the cache has expired. A message from another session or a finished background task doesn't
   resume it.
-- A refresh that fails stops keepalive, and the status line says what broke in one clause, such as
-  `keepalive stopped: API error 529 (overloaded)`. Your next prompt restarts it.
+- A refresh that fails stops keepalive, and the Keepalive heading reads `stopped` and the first line beneath it says what broke in one clause, such as
+  `API error 529 (overloaded); your next prompt restarts it`.
 - The lead (how long before expiry a refresh is sent) starts at 15 s. A refresh slower than half the lead raises it to
   twice that round trip for the session. It is never lowered, and keepalive stops instead of raising it past half the
   TTL.
@@ -136,13 +137,18 @@ Each message has its time at its top right, so you can see how long each phase t
 ## `/keepalive`
 
 `on <lead_s> [count]`, `off`, `default on|off`, `unit dollars|tokens`, or no argument for the state and the full
-rundown, in four sections: Cache (the warmth, with the figure to rebuild an expired or reset cache), Keepalive (its
-state and the refresh cost, how many refreshes a pause gets and why, when it pays off, this session and your pauses),
-Advice (the best setup's sentence, the one-hour cache advice, the misses by cause, why figures are in tokens) and
-Settings (the TTL, lead, refresh count, start mode and unit: each value, where it came from when that is known, and what
-changes it; the TTL and start mode apply to new sessions). A section with nothing to say is left out. The text wraps at
-48 columns. A count pins the refreshes per pause for the session; without one, each pause sends the learned count, else
-the break-even count.
+rundown, in four sections: Cache (the warmth, with the figure to rebuild an expired or reset cache), Keepalive (the
+refresh cost, how many refreshes a pause gets and why, when it pays off, this session and your pauses), Advice (the best
+setup's sentence, the one-hour cache advice, the misses by cause, why figures are in tokens) and Settings (the TTL, lead,
+refresh count, start mode and unit: each value, where it came from when that is known, and what changes it; the TTL and
+start mode apply to new sessions). The Keepalive heading names keepalive's state, one of `off`, `on, refreshing`,
+`on, no count`, `paused` and `stopped`; the reason for a pause or stop is the first line beneath it. When no refresh is
+coming, the Keepalive section words the pie's warning (the pie turns amber in the cache's last quarter and red in its last
+tenth: the cache is about to lapse) just below that reason, but only while the pie is amber or red on a warm cache: not
+earlier in the lifetime, not while it refreshes, and not on a reset or expired cache. The Keepalive
+section is always shown, as its heading alone when it has nothing else to say. Cache, Advice and Settings are left out
+when they have nothing to say. The text wraps at 48 columns. A count pins the refreshes per pause for the session;
+without one, each pause sends the learned count, else the break-even count.
 
 Options: `keepalive_lead_s` (default 15), the lead the pie uses until a command sets one; `keepalive_count` (unset by default), a cap on the
 break-even count; `keepalive_default` (`off` or `on`, default `off`), the mode a session starts in, which
