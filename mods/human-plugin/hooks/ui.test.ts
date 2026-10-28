@@ -246,11 +246,12 @@ test('the header is a chip filled in warning while a blocking item is open, and 
   expect(count?.backgroundColor).toBeUndefined()
 })
 
-test('the chip reads To do for you until the agent states a term, and To do for the term once it does', () => {
+test('the chip reads To do for you until the agent states a term, and To do for the term once it does; a term the agent cleared reads To do for you', () => {
   const chipText = (tree: unknown) => nodes(tree, 'Text').map(n => texts(n).join('')).find(text => text.includes('To do for'))
   expect(chipText(band(table, handlers, store, view()))).toBe(' To do for you ')
   expect(chipText(band(table, handlers, { ...store, term: 'owner' }, view()))).toBe(' To do for owner ')
   expect(chipText(band(table, handlers, { ...store, term: 'Team lead' }, view()))).toBe(' To do for Team lead ')
+  expect(chipText(band(table, handlers, { ...store, term: '' }, view()))).toBe(' To do for you ')
 })
 
 test('the pane draws no term: an empty list still reads Nothing to do for you, and an item\'s pane shows none', () => {

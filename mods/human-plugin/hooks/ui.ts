@@ -182,8 +182,8 @@ export const toolLine = (call: ToolCall): string => {
   return `human-plugin: ${text}`.replace(/\s+/g, ' ')
 }
 
-// The chip names the term the agent states for the human, and says "you" until one is stated.
-const chipText = (term: string | null): string => (term === null ? 'To do for you' : `To do for ${term}`)
+// The chip names the term the agent states for the human; it says "you" until one is stated, and again once the agent clears it (the term '').
+const chipText = (term: string | null): string => (term === null || term === '' ? 'To do for you' : `To do for ${term}`)
 
 // The band above the prompt: a header with the count, then the rows that fit. When items are folded, the summary row is the way into
 // the pane for them. The pane is also opened by a title, and closed by its own close or a press on the item it shows.

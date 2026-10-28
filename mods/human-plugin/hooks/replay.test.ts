@@ -72,6 +72,17 @@ test('a resume rebuilds the term the main agent last stated, on an add or an upd
   expect(store.items.map(it => it.id)).toEqual([1, 2])
 })
 
+test('a transcript that ends on a clear replays the cleared term, not the one before it', async () => {
+  const text = [
+    call('2026-10-20T10:00:00.000Z', 'a', { action: 'add', title: 'Pick a db', term: 'owner' }),
+    result('2026-10-20T10:00:01.000Z', 'a', 'added #1 (term set to "owner")'),
+    call('2026-10-20T10:00:02.000Z', 'b', { action: 'update', id: 1, term: '  ' }),
+    result('2026-10-20T10:00:03.000Z', 'b', 'no change to #1 (term cleared)'),
+  ].join('\n') + '\n'
+  const { store } = await replay([sourceOf(text)])
+  expect(store.term).toBe('')
+})
+
 test('a call the mod refused for a term over the limit never ran, so the term before it stays', async () => {
   const text = [
     call('2026-10-20T10:00:00.000Z', 'a', { action: 'add', title: 'Pick a db', term: 'owner' }),

@@ -65,8 +65,11 @@ export const normalizeItem = (raw: unknown): Item | null => {
   return stored === 'done-waiting' && pressedAt === null ? cancelWindow(item) : item
 }
 
-// The term as stored: text that is not blank. Any other value is no term, so a list an older release wrote has none.
-const termStored = (raw: unknown): string | null => (typeof raw === 'string' && raw.trim() !== '' ? raw : null)
+// The term as stored: text, a blank text as the cleared term (''). Any other value is no term (null), so a list an older release wrote has none.
+const termStored = (raw: unknown): string | null => {
+  if (typeof raw !== 'string') return null
+  return raw.trim() === '' ? '' : raw
+}
 
 // The whole list as stored: its items normalized (the garbage ones dropped), the id counter kept at least one above the highest
 // id, so an id is never handed out twice, and the term as stored.
@@ -78,8 +81,8 @@ export const normalizeStore = (raw: unknown): Store => {
   return { items, next: Math.max(saved, highest + 1), term: termStored(r.term) }
 }
 
-// A term as the input check reads it: one line, or the reason it is refused. A blank term is `ok` with a null value, which clears the term.
-type TermCheck = { ok: true; value: string | null } | { ok: false; reason: string }
+// A term as the input check reads it: one line, or the reason it is refused. A blank term is `ok` with the empty text, which clears the term.
+type TermCheck = { ok: true; value: string } | { ok: false; reason: string }
 
 // `term` is the term the call states for the human (add and update only): undefined when it states none.
 export type ToolInput =
@@ -146,14 +149,12 @@ const parseDone = (raw: unknown, decision: boolean, clear: boolean): { ok: true;
   return { ok: true, value: label.value }
 }
 
-// The term the call states for the human, as the input check reads it: one line, at most TERM_MAX columns, null when blank. Undefined when none
+// The term the call states for the human, as the input check reads it: one line, at most TERM_MAX columns, '' when blank. Undefined when none
 // is given. A refused term is returned, not acted on here: whether it refuses the call depends on the caller, and withTerm decides that.
 const parseTerm = (raw: unknown): TermCheck | undefined => {
   if (raw === undefined) return undefined
   if (typeof raw !== 'string') return { ok: false, reason: 'term must be text' }
-  const term = lineOf(raw, TERM_MAX, `term must be at most ${TERM_MAX} columns: give the short word or name you use for the human`)
-  if (!term.ok) return term
-  return { ok: true, value: term.value === '' ? null : term.value }
+  return lineOf(raw, TERM_MAX, `term must be at most ${TERM_MAX} columns: give the short word or name you use for the human`)
 }
 
 // The model's tool input is external data: it is checked here once, and the rest of the mod sees only ToolInput.
@@ -308,7 +309,7 @@ const withTerm = (out: Applied, term: TermCheck | undefined, ctx: Ctx): Outcome 
   if (term === undefined) return out
   if (ctx.agent !== null) return { ...out, reply: `${out.reply}${termNote('term not used: only the main agent sets it')}` }
   if (!term.ok) return { deny: term.reason }
-  const note = term.value === null ? termNote('term cleared') : termNote(`term set to "${term.value}"`)
+  const note = term.value === '' ? termNote('term cleared') : termNote(`term set to "${term.value}"`)
   return { ...out, store: { ...out.store, term: term.value }, reply: `${out.reply}${note}` }
 }
 
@@ -399,7 +400,8 @@ export const carryNext = (store: Store, saved: unknown): Store => {
 
 // Joins the list rebuilt from a transcript with the list as it stands. The transcript decides every item whose id it
 // handed out (`known`, on any branch): kept as replayed, or gone if the replay dropped it. An item it does not know was
-// added after the transcript was read, and stays. The counter never goes down. A term set live is kept; the rebuilt one fills a list that has none.
+// added after the transcript was read, and stays. The counter never goes down. A term the main agent stated live is kept, a cleared one ('')
+// included; the rebuilt term fills only a list on which none was stated (null).
 export const mergeRestored = (live: Store, replayed: Store, known: readonly number[]): Store => {
   const decided = new Set([...known, ...replayed.items.map(it => it.id)])
   const added = live.items.filter(it => !decided.has(it.id))

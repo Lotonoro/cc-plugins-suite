@@ -514,8 +514,8 @@ const NOT_USED = ' (term not used: only the main agent sets it)'
 test('a term is read as one line with single spaces, a blank one clears it, and one that is not text is refused for a main agent, naming the field', () => {
   const owned = applied(EMPTY, { action: 'add', title: 'Pick a db', term: 'owner' }).store
   expect(applied(EMPTY, { action: 'add', title: 'Pick a db', term: '  Team\n   lead  ' }).store.term).toBe('Team lead')
-  expect(applied(owned, { action: 'add', title: 'Second', term: '   ' }).store.term).toBe(null)
-  expect(applied(owned, { action: 'update', id: 1, term: '' }).store.term).toBe(null)
+  expect(applied(owned, { action: 'add', title: 'Second', term: '   ' }).store.term).toBe('')
+  expect(applied(owned, { action: 'update', id: 1, term: '' }).store.term).toBe('')
   expect(act(owned, input({ action: 'add', title: 'Second', term: 3 }), MAIN)).toEqual({ deny: 'term must be text' })
   expect(act(owned, input({ action: 'update', id: 1, term: null }), MAIN)).toEqual({ deny: 'term must be text' })
 })
@@ -567,7 +567,7 @@ test('a call with no term leaves the list\'s term and adds no note; a later term
   expect(replaced.store.term).toBe('boss')
   expect(replaced.reply).toBe('added #3 (term set to "boss")')
   const cleared = applied(replaced.store, { action: 'add', title: 'Fourth', term: '  ' })
-  expect(cleared.store.term).toBe(null)
+  expect(cleared.store.term).toBe('')
   expect(cleared.store.items.map(it => it.title)).toEqual(['Pick a db', 'Second', 'Third', 'Fourth'])
   expect(cleared.reply).toBe('added #4 (term cleared)')
 })
@@ -604,7 +604,7 @@ test('a term-only update from the main agent sets the term and leaves an open it
   expect(set.changed).toBe(null)
   expect(set.reply).toBe('no change to #1 (term set to "owner")')
   const cleared = applied(set.store, { action: 'update', id: 1, term: '' })
-  expect(cleared.store.term).toBe(null)
+  expect(cleared.store.term).toBe('')
   expect(cleared.reply).toBe('no change to #1 (term cleared)')
 })
 
@@ -618,7 +618,7 @@ test('a term-only update on a sent item sets the term and leaves the item sent',
 test('a blank term on an update clears the term, and the update\'s other fields still apply', () => {
   const owned = applied(EMPTY, { action: 'add', title: 'Pick a db', term: 'owner' }).store
   const retitled = applied(owned, { action: 'update', id: 1, title: 'Pick a cache', term: '  ' })
-  expect(retitled.store.term).toBe(null)
+  expect(retitled.store.term).toBe('')
   expect(retitled.store.items[0]?.title).toBe('Pick a cache')
   expect(retitled.reply).toBe('updated #1 (term cleared)')
 })
@@ -635,22 +635,29 @@ test('an update with a term that changes a field the human is asked about reopen
   expect(withTerm.reply).toBe('updated #1 (term set to "owner")')
 })
 
-test('a stored term reads as none when it is blank, not text, or absent from a list an older release wrote', () => {
+test('a stored term is kept as text, a stored blank reads as the cleared term, and anything else, or no term at all, reads as none', () => {
   expect(normalizeStore({ items: [], next: 2, term: 'owner' })).toEqual({ items: [], next: 2, term: 'owner' })
+  expect(normalizeStore({ items: [], next: 2, term: '' })).toEqual({ items: [], next: 2, term: '' })
+  expect(normalizeStore({ items: [], next: 2, term: '  ' })).toEqual({ items: [], next: 2, term: '' })
   expect(normalizeStore({ items: [], next: 2 })).toEqual({ items: [], next: 2, term: null })
   expect(normalizeStore({ items: [], next: 2, term: 7 })).toEqual({ items: [], next: 2, term: null })
-  expect(normalizeStore({ items: [], next: 2, term: '  ' })).toEqual({ items: [], next: 2, term: null })
 })
 
 test('clearing the list clears the term with the items, and keeps the counter', () => {
   expect(clearAll({ items: [], next: 3, term: 'owner' })).toEqual({ items: [], next: 3, term: null })
 })
 
-test('a rebuilt list keeps a term set live, and takes the rebuilt term when none is set', () => {
+test('a rebuilt list keeps a term stated live, a cleared one included, and takes the rebuilt term only when none was stated live', () => {
   const rebuilt: Store = { items: [], next: 1, term: 'owner' }
   expect(mergeRestored({ items: [], next: 1, term: 'mine' }, rebuilt, []).term).toBe('mine')
+  expect(mergeRestored({ items: [], next: 1, term: '' }, rebuilt, []).term).toBe('')
   expect(mergeRestored({ items: [], next: 1, term: null }, rebuilt, []).term).toBe('owner')
   expect(mergeRestored(EMPTY, { items: [], next: 1, term: null }, []).term).toBe(null)
+})
+
+test('a term the main agent clears live stays cleared when a rebuild joins a transcript that states another', () => {
+  const live = applied(EMPTY, { action: 'add', title: 'Pick a db', term: '  ' }).store
+  expect(mergeRestored(live, { items: [], next: 1, term: 'owner' }, []).term).toBe('')
 })
 
 test('an unknown action names every action it takes', () => {
