@@ -223,7 +223,8 @@ const threadRows = (turns: Turn[]): number => turns.reduce((rows, turn, k) => ro
 const controlRows = (item: Item): number => (item.state === 'open' && item.options.length > 0 ? item.options.length : 1)
 
 // The rows the pane asks for, as it draws them: the header (a row for each line of its title), the note, the brief, the thread, the controls,
-// and the reply field's row while the item is open. The engine grants what the layout spares, so this is a request.
+// and the reply field's row while the item is open. For text that does not wrap, the request equals the drawn rows: a line that soft-wraps is
+// asked as one row, and the pane scrolls. The engine grants what the layout spares, so this is a request.
 export const paneRows = (shown: Item | undefined): number => {
   if (shown === undefined) return 1
   const turns = turnsOf(shown)

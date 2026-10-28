@@ -692,7 +692,7 @@ const drawnRows = (node: unknown): number => {
   return n.flexDirection === 'column' ? rows.reduce((sum, r) => sum + r, 0) : Math.max(0, ...rows)
 }
 
-test('the pane\'s row request for an item with a thread equals the rows its drawn output takes', () => {
+test('the pane\'s row request for an item with a thread equals the rows its drawn output takes, for text that does not wrap', () => {
   const thread: Turn[] = [
     { speaker: 'human', words: 'Use sqlite' },
     { speaker: 'agent', words: 'Noted.' },
