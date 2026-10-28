@@ -1,6 +1,6 @@
 import type { EngineInterface, Register, RenderElement } from 'claude-code'
 import type { ModelForkResult, ModelUsage } from 'claude-code'
-import type { CacheView, ColdMark, HintCost, HintState, Judged, KeepaliveState, Spend, StatsState, TallyState, Unit } from '../types'
+import type { CacheView, ColdMark, HintCost, HintState, Judged, KeepaliveState, PriceCue, Spend, StatsState, TallyState, Unit } from '../types'
 import { pieOf, readingOf, refreshingOf, settleCold, touchedAt, warmthOf } from './countdown'
 import {
   coldBegun,
@@ -57,12 +57,14 @@ import { stampLabel, withStamp } from './stamp'
 import { foldStatsEvents, INITIAL_STATS, pendingFor, rundownSections, sessionLineOf, type MissEvent, type LongPauseEvent } from './stats'
 import { lookupRows, readCache, type History, type Host, type Row } from './transcript'
 import { dollars, NO_KINDS, spendOf, TTL_WORDS, unitOf, writeReadRatio, type Money } from './prices'
-import { priceCheck, priceList, priceReady, priceSync, report } from './pricesync'
+import { priceCheck, priceList, priceReady, priceSink, priceSync, report, type PriceEvent } from './pricesync'
 
 type Dollar = EngineInterface
 
 const TICK_MS = 1000
 const READ_TIMEOUT_MS = 10000
+// How long a landed or failed read's cue stays on the footer.
+const CUE_MS = 3000
 const NO_CACHE: CacheView = { kind: 'no-cache' }
 // The plugin's name: its state's owner, and the first part of its options' /config keys.
 const PLUGIN = 'cachier'
@@ -79,6 +81,8 @@ const KEEPALIVE = { plugin: 'cachier', key: 'keepalive' } as const
 // What the forks cost this pause and this session, and the lead a slow ping raised.
 const TALLY = { plugin: 'cachier', key: 'tally' } as const
 const JUDGED = { plugin: 'cachier', key: 'judged' } as const
+// The price read's phase for the footer's cue: written by the read's sink, cleared a few seconds after it ends.
+const CUE = { plugin: 'cachier', key: 'cue' } as const
 const SHAPE = { plugin: 'cachier', key: 'shape' } as const
 // The unit costs are shown in.
 const UNIT = { plugin: 'cachier', key: 'unit' } as const
@@ -485,7 +489,51 @@ const resetKeepalive = async ($: Dollar): Promise<void> => {
 
 // The shape of the values this code keeps in the session's state. Bump it with any change to a value's shape in
 // types/index.d.ts: a reload under a new shape resets what the old one wrote, and one under the same shape keeps it.
-export const STATE_SHAPE = 13
+export const STATE_SHAPE = 14
+
+// The cue's writes, one after another, so a read's `started` never lands over its own end; and the timer that clears a cue that has ended.
+let cueWrites: Promise<void> = Promise.resolve()
+let cueTimer: { cancel: () => void } | undefined
+// Set when a session ends and cleared when the next one starts, at session.start and at classic.SessionStart (which a /clear raises with no
+// session.start): a read still in flight then reports to no cue, so its end never writes one or arms its timer after the session.
+let sessionEnded = false
+
+const setCue = async ($: Dollar, cue: PriceCue | null) => {
+  try {
+    await $.state.set(CUE, cue)
+  } catch (err) {
+    report($, err)
+  }
+}
+
+// Turns the price read's events into the cue's phase: `⟳` while it runs, `✓` or `!` for CUE_MS after it ends. A new read replaces a standing cue.
+// Registered as the session's one sink at session.start, so only the reading session shows a cue.
+const cueEvent = ($: Dollar, event: PriceEvent) => {
+  if (sessionEnded) return
+  cueTimer?.cancel()
+  cueTimer = undefined
+  if (event !== 'started') {
+    const clear = () => {
+      cueWrites = cueWrites.then(() => setCue($, null))
+    }
+    cueTimer = $.clock.after(CUE_MS, clear)
+  }
+  const phase: PriceCue = event === 'started' ? 'reading' : event
+  cueWrites = cueWrites.then(() => setCue($, phase))
+}
+
+// Registers this load's one sink, if it has none: the session start does, and so does the first hook of a mod installed mid-session.
+const ensureSink = ($: Dollar) => {
+  if (sync.sink === null) priceSink(sync, (event) => cueEvent($, event))
+}
+
+// Clears a cue still standing and its timer: at a reload and at a session's end, so a cue never outlives its read.
+const clearCue = async ($: Dollar) => {
+  cueTimer?.cancel()
+  cueTimer = undefined
+  await cueWrites
+  await setCue($, null)
+}
 
 // A reload runs session.start again and keeps the session's state, which an earlier load wrote. Keepalive keeps what still fits, so a
 // reload mid-turn keeps the gap shut and a toggle that was on stays on, and the transcript is kept while it is a path. The unit is left as
@@ -1349,6 +1397,7 @@ const tick = ($: Dollar) => {
 }
 
 const ensureTicker = ($: Dollar) => {
+  ensureSink($)
   if (timer !== undefined) return
   timer = $.clock.every(TICK_MS, () => {
     tick($)
@@ -1377,6 +1426,7 @@ export const register: Register = (on, options) => {
   defaultUnit = unitOf(options.cost_unit)
   defaultMode = modeOf(options.keepalive_default)
   on('classic.SessionStart', async ($, e, next) => {
+    sessionEnded = false
     const result = await next(e)
     ensureTicker($)
     const path = transcriptOf(e.transcript_path)
@@ -1440,6 +1490,7 @@ export const register: Register = (on, options) => {
   // The session's live touch and cold mark end with it, whatever the reason: a resumed session counts from its own
   // transcript. Keepalive is off in every session.
   on('session.end', async ($, e, next) => {
+    sessionEnded = true
     await resetKeepalive($)
     try {
       stopTicker()
@@ -1448,12 +1499,22 @@ export const register: Register = (on, options) => {
     } catch (err) {
       report($, err)
     }
+    // Its own try: the cue clears whether or not a step above threw.
+    try {
+      await clearCue($)
+    } catch (err) {
+      report($, err)
+    }
     return next(e)
   })
 
   on('session.start', async ($, e, next) => {
+    sessionEnded = false
     // Started before anything else is awaited: a hint drawn meanwhile waits for it, so it never reads an earlier load's shape.
     restoring = restoreState($)
+    // A cue the earlier load left standing is cleared, and this load's reads report to it.
+    await clearCue($)
+    ensureSink($)
     // A reload starts the module's history over: it is read again, as at a start.
     inBackground($, loadHistoryOnce($))
     await $.command.register({
@@ -1544,6 +1605,7 @@ export const register: Register = (on, options) => {
     await restoring?.catch(() => null)
     const state = (await $.state.get(HINT)).value ?? null
     const keepalive = (await $.state.get(KEEPALIVE)).value ?? INITIAL
+    const cue = (await $.state.get(CUE)).value ?? null
     // The pane's size is worked out by the draw, not the click: the open must be made inside the press, with nothing awaited (pane.ts).
     const size = paneSize(await paneLinesOf($, state, keepalive))
     const t = $.ui.resolve(e)
@@ -1553,6 +1615,7 @@ export const register: Register = (on, options) => {
       keepalive.config !== null,
       () => inBackground($, pressOnce(() => pressCountdown($, defaults))),
       () => inBackground($, togglePane($, size)),
+      cue,
     )
     if (line === null) return tree
     // The separator stands between the line and what is drawn beneath, and only where something is: judged from what the hooks beneath
