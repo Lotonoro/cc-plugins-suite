@@ -684,6 +684,36 @@ test('a correction the engine refuses is logged, and the turn end still submits 
   expect(logs.some(line => line.includes('a notice was refused') && line.includes('refused by the test'))).toBe(true)
 })
 
+test('a reply typed in the pane keeps the pane on its item once sent, and the agent\'s next append brings the reply field back', async ($, on) => {
+  const opened: string[] = []
+  const shown = new Set<string>()
+  on('ui.open', (_$, e) => {
+    opened.push(e.id)
+    shown.add(e.id)
+    return { value: { isPlaced: true } }
+  })
+  on('ui.panes', () => ({ value: [...shown].map(id => ({ id, title: id, isShown: true, hasKeyboard: false, isFocused: false, isPlaced: true }) as UiPane) }))
+  on('prompt.submit', (_$, e) => ({ text: e.text }))
+  const clock = mock.clock(on)
+  mock.store(on)
+  await $.tool.call({ tool: TOOL, action: 'add', title: 'Pick a db' })
+  await $.tool.call({ tool: TOOL, action: 'add', title: 'Pick a cache' })
+  const band = await $.ui.mount({ plugin: 'human-plugin', surface: 'terminal', component: 'AbovePrompt', props: BAND_PROPS })
+  await band.press({ key: 'title-1' })
+  const pane = await $.ui.mount({ plugin: 'human-plugin', surface: 'terminal', component: 'Pane', requestId: 'human-items', props: { title: 'Items for you', isFocused: true, bodyColumns: 80, placement: 'inline', scroll: { offset: 0, bodyRows: 20 }, view: {} } })
+  await pane.input({ key: 'reply-1', text: 'Use sqlite' })
+  opened.length = 0
+  await clock.advance(5000)
+  const sent = JSON.stringify(await pane.drawn())
+  expect(sent).toContain('#1 non-blocking, done-pending: Pick a db')
+  expect(sent).toContain('✓ sent')
+  expect(sent).not.toContain('reply-1')
+  expect(opened).toEqual(['human-items'])
+  await $.tool.call({ tool: TOOL, action: 'append', id: 1, text: 'more' })
+  expect(JSON.stringify(await pane.drawn())).toContain('reply-1')
+  expect(opened).toEqual(['human-items', 'human-items'])
+})
+
 test('a reply typed into the terminal pane is sent through the undo window, and the agent is told it', async ($, on) => {
   const sent: string[] = []
   on('prompt.submit', (_$, e) => {
