@@ -232,7 +232,8 @@ async function checkOf(state: PriceSync, $: Dollar, switched: boolean): Promise<
   while (state.reading !== null) {
     if (await joinedRun(state, switched)) return
   }
-  // The clock await above can outlast another read's success, so a tick tests the copy it holds now, with no await before the claim.
+  // The waits above can outlast another read's success, so a tick tests the copy it holds, at the clock value from its last
+  // read (a fresh read is an await, which would reopen the window), with no await before the claim.
   if (!switched && !isDue(state.record, nowMs)) return
   const run = readPage(state, $, switched)
   state.reading = run.finally(() => {
