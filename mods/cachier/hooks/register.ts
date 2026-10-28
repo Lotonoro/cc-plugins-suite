@@ -56,7 +56,8 @@ import { answerOf, type Setting } from './sections'
 import { stampLabel, withStamp } from './stamp'
 import { foldStatsEvents, INITIAL_STATS, pendingFor, rundownSections, sessionLineOf, type MissEvent, type LongPauseEvent } from './stats'
 import { lookupRows, readCache, type History, type Host, type Row } from './transcript'
-import { dollars, NO_KINDS, parsePricing, PRICES, PRICING_URL, spendOf, TTL_WORDS, unitOf, writeReadRatio, type Money, type PriceList } from './prices'
+import { dollars, NO_KINDS, spendOf, TTL_WORDS, unitOf, writeReadRatio, type Money } from './prices'
+import { priceCheck, priceList, priceReady, priceSync, report } from './pricesync'
 
 type Dollar = EngineInterface
 
@@ -81,9 +82,6 @@ const JUDGED = { plugin: 'cachier', key: 'judged' } as const
 const SHAPE = { plugin: 'cachier', key: 'shape' } as const
 // The unit costs are shown in.
 const UNIT = { plugin: 'cachier', key: 'unit' } as const
-// How long the price list read from the pricing page is kept, and how long before a failed read is tried again.
-const PRICES_FRESH_MS = 6 * 3600000
-const PRICES_RETRY_MS = 600000
 // Attempts at one keepalive state write before it is given up, when other hooks keep beating it to the version.
 const WRITE_ATTEMPTS = 5
 const PING_PROMPT = 'ok'
@@ -195,66 +193,12 @@ const hostOf = ($: Dollar): Host => ({
   },
 })
 
-// A failure is logged with its stack; the status line and the stamps carry on without it.
-const report = ($: Dollar, err: unknown) => {
-  $.ui.log(`cachier: ${err instanceof Error ? (err.stack ?? err.message) : String(err)}`, { to: 'debug' })
-}
-
-// The price list in force: the built-in one until the pricing page has been read, then the page's rows over it. A reload
-// starts over from the built-in one and reads the page again.
-let prices: PriceList = PRICES
-// When the page is next read, and whether the last read failed.
-let pricesDueMs = 0
-let pricesFailed = false
-// The page read in flight, so a second caller waits for it instead of sending another.
-let pricesLoading: Promise<void> | null = null
+// This load's shared price record and page read. Re-created in register(), so a reload starts with none of it.
+let sync = priceSync()
 
 // Work a hook starts and does not wait for: a failure is reported, and the hook's own result is not held up by it.
 const inBackground = ($: Dollar, work: Promise<unknown>) => {
   work.catch((err: unknown) => report($, err))
-}
-
-// Reads Anthropic's pricing page; throws when it does not answer in time or answers badly.
-const fetchPrices = async ($: Dollar): Promise<PriceList> => {
-  let late: () => void = () => {}
-  const timeout = new Promise<null>((resolve) => {
-    late = () => resolve(null)
-  })
-  const timer = $.clock.after(READ_TIMEOUT_MS, late)
-  try {
-    const answer = await Promise.race([$.http.fetch(PRICING_URL), timeout])
-    if (answer === null) throw new Error('the pricing page did not answer in time')
-    if (!answer.ok) throw new Error(`the pricing page answered ${answer.status}`)
-    const read = parsePricing(answer.text)
-    if (read === null) throw new Error('the pricing page has no model prices it can read')
-    return read
-  } finally {
-    timer.cancel()
-  }
-}
-
-// Reads the pricing page when it is due, one read at a time. A read that fails is reported and tried again after ten minutes,
-// the list in force kept. `now`: a failed read is tried again at once rather than after the retry window.
-const readPrices = async ($: Dollar, now: boolean): Promise<void> => {
-  const nowMs = await $.clock.now()
-  if (nowMs < pricesDueMs && !(now && pricesFailed)) return
-  try {
-    prices = { ...PRICES, ...(await fetchPrices($)) }
-    pricesFailed = false
-    pricesDueMs = nowMs + PRICES_FRESH_MS
-  } catch (err) {
-    report($, err)
-    pricesFailed = true
-    pricesDueMs = nowMs + PRICES_RETRY_MS
-  }
-}
-
-// The slot is taken before anything is awaited, so two callers in the same moment share one read.
-const loadPrices = ($: Dollar, now = false): Promise<void> => {
-  pricesLoading ??= readPrices($, now).finally(() => {
-    pricesLoading = null
-  })
-  return pricesLoading
 }
 
 // The unit pressed this session, or the option's while none is: a value of another shape, from an earlier load, counts as
@@ -268,7 +212,7 @@ const unitNow = async ($: Dollar): Promise<Unit> => unitFrom((await $.state.get(
 // would read.
 const moneyOf = async ($: Dollar, view: CacheView): Promise<Money> => {
   const known = view.kind === 'known' ? view : null
-  return { unit: await unitNow($), list: prices, model: known?.model ?? null, speed: known?.speed ?? null, ttl: known?.ttlLabel ?? '5m' }
+  return { unit: await unitNow($), list: priceList(sync), model: known?.model ?? null, speed: known?.speed ?? null, ttl: known?.ttlLabel ?? '5m' }
 }
 
 // A cold mark lifts once the reading or a live request start is later than it.
@@ -309,12 +253,12 @@ const readOnce = async ($: Dollar) => {
   await $.state.set(VIEW, view)
   const counted = read
   if (counted !== null) {
-    // Each response is priced as it is counted, so a read of the pricing page still in flight is waited for; it has its own timeout.
-    await loadPrices($)
+    // Each response is priced at the record in force when it is counted, so the fold waits for this session's first read of it.
+    await priceReady(sync, $)
     let found: MissEvent[] = []
     let pauses: LongPauseEvent[] = []
     const wrote = await statsWrite($, (s) => {
-      const out = foldStatsEvents(s, counted, prices)
+      const out = foldStatsEvents(s, counted, priceList(sync))
       found = out.events
       pauses = out.pauses
       return out.state
@@ -978,13 +922,14 @@ const unitNotes = (money: Money, view: CacheView, tally: TallyState, stats: Stat
 const drawOnce = singleFlight()
 
 // Sets the session's unit and draws it at once, or by the next tick when a draw is already running. Keepalive's state is not
-// touched. A switch to dollars after a failed read of the pricing page reads it again at once; the figures redraw when the read
-// lands. `/keepalive unit` switches through here.
+// touched. A switch to dollars from another unit reads the shared record at once; the figures redraw when the read lands.
+// `/keepalive unit` switches through here.
 const setUnit = async ($: Dollar, unit: Unit): Promise<void> => {
+  const before = await unitNow($)
   await $.state.set(UNIT, unit)
   await drawOnce(() => drawStatus($))
-  if (unit === 'dollars' && pricesFailed) {
-    await loadPrices($, true)
+  if (unit === 'dollars' && before !== 'dollars') {
+    await priceCheck(sync, $, true)
     await drawOnce(() => drawStatus($))
   }
 }
@@ -1382,7 +1327,7 @@ const lookupStamps = async ($: Dollar) => {
 const runTick = singleFlight()
 
 const tick = ($: Dollar) => {
-  inBackground($, loadPrices($))
+  inBackground($, priceCheck(sync, $))
   inBackground($, drawOnce(() => drawStatus($)).then(() => runTick(() => lookupStamps($))))
   inBackground($, keepaliveTick($))
 }
@@ -1410,6 +1355,7 @@ const stamped = (requestId: string, tree: RenderElement): RenderElement => {
 }
 
 export const register: Register = (on, options) => {
+  sync = priceSync()
   const defaults = defaultsOf(options)
   defaultRun = defaults
   defaultUnit = unitOf(options.cost_unit)

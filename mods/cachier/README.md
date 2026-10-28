@@ -76,11 +76,14 @@ and why a figure is in tokens are in the answer to a bare `/keepalive`.
   figure in the hover and in the pane follows it. The `cost_unit` option sets the unit a session starts in; dollars by
   default.
 - Dollars are Anthropic's list prices, read from the official pricing page
-  (`platform.claude.com/docs/en/about-claude/pricing.md`) at session start and every six hours after. A read that fails
-  is tried again after ten minutes, or at once when you switch to dollars; the failure goes to the debug log. Until the
-  page has been read, and whenever it can't be, a built-in table in `hooks/prices.ts` prices the models it lists. A 5 m
-  or 1 h cache write is priced at its own rate, a read at the read rate, and a prompt over a model's size threshold
-  (Haiku 5.5 over 100,000 tokens) at its higher rates.
+  (`platform.claude.com/docs/en/about-claude/pricing.md`). One price list, kept in the plugin store, is shared by every
+  session: a read happens when the newest successful read is seven days old, and at once on every switch to dollars. A
+  session about to read checks the shared record again, so a read another session has already stamped is not repeated.
+  Until the page has been read, the built-in table in `hooks/prices.ts` prices the models it lists; after that the last
+  stored list stays in force, and a failed read falls back to it and goes to the debug log. An unreachable page is tried
+  again an hour later, then once a day; a page with no readable table waits for the next weekly read. A model the page
+  stops listing keeps its last stored rates. A 5 m or 1 h cache write is priced at its own rate, a read at the read
+  rate, and a prompt over a model's size threshold (Haiku 5.5 over 100,000 tokens) at its higher rates.
 - A figure with no price is shown in tokens, and the bare `/keepalive` answer says why (`Shown in tokens: no price for …`). That covers a
   model neither the page nor the built-in table lists, fast mode, and a response that names no model.
 - Tokens name what was done with them (`~19k tokens read`, `~20k tokens written`), since a write costs many reads. The
@@ -202,9 +205,11 @@ cachier's own reading of the cache.
 Cachier keeps one record per pause your prompt ends, in its plugin store under your config directory: when the pause
 started, how long it ran, the local hour and weekday, the cache TTL, what a rewrite costs over a refresh, and the size of
 the cached context and how much it grew since the session's previous pause. Nothing from the conversation is kept. It
-holds the newest 2,000 or so pauses across all sessions, for keepalive to learn its refresh count from. Nothing else is
-written to disk. The only request cachier makes itself is the pricing page, with nothing sent but the request. Each
-keepalive refresh is a model request.
+holds the newest 2,000 or so pauses across all sessions, for keepalive to learn its refresh count from. It also keeps one
+shared price record under the key `prices`: the rates each read gave every model it listed, when each model's rates last
+changed, whether the newest read dropped it, when the newest successful read landed and when a read last changed any
+rates, and the last read attempt with its outcome and failure count. Nothing else is written to disk. The only request
+cachier makes itself is the pricing page, with nothing sent but the request. Each keepalive refresh is a model request.
 
 ## Known limits
 
