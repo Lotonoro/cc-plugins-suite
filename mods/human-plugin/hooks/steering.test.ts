@@ -50,6 +50,10 @@ test('the steering line says append goes to the brief until the human answers an
   expect(STEERING.text).toContain("- Use append to add to an item, so nothing is resent: until the human has answered the item, it adds a section at the end of the brief; once they have (a reply or a press), it adds your turn to the item's thread, after theirs, and a reply's notice says when to append and when to remove.")
 })
 
+test('the remove line keeps an item updated to name the human step, and after a reply points at append and its notice', () => {
+  expect(STEERING.text).toContain('keep it only if the human still has a step of their own to take, updated to name that step; after a reply, append instead, as its notice says.')
+})
+
 test('no steering or tool text says append always adds to the brief or the detail', () => {
   for (const text of [STEERING.text, TOOL_SPEC.description, TOOL_SPEC.inputSchema.properties.text.description]) {
     expect(text).not.toContain('fold the explanation into its detail')

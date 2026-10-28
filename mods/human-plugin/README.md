@@ -61,12 +61,12 @@ Then start a new session and let the agent do the asking.
 
 ## Details
 
-- **Delivery.** A done press, answer or reply reaches the agent exactly once. After a press or an answer the item then leaves the list unless you still
-  have a step of your own to take: the agent's follow-up work is not yours, so it does not stay listed. When the session is idle it starts a short
+- **Delivery.** A done press, answer or reply reaches the agent exactly once. After a press, of done or of an answer, the item then leaves the list unless you still
+  have a step of your own to take: the agent's follow-up work is not yours, so it does not stay listed. After a typed reply it stays sent until the agent adds to it or, once your reply settles the ask, removes it. When the session is idle a press or reply starts a short
   turn; during a turn it is read before the agent's next model request; if you interrupt with Esc, it waits for your
   next prompt. A press on an item the agent has already removed sends nothing. What is read during a turn or beside
   your prompt also shows in your transcript as a dim line, `sent to Claude: …`, which the agent never reads.
-  When the agent adds to a sent item (an append, or an update that sets a title, brief, blocking mark, options, note or label), the item comes back open, with its reply field, marked `•`; a change that only clears a field does not reopen it. A change made during the three seconds leaves them running, and your press is sent as given; an addition made then follows your answer in the thread, and the item comes back open when they end.
+  When the agent adds to a sent item (an append, or an update that sets a title, brief, blocking mark, options, note or label), the item comes back open, with its reply field, marked `•`; a change that only clears a field does not reopen it. A change made during the three seconds leaves them running, and your press is sent as given; an append made then follows your answer in the thread, and the item comes back open when they end, while an update made then changes the item without reopening it.
 - **Survives compaction and resume.** `claude --resume` rebuilds the list from the session's transcript, subagents
   included, and leaves out anything on a branch that `/rewind` abandoned. `/clear` empties the list. Item numbers
   are never reused.

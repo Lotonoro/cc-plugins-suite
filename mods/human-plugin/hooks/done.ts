@@ -5,7 +5,7 @@ import type { Item, Store, Turn } from '../types'
 // that, and `list` returns it. The marker line is what the replay reads back.
 // What a press's notice asks after acting: the item leaves the list unless the human still has a step of their own, since the list is what
 // the human owes and the agent's own follow-up work (a build, an install, a check) would read as theirs. A reply's notice asks instead whether
-// the reply settles the ask: the agent removes the item, or appends what it needs from the human, which reopens it for their next reply.
+// the reply settles the ask: the agent removes the item, or appends to it, after which it is open for their next reply.
 const THEN = 'then remove it. Keep it only if the human still has a step of their own to take, updated to name that step; your own follow-up work does not stay on the list.'
 
 // A notice's title and answer, each on one line: a line break in either would start a line the replay reads as another item's marker,
@@ -19,7 +19,7 @@ export const doneNotice = (item: Item): string => {
     answer === null
       ? `The human marked it done. If the item proposed something or carried a recommendation, that is a go-ahead for it. Check that it is finished, ${THEN}`
       : item.replied
-        ? `The human replied on #${item.id}: ${answer}\nIf that reply settles the ask, act on it, then remove the item; if you need more from the human, or they asked you something, append it to #${item.id}, which reopens it for their next reply. Your own follow-up work never stays on the list.`
+        ? `The human replied on #${item.id}: ${answer}\nIf that reply settles the ask, act on it, then remove the item; if you need more from the human, or they asked you something, append what you have to say to #${item.id}; the item is then open for their next reply. Your own follow-up work never stays on the list.`
         : item.yesno
           ? `The human answered ${answer} on #${item.id}. Act on that answer, ${THEN}`
           : item.doneLabel !== null
