@@ -340,7 +340,8 @@ describe('countdown', () => {
     await $.turn.complete({ answer: 'x', durationMs: 1, isAborted: false, turnId: 't', reason: 'answer' } as any)
     await clock.advance(1000)
     expect(await hint($)).toBe('4:59')
-    expect(rec.logs).toEqual([])
+    expect(debugOf(rec, 'cachier switch')).toEqual([{ prompt_cache_warm: false, reading: 'none' }])
+    expect(rec.logs.filter((l) => !l.includes('cachier switch'))).toEqual([])
   })
 
   for (const [what, from, source] of [['a resume restoring the session\'s model', 'a', 'resume'], ['a switch to the model already in use', 'b', 'command']] as const) {
@@ -365,7 +366,7 @@ describe('countdown', () => {
     await $.classic.PostModelSwitch({ from_model: 'a', to_model: 'b', requested_model: 'b', source: 'command', prompt_cache_warm: true, cache_ttl: '5m', context_tokens: 1, estimated_cache_write_usd: 0, pricing: 'catalog' } as any)
     await clock.advance(1000)
     expect(await hint($)).toBe('')
-    expect(rec.logs).toEqual([])
+    expect(rec.logs.filter((l) => !l.includes('cachier switch'))).toEqual([])
     doc.text += lines([user({ uuid: 'u2', parent: 'a1', ts: iso(T0 + 11000) }), assistant({ uuid: 'a2', parent: 'u2', ts: iso(T0 + 11500), read: 9 })])
     await $.turn.complete({ answer: 'x', durationMs: 1, isAborted: false, turnId: 't', reason: 'answer' } as any)
     await clock.advance(1000)
@@ -4798,5 +4799,177 @@ describe('the rebuild figure: one figure on the footer, the pane and the bare co
     expect(await hint($)).toBe('~26k tokens to rebuild')
     expect(await drawnPane($)).toContain('~26k tokens to rebuild')
     expect(await toggle($, '')).toContain('Prompt cache expired, ~26k tokens to rebuild.')
+  })
+})
+
+describe('a model switch counts as a reset only on a cache cachier read as warm', () => {
+  const TTL = 300000
+  const SW = { from_model: 'a', to_model: 'b', requested_model: 'b', source: 'command', prompt_cache_warm: true, cache_ttl: '5m', context_tokens: 1, estimated_cache_write_usd: 0, pricing: 'catalog' } as any
+  const at = (s: number) => iso(T0 + s * 1000)
+  // The last value the mod wrote to each state key, and whether the view reads as unread.
+  const wrote: Record<string, any> = {}
+  let unread = false
+  let broken = false
+  const watch = (on: any) => {
+    for (const k of Object.keys(wrote)) delete wrote[k]
+    unread = false
+    broken = false
+    on('state.set', (_$: any, e: any, next: any) => {
+      wrote[e.key] = e.value
+      return next(e)
+    })
+    on('state.get', (_$: any, e: any, next: any) => (broken && e.key === 'view' ? { deny: 'read refused' } : unread && e.key === 'view' ? { value: { kind: 'unread' }, version: 1 } : next(e)))
+  }
+  const held = (key: string): any => wrote[key]
+  let snapshot: number[] = []
+
+  // A first reply, a main-thread request at T0+1s (the live touch), then `setup`, the switch, and a missing reply 400s later.
+  const scenario = async ($: any, on: any, opts: { afterMs: number; engineWarm?: boolean; setup?: (rec: any, doc: any) => Promise<void>; undo?: (rec: any) => void; withReply?: boolean }) => {
+    const doc: any = {
+      text: lines([
+        user({ uuid: 'u0', parent: null, ts: at(-60) }),
+        assistant({ uuid: 'a0', parent: 'u0', ts: at(-59), write: 5, tags: FIVE, msg: 'm0' }),
+        user({ uuid: 'u1', parent: 'a0', ts: at(0) }),
+        assistant({ uuid: 'a1', parent: 'u1', ts: at(0.5), read: 20000, write: 100, tags: FIVE, msg: 'm1' }),
+      ]),
+    }
+    watch(on)
+    const rec = kaWorld(on, doc)
+    const clock = mock.clock(on, { now: T0 + 1000 })
+    await $.classic.SessionStart({ source: 'startup', transcript_path: PATH })
+    await mainStep($)
+    await turnEnd($)
+    await clock.advance(opts.afterMs)
+    await opts.setup?.(rec, doc)
+    await $.classic.PostModelSwitch({ ...SW, prompt_cache_warm: opts.engineWarm ?? true })
+    snapshot = wrote.stats?.coldSince ?? []
+    opts.undo?.(rec)
+    await clock.advance(1000)
+    if (opts.withReply !== false) {
+      await clock.advance(400000)
+      doc.text += lines([
+        user({ uuid: 'u2', parent: 'a1', ts: iso(T0 + 1000 + opts.afterMs + 399000) }),
+        assistant({ uuid: 'b1', parent: 'u2', ts: iso(T0 + 1000 + opts.afterMs + 400500), read: 0, write: 20100, tags: FIVE, msg: 'm2' }),
+      ])
+      await mainStep($)
+      await turnEnd($)
+      await clock.advance(1000)
+    }
+    return { rec, clock, doc }
+  }
+  const causes = (rec: any) => debugOf(rec, 'cachier miss').map((m: any) => m.cause)
+  const lineOf = (rec: any) => debugOf(rec, 'cachier switch')
+
+  test('a cache read as expired at the switch makes the next miss a lapse and adds nothing to the reset times', async ($, on) => {
+    const { rec } = await scenario($, on, { afterMs: TTL + 10000 })
+    expect(snapshot).toEqual([])
+    expect(held('cold')).toBeDefined()
+    expect(causes(rec)).toEqual(['lapse'])
+  })
+
+  test('a cache read as warm makes the next miss a reset miss', async ($, on) => {
+    const { rec } = await scenario($, on, { afterMs: 120000 })
+    expect(snapshot).toHaveLength(1)
+    expect(causes(rec)).toEqual(['cold'])
+  })
+
+  test('the reading decides, not the engine: warm read with the engine saying not warm is a reset', async ($, on) => {
+    const { rec } = await scenario($, on, { afterMs: 120000, engineWarm: false })
+    expect(snapshot).toHaveLength(1)
+    expect(causes(rec)).toEqual(['cold'])
+    expect(lineOf(rec)).toEqual([{ prompt_cache_warm: false, reading: 'warm' }])
+  })
+
+  test('an expired read with the engine saying warm adds nothing', async ($, on) => {
+    const { rec } = await scenario($, on, { afterMs: TTL + 10000, engineWarm: true })
+    expect(snapshot).toEqual([])
+    expect(lineOf(rec)).toEqual([{ prompt_cache_warm: true, reading: 'expired' }])
+  })
+
+  test('the reading is warm one millisecond inside the TTL, counting from the live touch', async ($, on) => {
+    await scenario($, on, { afterMs: TTL - 1, withReply: false })
+    expect(snapshot).toHaveLength(1)
+  })
+
+  test('the reading is not warm at the TTL\'s end', async ($, on) => {
+    const { rec } = await scenario($, on, { afterMs: TTL, withReply: false })
+    expect(snapshot).toEqual([])
+    expect(lineOf(rec)).toEqual([{ prompt_cache_warm: true, reading: 'expired' }])
+  })
+
+  test('a switch with no cache adds nothing', async ($, on) => {
+    watch(on)
+    const rec = world(on, { text: '' })
+    mock.clock(on, { now: T0 })
+    await $.classic.SessionStart({ source: 'startup', transcript_path: PATH })
+    await $.classic.PostModelSwitch(SW)
+    expect(wrote.stats?.coldSince ?? []).toEqual([])
+    expect(held('cold')).toBeDefined()
+    expect(lineOf(rec)).toEqual([{ prompt_cache_warm: true, reading: 'none' }])
+  })
+
+  test('a switch after /clear adds nothing beyond the clear\'s own reset time', async ($, on) => {
+    const { rec } = await scenario($, on, {
+      afterMs: 1000,
+      withReply: false,
+      setup: async () => {
+        await $.classic.SessionStart({ source: 'clear', transcript_path: PATH })
+      },
+    })
+    expect(snapshot.length).toBe(1)
+    expect(lineOf(rec)[0].reading).toBe('none')
+  })
+
+  test('a switch with an unread view adds nothing', async ($, on) => {
+    const { rec } = await scenario($, on, {
+      afterMs: 1000,
+      withReply: false,
+      setup: async () => void (unread = true),
+    })
+    expect(snapshot).toEqual([])
+    expect(lineOf(rec)).toEqual([{ prompt_cache_warm: true, reading: 'none' }])
+  })
+
+  test('a switch while a compaction mark stands adds nothing, and the next miss is still a reset miss', async ($, on) => {
+    const { rec } = await scenario($, on, {
+      afterMs: 1000,
+      setup: async () => {
+        await $.classic.PostCompact({ trigger: 'manual', compact_summary: 's' } as any)
+      },
+    })
+    expect(snapshot).toHaveLength(1)
+    expect(lineOf(rec)).toEqual([{ prompt_cache_warm: true, reading: 'cold' }])
+    expect(causes(rec)).toEqual(['cold'])
+  })
+
+  test('a reading that throws writes the mark, adds nothing and does not fail the hook', async ($, on) => {
+    const { rec } = await scenario($, on, {
+      afterMs: 1000,
+      withReply: false,
+      setup: async () => void (broken = true),
+      undo: () => void (broken = false),
+    })
+    expect(snapshot).toEqual([])
+    expect(lineOf(rec)).toEqual([{ prompt_cache_warm: true, reading: 'unread' }])
+    expect(held('cold')).toBeDefined()
+  })
+
+  for (const [what, from, source] of [['a resume', 'a', 'resume'], ['a switch to the model in use', 'b', 'command']] as const) {
+    test(`${what} writes no debug line`, async ($, on) => {
+      const rec = world(on, { text: '' })
+      mock.clock(on, { now: T0 })
+      await $.classic.SessionStart({ source: 'startup', transcript_path: PATH })
+      await $.classic.PostModelSwitch({ ...SW, from_model: from, source })
+      expect(lineOf(rec)).toEqual([])
+    })
+  }
+
+  test('after a switch no refresh is sent until the next reply', { options: { keepalive_lead_s: 60, keepalive_count: 9 } }, async ($, on) => {
+    const { rec } = await scenario($, on, {
+      afterMs: TTL + 10000,
+      withReply: false,
+      setup: async () => void (await toggle($, 'on 60 3')),
+    })
+    expect(rec.forks).toEqual([])
   })
 })

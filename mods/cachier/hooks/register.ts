@@ -442,25 +442,44 @@ const learnPath = async ($: Dollar, path: string) => {
   if (await learnTranscript($, path)) refresh($)
 }
 
-const setCold = async ($: Dollar, reason: ColdMark['reason']) => {
+// `adds` says, once pings are paused and before the mark is written, whether the mark's time joins the reset times the miss
+// classifier reads. Compaction and /clear always add.
+const setCold = async ($: Dollar, reason: ColdMark['reason'], adds: (atMs: number) => Promise<boolean> = async () => true) => {
   // Pings wait from the start of the mark until it lands, so no tick can read the cache as warm across the switch.
   await editKeepalive($, coldBegun)
   const atMs = await $.clock.now()
+  const add = await adds(atMs)
   await $.state.set(COLD, { reason, atMs })
-  await statsWrite($, (s) => ({ ...s, coldSince: [...s.coldSince, atMs] }))
+  if (add) await statsWrite($, (s) => ({ ...s, coldSince: [...s.coldSince, atMs] }))
   await editKeepalive($, coldLanded)
   await settleColdMark($)
 }
 
 // A cold mark from a hook the engine awaits. A failure is logged and fails closed, so no ping forks on a cache the mod could
 // not mark cold; it never reaches the engine.
-const markCold = async ($: Dollar, reason: ColdMark['reason']): Promise<void> => {
+const markCold = async ($: Dollar, reason: ColdMark['reason'], adds?: (atMs: number) => Promise<boolean>): Promise<void> => {
   try {
-    await setCold($, reason)
+    await setCold($, reason, adds)
   } catch (err) {
     report($, err)
     gapBroken = true
   }
+}
+
+// Whether a switch forfeits a cache cachier reads as warm now, the footer's own reading with the cache view and the standing mark
+// as they stand. A reading that cannot be taken is not warm. The engine's flag and the reading go to the debug log to compare.
+const switchForfeits = async ($: Dollar, engineWarm: boolean, nowMs: number): Promise<boolean> => {
+  let state = 'unread'
+  try {
+    const view = (await $.state.get(VIEW)).value ?? NO_CACHE
+    const live = (await $.state.get(TOUCH)).value ?? null
+    const cold = (await $.state.get(COLD)).value ?? null
+    state = readingOf(view, live, cold, nowMs, '')?.state ?? 'none'
+  } catch (err) {
+    report($, err)
+  }
+  debugLine($, 'cachier switch', { prompt_cache_warm: engineWarm, reading: state })
+  return state === 'warm'
 }
 
 const liveTouch = async ($: Dollar) => {
@@ -1424,7 +1443,7 @@ export const register: Register = (on, options) => {
   // A resume restores the model the session's cache was written by, and a switch to the model in use changes nothing: neither
   // forfeits the cache.
   on('classic.PostModelSwitch', async ($, e, next) => {
-    if (e.source !== 'resume' && e.from_model !== e.to_model) await markCold($, 'model switch')
+    if (e.source !== 'resume' && e.from_model !== e.to_model) await markCold($, 'model switch', (atMs) => switchForfeits($, e.prompt_cache_warm, atMs))
     return next(e)
   })
 
