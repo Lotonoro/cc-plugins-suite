@@ -1,7 +1,7 @@
 import type { EngineInterface, Register, RenderElement } from 'claude-code'
 import type { ModelForkResult, ModelUsage } from 'claude-code'
 import type { CacheView, ColdMark, HintCost, HintState, Judged, KeepaliveState, PriceCue, Spend, StatsState, TallyState, Unit } from '../types'
-import { pieOf, readingOf, refreshingOf, settleCold, touchedAt, warmthOf } from './countdown'
+import { pieOf, readingOf, rebuildDrawnOf, refreshingOf, settleCold, touchedAt, warmthOf } from './countdown'
 import {
   coldBegun,
   coldLanded,
@@ -51,12 +51,12 @@ import { closedPane, isPaneOpen, paneAlarm, PANE, resizePane, syncPane, togglePa
 import { appended, HISTORY_BOUND, keyOf, KEY_PREFIX, merged, recordOf, recordsOf, staleKeys, type PauseRecord } from './history'
 import { adviceOf, ratesOfView, type Inputs } from './advice'
 import { learnedLine, learnedOf, ttlAdviceLine, ttlAdviceOf, ttlSwitchOf, type Learned } from './learn'
-import { breakEvenLine, countLineOf, judge, KEPT_COUNT, ratioOf, rebuildOf, runCountOf, sessionBalanceLine, NO_JUDGED, pauseOf, type Pause } from './verdict'
+import { breakEvenLine, countLineOf, judge, KEPT_COUNT, ratioOf, rebuildOf, rebuildSpendOf, runCountOf, sessionBalanceLine, NO_JUDGED, pauseOf, type Pause } from './verdict'
 import { answerOf, type Setting, type Snapshot } from './sections'
 import { stampLabel, withStamp } from './stamp'
 import { foldStatsEvents, INITIAL_STATS, pendingFor, rundownSections, sessionLineOf, type MissEvent, type LongPauseEvent } from './stats'
 import { lookupRows, readCache, type History, type Host, type Row } from './transcript'
-import { dollars, NO_KINDS, spendOf, TTL_WORDS, unitOf, writeReadRatio, type Money } from './prices'
+import { dollars, NO_KINDS, spendOf, TTL_WORDS, unitOf, uponOf, writeReadRatio, type Money } from './prices'
 import { priceCheck, priceList, priceReady, priceSink, priceSync, report, type PriceEvent } from './pricesync'
 
 type Dollar = EngineInterface
@@ -894,8 +894,12 @@ const snapshotNow = async ($: Dollar): Promise<Snapshot> => {
   const money = moneyFrom(unitHeld, view)
   const tally = (await $.state.get(TALLY)).value ?? INITIAL_TALLY
   const stats = (await $.state.get(STATS)).value ?? INITIAL_STATS
-  const rebuild = rebuildOf(raw, money)
+  // The rebuild is priced once here: the figure and the 'Shown in tokens' reason both come from this spend.
+  const rebuildPriced = raw.kind === 'known' ? rebuildSpendOf(raw, money) : null
+  const rebuild = rebuildPriced === null ? '' : uponOf(rebuildPriced, money.unit)
   const reading = readingOf(raw, live, cold, nowMs, rebuild)
+  // The reason is given only where the warmth line draws the figure (rebuildDrawnOf): not on a warm cache, nor after /clear, which leaves the view known and no reading.
+  const rebuildSpend = rebuildDrawnOf(reading, rebuild) ? rebuildPriced : null
   const judged = (await $.state.get(JUDGED)).value ?? NO_JUDGED
   const run = runOf(held, defaultRun)
   const rundown = rundownSections(tally, stats, money)
@@ -917,7 +921,7 @@ const snapshotNow = async ($: Dollar): Promise<Snapshot> => {
         ...rundown.keepalive,
       ].filter((line) => line !== ''),
     },
-    advice: [sentenceNow(held, view, money), ...ttlAdviceLines(held, view, money), ...rundown.advice, ...unitNotes(money, view, tally, stats)].filter((line) => line !== ''),
+    advice: [sentenceNow(held, view, money), ...ttlAdviceLines(held, view, money), ...rundown.advice, ...unitNotes(money, view, rebuildSpend, tally, stats)].filter((line) => line !== ''),
     settings: settingsOf(raw, run, kept, tally, view, money, nowMs, unitPressedNow(unitHeld)),
   }
 }
@@ -967,8 +971,8 @@ export const alarmOf = async ($: Dollar, view: CacheView): Promise<string | null
 }
 
 // The bare command's notes on the unit. In tokens, what a cache write costs in reads on this model, which no token count says by
-// itself. In dollars, why a figure is shown in tokens instead, once per reason.
-const unitNotes = (money: Money, view: CacheView, tally: TallyState, stats: StatsState): string[] => {
+// itself. In dollars, why a figure is shown in tokens instead, once per reason. `rebuild` is the rebuild figure's spend, null where none is drawn.
+const unitNotes = (money: Money, view: CacheView, rebuild: Spend | null, tally: TallyState, stats: StatsState): string[] => {
   if (money.unit === 'tokens') {
     const ratio = writeReadRatio(money.list, money.model, money.ttl)
     return ratio === null || money.model === null
@@ -976,7 +980,7 @@ const unitNotes = (money: Money, view: CacheView, tally: TallyState, stats: Stat
       : [`A ${TTL_WORDS[money.ttl]} cache write costs about ${Math.round(ratio)} cache reads on ${money.model}.`]
   }
   const ping = view.kind === 'known' ? spendOf(money.list, view.model, view.speed, { ...NO_KINDS, read: view.promptTokens }) : null
-  const spends: (Spend | null)[] = [ping, tally.session.spend, stats.misses.lapse.spend, stats.misses.cold.spend, stats.misses.unexplained.spend, stats.saved.spend, stats.saved.avoided, stats.ranOut.spend, stats.notNeeded.spend]
+  const spends: (Spend | null)[] = [ping, rebuild, tally.session.spend, stats.misses.lapse.spend, stats.misses.cold.spend, stats.misses.unexplained.spend, stats.saved.spend, stats.saved.avoided, stats.ranOut.spend, stats.notNeeded.spend]
   const whys = new Set(spends.flatMap((sp) => (sp !== null && sp.usd === null && sp.why !== null ? [sp.why] : [])))
   return [...whys].map((why) => `Shown in tokens: ${why}.`)
 }

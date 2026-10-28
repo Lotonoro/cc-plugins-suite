@@ -4981,6 +4981,69 @@ describe('the bare command answers whole: the text its sections lay out, for fix
       ].join('\n'),
     )
   })
+
+  // A cold mark from a model switch, held over the stored cache: 18551 tokens written by Opus 5.5 at the 5-minute TTL, 7000 of output.
+  const coldHeld = async ($: any, on: any) => {
+    kaWorld(on, expired())
+    const clock = mock.clock(on, { now: T0 + 1000 })
+    await $.classic.SessionStart({ source: 'startup', transcript_path: PATH })
+    await clock.advance(1000)
+    await $.classic.PostModelSwitch({ from_model: 'claude-opus-5-5', to_model: 'claude-sonnet-5-5', requested_model: 'claude-sonnet-5-5', source: 'command', prompt_cache_warm: true, cache_ttl: '5m', context_tokens: 1, estimated_cache_write_usd: 0, pricing: 'catalog' } as any)
+    await clock.advance(1000)
+    return clock
+  }
+
+  test('a cold mark from a model switch held over a priced stored cache: the whole answer gives the rebuild figure in dollars', async ($, on) => {
+    await coldHeld($, on)
+    expect(await commandText($, '')).toBe(
+      [
+        'Cache',
+        '  Prompt cache reset, ~$0.13 to rebuild.',
+        '',
+        'Keepalive  off',
+        '',
+        'Settings',
+        '  TTL 5 min (read from the last response): set',
+        '    "promptCacheTtl": "1h" in settings.json for',
+        '    1 h (new sessions).',
+        '  lead 15 s: /keepalive on <lead seconds>.',
+        '  refreshes a pause break-even: /keepalive on',
+        '    <lead seconds> <refreshes>, or',
+        '    keepalive_count.',
+        '  start mode off (keepalive_default option):',
+        '    /keepalive default on|off, for new sessions.',
+        '  unit dollars (cost_unit option): /keepalive',
+        '    unit tokens|dollars.',
+      ].join('\n'),
+    )
+  })
+
+  test('a cold mark from a model switch held over a priced stored cache: the whole answer gives the rebuild figure in tokens', async ($, on) => {
+    const clock = await coldHeld($, on)
+    await toggle($, 'unit tokens')
+    await clock.advance(1000)
+    expect(await commandText($, '')).toBe(
+      [
+        'Cache',
+        '  Prompt cache reset, ~26k tokens to rebuild.',
+        '',
+        'Keepalive  off',
+        '',
+        'Settings',
+        '  TTL 5 min (read from the last response): set',
+        '    "promptCacheTtl": "1h" in settings.json for',
+        '    1 h (new sessions).',
+        '  lead 15 s: /keepalive on <lead seconds>.',
+        '  refreshes a pause break-even: /keepalive on',
+        '    <lead seconds> <refreshes>, or',
+        '    keepalive_count.',
+        '  start mode off (keepalive_default option):',
+        '    /keepalive default on|off, for new sessions.',
+        '  unit tokens (switched this session):',
+        '    /keepalive unit tokens|dollars.',
+      ].join('\n'),
+    )
+  })
 })
 
 // The reads a status call makes of the states it states: each is read once per call, so its figures are one reading.
@@ -5762,6 +5825,115 @@ describe('the rebuild figure: one figure on the footer, the pane and the bare co
     expect(await hint($)).toBe('~26k tokens to rebuild')
     expect(await drawnPane($)).toContain('~26k tokens to rebuild')
     expect(await toggle($, '')).toContain('Prompt cache expired, ~26k tokens to rebuild.')
+  })
+})
+
+describe("the rebuild figure under a cold mark: priced at the model that last wrote the cache, and the bare answer says why a figure is in tokens", () => {
+  const SWITCH = { from_model: 'claude-opus-5-5', to_model: 'claude-opus-5-5-next', requested_model: 'x', source: 'command', prompt_cache_warm: true, cache_ttl: '5m', context_tokens: 1, estimated_cache_write_usd: 0, pricing: 'catalog' } as any
+  // The stored cache: 18551 tokens written and 7000 output, so 25551 tokens to rebuild. A named model with a price, unless given.
+  const stored = (o: { model?: string | null; speed?: string; tags?: { five: number; one: number } } = {}) => ({
+    text: lines([
+      user({ uuid: 'u1', parent: null, ts: iso(T0) }),
+      assistant({ uuid: 'a1', parent: 'u1', ts: iso(T0), write: 18551, out: 7000, tags: o.tags ?? FIVE, model: o.model === null ? undefined : (o.model ?? 'claude-opus-5-5'), speed: o.speed ?? 'standard' }),
+    ]),
+  })
+  // The cold mark of a model switch (to `to`) or a compaction, held over the stored cache: nothing touches the cache after it.
+  const held = async ($: any, on: any, doc: any, by: 'switch' | 'compaction' = 'switch', to = 'claude-opus-5-5-next') => {
+    kaWorld(on, doc)
+    const clock = mock.clock(on, { now: T0 + 1000 })
+    await $.classic.SessionStart({ source: 'startup', transcript_path: PATH })
+    await clock.advance(1000)
+    if (by === 'switch') await $.classic.PostModelSwitch({ ...SWITCH, to_model: to })
+    else await $.classic.PostCompact({ trigger: 'manual', compact_summary: 's' } as any)
+    await clock.advance(1000)
+    return clock
+  }
+  const surfaces = async ($: any, figure: string) => {
+    expect(await hint($)).toBe('reset')
+    expect(await drawnPane($)).toContain(`Prompt cache reset, ${figure} to rebuild.`)
+    expect(await toggle($, '')).toContain(`Prompt cache reset, ${figure} to rebuild.`)
+  }
+
+  test('a model switch held over a priced model: the pane and the bare answer give the figure in dollars', async ($, on) => {
+    await held($, on, stored())
+    // 25551 tokens at Opus 5.5's $5/M 5-minute write rate.
+    await surfaces($, '~$0.13')
+    expect(await toggle($, '')).not.toContain('Shown in tokens')
+  })
+
+  test('a compaction held over a priced model: the same figure in dollars', async ($, on) => {
+    await held($, on, stored(), 'compaction')
+    await surfaces($, '~$0.13')
+  })
+
+  test("the figure is the stored cache's TTL's write rate", async ($, on) => {
+    await held($, on, stored({ tags: { five: 0, one: 18551 } }))
+    // 25551 tokens at Opus 5.5's $8/M 1-hour write rate.
+    await surfaces($, '~$0.20')
+  })
+
+  test('the figure is the one the same view gives with no cold mark once it has expired', async ($, on) => {
+    kaWorld(on, stored())
+    const clock = mock.clock(on, { now: T0 + 400000 })
+    await $.classic.SessionStart({ source: 'startup', transcript_path: PATH })
+    await clock.advance(1000)
+    expect(await toggle($, '')).toContain('Prompt cache expired, ~$0.13 to rebuild.')
+    await $.classic.PostModelSwitch(SWITCH)
+    await clock.advance(1000)
+    await surfaces($, '~$0.13')
+  })
+
+  test('after a switch between differently priced models the figure is at the model switched from', async ($, on) => {
+    // Sonnet 5.5 writes at $2.50/M, Opus 5.5 at $5/M; the stored cache was written by Opus.
+    await held($, on, stored(), 'switch', 'claude-sonnet-5-5')
+    await surfaces($, '~$0.13')
+    expect(await toggle($, '')).not.toContain('~$0.064')
+  })
+
+  test('in tokens the pane and the bare answer give the token figure', async ($, on) => {
+    const clock = await held($, on, stored())
+    await toggle($, 'unit tokens')
+    await clock.advance(1000)
+    await surfaces($, '~26k tokens')
+    expect(await toggle($, '')).not.toContain('Shown in tokens')
+  })
+
+  describe('in dollars, a stored view with no price gives the token figure and the bare answer says why', () => {
+    const cases: [string, Parameters<typeof stored>[0], string][] = [
+      ['a model with no price', { model: 'claude-nonesuch-1' }, 'no price for claude-nonesuch-1'],
+      ['fast mode', { speed: 'fast' }, 'no price for fast mode'],
+      ['no model named', { model: null }, 'no price for an unnamed model'],
+    ]
+    for (const [name, o, why] of cases) {
+      test(name, async ($, on) => {
+        await held($, on, stored(o))
+        await surfaces($, '~26k tokens')
+        expect(await toggle($, '')).toContain(`Advice Shown in tokens: ${why}.`)
+      })
+    }
+  })
+
+  test('an expired cache on an unpriced model has the one reason line, as before', async ($, on) => {
+    kaWorld(on, stored({ model: 'claude-nonesuch-1' }))
+    const clock = mock.clock(on, { now: T0 + 400000 })
+    await $.classic.SessionStart({ source: 'startup', transcript_path: PATH })
+    await clock.advance(1000)
+    const answer = await toggle($, '')
+    expect(answer).toContain('Prompt cache expired, ~26k tokens to rebuild.')
+    expect(answer.split('Shown in tokens:').length).toBe(2)
+  })
+
+  test('after /clear over a known stored view with no price: no Cache section, no pane warmth line and no reason line', async ($, on) => {
+    kaWorld(on, stored({ model: 'claude-nonesuch-1' }))
+    const clock = mock.clock(on, { now: T0 + 1000 })
+    await $.classic.SessionStart({ source: 'startup', transcript_path: PATH })
+    await clock.advance(1000)
+    await $.classic.SessionStart({ source: 'clear', transcript_path: PATH })
+    await clock.advance(1000)
+    const answer = await commandText($, '')
+    expect(answer.startsWith('Keepalive')).toBe(true)
+    expect(answer).not.toContain('Shown in tokens')
+    expect(await drawnPane($)).not.toContain('Prompt cache')
   })
 })
 

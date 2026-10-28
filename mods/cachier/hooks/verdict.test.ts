@@ -93,6 +93,31 @@ describe('rebuildSpendOf and rebuildOf: what the next prompt pays, the last repl
     expect(rebuildOf(view, { ...money, unit: 'tokens' })).toBe('~1000k tokens')
     expect(rebuildOf({ kind: 'unread' }, money)).toBe('')
   })
+
+  test('prices the model and speed of the view it is handed, whatever model the money names', () => {
+    // Under a cold mark the money names no model, yet the stored view does: the figure is the view's own model's.
+    const none: Money = { ...money, model: null, speed: null }
+    expect(micro(rebuildSpendOf(view, none).usd)).toBe(5)
+    expect(rebuildOf(view, none)).toBe('~$5.00')
+    // The money's own model is not the figure's: Sonnet 5.5's 5 m write is $2.50 per million, Opus 5.5's is $5.
+    expect(micro(rebuildSpendOf(view, { ...money, model: 'claude-sonnet-5-5' }).usd)).toBe(5)
+    expect(micro(rebuildSpendOf({ ...view, model: 'claude-sonnet-5-5' }, money).usd)).toBe(2.5)
+    // The unit and the list are the money's.
+    expect(rebuildOf(view, { ...none, unit: 'tokens' })).toBe('~1000k tokens')
+  })
+
+  test('a view that is fast mode, names no model or a model with no price leaves the figure in tokens, whatever the money names', () => {
+    const named: Money = { ...money, model: 'claude-opus-5-5', speed: 'standard' }
+    for (const odd of [{ speed: 'fast' }, { model: null }, { model: 'claude-nonesuch-1' }]) {
+      const spend = rebuildSpendOf({ ...view, ...odd }, named)
+      expect(spend.usd).toBeNull()
+      expect(spend.write5m).toBe(1000000)
+      expect(rebuildOf({ ...view, ...odd }, named)).toBe('~1000k tokens')
+    }
+    expect(rebuildSpendOf({ ...view, speed: 'fast' }, money).why).toBe('no price for fast mode')
+    expect(rebuildSpendOf({ ...view, model: null }, money).why).toBe('no price for an unnamed model')
+    expect(rebuildSpendOf({ ...view, model: 'claude-nonesuch-1' }, money).why).toBe('no price for claude-nonesuch-1')
+  })
 })
 
 describe("pauseOf: the pause from the session's state", () => {
