@@ -11,8 +11,8 @@ export const STEERING: PromptComposeSection = {
     '- A proposal that waits on the human\'s word is an ask: "say go", "unless you veto", "your call" or "yes or no?" each files it the moment it comes up, not appended to a report.',
     '- Mention a new item once in prose ("added #3"), then refer to it by its id. Never restate its ask.',
     '- When an ask needs real context, such as a decision with trade-offs, write the detail as a markdown brief: a one-line question first, then your recommendation, the options with their costs, and the context. In chat, say one line only, such as "added #4: which store for the cache? The brief is in details."; the recommendation, the options and any caveats stay in the brief, so do not repeat or sum up the brief there.',
-    '- When the human asks for more about an item, fold the explanation into its detail with append, and say one line in chat ("expanded #4: added ..."), never the explanation itself.',
-    '- Use append to add to an item\'s brief: it adds a section at the end, so the brief is not resent. Use update only to change existing text, the title, blocking, or a note.',
+    '- When the human asks for more about an item, add the explanation to it with append, and say one line in chat ("expanded #4: added ..."), never the explanation itself.',
+    '- Use append to add to an item, so nothing is resent: until the human has answered the item, it adds a section at the end of the brief; once they have (a reply or a press), it adds your turn to the item\'s thread, after theirs, and a reply\'s notice says when to append and when to remove. Use update only to change existing text, the title, blocking, or a note.',
     '- Remove an item the moment it no longer applies: the human handled it (they pressed done, or said so in chat), you resolved it yourself, or it became moot. After a done press, an answer or a claim in chat, check first, and keep it only if the human still has a step of their own to take, updated to name that step. Your own follow-up work (a build, an install, a check) never stays on the list.',
     '- When you remove an item the human did not close, say why in one line.',
     '- When you are unsure what is open, for example after a compaction, call list.',
@@ -32,12 +32,12 @@ export const TOOL_SPEC = {
   description:
     'The human-plugin list: a live view of what you currently need from the human. action add files a need (title, ' +
     'detail, blocking); detail is markdown, for a decision a brief: one-line question, recommendation, options with ' +
-    'costs, context. append adds a section to the end of an item\'s detail (text): use it to add to a brief. update ' +
-    'changes existing text, the title, blocking or a note, and a detail it is given replaces the whole detail, so use ' +
-    'append to grow one. Any change to a sent item (an append, or an update that sets something) reopens it for the human, ' +
+    'costs, context. append adds text to an item: a section at the end of its detail until the human has answered it, then ' +
+    'a turn in its thread after theirs, and a reply\'s notice says whether to append or remove. update changes existing ' +
+    'text, the title, blocking or a note, and a detail it is given replaces the whole detail, so add with append instead. Any change to a sent item (an append, or an update that sets something) reopens it for the human, ' +
     'so change a sent item only when the human has something more to read or answer, and otherwise remove it; clearing a ' +
     'field alone (a blank note, done or detail) does not reopen it. remove takes an item off once it no longer applies: the human ' +
-    'handled it, you resolved it, or it became moot. list returns every item with its state, and is the only action that ' +
+    'handled it, you resolved it, or it became moot. list returns every item with its state and thread, and is the only action that ' +
     'returns the list. Use it for what the human does outside the chat, what can wait, and a decision that needs a long ' +
     'brief; AskUserQuestion is for a question needed now with a few options. A question you will still need answered after ' +
     'this turn goes on the list the moment you would write it, not in a closing recap. One item asks one question. A decision must be filed with options, as AskUserQuestion takes them, ' +
@@ -47,7 +47,7 @@ export const TOOL_SPEC = {
     properties: {
       action: { type: 'string', enum: ['add', 'update', 'append', 'remove', 'list'] },
       id: { type: 'integer', minimum: 1, description: 'The item number, as in "#3". Needed by update, append and remove.' },
-      text: { type: 'string', description: 'The section append adds to the end of the detail.' },
+      text: { type: 'string', description: 'What append adds: a section at the end of the detail, or a turn in the thread once the human has answered.' },
       title: { type: 'string' },
       detail: { type: 'string' },
       options: {

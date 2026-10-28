@@ -7,7 +7,7 @@ test('the steering section is a session section that names the tool and its rule
   expect(STEERING.scope).toBe('session')
   expect(STEERING.text).toContain('human_items')
   expect(STEERING.text).toContain('blocking')
-  for (const rule of ['Never restate', 'no longer applies', 'said so in chat', 'resolved it yourself', 'check first', 'say why in one line', 'call list', 'A subagent removes only', 'markdown brief', 'one-line question first', 'do not repeat or sum up the brief', 'fold the explanation into its detail', 'never the explanation itself', 'Use AskUserQuestion for a question you need answered now', 'Never put the same ask in both', 'Use append to add to an item', 'the moment you would write it', 'a closing recap of open questions', 'A decision must be filed with options', 'a step of their own to take', 'Your own follow-up work']) {
+  for (const rule of ['Never restate', 'no longer applies', 'said so in chat', 'resolved it yourself', 'check first', 'say why in one line', 'call list', 'A subagent removes only', 'markdown brief', 'one-line question first', 'do not repeat or sum up the brief', 'add the explanation to it with append', 'never the explanation itself', 'Use AskUserQuestion for a question you need answered now', 'Never put the same ask in both', 'Use append to add to an item', 'the moment you would write it', 'a closing recap of open questions', 'A decision must be filed with options', 'a step of their own to take', 'Your own follow-up work']) {
     expect(STEERING.text).toContain(rule)
   }
   expect(STEERING.text).not.toContain('go with your recommendation')
@@ -39,9 +39,24 @@ test('the tool description says which of the two a question is for, and that a q
   expect(TOOL_SPEC.description).toContain('the moment you would write it, not in a closing recap')
 })
 
-test('the tool description and schema name append, the action that adds to a brief', () => {
-  expect(TOOL_SPEC.description).toContain('append adds a section')
+test('the tool description and schema name append, the action that adds to a brief and, once the human has answered, to the thread', () => {
+  expect(TOOL_SPEC.description).toContain("append adds text to an item: a section at the end of its detail until the human has answered it, then a turn in its thread after theirs, and a reply's notice says whether to append or remove.")
+  expect(TOOL_SPEC.description).toContain('list returns every item with its state and thread')
   expect(TOOL_SPEC.inputSchema.properties.text.type).toBe('string')
+  expect(TOOL_SPEC.inputSchema.properties.text.description).toBe('What append adds: a section at the end of the detail, or a turn in the thread once the human has answered.')
+})
+
+test('the steering line says append goes to the brief until the human answers and to the thread after, and points at the reply notice', () => {
+  expect(STEERING.text).toContain("- Use append to add to an item, so nothing is resent: until the human has answered the item, it adds a section at the end of the brief; once they have (a reply or a press), it adds your turn to the item's thread, after theirs, and a reply's notice says when to append and when to remove.")
+})
+
+test('no steering or tool text says append always adds to the brief or the detail', () => {
+  for (const text of [STEERING.text, TOOL_SPEC.description, TOOL_SPEC.inputSchema.properties.text.description]) {
+    expect(text).not.toContain('fold the explanation into its detail')
+    expect(text).not.toContain("Use append to add to an item's brief")
+    expect(text).not.toContain("append adds a section to the end of an item's detail")
+    expect(text).not.toContain('The section append adds to the end of the detail')
+  }
 })
 
 test('the schema has the yes/no marker beside options, a boolean', () => {

@@ -674,6 +674,6 @@ test('a reply typed into the terminal pane is sent through the undo window, and 
   await ui.input({ key: 'reply-1', text: 'Use sqlite' })
   await clock.advance(5000)
   expect(sent).toEqual([
-    '#1 is done: Pick a db\nThe human replied on #1: Use sqlite\nAct on that reply, then remove it. Keep it only if the human still has a step of their own to take, updated to name that step; your own follow-up work does not stay on the list.',
+    '#1 is done: Pick a db\nThe human replied on #1: Use sqlite\nIf that reply settles the ask, act on it, then remove the item; if you need more from the human, or they asked you something, append it to #1, which reopens it for their next reply. Your own follow-up work never stays on the list.',
   ])
 })

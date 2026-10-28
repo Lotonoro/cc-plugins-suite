@@ -124,7 +124,7 @@ test('a press that cancels a reply clears its text and its replied flag', () => 
 test('the notice of a reply quotes it on its own line after the title, and names the reply', () => {
   const text = doneNotice({ ...item, answer: 'Use sqlite, not postgres', replied: true, state: 'done-pending' })
   expect(text).toBe(
-    '#3 is done: Pick a db\nThe human replied on #3: Use sqlite, not postgres\nAct on that reply, then remove it. Keep it only if the human still has a step of their own to take, updated to name that step; your own follow-up work does not stay on the list.',
+    '#3 is done: Pick a db\nThe human replied on #3: Use sqlite, not postgres\nIf that reply settles the ask, act on it, then remove the item; if you need more from the human, or they asked you something, append it to #3, which reopens it for their next reply. Your own follow-up work never stays on the list.',
   )
 })
 
@@ -153,7 +153,7 @@ test('a reply on a labelled to-do is still a reply: its text is sent, and the la
   const sent = expire(reply(labelled, 3, 1000, 'Use postgres instead'), 3, 1000).sent
   expect(sent).toMatchObject({ state: 'done-pending', answer: 'Use postgres instead', replied: true })
   expect(doneNotice(sent as Item)).toBe(
-    '#3 is done: Pick a db\nThe human replied on #3: Use postgres instead\nAct on that reply, then remove it. Keep it only if the human still has a step of their own to take, updated to name that step; your own follow-up work does not stay on the list.',
+    '#3 is done: Pick a db\nThe human replied on #3: Use postgres instead\nIf that reply settles the ask, act on it, then remove the item; if you need more from the human, or they asked you something, append it to #3, which reopens it for their next reply. Your own follow-up work never stays on the list.',
   )
 })
 

@@ -30,14 +30,14 @@ To do for you 3 open
   marked `(recommended)`, below the brief that explains the options. Pressing one gets the same three seconds to change
   your mind, then the agent is told your choice and acts on it. A choice's row in the band shows no answer buttons: open
   the decision to answer it.
-- **Reply field.** Under an open item's buttons in the pane is a one-line field: type a reply and press Enter, and it is sent with the same three seconds to change your mind (terminal and desktop only). A sent item has no field until the agent adds to it, which opens it again.
+- **Reply field.** Under an open item's buttons in the pane is a one-line field: type a reply and press Enter, and it is sent with the same three seconds to change your mind (terminal and desktop only). A sent item has no field until the agent adds to it, which opens it again. Each answer you send, typed or pressed, and each thing the agent adds after it stay on the item in order, as its thread: the agent adds to the item to ask you more, and removes it once your reply settles the ask.
 - **`[…]`** on a title means the item is a choice, whose answers are in the pane alone. A to-do or a yes/no shows none,
   even with a brief or a note, because its buttons are on the row. The summary row always shows `[…]` (`+N more […]`).
   A press on a title, or on the summary row, opens the pane on that item; the summary opens on the first item it folds, a blocking one first. The pane shows the
-  one item you have selected: its note, its full detail, and its buttons last. Click an item in the band to show it, and click
+  one item you have selected: its note, its full detail, its thread (`you` and `agent`, the last four turns whole and each older one as one dim line), and its buttons last. Click an item in the band to show it, and click
   the shown item again to close the pane. When the item you are shown is removed, or its answer or reply is sent, the pane moves to the next open item, and closes when none is left. A decision comes as a brief: the
   question, the agent's recommendation, the options with their costs, and the context. The pane draws any table in a brief as a list, so it fits the narrow pane. Each code block in a brief, except one inside a nested list item, has a `[copy]` button under it that puts just that block's lines on your clipboard, with no frame characters; a toast says whether it took. Ask for more and the agent adds
-  to the brief instead of burying the answer in chat.
+  to the item (to the brief, or to the thread once you have answered) instead of burying the answer in chat.
 - When the agent works out the answer itself, it tells you why in one line.
 
 Quick questions with a couple of clear options still arrive as Claude Code's usual question dialog. The list is for
@@ -61,12 +61,12 @@ Then start a new session and let the agent do the asking.
 
 ## Details
 
-- **Delivery.** A done press or answer reaches the agent exactly once, and the item then leaves the list unless you still
+- **Delivery.** A done press, answer or reply reaches the agent exactly once. After a press or an answer the item then leaves the list unless you still
   have a step of your own to take: the agent's follow-up work is not yours, so it does not stay listed. When the session is idle it starts a short
   turn; during a turn it is read before the agent's next model request; if you interrupt with Esc, it waits for your
   next prompt. A press on an item the agent has already removed sends nothing. What is read during a turn or beside
   your prompt also shows in your transcript as a dim line, `sent to Claude: …`, which the agent never reads.
-  When the agent adds to a sent item (an append, or an update that sets a title, brief, blocking mark, options, note or label), the item comes back open, with its reply field, marked `•`; a change that only clears a field does not reopen it. A change made during the three seconds leaves them running, and your press is sent as given.
+  When the agent adds to a sent item (an append, or an update that sets a title, brief, blocking mark, options, note or label), the item comes back open, with its reply field, marked `•`; a change that only clears a field does not reopen it. A change made during the three seconds leaves them running, and your press is sent as given; an addition made then follows your answer in the thread, and the item comes back open when they end.
 - **Survives compaction and resume.** `claude --resume` rebuilds the list from the session's transcript, subagents
   included, and leaves out anything on a branch that `/rewind` abandoned. `/clear` empties the list. Item numbers
   are never reused.
@@ -81,7 +81,7 @@ Then start a new session and let the agent do the asking.
 - The restatement check is a heuristic. It reads only the reply's last message, after the final tool call. It misses a
   paraphrase, a recap that puts no ask to the reader, and a block that names any listed item's id. It can mistake a block about an item's
   subject for an ask, at the cost of one extra note. A resumed conversation can note an item once more.
-- A resumed conversation orders an item's change before the notice that preceded it in time, so an item the agent changed after your reply but before the agent read the reply comes back sent, and a second reply you sent from the reopened item in that gap is not rebuilt. The agent's next change to the item, or removing it, settles it.
+- A resumed conversation orders an item's change before the notice that preceded it in time, so an item the agent changed after your reply but before the agent read the reply comes back sent, and a second reply you sent from the reopened item in that gap is not rebuilt. An addition made in that gap comes back in the brief if you had not answered the item before, and otherwise as an agent turn ahead of your reply. The agent's next change to the item, or removing it, settles it.
 - A session that enables the plugin partway through may keep asking in chat until a `/clear` or a new session.
 - `/rewind` inside a running session does not rewind the list, because Claude Code gives a plugin no signal that a
   rewind happened. The agent can still remove what no longer applies, and a resume rebuilds the list correctly.

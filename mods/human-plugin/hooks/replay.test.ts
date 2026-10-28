@@ -116,7 +116,7 @@ test('a reply notice with no append after it rebuilds the item sent, its answer 
   expect(store.items[0]).toMatchObject({ state: 'done-pending', answer: 'use sqlite', replied: true, thread: [] })
 })
 
-test('an append made before the reply notice reached the transcript rebuilds the item sent: the resume order puts the change first', async () => {
+test('an append made before the reply notice reached the transcript rebuilds the item sent: the resume order puts the change first, in the brief', async () => {
   const text = [
     call('2026-10-20T10:00:00.000Z', 'a', { action: 'add', title: 'Pick a db' }),
     result('2026-10-20T10:00:01.000Z', 'a', 'added #1'),
@@ -125,7 +125,27 @@ test('an append made before the reply notice reached the transcript rebuilds the
     notice('2026-10-20T10:00:04.000Z', REPLY_NOTICE),
   ].join('\n') + '\n'
   const { store } = await replay([sourceOf(text)])
-  expect(store.items[0]).toMatchObject({ state: 'done-pending', answer: 'use sqlite', replied: true })
+  expect(store.items[0]).toMatchObject({ state: 'done-pending', answer: 'use sqlite', replied: true, detail: 'sqlite needs a file', thread: [] })
+})
+
+test('on an item answered before, an append made before the next reply notice reached the transcript rebuilds as an agent turn ahead of that reply', async () => {
+  const text = [
+    call('2026-10-20T10:00:00.000Z', 'a', { action: 'add', title: 'Pick a db' }),
+    result('2026-10-20T10:00:01.000Z', 'a', 'added #1'),
+    notice('2026-10-20T10:00:02.000Z', REPLY_NOTICE),
+    call('2026-10-20T10:00:03.000Z', 'b', { action: 'append', id: 1, text: 'sqlite needs a file' }),
+    result('2026-10-20T10:00:04.000Z', 'b', 'appended to #1'),
+    call('2026-10-20T10:00:05.000Z', 'c', { action: 'append', id: 1, text: 'postgres needs a server' }),
+    result('2026-10-20T10:00:06.000Z', 'c', 'appended to #1'),
+    notice('2026-10-20T10:00:07.000Z', REPLY_NOTICE_2),
+  ].join('\n') + '\n'
+  const { store } = await replay([sourceOf(text)])
+  expect(store.items[0]).toMatchObject({ state: 'done-pending', answer: 'use postgres', replied: true, detail: '' })
+  expect(store.items[0]?.thread).toEqual([
+    { speaker: 'human', words: 'use sqlite' },
+    { speaker: 'agent', words: 'sqlite needs a file' },
+    { speaker: 'agent', words: 'postgres needs a server' },
+  ])
 })
 
 test('a failed or denied tool result is not replayed', async () => {
