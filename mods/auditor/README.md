@@ -19,8 +19,8 @@ earlier one, confirm a fix, or correct the wording of a message when nothing wou
 
 - **The toggle** sits on the footer's mode row, after Claude Code's mode labels and a dim ` · ` separator. It reads
   `auditor is on` while the reviewer runs, and `auditor is failing` while its reviews fail. Click it to switch:
-  `auditor is off` pauses the reviewer for this session, so no new review starts and nothing is recorded, though a
-  review already running finishes and its note still arrives. It stays off across `/clear`. Clicking it again,
+  `auditor is off` stops the reviewer for this session at once: a review already running is stopped, any note still
+  held is dropped, no new review starts and nothing is recorded. It stays off across `/clear`. Clicking it again,
   `auditor is on`, resumes the reviewer, and the next review covers only what happens from then on. `/auditor off` and
   `/auditor on` do the same from anywhere, mid-turn too, and bare `/auditor` says which it is: the Claude mobile app
   draws no footer, but runs the command and shows its answer. Every new session starts on. To stop it for good,
@@ -62,8 +62,8 @@ Then start a new session. The reviewer is on as soon as the plugin is loaded.
   80,000 tokens, which keeps it under Haiku's higher price tier, the next review goes to a fresh reviewer, told the
   last five notes the worker was given; it finds your instructions again in the transcript. A fresh reviewer also
   carries none of the old one's reading of the session, which keeps it independent. The retired reviewer is stopped,
-  so it does not stay idle for the rest of the session. So is a reviewer forgotten on a `/clear`, or one whose brief
-  was refused. Should one review alone outgrow 100,000 tokens, the reviewer
+  so it does not stay idle for the rest of the session. So is a reviewer forgotten on a `/clear`, one whose brief
+  was refused, or one the toggle switched off. Should one review alone outgrow 100,000 tokens, the reviewer
   compacts, keeping your instructions, its notes and any open disagreement.
 - **What the reviewer reads.** A record of the agent's turns since the previous review: your prompts, the agent's
   replies and every tool call with its result. It also reads files on disk, and it can search the whole session's

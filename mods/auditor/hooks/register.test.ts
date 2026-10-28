@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'claude-code/testing'
 import { LOOKUP_TIMEOUT_MS, lineCommand, searchCommand } from './transcript'
 import { REVIEWER_PROMPT } from './prompt'
+import * as register from './register'
 
 const ON = { options: { log: true } }
 
@@ -19,8 +20,10 @@ const REFUSED = "this tool serves only auditor's reviewers their open review's r
 const NO_REVIEW = 'auditor has no review in progress for this reviewer, so there is no record to return'
 const LOG_1 = `${DIR}/0001.json`
 const LOG_2 = `${DIR}/0002.json`
+const TEN_MINUTES = 10 * 60 * 1000
 
 type Env = Record<string, string>
+type SpawnHold = { until: Promise<void>; reached?: () => void; result?: unknown }
 type Opts = {
   spawn?: unknown
   // The reviewer spawn throws this message rather than answering.
@@ -45,18 +48,22 @@ type Opts = {
   submitFails?: boolean
   // Makes each $.session.append refuse with this reason.
   appendDenies?: string
+  // Each $.session.append calls reached, then waits for `until` before the engine answers it.
+  appendHold?: { until: Promise<void>; reached?: () => void }
   // With `submitFailsOnce`, only the first note prompt throws.
   submitFailsOnce?: boolean
   // Each write whose path contains `path` calls reached, then waits for `until` before it lands.
   hold?: { path: string; until: Promise<void>; reached?: () => void }
   // Each note prompt calls reached, then waits for `until` before the engine answers it.
   submitHold?: { until: Promise<void>; reached?: () => void }
+  // Each $.session.send calls reached, then waits for `until` before the engine answers it.
+  sendHold?: { until: Promise<void>; reached?: () => void }
   // Each $.tool.call of this tool rejects.
   toolThrows?: string
   // Each TaskStop call is refused with this reason.
   stopRefuses?: string
-  // From the reviewer spawn numbered `from` (1-based, 1 by default) on, the spawn calls reached, then waits for `until` before its result, with the reviewer's id, lands.
-  spawnHold?: { from?: number; until: Promise<void>; reached?: () => void }
+  // A spawn a hold covers calls its `reached`, then waits for `until` before its result lands (`result` when given, else the reviewer's id). A single hold covers the spawns numbered `from` (1-based, 1 by default) through `to` when given; an array holds the spawn numbered i + 1 by its entry i, and an undefined entry holds none.
+  spawnHold?: (SpawnHold & { from?: number; to?: number }) | (SpawnHold | undefined)[]
   // From the reviewer spawn numbered `spawnThrowsFrom` (1-based) on, the spawn throws; from `spawnDeniesFrom` on, it is refused.
   spawnThrowsFrom?: number
   spawnDeniesFrom?: number
@@ -66,10 +73,19 @@ type Opts = {
   listFailsAt?: number
   // With `sessionIdFailsOnce`, the first session id read rejects.
   sessionIdFailsOnce?: boolean
+  // Each session id read calls reached, then waits for `until` before the engine answers it; a hold covers the reads numbered `from` (1-based, 1 by default) through `to` when given.
+  sessionIdHold?: { until: Promise<void>; reached?: () => void; from?: number; to?: number }
   // With `stateSetFailsOnce`, the first conversation write rejects.
   stateSetFailsOnce?: boolean
   // Each $.tool.call of `tool`, in the order the calls arrive, waits for its gate in `untils` before the engine answers it.
   toolHolds?: { tool: string; untils: Promise<void>[] }
+}
+
+// The hold that covers the reviewer spawn numbered `n` (1-based), when one does.
+const heldAt = (hold: Opts['spawnHold'], n: number): SpawnHold | undefined => {
+  if (Array.isArray(hold)) return hold[n - 1]
+  if (hold === undefined || n < (hold.from ?? 1) || n > (hold.to ?? Infinity)) return undefined
+  return hold
 }
 
 // The engine's answers. The reviewer spawns as agent ag1; any other subagent spawns as sub1.
@@ -114,10 +130,17 @@ const engine = (on: any, opts: Opts = {}) => {
     return { value: seen.clock++ }
   })
   let sessionIdFailsLeft = opts.sessionIdFailsOnce === true ? 1 : 0
-  on('session.id', () => {
+  let sessionIdCalls = 0
+  on('session.id', async () => {
+    sessionIdCalls++
     if (sessionIdFailsLeft > 0) {
       sessionIdFailsLeft--
       return { deny: 'session id unavailable' }
+    }
+    const hold = opts.sessionIdHold
+    if (hold !== undefined && sessionIdCalls >= (hold.from ?? 1) && sessionIdCalls <= (hold.to ?? Infinity)) {
+      hold.reached?.()
+      await hold.until
     }
     return { value: seen.session }
   })
@@ -142,8 +165,12 @@ const engine = (on: any, opts: Opts = {}) => {
     return { value: undefined }
   })
   // Every attempt is recorded as it was sent, refused or not; an accepted row goes on to the conversation.
-  on('session.append', (_$: any, e: any, next: any) => {
+  on('session.append', async (_$: any, e: any, next: any) => {
     seen.appends.push(structuredClone(e.message))
+    if (opts.appendHold !== undefined) {
+      opts.appendHold.reached?.()
+      await opts.appendHold.until
+    }
     if (opts.appendDenies !== undefined) return { deny: opts.appendDenies }
     return next(e)
   })
@@ -194,9 +221,11 @@ const engine = (on: any, opts: Opts = {}) => {
       const reviewersSpawned = seen.spawns.filter(s => typeOf(s) === 'auditor:reviewer').length
       if (opts.spawnThrowsFrom !== undefined && reviewersSpawned >= opts.spawnThrowsFrom) throw new Error('spawn down')
       if (opts.spawnDeniesFrom !== undefined && reviewersSpawned >= opts.spawnDeniesFrom) return { deny: 'spawn refused' }
-      if (opts.spawnHold !== undefined && reviewersSpawned >= (opts.spawnHold.from ?? 1)) {
-        opts.spawnHold.reached?.()
-        await opts.spawnHold.until
+      const hold = heldAt(opts.spawnHold, reviewersSpawned)
+      if (hold !== undefined) {
+        hold.reached?.()
+        await hold.until
+        if (hold.result !== undefined) return hold.result
       }
       return opts.spawn ?? (opts.spawnNoId === true ? { model: 'm' } : { model: 'm', agentId: reviewerId() })
     }
@@ -205,6 +234,10 @@ const engine = (on: any, opts: Opts = {}) => {
   on('session.send', async (_$: any, e: any) => {
     seen.sends.push(e)
     seen.flights.push([...(seen.conversation?.briefsInFlight ?? [])])
+    if (opts.sendHold !== undefined) {
+      opts.sendHold.reached?.()
+      await opts.sendHold.until
+    }
     return e.to === opts.sendThrows ? Promise.reject(new Error('send threw')) : e.to === opts.sendFails ? { isDelivered: false, reason: 'refused' } : { isDelivered: true }
   })
   let submitFailsLeft = opts.submitFailsOnce === true ? 1 : 0
@@ -432,6 +465,20 @@ describe('auditor', () => {
     expect(seen.sends.length).toBe(0)
     await $.classic.Stop(stop)
     expect(seen.sends.length).toBe(0)
+  })
+
+  test('a settle whose flush is under way briefs nothing when a user prompt enters before it finishes', ON, async ($, on) => {
+    const release = gate()
+    const reached = gate()
+    // The third session id read is the settle's flush: the dispatch made the first, the settle's own log the second.
+    const seen = engine(on, { sessionIdHold: { from: 3, to: 3, until: release.until, reached: reached.open } })
+    await workerTurn($)
+    const settling = reviewed($, HANDBACK('Nothing to note.'), 'ag1')
+    await reached.until
+    await $.prompt.submit(COMPOSER('carry on'))
+    release.open()
+    await settling
+    expect(seen.sends.map(s => s.to)).toEqual([])
   })
 
   test('a review settling with entries pending and the worker idle is briefed at once, once', ON, async ($, on) => {
@@ -705,6 +752,22 @@ describe('auditor', () => {
     await $.classic.PostToolBatch({ tool_calls: [] })
     await $.classic.Stop(stop)
     expect(await entriesOf($, { which: 'record' })).toBe(RECORD_OF(2, `PROMPT (plugin): ${FRAMED(1, 'a.ts:4 held.')}`))
+  })
+
+  test('a note appended at a tool batch adds nothing to the new record when a session end lands while the append is in flight', ON, async ($, on) => {
+    const release = gate()
+    const reached = gate()
+    const seen = engine(on, { appendHold: { until: release.until, reached: reached.open } })
+    await $.prompt.submit(COMPOSER('carry on'))
+    await $.classic.Stop(stop)
+    await turnEnded($, 'ag1', 'a.ts:4 held.')
+    const delivering = $.classic.PostToolBatch({ tool_calls: [] })
+    await reached.until
+    await $.session.end({ reason: 'clear', sessionId: 's1' } as any)
+    release.open()
+    await delivering
+    expect(seen.appends).toEqual([ROW(FRAMED(1, 'a.ts:4 held.'))])
+    expect({ epoch: seen.conversation.epoch, blocks: seen.conversation.record.blocks }).toEqual({ epoch: 1, blocks: [] })
   })
 
   test('an escalation toasts once when its review settles, and its delivery at a tool batch toasts nothing more', ON, async ($, on) => {
@@ -3157,8 +3220,10 @@ describe('the session mode button', () => {
     await buttonReads(ui, 'on')
     await $.prompt.submit(HELPER)
     await workerTurn($)
-    expect(seen.sends.map(s => s.to)).toEqual(['ag1'])
-    expect(seen.sends[0].text).toContain('Review 2. Its record holds entries 1-2,')
+    // Off let the reviewer go, so the review goes to a fresh one.
+    expect(seen.sends.length).toBe(0)
+    expect(seen.spawns.length).toBe(2)
+    expect(seen.spawns[1].prompt).toContain('Review 2. Its record holds entries 1-2,')
   })
 
   test('a /clear keeps the reviewer off: the next worker turn end dispatches no review, and the button still reads off', ON, async ($, on) => {
@@ -3174,7 +3239,7 @@ describe('the session mode button', () => {
     await buttonReads(ui, 'off')
   })
 
-  test('a review in flight when the reviewer is turned off settles, and the review it would chain is not dispatched', ON, async ($, on) => {
+  test('a review in flight when the reviewer is turned off is dropped: its late turn end settles nothing, and no review is chained after it', ON, async ($, on) => {
     const seen = engine(on)
     otherMods(on)
     await $.prompt.submit(COMPOSER('fix the parser'))
@@ -3202,8 +3267,8 @@ describe('the session mode button', () => {
     expect(seen.conversation.dispatchesAtPrompt).toBe(1)
     await $.prompt.submit(HELPER)
     await $.classic.Stop({ ...stop, background_tasks: [], session_crons: [] })
-    expect(seen.sends.map(s => s.to)).toEqual(['ag1'])
-    expect(seen.sends[0].text).toContain('Nothing will wake the worker:')
+    expect(seen.spawns.length).toBe(2)
+    expect(seen.spawns[1].prompt).toContain('Nothing will wake the worker:')
   })
 
   test('the band above the prompt draws nothing from this mod', ON, async ($, on) => {
@@ -3215,17 +3280,590 @@ describe('the session mode button', () => {
     expect(await ui.find({ type: 'Text', text: 'human-plugin: 2 open' })).toBeDefined()
   })
 
-  test('a review in flight when the button turns the reviewer off completes, and its note is delivered', ON, async ($, on) => {
+  test('turning the reviewer off stops a review in flight at once: the reviewer is stopped, its review is logged incomplete, and its late note reaches no one', ON, async ($, on) => {
     const seen = engine(on)
     otherMods(on)
     await busyWorker($)
     expect(seen.spawns.length).toBe(1)
     const ui = await mountMode($)
     await ui.press({ key: 'auditor-toggle' })
+    expect(seen.stops.map(s => s.task_id)).toEqual(['ag1'])
+    expect(logOf(seen, LOG_1)).toMatchObject({ status: 'incomplete', reason: 'the auditor was switched off' })
+    await turnEnded($, 'ag1', 'Escalation: a.ts:4 cut off.')
+    await $.tool.call(WORKER_CALL('Bash', { command: 'ls' }))
+    await mainTurnEnd($)
+    expect(seen.prompts).toEqual(['fix the parser'])
+    expect(seen.appends.length).toBe(0)
+    expect(seen.toasts).toEqual([])
+    expect(seen.spawns.length).toBe(1)
+  })
+
+  test('/auditor off stops a review in flight the same way', ON, async ($, on) => {
+    const seen = engine(on)
+    await busyWorker($)
+    await $.command.run({ command: 'auditor', args: 'off' } as any)
+    expect(seen.stops.map(s => s.task_id)).toEqual(['ag1'])
     await turnEnded($, 'ag1', 'a.ts:4 cut off.')
     await mainTurnEnd($)
-    expect(seen.prompts).toEqual(['fix the parser', FRAMED(1, 'a.ts:4 cut off.')])
+    expect(seen.prompts).toEqual(['fix the parser'])
+  })
+
+  test('a note held when the reviewer is turned off is dropped: no tool batch, turn end or prompt delivers it', ON, async ($, on) => {
+    const seen = engine(on)
+    otherMods(on)
+    await busyWorker($)
+    await turnEnded($, 'ag1', 'a.ts:4 cut off.')
+    expect(seen.conversation.pendingNotes.length).toBe(1)
+    const ui = await mountMode($)
+    await ui.press({ key: 'auditor-toggle' })
+    await $.tool.call(WORKER_CALL('Bash', { command: 'ls' }))
+    await mainTurnEnd($)
+    await $.prompt.submit(COMPOSER('next'))
+    expect(seen.prompts).toEqual(['fix the parser', 'next'])
+    expect(seen.appends.length).toBe(0)
+    expect(transcriptLines(seen).filter(l => l.startsWith('auditor note'))).toEqual([])
+  })
+
+  test('turning the reviewer off with no review open stops the idle reviewer and logs nothing', ON, async ($, on) => {
+    const seen = engine(on)
+    otherMods(on)
+    await workerTurn($)
+    await turnEnded($, 'ag1', 'Nothing to note.')
+    const ui = await mountMode($)
+    await ui.press({ key: 'auditor-toggle' })
+    expect(seen.stops.map(s => s.task_id)).toEqual(['ag1'])
+    expect(logOf(seen, LOG_1)).toMatchObject({ status: 'complete' })
+  })
+
+  test('a note whose submit fails after the reviewer is turned off stays dropped: turning it on again delivers nothing', ON, async ($, on) => {
+    const release = gate()
+    const reached = gate()
+    const seen = engine(on, { submitFails: true, submitHold: { until: release.until, reached: reached.open } })
+    await workerTurn($)
+    const settling = turnEnded($, 'ag1', 'a.ts:4 cut off.')
+    await reached.until
+    await $.command.run({ command: 'auditor', args: 'off' } as any)
+    release.open()
+    await settling
+    expect(seen.conversation.pendingNotes).toEqual([])
+    await $.command.run({ command: 'auditor', args: 'on' } as any)
+    await $.prompt.submit(COMPOSER('next'))
+    expect(seen.contexts.at(-1)).toBeUndefined()
+    expect(transcriptLines(seen).filter(l => l.startsWith('auditor note'))).toEqual([])
+  })
+
+  test('a submit dropped after the reviewer is turned off leaves no hold: after it is turned on again, a new note on an idle worker is submitted at once', ON, async ($, on) => {
+    const release = gate()
+    const reached = gate()
+    const seen = engine(on, { dropText: FRAMED(1, 'a.ts:4 cut off.'), submitHold: { until: release.until, reached: reached.open } })
+    await workerTurn($)
+    const settling = turnEnded($, 'ag1', 'a.ts:4 cut off.')
+    await reached.until
+    await $.command.run({ command: 'auditor', args: 'off' } as any)
+    release.open()
+    await settling
+    await $.command.run({ command: 'auditor', args: 'on' } as any)
+    await workerTurn($)
+    await turnEnded($, 'ag1', 'b.ts:1 second.')
+    expect(seen.prompts).toEqual([FRAMED(1, 'a.ts:4 cut off.'), FRAMED(2, 'b.ts:1 second.')])
+  })
+
+  test('a reviewer whose spawn lands after the reviewer is turned off is not adopted by its tool call, and is stopped', ON, async ($, on) => {
+    const held = heldSpawn()
+    const seen = engine(on, { spawnHold: held.hold, agents: [{ id: 'ag1', name: 'auditor-reviewer', type: 'auditor:reviewer', spawnedBy: 'auditor' }] })
+    const ending = workerTurn($)
+    await held.reached
+    await $.command.run({ command: 'auditor', args: 'off' } as any)
+    expect((await $.tool.call({ tool: ENTRIES, agentId: 'ag1', which: 'record' })).deny).toBe(REFUSED)
+    held.land()
+    await ending
+    await drained()
+    expect(seen.stops.map(s => s.task_id)).toEqual(['ag1'])
+    expect(seen.conversation.reviewer).toBeUndefined()
+  })
+
+  test('a reviewer whose spawn lands after the reviewer is turned off and on again is stopped, and the next review goes to a fresh one', ON, async ($, on) => {
+    const held = heldSpawn()
+    const seen = engine(on, { spawnHold: held.hold })
+    const ending = workerTurn($)
+    await held.reached
+    await $.command.run({ command: 'auditor', args: 'off' } as any)
+    await $.command.run({ command: 'auditor', args: 'on' } as any)
+    held.land()
+    await ending
+    await drained()
+    expect(seen.stops.map(s => s.task_id)).toEqual(['ag1'])
+    expect(seen.conversation.reviewer).toBeUndefined()
+    await workerTurn($)
+    expect(seen.sends.length).toBe(0)
+    expect(seen.spawns.length).toBe(2)
+  })
+
+  test('after the reviewer is turned off and on, a dispatch does not wait for a spawn still in flight: the next turn end spawns its reviewer at once', ON, async ($, on) => {
+    const release = gate()
+    const reached = gate()
+    const seen = engine(on, { reviewerIds: ['ag2'], spawnHold: { to: 1, until: release.until, reached: reached.open, result: { model: 'm', agentId: 'ag1' } } })
+    const ending = workerTurn($)
+    await reached.until
+    await $.command.run({ command: 'auditor', args: 'off' } as any)
+    await $.command.run({ command: 'auditor', args: 'on' } as any)
+    await workerTurn($, 'Second.')
+    expect(seen.spawns.length).toBe(2)
+    expect(seen.spawns[1].prompt).toContain('Review 2.')
+    expect(seen.conversation.reviewer).toMatchObject({ id: 'ag2' })
+    release.open()
+    await ending
+    await drained()
+    expect(seen.stops.map(s => s.task_id)).toEqual(['ag1'])
+  })
+
+  // Two spawns in flight across a /clear: each carries the epoch it was planned in, so the first to land is judged by the epoch it was made in, not by arrival order.
+  test('a /clear mid-spawn, then a second spawn that lands before the first: the second is the reviewer, the first is stopped, and the next review goes to the second', ON, async ($, on) => {
+    const firstLands = gate()
+    const secondLands = gate()
+    const firstReached = gate()
+    const secondReached = gate()
+    const seen = engine(on, {
+      spawnHold: [
+        { until: firstLands.until, reached: firstReached.open, result: { model: 'm', agentId: 'ag1' } },
+        { until: secondLands.until, reached: secondReached.open, result: { model: 'm', agentId: 'ag2' } },
+      ],
+    })
+    const first = workerTurn($)
+    await firstReached.until
+    await $.session.end({ reason: 'clear', sessionId: 's1' } as any)
+    const second = workerTurn($, 'Second.')
+    await secondReached.until
+    secondLands.open()
+    await second
+    firstLands.open()
+    await first
+    await drained()
+    expect(seen.stops.map(s => s.task_id)).toEqual(['ag1'])
+    expect(seen.conversation.reviewer).toMatchObject({ id: 'ag2' })
+    await turnEnded($, 'ag2', 'Nothing to note.')
+    expect(logOf(seen, LOG_2)).toMatchObject({ status: 'complete', number: 2 })
+    await workerTurn($, 'Third.')
+    expect(seen.sends.map(s => s.to)).toEqual(['ag2'])
+    expect(seen.sends[0].text).toContain('Review 3.')
+  })
+
+  test('a /clear mid-spawn, then a second spawn that lands after the first: the first is stopped as it lands, the second is the reviewer, and the next review goes to the second', ON, async ($, on) => {
+    const firstLands = gate()
+    const secondLands = gate()
+    const firstReached = gate()
+    const secondReached = gate()
+    const seen = engine(on, {
+      spawnHold: [
+        { until: firstLands.until, reached: firstReached.open, result: { model: 'm', agentId: 'ag1' } },
+        { until: secondLands.until, reached: secondReached.open, result: { model: 'm', agentId: 'ag2' } },
+      ],
+    })
+    const first = workerTurn($)
+    await firstReached.until
+    await $.session.end({ reason: 'clear', sessionId: 's1' } as any)
+    const second = workerTurn($, 'Second.')
+    await secondReached.until
+    firstLands.open()
+    await first
+    await drained()
+    expect(seen.stops.map(s => s.task_id)).toEqual(['ag1'])
+    secondLands.open()
+    await second
+    expect(seen.conversation.reviewer).toMatchObject({ id: 'ag2' })
+    await turnEnded($, 'ag2', 'Nothing to note.')
+    expect(logOf(seen, LOG_2)).toMatchObject({ status: 'complete', number: 2 })
+    await workerTurn($, 'Third.')
+    expect(seen.sends.map(s => s.to)).toEqual(['ag2'])
+    expect(seen.sends[0].text).toContain('Review 3.')
+  })
+
+  test('a /clear mid-spawn: the spawn calling the entries tool before it lands is not adopted, and is stopped as it lands', ON, async ($, on) => {
+    const firstLands = gate()
+    const firstReached = gate()
+    const seen = engine(on, {
+      spawnHold: [{ until: firstLands.until, reached: firstReached.open, result: { model: 'm', agentId: 'ag1' } }],
+      agents: [{ id: 'ag1', name: 'auditor-reviewer', type: 'auditor:reviewer', spawnedBy: 'auditor' }],
+    })
+    const first = workerTurn($)
+    await firstReached.until
+    await $.session.end({ reason: 'clear', sessionId: 's1' } as any)
+    expect(await $.tool.call({ tool: ENTRIES, agentId: 'ag1', which: 'record' })).toMatchObject({ deny: REFUSED })
+    expect(seen.conversation.reviewer).toBeUndefined()
+    firstLands.open()
+    await first
+    await drained()
+    expect(seen.stops.map(s => s.task_id)).toEqual(['ag1'])
+    expect(seen.conversation.reviewer).toBeUndefined()
+    expect(seen.conversation.spawnsInFlight).toEqual([])
+  })
+
+  test('a spawn that lands after the epoch moved, with no agent id and no review open, leaves its brief out of flight, so the worker\'s identical send is recorded', ON, async ($, on) => {
+    const lands = gate()
+    const reached = gate()
+    const seen = engine(on, { spawnHold: { to: 1, until: lands.until, reached: reached.open, result: { model: 'm' } } })
+    const ending = workerTurn($)
+    await reached.until
+    const brief: string = seen.spawns[0].prompt
+    await $.command.run({ command: 'auditor', args: 'off' } as any)
+    expect(seen.conversation.review).toBeUndefined()
+    lands.open()
+    await ending
+    await drained()
+    expect(seen.conversation.briefsInFlight).toEqual([])
+    await $.command.run({ command: 'auditor', args: 'on' } as any)
+    await $.tool.call({ tool: 'SendMessage', to: 'ag1', message: brief } as any)
+    expect(seen.conversation.record.blocks.at(-1)).toContain('TOOL SendMessage(')
+  })
+
+  test('a spawn whose result names no agent, after its reviewer was adopted by name, keeps that reviewer and its review open', ON, async ($, on) => {
+    const lands = gate()
+    const reached = gate()
+    const seen = engine(on, {
+      spawnHold: { to: 1, until: lands.until, reached: reached.open, result: { model: 'm' } },
+      agents: [{ id: 'ag1', name: 'auditor-reviewer', type: 'auditor:reviewer', spawnedBy: 'auditor' }],
+    })
+    const ending = workerTurn($)
+    await reached.until
+    expect(await $.tool.call({ tool: ENTRIES, agentId: 'ag1', which: 'record' })).not.toMatchObject({ deny: REFUSED })
+    lands.open()
+    await ending
+    await drained()
+    expect(seen.conversation.reviewer).toMatchObject({ id: 'ag1' })
+    expect(seen.conversation.review).toMatchObject({ number: 1 })
+    expect(seen.conversation.failing).toBe(false)
+    expect(seen.stops).toEqual([])
+  })
+
+  test('a spawn held past ten minutes after a /clear no longer blocks adoption by name of a later reviewer, and when it lands it is stopped and is not the reviewer', ON, async ($, on) => {
+    const held = heldSpawn()
+    const seen = engine(on, { spawnHold: held.hold, agents: [{ id: 'ag2', name: 'auditor-reviewer', type: 'auditor:reviewer', spawnedBy: 'auditor' }] })
+    await $.prompt.submit(COMPOSER('fix'))
+    const stopping = $.classic.Stop(stop)
+    await held.reached
+    await $.session.end({ reason: 'clear', sessionId: 's1' } as any)
+    seen.clock += TEN_MINUTES + 1
+    try {
+      expect(await entriesOf($, { which: 'record' }, 'ag2')).toBe(NO_REVIEW)
+      expect(seen.conversation.reviewer).toMatchObject({ id: 'ag2' })
+    } finally {
+      held.land()
+    }
+    await stopping
+    await drained()
+    expect(seen.stops.map(s => s.task_id)).toEqual(['ag1'])
+    expect(seen.conversation.reviewer).toMatchObject({ id: 'ag2' })
+  })
+
+  test('a stale spawn whose agent was adopted by name in the current epoch is not stopped, and stays the reviewer', ON, async ($, on) => {
+    const held = heldSpawn()
+    const seen = engine(on, { spawnHold: held.hold, agents: [{ id: 'ag1', name: 'auditor-reviewer', type: 'auditor:reviewer', spawnedBy: 'auditor' }] })
+    const first = workerTurn($)
+    await held.reached
+    await $.session.end({ reason: 'clear', sessionId: 's1' } as any)
+    seen.clock += TEN_MINUTES + 1
+    try {
+      expect(await entriesOf($, { which: 'record' }, 'ag1')).toBe(NO_REVIEW)
+      expect(seen.conversation.reviewer).toMatchObject({ id: 'ag1' })
+    } finally {
+      held.land()
+    }
+    await first
+    await drained()
+    expect(seen.stops).toEqual([])
+    expect(seen.conversation.reviewer).toMatchObject({ id: 'ag1' })
+  })
+
+  test('an older spawn still in flight blocks adoption by name unless its hook named another id or it is past ten minutes', ON, async ($, on) => {
+    const agents = [{ id: 'agY', name: 'auditor-reviewer', type: 'auditor:reviewer', spawnedBy: 'auditor' }]
+    const older = (extra: object) => ({ epoch: 1, spawnsInFlight: [{ brief: 'b', epoch: 0, number: 1, startedAt: 1000, ...extra }] })
+    const blocked = engine(on, { agents, stateSeed: older({}) })
+    expect(await $.tool.call({ tool: ENTRIES, agentId: 'agY', which: 'record' })).toMatchObject({ deny: REFUSED })
+    expect(blocked.conversation?.reviewer).toBeUndefined()
+  })
+
+  test('an older spawn whose hook named another id blocks no adoption by name', ON, async ($, on) => {
+    const seen = engine(on, { agents: [{ id: 'agY', name: 'auditor-reviewer', type: 'auditor:reviewer', spawnedBy: 'auditor' }], stateSeed: { epoch: 1, spawnsInFlight: [{ brief: 'b', epoch: 0, number: 1, startedAt: 1000, id: 'agX' }] } })
+    expect(await entriesOf($, { which: 'record' }, 'agY')).toBe(NO_REVIEW)
+    expect(seen.conversation.reviewer).toMatchObject({ id: 'agY' })
+  })
+
+  test('an older spawn past ten minutes blocks no adoption by name', ON, async ($, on) => {
+    const seen = engine(on, { agents: [{ id: 'agY', name: 'auditor-reviewer', type: 'auditor:reviewer', spawnedBy: 'auditor' }], stateSeed: { epoch: 1, spawnsInFlight: [{ brief: 'b', epoch: 0, number: 1, startedAt: 1000 }] } })
+    seen.clock += TEN_MINUTES + 1
+    expect(await entriesOf($, { which: 'record' }, 'agY')).toBe(NO_REVIEW)
+    expect(seen.conversation.reviewer).toMatchObject({ id: 'agY' })
+  })
+
+  test('a spawn held past ten minutes with no reset fails its review at the next turn end, which logs that review incomplete and dispatches a new one', ON, async ($, on) => {
+    const held = heldSpawn()
+    const seen = engine(on, { spawnHold: { ...held.hold, to: 1 } })
+    await $.prompt.submit(COMPOSER('fix'))
+    const stopping = $.classic.Stop(stop)
+    await held.reached
+    seen.clock += TEN_MINUTES + 1
+    try {
+      await $.prompt.submit(COMPOSER('again'))
+      await $.classic.Stop(stop)
+      expect(logOf(seen, LOG_1)).toMatchObject({ status: 'incomplete', number: 1, reason: 'reviewer spawn did not settle in 10 minutes' })
+      expect(JSON.stringify(seen.logs)).toContain('review failed: reviewer spawn did not settle in 10 minutes')
+      expect(seen.spawns.filter(sp => typeOf(sp) === 'auditor:reviewer').length).toBe(2)
+    } finally {
+      held.land()
+    }
+    await stopping
+    await drained()
+  })
+
+
+
+  test('a spawn given up after its review settled does not fail the auditor when it lands, while the next review is open', ON, async ($, on) => {
+    const lands = gate()
+    const reached = gate()
+    const seen = engine(on, {
+      spawnHold: { to: 1, until: lands.until, reached: reached.open, result: { model: 'm', agentId: 'ag1' } },
+      reviewerIds: ['ag2'],
+      sendFails: 'ag1',
+      agents: [{ id: 'ag1', name: 'auditor-reviewer', type: 'auditor:reviewer', spawnedBy: 'auditor' }],
+    })
+    await $.prompt.submit(COMPOSER('fix'))
+    const stopping = $.classic.Stop(stop)
+    await reached.until
+    await entriesOf($, { which: 'live' })
+    expect(seen.conversation.reviewer).toMatchObject({ id: 'ag1' })
+    const hand = HANDBACK('a.ts:4 swallows it.')
+    await $.prompt.submit(hand)
+    await $.turn.complete(TURN_END('ag1', REPORT(hand), USAGE))
+    await drained()
+    expect(logOf(seen, LOG_1)).toMatchObject({ status: 'complete', number: 1 })
+    seen.clock += TEN_MINUTES + 1
+    await $.prompt.submit(COMPOSER('again'))
+    await $.classic.Stop(stop)
+    await drained()
+    expect(seen.conversation.review).toMatchObject({ number: 2 })
+    lands.open()
+    await stopping
+    await drained()
+    expect(seen.conversation.failing).toBe(false)
+  })
+
+
+  test('a late hook for a spawn whose review was given up stands nothing in while another reviewer spawn is in flight unnamed', ON, async ($, on) => {
+    const aLands = gate()
+    const aReached = gate()
+    const bLands = gate()
+    const bReached = gate()
+    const seen = engine(on, {
+      spawnHold: [
+        { until: aLands.until, reached: aReached.open, result: { model: 'm', agentId: 'agA' } },
+        { until: bLands.until, reached: bReached.open, result: { model: 'm', agentId: 'agB' } },
+      ],
+    })
+    await $.prompt.submit(COMPOSER('fix'))
+    const first = $.classic.Stop(stop)
+    await aReached.until
+    seen.clock += TEN_MINUTES + 1
+    await $.prompt.submit(COMPOSER('again'))
+    const second = $.classic.Stop(stop)
+    await bReached.until
+    aLands.open()
+    await first
+    await drained()
+    expect(seen.conversation.reviewer).toBeUndefined()
+    expect(seen.conversation.spawnsInFlight.map((s: { id?: string }) => s.id)).toEqual([undefined])
+    bLands.open()
+    await second
+    await drained()
+    expect(seen.conversation.reviewer).toMatchObject({ id: 'agB' })
+  })
+
+  test('a /clear mid-submit whose submit then fails: the notes stay dropped, and none is kept as delivered', ON, async ($, on) => {
+    const release = gate()
+    const reached = gate()
+    const seen = engine(on, { submitFails: true, submitHold: { until: release.until, reached: reached.open } })
+    await workerTurn($)
+    const settling = turnEnded($, 'ag1', 'a.ts:4 cut off.')
+    await reached.until
+    await $.session.end({ reason: 'clear', sessionId: 's1' } as any)
+    release.open()
+    await settling
+    expect(seen.conversation.pendingNotes).toEqual([])
+    expect(seen.conversation.deliveredNotes).toEqual([])
+    await $.prompt.submit(COMPOSER('next'))
+    expect(seen.contexts.at(-1)).toBeUndefined()
+  })
+
+  test('a spawn that never settles, then the reviewer turned off and on: the next turn end dispatches again', ON, async ($, on) => {
+    const reached = gate()
+    const seen = engine(on, { spawnHold: { to: 1, until: new Promise<void>(() => {}), reached: reached.open } })
+    void workerTurn($)
+    await reached.until
+    await $.command.run({ command: 'auditor', args: 'off' } as any)
+    await $.command.run({ command: 'auditor', args: 'on' } as any)
+    await workerTurn($, 'Second.')
+    expect(seen.spawns.length).toBe(2)
+    expect(seen.conversation.reviewer).toMatchObject({ id: 'ag1' })
+  })
+
+  test('a spawn that lands with no agent id after the reviewer is turned off and on stops no reviewer: the next turn end\'s review reaches a live one', ON, async ($, on) => {
+    const release = gate()
+    const reached = gate()
+    const seen = engine(on, { reviewerIds: ['ag2'], spawnHold: { to: 1, until: release.until, reached: reached.open, result: { model: 'm' } } })
+    const ending = workerTurn($)
+    await reached.until
+    await $.command.run({ command: 'auditor', args: 'off' } as any)
+    await $.command.run({ command: 'auditor', args: 'on' } as any)
+    await workerTurn($, 'Second.')
+    release.open()
+    await ending
+    await drained()
+    await workerTurn($, 'Third.')
+    expect(seen.spawns.length).toBe(2)
+    await turnEnded($, 'ag2', 'Nothing to note.')
+    expect(logOf(seen, LOG_2)).toMatchObject({ status: 'complete', number: 2 })
+    expect(seen.stops).toEqual([])
+  })
+
+  test('a spawn that lands after the next reviewer\'s, once the reviewer is turned off and on, does not displace that reviewer: the next turn end\'s review reaches a live one', ON, async ($, on) => {
+    const release = gate()
+    const reached = gate()
+    const seen = engine(on, { reviewerIds: ['ag2'], spawnHold: { to: 1, until: release.until, reached: reached.open, result: { model: 'm', agentId: 'ag1' } } })
+    const ending = workerTurn($)
+    await reached.until
+    await $.command.run({ command: 'auditor', args: 'off' } as any)
+    await $.command.run({ command: 'auditor', args: 'on' } as any)
+    await workerTurn($, 'Second.')
+    release.open()
+    await ending
+    await drained()
+    await workerTurn($, 'Third.')
+    expect(seen.spawns.length).toBe(2)
+    await turnEnded($, 'ag2', 'Nothing to note.')
+    expect(logOf(seen, LOG_2)).toMatchObject({ status: 'complete', number: 2 })
+    expect(seen.stops.map(s => s.task_id)).toEqual(['ag1'])
+  })
+
+  test('a note whose submit fails while the reviewer is turned off and on again stays dropped', ON, async ($, on) => {
+    const release = gate()
+    const reached = gate()
+    const seen = engine(on, { submitFails: true, submitHold: { until: release.until, reached: reached.open } })
+    await workerTurn($)
+    const settling = turnEnded($, 'ag1', 'a.ts:4 cut off.')
+    await reached.until
+    await $.command.run({ command: 'auditor', args: 'off' } as any)
+    await $.command.run({ command: 'auditor', args: 'on' } as any)
+    release.open()
+    await settling
+    expect(seen.conversation.pendingNotes).toEqual([])
+  })
+
+  test('a brief whose send is refused after the reviewer is turned off spawns no reviewer', ON, async ($, on) => {
+    const release = gate()
+    const reached = gate()
+    const seen = engine(on, { sendFails: 'ag1', sendHold: { until: release.until, reached: reached.open } })
+    await workerTurn($)
+    await turnEnded($, 'ag1', 'Nothing to note.')
+    const ending = workerTurn($)
+    await reached.until
+    await $.command.run({ command: 'auditor', args: 'off' } as any)
+    release.open()
+    await ending
     expect(seen.spawns.length).toBe(1)
+    expect(seen.conversation.briefsInFlight.filter((b: string) => b.includes('Review 2.'))).toEqual([])
+    expect(seen.conversation.reviewer).toBeUndefined()
+  })
+
+  test('a brief whose send is refused after the reviewer is turned off and on again spawns no reviewer for the dropped review', ON, async ($, on) => {
+    const release = gate()
+    const reached = gate()
+    const seen = engine(on, { sendFails: 'ag1', sendHold: { until: release.until, reached: reached.open } })
+    await workerTurn($)
+    await turnEnded($, 'ag1', 'Nothing to note.')
+    const ending = workerTurn($)
+    await reached.until
+    await $.command.run({ command: 'auditor', args: 'off' } as any)
+    await $.command.run({ command: 'auditor', args: 'on' } as any)
+    release.open()
+    await ending
+    expect(seen.spawns.length).toBe(1)
+    expect(seen.conversation.briefsInFlight.filter((b: string) => b.includes('Review 2.'))).toEqual([])
+  })
+
+  test('a brief whose send is refused after the reviewer is turned off stops that refused reviewer again, and spawns no reviewer', ON, async ($, on) => {
+    const release = gate()
+    const reached = gate()
+    const seen = engine(on, { sendFails: 'ag1', sendHold: { until: release.until, reached: reached.open } })
+    await workerTurn($)
+    await turnEnded($, 'ag1', 'Nothing to note.')
+    const ending = workerTurn($)
+    await reached.until
+    await $.command.run({ command: 'auditor', args: 'off' } as any)
+    expect(seen.stops.map(s => s.task_id)).toEqual(['ag1'])
+    release.open()
+    await ending
+    await drained()
+    expect(seen.stops.map(s => s.task_id)).toEqual(['ag1', 'ag1'])
+    expect(seen.spawns.length).toBe(1)
+  })
+
+  test('a brief delivered to the stored reviewer after the reviewer is turned off stops that reviewer again, so the brief runs no review', ON, async ($, on) => {
+    const release = gate()
+    const reached = gate()
+    const seen = engine(on, { sendHold: { until: release.until, reached: reached.open } })
+    await workerTurn($)
+    await turnEnded($, 'ag1', 'Nothing to note.')
+    const ending = workerTurn($)
+    await reached.until
+    await $.command.run({ command: 'auditor', args: 'off' } as any)
+    expect(seen.stops.map(s => s.task_id)).toEqual(['ag1'])
+    release.open()
+    await ending
+    await drained()
+    expect(seen.stops.map(s => s.task_id)).toEqual(['ag1', 'ag1'])
+    expect(seen.spawns.length).toBe(1)
+  })
+
+  test('a delivered brief whose epoch re-check cannot read is logged, and its review stays open and not failing', ON, async ($, on) => {
+    const release = gate()
+    const reached = gate()
+    const opts: Opts = { sendHold: { until: release.until, reached: reached.open } }
+    const seen = engine(on, opts)
+    await workerTurn($)
+    await turnEnded($, 'ag1', 'Nothing to note.')
+    const ending = workerTurn($)
+    await reached.until
+    opts.stateFails = 'conversation'
+    release.open()
+    await ending
+    expect(seen.conversation.review).toMatchObject({ number: 2 })
+    expect(seen.conversation.failing).toBe(false)
+    expect(debugLines(seen, 'reviewer send bookkeeping failed').length).toBe(1)
+  })
+
+  test('turning the reviewer on stops nothing', ON, async ($, on) => {
+    const seen = engine(on)
+    otherMods(on)
+    await workerTurn($)
+    const ui = await mountMode($)
+    await ui.press({ key: 'auditor-toggle' })
+    await ui.press({ key: 'auditor-toggle' })
+    expect(seen.stops.length).toBe(1)
+  })
+
+  test('turning the reviewer off ends a dropped submit\'s hold: after off and on, a new note on an idle worker is submitted at once', ON, async ($, on) => {
+    const seen = engine(on, { dropText: FRAMED(1, 'a.ts:4 first.') })
+    otherMods(on)
+    await busyWorker($)
+    await turnEnded($, 'ag1', 'a.ts:4 first.')
+    await mainTurnEnd($)
+    expect(seen.prompts).toEqual(['fix the parser', FRAMED(1, 'a.ts:4 first.')])
+    const ui = await mountMode($)
+    await ui.press({ key: 'auditor-toggle' })
+    await ui.press({ key: 'auditor-toggle' })
+    await $.tool.call(WORKER_CALL('Bash', { command: 'ls' }))
+    await $.classic.Stop(stop)
+    await turnEnded($, 'ag1', 'b.ts:1 second.')
+    expect(seen.prompts).toEqual(['fix the parser', FRAMED(1, 'a.ts:4 first.'), FRAMED(2, 'b.ts:1 second.')])
   })
 })
 
@@ -3711,6 +4349,21 @@ describe('reviewer rotation', () => {
     expect(seen.conversation.reviewer).toMatchObject({ id: 'ag2', model: 'm' })
   })
 
+  test('a reviewer adopted by name and retired before its spawn result lands is not stood in again by the landing', ON, async ($, on) => {
+    const held = heldSpawn(1)
+    const seen = engine(on, { spawnHold: held.hold, agents: [{ id: 'ag1', name: 'auditor-reviewer', type: 'auditor:reviewer', spawnedBy: 'auditor' }] })
+    const first = workerTurn($)
+    await held.reached
+    expect(await entriesOf($, { which: 'record' }, 'ag1')).toBe(RECORD_OF(1, 'ASSISTANT: working'))
+    await requestWith($, contextOf(80_001))
+    await reviewed($, HANDBACK('Nothing to note.'), 'ag1')
+    expect(seen.conversation.reviewer).toBeUndefined()
+    held.land()
+    await first
+    expect(seen.conversation.reviewer).toBeUndefined()
+    expect(seen.conversation.reviewerIds).toEqual(['ag1'])
+  })
+
   test('a retired reviewer\'s verified delivery is still consumed', ON, async ($, on) => {
     const seen = engine(on, { reviewerIds: ['ag1', 'ag2'] })
     await workerTurn($)
@@ -3851,7 +4504,7 @@ describe('reviewer rotation', () => {
   })
 
   test('a retiring settle whose dispatch throws still makes one stop of the retired id', ON, async ($, on) => {
-    // The first clock read is the dispatch at the first Stop, the second the settle's turn end, the third the settle's own dispatch.
+    // The clock reads, in order: the dispatch at the first Stop, the dispatch at the worker's turn end, then the settle's turn end, the third.
     const seen = engine(on, { reviewerIds: ['ag1', 'ag2'], clockFailsAt: 3 })
     await $.prompt.submit(COMPOSER('first'))
     await $.classic.Stop(stop)
@@ -4185,5 +4838,65 @@ describe('the escalation push', () => {
     await mainTurnEnd($)
     await workerTurn($, 'Third.')
     expect(await entriesOf($, { which: 'record' })).toBe(RECORD_OF(3, `PROMPT (plugin): ${FRAMED(2, ESCALATION)}`, 'ASSISTANT: working'))
+  })
+})
+
+
+describe('rc regression tests', () => {
+  test('a reviewer its spawn hook stood in is not given up while it reviews past ten minutes: its review settles with its note', ON, async ($, on) => {
+    const seen = engine(on, {
+      stateSeed: {
+        dispatches: 1,
+        reviewer: { id: 'ag1', model: 'm' },
+        reviewerIds: ['ag1'],
+        review: { number: 1, record: ['[1] USER: fix\n\n'], dispatchedAt: 1000, nothingWakes: false },
+        spawnsInFlight: [{ brief: 'a brief', epoch: 0, number: 1, startedAt: 1000, id: 'ag1', model: 'm' }],
+      },
+    })
+    seen.clock = 1000 + TEN_MINUTES + 1
+    await workerTurn($, 'Second.')
+    await drained()
+    expect(seen.stops).toEqual([])
+    expect(seen.conversation.failing).toBe(false)
+    await turnEnded($, 'ag1', 'a.ts:4 swallows the error.')
+    expect(logOf(seen, LOG_1)).toMatchObject({ status: 'complete', note: 'a.ts:4 swallows the error.' })
+  })
+
+  test('a spawn whose review was given up at a turn end is stopped when it lands late, and the reviewer spawned since stays', ON, async ($, on) => {
+    const held = heldSpawn()
+    const seen = engine(on, { spawnHold: { ...held.hold, to: 1 }, reviewerIds: ['ag1', 'ag2'] })
+    await $.prompt.submit(COMPOSER('fix'))
+    const stopping = $.classic.Stop(stop)
+    await held.reached
+    seen.clock += TEN_MINUTES + 1
+    await $.prompt.submit(COMPOSER('again'))
+    await $.classic.Stop(stop)
+    expect(logOf(seen, LOG_1)).toMatchObject({ status: 'incomplete', reason: 'reviewer spawn did not settle in 10 minutes' })
+    expect(seen.conversation.reviewer).toMatchObject({ id: 'ag1' })
+    held.land()
+    await stopping
+    await drained()
+    expect(seen.stops.map(s => s.task_id)).toEqual(['ag2'])
+    expect(seen.conversation.reviewer).toMatchObject({ id: 'ag1' })
+  })
+})
+
+
+describe('rc session end ids', () => {
+  test('a /clear keeps the ids of reviewer spawns still in flight, so their traffic stays the reviewer\'s', ON, async ($, on) => {
+    const seen = engine(on, {
+      agents: [{ id: 'ag1', name: 'auditor-reviewer', type: 'auditor:reviewer', spawnedBy: 'auditor' }],
+      stateSeed: {
+        dispatches: 1,
+        reviewer: { id: 'ag1', model: 'm' },
+        reviewerIds: ['ag1'],
+        reviewerNames: ['auditor-reviewer'],
+        review: { number: 1, record: ['[1] USER: fix\n\n'], dispatchedAt: 1000, nothingWakes: false },
+        spawnsInFlight: [{ brief: 'a brief', epoch: 0, number: 1, startedAt: 1000, id: 'ag1', model: 'm' }],
+      },
+    })
+    await $.session.end({ reason: 'clear', sessionId: 's1' } as any)
+    expect(seen.conversation.reviewerIds).toEqual(['ag1'])
+    expect(await $.session.receive({ text: 'a.ts:4 swallows it.', origin: { kind: 'peer' as const, teammate: 'auditor-reviewer', isVerified: true } } as any)).toEqual({ consumed: 'auditor reviewer traffic' })
   })
 })
