@@ -14,7 +14,7 @@ To do for you 3 open
 ```
 
 - **The band above your prompt** appears whenever the agent needs something from you. Blocking items, meaning the agent is
-  stuck until you act, come first, one row each, and their arrival raises a toast and a chime. Then come the rest, by
+  stuck until you act, come first, one row each, and their arrival plays a chime (macOS only). Then come the rest, by
   item number, while the rows last. When they don't all fit, the last row summarises what is left out: `+N blocking` for
   the blocking items and `+N more` for the others. The header turns amber while anything blocking is open, so its colour
   alone tells you whether the agent is stuck.

@@ -138,7 +138,7 @@ test('every add saves the id counter to the plugin store, so a /clear whose carr
   expect(saved).toEqual([2, 3])
 })
 
-test('a blocking add raises a toast and plays the sound; a non-blocking add raises neither', async ($, on) => {
+test('a blocking add plays the sound and raises no toast; a non-blocking add raises neither', async ($, on) => {
   mock.clock(on)
   mock.store(on)
   on('ui.panes', () => ({ value: [] }))
@@ -156,7 +156,7 @@ test('a blocking add raises a toast and plays the sound; a non-blocking add rais
   expect(toasts).toEqual([])
   expect(runs).toEqual([])
   await $.tool.call({ tool: TOOL, action: 'add', title: 'Pick a db', blocking: true })
-  expect(toasts).toEqual(['Blocking: #2 Pick a db'])
+  expect(toasts).toEqual([])
   expect(runs).toEqual([['afplay', SOUND]])
 })
 
