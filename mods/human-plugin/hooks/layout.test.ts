@@ -20,6 +20,7 @@ const item = (id: number, blocking = false): Item => ({
   doneLabel: null,
   thread: [],
   windowTurns: [],
+  windowChanged: false,
 })
 
 const ids = (rows: ReturnType<typeof bandRows>): number[] => rows.map(r => (r.kind === 'item' ? r.item.id : -1))

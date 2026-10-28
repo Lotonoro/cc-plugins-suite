@@ -58,6 +58,7 @@ export const normalizeItem = (raw: unknown): Item | null => {
     doneLabel: typeof r.doneLabel === 'string' ? r.doneLabel : null,
     thread: turnsStored(r.thread),
     windowTurns: turnsStored(r.windowTurns),
+    windowChanged: stored === 'done-waiting' && r.windowChanged === true,
   }
   // An undo window with no press time cannot end, so the item was never pressed: it is open, and its window's turns are given to it as a
   // cancelled window gives them (cancelWindow).
@@ -237,11 +238,13 @@ const unchanged = (before: Item, after: Item): boolean => FIELDS.every(field => 
 const asks = (before: Item, after: Item): boolean => FIELDS.some(field => field(after) !== field(before) && field(after) !== '')
 
 // An agent's change to `target`, written as `after`. One that leaves the item as it was is no change. One that asks the human something
-// (asks) puts a sent item back to open, with its reply field (done.ts); an item in its undo window keeps the window.
+// (asks) puts a sent item back to open, with its reply field (done.ts); an item in its undo window keeps the window, and reopens when it ends.
 const change = (store: Store, target: Item, after: Item, reply: string): Outcome => {
   if (unchanged(target, after)) return { store, reply: `no change to #${target.id}`, added: null, changed: null }
-  const written = { ...store, items: store.items.map(it => (it.id === target.id ? after : it)) }
-  const out = asks(target, after) ? reopen(written, target.id) : { store: written, reopened: false }
+  const asked = asks(target, after)
+  const marked = asked && target.state === 'done-waiting' ? { ...after, windowChanged: true } : after
+  const written = { ...store, items: store.items.map(it => (it.id === target.id ? marked : it)) }
+  const out = asked ? reopen(written, target.id) : { store: written, reopened: false }
   return { store: out.store, reply, added: null, changed: { id: target.id, reopened: out.reopened } }
 }
 
@@ -280,6 +283,7 @@ export const act = (store: Store, input: ToolInput, ctx: Ctx): Outcome => {
       doneLabel: input.doneLabel,
       thread: [],
       windowTurns: [],
+      windowChanged: false,
     }
     return { store: { items: [...store.items, item], next: store.next + 1 }, reply: `added #${item.id}`, added: item, changed: null }
   }

@@ -41,6 +41,9 @@ export type Item = {
   // The agent's additions made while the item's answer is in its undo window. They follow that answer, which joins the thread when the
   // window ends; a cancelled window gives them to the brief, or to the thread after a human turn (done.ts).
   windowTurns: Turn[]
+  // An update made while the item's answer is in its undo window, of the kind that reopens a sent item (items.ts): the item reopens when the
+  // window ends, as it does for a window turn. It has no words, so it is no turn; a cancelled window drops it, and the update stays (done.ts).
+  windowChanged: boolean
 }
 
 // The whole list, in one value so a write checks it at once: the items, and the number the next item takes.

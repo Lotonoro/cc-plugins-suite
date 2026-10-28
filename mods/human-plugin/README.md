@@ -66,7 +66,7 @@ Then start a new session and let the agent do the asking.
   turn; during a turn it is read before the agent's next model request; if you interrupt with Esc, it waits for your
   next prompt. A press on an item the agent has already removed sends nothing. What is read during a turn or beside
   your prompt also shows in your transcript as a dim line, `sent to Claude: …`, which the agent never reads.
-  When the agent adds to a sent item (an append, or an update that sets a title, brief, blocking mark, options, note or label), the item comes back open, with its reply field, marked `•`; a change that only clears a field does not reopen it. A change made during the three seconds leaves them running, and your press is sent as given; an append made then follows your answer in the thread, and the item comes back open when they end, while an update made then changes the item without reopening it.
+  When the agent adds to a sent item (an append, or an update that sets a title, brief, blocking mark, options, note or label), the item comes back open, with its reply field, marked `•`; a change that only clears a field does not reopen it. A change made during the three seconds leaves them running, and your press is sent as given; when they end, the item comes back open, your answer first in its thread and any append made then after it. If you undo instead, the change stays on the item, which does not reopen.
 - **Survives compaction and resume.** `claude --resume` rebuilds the list from the session's transcript, subagents
   included, and leaves out anything on a branch that `/rewind` abandoned. `/clear` empties the list. Item numbers
   are never reused.

@@ -68,9 +68,9 @@ export const withSection = (detail: string, text: string): string => (detail ===
 
 // An item whose undo window is cancelled, or was never pressed (items.ts's normalizer): the answer is gone, so the agent's turns the window took
 // are no longer waiting on it. With a human turn in the thread they follow it there; with none, each is a section of the brief, as an append made
-// while no answer is out would add it.
+// while no answer is out would add it. An update the window took stays in the item, and reopens nothing: no answer is left to reopen past.
 export const cancelWindow = (item: Item): Item => {
-  const open: Item = { ...item, state: 'open', pressedAt: null, answer: null, replied: false, windowTurns: [] }
+  const open: Item = { ...item, state: 'open', pressedAt: null, answer: null, replied: false, windowTurns: [], windowChanged: false }
   if (answered(open)) return { ...open, thread: [...open.thread, ...item.windowTurns] }
   return { ...open, detail: item.windowTurns.reduce((detail, turn) => withSection(detail, turn.words), open.detail) }
 }
@@ -85,6 +85,7 @@ export const archive = (item: Item): Item => ({
   unread: true,
   thread: [...item.thread, humanTurn(item), ...item.windowTurns],
   windowTurns: [],
+  windowChanged: false,
 })
 
 // A done press, or the press of an option or of a labelled to-do's ✓ (`answer`, its label). Open starts the undo window (nothing is sent yet) with that
@@ -113,11 +114,11 @@ export const reopen = (store: Store, id: number): { store: Store; reopened: bool
 }
 
 // The window of press `token` has passed. It sends only if that press is still the open window: a cancelled item sends nothing, and a second
-// expiry of the same press finds it already sent. The item it sends is returned as sent, for its notice. An agent turn the window took reopens the
-// item here, with the answer archived ahead of those turns: the reply first, the agent's after.
+// expiry of the same press finds it already sent. The item it sends is returned as sent, for its notice. An agent turn or an update the window took
+// reopens the item here, with the answer archived ahead of those turns: the reply first, the agent's after.
 export const expire = (store: Store, id: number, token: number): { store: Store; sent: Item | null } => {
   const target = store.items.find(it => it.id === id)
   if (target === undefined || target.state !== 'done-waiting' || target.pressedAt !== token) return { store, sent: null }
   const sent: Item = { ...target, state: 'done-pending', pressedAt: null }
-  return { store: mapItem(store, id, () => (sent.windowTurns.length > 0 ? archive(sent) : sent)), sent }
+  return { store: mapItem(store, id, () => (sent.windowTurns.length > 0 || sent.windowChanged ? archive(sent) : sent)), sent }
 }

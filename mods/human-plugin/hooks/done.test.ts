@@ -14,7 +14,7 @@ const item: Item = {
   note: null,
   agent: null,
   unread: false,
-  options: [], answer: null, yesno: false, replied: false, doneLabel: null, thread: [], windowTurns: [],
+  options: [], answer: null, yesno: false, replied: false, doneLabel: null, thread: [], windowTurns: [], windowChanged: false,
 }
 const store: Store = { items: [item], next: 4 }
 const stateOf = (s: Store) => s.items[0]?.state

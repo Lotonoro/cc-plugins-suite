@@ -1020,7 +1020,7 @@ test('a reply typed in the pane is sent once, through the undo window, with its 
   expect(submitted).toEqual([{ text: '#1 is done: Item 1\nThe human replied on #1: Use sqlite\nIf that reply settles the ask, act on it, then remove the item; if you need more from the human, or they asked you something, append what you have to say to #1; the item is then open for their next reply. Your own follow-up work never stays on the list.' }])
 })
 
-test('an agent change during a reply\'s undo window is a turn after the reply: the window runs on, and its end sends the reply and reopens the item with that turn after it', async () => {
+test('an agent append during a reply\'s undo window is a turn after the reply: the window runs on, and its end sends the reply and reopens the item with that turn after it', async () => {
   reset()
   const { hooks } = wire()
   const open: string[] = []
@@ -1042,6 +1042,27 @@ test('an agent change during a reply\'s undo window is a turn after the reply: t
   expect(submitted).toEqual([{ text: '#1 is done: Item 1\nThe human replied on #1: Use sqlite\nIf that reply settles the ask, act on it, then remove the item; if you need more from the human, or they asked you something, append what you have to say to #1; the item is then open for their next reply. Your own follow-up work never stays on the list.' }])
   expect((values.list as { items: Item[] }).items[0]).toMatchObject({
     state: 'open', answer: null, replied: false, thread: [{ speaker: 'human', words: 'Use sqlite' }, { speaker: 'agent', words: 'more' }],
+  })
+})
+
+test('an agent update during a reply\'s undo window leaves it running, and its end sends the reply once and reopens the item with the reply archived once', async () => {
+  reset()
+  const { hooks } = wire()
+  const open: string[] = []
+  const submitted: unknown[] = []
+  const timers: Timer[] = []
+  const { env, values, clock } = replyEnv([made(1, { detail: 'Brief 1.' })], open, 1, submitted, timers)
+  await (hooks['session.end'] as Handler)(env as never, { reason: 'exit' } as never, next(false) as never)
+  findInput(await paneTree(hooks, env), 'reply-1')?.onSubmit('Use sqlite', {})
+  await settle()
+  await (hooks['tool.call'] as Handler)(env as never, { tool: TOOL, action: 'update', id: 1, detail: 'Brief 2.' } as never, next(false) as never)
+  await settle()
+  expect((values.list as { items: Item[] }).items[0]).toMatchObject({ state: 'done-waiting', detail: 'Brief 2.', answer: 'Use sqlite' })
+  await tickAt(timers, clock, 3000)
+  await tickAt(timers, clock, 4000)
+  expect(submitted).toEqual([{ text: '#1 is done: Item 1\nThe human replied on #1: Use sqlite\nIf that reply settles the ask, act on it, then remove the item; if you need more from the human, or they asked you something, append what you have to say to #1; the item is then open for their next reply. Your own follow-up work never stays on the list.' }])
+  expect((values.list as { items: Item[] }).items[0]).toMatchObject({
+    state: 'open', answer: null, replied: false, detail: 'Brief 2.', thread: [{ speaker: 'human', words: 'Use sqlite' }],
   })
 })
 

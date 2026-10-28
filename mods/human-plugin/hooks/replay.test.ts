@@ -128,6 +128,18 @@ test('an append made before the reply notice reached the transcript rebuilds the
   expect(store.items[0]).toMatchObject({ state: 'done-pending', answer: 'use sqlite', replied: true, detail: 'sqlite needs a file', thread: [] })
 })
 
+test('an update made before the reply notice reached the transcript rebuilds the item sent with the update in it, as an append made then does', async () => {
+  const text = [
+    call('2026-10-20T10:00:00.000Z', 'a', { action: 'add', title: 'Pick a db' }),
+    result('2026-10-20T10:00:01.000Z', 'a', 'added #1'),
+    call('2026-10-20T10:00:02.000Z', 'b', { action: 'update', id: 1, detail: 'Postgres or sqlite?' }),
+    result('2026-10-20T10:00:03.000Z', 'b', 'updated #1'),
+    notice('2026-10-20T10:00:04.000Z', REPLY_NOTICE),
+  ].join('\n') + '\n'
+  const { store } = await replay([sourceOf(text)])
+  expect(store.items[0]).toMatchObject({ state: 'done-pending', answer: 'use sqlite', replied: true, detail: 'Postgres or sqlite?', thread: [], windowChanged: false })
+})
+
 test('on an item answered before, an append made before the next reply notice reached the transcript rebuilds as an agent turn ahead of that reply', async () => {
   const text = [
     call('2026-10-20T10:00:00.000Z', 'a', { action: 'add', title: 'Pick a db' }),

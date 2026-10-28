@@ -20,6 +20,7 @@ const item = (id: number, title: string, state: ItemState = 'open', options: Ite
   doneLabel: null,
   thread: [],
   windowTurns: [],
+  windowChanged: false,
 })
 
 const option = (label: string): ItemOption => ({ label, description: '', recommended: false })

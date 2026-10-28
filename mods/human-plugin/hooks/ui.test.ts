@@ -45,7 +45,7 @@ const item: Item = {
   note: 'still open',
   agent: null,
   unread: false,
-  options: [], answer: null, yesno: false, replied: false, doneLabel: null, thread: [], windowTurns: [],
+  options: [], answer: null, yesno: false, replied: false, doneLabel: null, thread: [], windowTurns: [], windowChanged: false,
 }
 const store: Store = { items: [item], next: 2 }
 

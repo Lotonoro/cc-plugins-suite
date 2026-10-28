@@ -1,6 +1,6 @@
 import { expect, test } from 'claude-code/testing'
 import { EMPTY, act, carryNext, clearAll, listText, mergeRestored, normalizeItem, normalizeStore, parseInput, selectedItem, successorOf, type Ctx, type ToolInput } from './items'
-import { expire, reply, turnsOf } from './done'
+import { expire, press, reply, turnsOf } from './done'
 import type { Item, Store } from '../types'
 
 const input = (raw: unknown): ToolInput => {
@@ -12,7 +12,7 @@ const MAIN: Ctx = { agent: null, now: 1000 }
 const SUB: Ctx = { agent: 'sub-1', now: 1000 }
 const withState = (id: number, state: Item['state']): Item => ({
   id, title: `Item ${id}`, detail: '', blocking: false, createdAt: 0, state, pressedAt: null, note: null, agent: null, unread: false,
-  options: [], answer: null, yesno: false, replied: false, doneLabel: null, thread: [], windowTurns: [],
+  options: [], answer: null, yesno: false, replied: false, doneLabel: null, thread: [], windowTurns: [], windowChanged: false,
 })
 
 const added =(store: Store, title: string, ctx: Ctx = MAIN) => {
@@ -421,8 +421,15 @@ const legacy = { id: 1, title: 'Pick a db', detail: 'Which store?', blocking: tr
 test('an item an older release wrote is filled with the defaults of every field added since', () => {
   expect(normalizeItem(legacy)).toEqual({
     id: 1, title: 'Pick a db', detail: 'Which store?', blocking: true, createdAt: 5, state: 'open', pressedAt: null, note: null,
-    agent: null, unread: false, options: [], yesno: false, answer: null, replied: false, doneLabel: null, thread: [], windowTurns: [],
+    agent: null, unread: false, options: [], yesno: false, answer: null, replied: false, doneLabel: null, thread: [], windowTurns: [], windowChanged: false,
   })
+})
+
+test('a stored window\'s update mark is kept while the window runs, and dropped from an item in no window or one never pressed', () => {
+  expect(normalizeItem({ ...legacy, state: 'done-waiting', pressedAt: 7, answer: 'Use sqlite', windowChanged: true })?.windowChanged).toBe(true)
+  expect(normalizeItem({ ...legacy, state: 'done-waiting', answer: 'Use sqlite', windowChanged: true })).toMatchObject({ state: 'open', windowChanged: false })
+  expect(normalizeItem({ ...legacy, state: 'done-pending', windowChanged: true })?.windowChanged).toBe(false)
+  expect(normalizeItem({ ...legacy, state: 'done-waiting', pressedAt: 7, windowChanged: 'yes' })?.windowChanged).toBe(false)
 })
 
 test('an item stored without a done label, a stored label kept, and a label of the wrong type is null', () => {
@@ -579,6 +586,44 @@ test('an append in a reply\'s undo window is an agent turn after the reply: the 
     { speaker: 'human', words: 'Use sqlite' },
     { speaker: 'agent', words: 'It needs a file.' },
   ])
+})
+
+test('an update in a reply\'s undo window changes the item and the window runs on; its end archives the reply once and reopens the item, sending the reply', () => {
+  const waiting = reply(added(EMPTY, 'Pick a db').store, 1, 1000, 'Use sqlite')
+  const updated = changed(waiting, { action: 'update', detail: 'Postgres or sqlite?' })
+  expect(updated.store.items[0]).toMatchObject({ state: 'done-waiting', pressedAt: 1000, detail: 'Postgres or sqlite?', windowTurns: [] })
+  expect(updated.changed).toEqual({ id: 1, reopened: false })
+  expect(listText(updated.store.items)).toBe('#1 non-blocking, done-waiting: Pick a db - Postgres or sqlite?\n  you: Use sqlite')
+  const out = expire(updated.store, 1, 1000)
+  expect(out.sent).toMatchObject({ state: 'done-pending', answer: 'Use sqlite', replied: true })
+  expect(out.store.items[0]).toMatchObject({ state: 'open', unread: true, answer: null, replied: false, detail: 'Postgres or sqlite?', windowChanged: false })
+  expect(turnsOf(out.store.items[0] as Item)).toEqual([{ speaker: 'human', words: 'Use sqlite' }])
+  expect(expire(out.store, 1, 1000).sent).toBe(null)
+})
+
+test('an update in a bare done press\'s window reopens the item at its end, the press archived as its turn', () => {
+  const waiting = press(added(EMPTY, 'Pick a db').store, 1, 1000, null)
+  const out = expire(changed(waiting, { action: 'update', note: 'which one?' }).store, 1, 1000)
+  expect(out.store.items[0]).toMatchObject({ state: 'open', note: 'which one?', thread: [{ speaker: 'human', words: 'pressed done' }] })
+})
+
+test('an update in an undo window that changes nothing, or only clears a field, leaves the item sent at the window\'s end, as it would a sent item', () => {
+  const waiting = reply(added(EMPTY, 'Pick a db').store, 1, 1000, 'Use sqlite')
+  const noop = changed(waiting, { action: 'update', note: '   ' })
+  expect(noop.reply).toBe('no change to #1')
+  expect(expire(noop.store, 1, 1000).store.items[0]).toMatchObject({ state: 'done-pending', answer: 'Use sqlite', thread: [] })
+  const noted = { ...waiting, items: waiting.items.map(it => ({ ...it, note: 'recheck' })) }
+  const cleared = changed(noted, { action: 'update', note: '' })
+  expect(cleared.store.items[0]?.note).toBe(null)
+  expect(expire(cleared.store, 1, 1000).store.items[0]).toMatchObject({ state: 'done-pending', answer: 'Use sqlite', thread: [] })
+})
+
+test('an undo of a window an update changed keeps the update and does not reopen: the answer was withdrawn, so a later send stays sent', () => {
+  const waiting = reply(added(EMPTY, 'Pick a db').store, 1, 1000, 'Use sqlite')
+  const undone = press(changed(waiting, { action: 'update', detail: 'Postgres or sqlite?' }).store, 1, 2000, null)
+  expect(undone.items[0]).toMatchObject({ state: 'open', answer: null, replied: false, detail: 'Postgres or sqlite?', thread: [], windowChanged: false })
+  expect(expire(undone, 1, 1000).sent).toBe(null)
+  expect(expire(reply(undone, 1, 3000, 'Use postgres'), 1, 3000).store.items[0]).toMatchObject({ state: 'done-pending', answer: 'Use postgres', thread: [] })
 })
 
 test('an append on an item with no human turn grows the brief and adds no turn', () => {
