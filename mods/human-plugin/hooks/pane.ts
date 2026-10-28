@@ -1,6 +1,6 @@
 import { atom, read, update, type EngineInterface, type PaneCloseOrigin } from 'claude-code'
 import type { Item } from '../types'
-import { successorOf } from './items'
+import { successorOf, type Outcome } from './items'
 import { inBackground, updateList } from './shared'
 import { paneRows } from './ui'
 
@@ -106,17 +106,20 @@ async function shownId($: EngineInterface): Promise<number | undefined> {
 }
 
 // After a tool call: an empty list closes the pane, whatever it last showed. Otherwise the pane moves on only when its item has left
-// the list. A sent item the person is viewing stays.
-export async function followShown($: EngineInterface, items: readonly Item[]): Promise<void> {
+// the list. A sent item the person is viewing stays, and a change to the item shown re-asks its rows as a switch does: a reopen adds the
+// reply field's row, which the pane's request did not count, and the item is being looked at, so it is read.
+export async function followShown($: EngineInterface, out: Exclude<Outcome, { deny: string }>): Promise<void> {
   if (!paneOpen) return
+  const items = out.store.items
   if (items.length === 0) {
     inBackground($, closePane($))
     return
   }
   const shown = await shownId($)
   // Checked after the read: the person may have closed the pane meanwhile, and a move would then reopen it.
-  if (!paneOpen || shown === undefined || items.some(it => it.id === shown)) return
-  moveOn($, items, shown)
+  if (!paneOpen || shown === undefined) return
+  if (!items.some(it => it.id === shown)) moveOn($, items, shown)
+  else if (out.changed?.id === shown) inBackground($, switchPane($, shown, items))
 }
 
 // After a window ends and sends `id`: the pane moves on only when it shows that item.

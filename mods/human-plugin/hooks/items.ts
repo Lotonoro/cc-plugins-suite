@@ -1,4 +1,5 @@
 import type { Item, ItemOption, ItemState, Store } from '../types'
+import { reopen } from './done'
 
 export const PLUGIN = 'human-plugin'
 export const TOOL = 'mcp__human-plugin__human_items'
@@ -192,12 +193,40 @@ export const parseInput = (raw: unknown): Parsed => {
 // Who asks: null for the main agent, else the subagent's id.
 export type Ctx = { agent: string | null; now: number }
 
+// `changed` names the item an append or an update changed, and whether that change reopened it (null for any other call, and for an
+// update that changed nothing): the pane, and any later consumer, learn of a reopen here and not by diffing lists.
 export type Outcome =
   | { deny: string }
-  | { store: Store; reply: string; added: Item | null }
+  | { store: Store; reply: string; added: Item | null; changed: { id: number; reopened: boolean } | null }
+
+// Whether a change leaves the human something new to read or answer: it sets a title, a blocking mark, options, or text in the detail,
+// note or done label. A change that only empties one of those (an update cannot empty the options) asks nothing.
+const asks = (before: Item, after: Item): boolean =>
+  after.title !== before.title ||
+  after.blocking !== before.blocking ||
+  JSON.stringify(after.options) !== JSON.stringify(before.options) ||
+  (after.detail !== before.detail && after.detail.trim() !== '') ||
+  (after.note !== before.note && after.note !== null) ||
+  (after.doneLabel !== before.doneLabel && after.doneLabel !== null)
+
+// An agent's change to `target`, written as `after`. One that leaves the item as it was is no change. One that asks the human something
+// (asks) puts a sent item back to open, with its reply field (done.ts); an item in its undo window keeps the window.
+const change = (store: Store, target: Item, after: Item, reply: string): Outcome => {
+  const unchanged =
+    after.title === target.title &&
+    after.detail === target.detail &&
+    after.blocking === target.blocking &&
+    after.note === target.note &&
+    after.doneLabel === target.doneLabel &&
+    JSON.stringify(after.options) === JSON.stringify(target.options)
+  if (unchanged) return { store, reply: `no change to #${target.id}`, added: null, changed: null }
+  const written = { ...store, items: store.items.map(it => (it.id === target.id ? after : it)) }
+  const out = asks(target, after) ? reopen(written, target.id) : { store: written, reopened: false }
+  return { store: out.store, reply, added: null, changed: { id: target.id, reopened: out.reopened } }
+}
 
 export const act = (store: Store, input: ToolInput, ctx: Ctx): Outcome => {
-  if (input.action === 'list') return { store, reply: listText(store.items), added: null }
+  if (input.action === 'list') return { store, reply: listText(store.items), added: null, changed: null }
   if (input.action === 'add') {
     const item: Item = {
       id: store.next,
@@ -216,21 +245,20 @@ export const act = (store: Store, input: ToolInput, ctx: Ctx): Outcome => {
       yesno: input.yesno,
       doneLabel: input.doneLabel,
     }
-    return { store: { items: [...store.items, item], next: store.next + 1 }, reply: `added #${item.id}`, added: item }
+    return { store: { items: [...store.items, item], next: store.next + 1 }, reply: `added #${item.id}`, added: item, changed: null }
   }
   const target = store.items.find(it => it.id === input.id)
   if (target === undefined) return { deny: `no item #${input.id}` }
   if (input.action === 'append') {
     const detail = target.detail === '' ? input.text : `${target.detail}\n\n${input.text}`
-    const items = store.items.map(it => (it.id === target.id ? { ...it, detail } : it))
-    return { store: { ...store, items }, reply: `appended to #${target.id}`, added: null }
+    return change(store, target, { ...target, detail }, `appended to #${target.id}`)
   }
   if (input.action === 'remove') {
     if (ctx.agent !== null && target.agent !== ctx.agent) {
       const who = target.agent === null ? 'the main agent' : 'another agent'
       return { deny: `#${target.id} was filed by ${who}; only ${target.agent === null ? 'it' : 'that agent'} can remove it` }
     }
-    return { store: { ...store, items: store.items.filter(it => it.id !== target.id) }, reply: `removed #${target.id}`, added: null }
+    return { store: { ...store, items: store.items.filter(it => it.id !== target.id) }, reply: `removed #${target.id}`, added: null, changed: null }
   }
   if (input.options !== undefined && target.yesno) return { deny: `#${target.id} is a yes/no question: it takes no options` }
   if (input.doneLabel !== undefined && (target.yesno || target.options.length > 0)) {
@@ -239,7 +267,7 @@ export const act = (store: Store, input: ToolInput, ctx: Ctx): Outcome => {
   if (input.options !== undefined && target.doneLabel !== null) {
     return { deny: `#${target.id} has a done label: it is a to-do, which takes no options; clear the label first with done: ''` }
   }
-  const changed: Item = {
+  return change(store, target, {
     ...target,
     title: input.title ?? target.title,
     detail: input.detail ?? target.detail,
@@ -247,25 +275,7 @@ export const act = (store: Store, input: ToolInput, ctx: Ctx): Outcome => {
     note: input.note !== undefined ? input.note : target.note,
     options: input.options ?? target.options,
     doneLabel: input.doneLabel !== undefined ? input.doneLabel : target.doneLabel,
-    // A note of text reopens a done item; a clear does not.
-    state: input.note !== undefined && input.note !== null && target.state !== 'open' ? 'open' : target.state,
-  }
-  const unchanged =
-    changed.title === target.title &&
-    changed.detail === target.detail &&
-    changed.blocking === target.blocking &&
-    changed.note === target.note &&
-    changed.state === target.state &&
-    changed.doneLabel === target.doneLabel &&
-    JSON.stringify(changed.options) === JSON.stringify(target.options)
-  if (unchanged) return { store, reply: `no change to #${target.id}`, added: null }
-  if (changed.state === 'open') {
-    changed.pressedAt = null
-    changed.answer = null
-    changed.replied = false
-  }
-  const items = store.items.map(it => (it.id === target.id ? changed : it))
-  return { store: { ...store, items }, reply: `updated #${target.id}`, added: null }
+  }, `updated #${target.id}`)
 }
 
 // The item the pane shows: the selected one, or with no selection the first. A selection whose item is gone names none; the pane

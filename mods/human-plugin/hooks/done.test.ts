@@ -1,5 +1,5 @@
 import { expect, test } from 'claude-code/testing'
-import { doneNotice, expire, pointerText, press, reply } from './done'
+import { doneNotice, expire, pointerText, press, reopen, reply } from './done'
 import { act, parseInput } from './items'
 import type { Item, Store } from '../types'
 
@@ -196,9 +196,27 @@ test('undo of a labelled press clears its answer and reopens the item', () => {
   expect(undone.items[0]).toMatchObject({ state: 'open', answer: null, pressedAt: null, replied: false })
 })
 
-test('a note that reopens a sent labelled press clears its answer and keeps the label', () => {
+test('a change to a sent labelled press reopens it, clears its answer and keeps the label', () => {
   const sent = expire(press(labelled, 3, 1000, 'Go with sqlite'), 3, 1000).store
   expect(sent.items[0]).toMatchObject({ state: 'done-pending', answer: 'Go with sqlite' })
   const reopened = applied(sent, { action: 'update', id: 3, note: 'still open' })
   expect(reopened.items[0]).toMatchObject({ state: 'open', answer: null, replied: false, doneLabel: 'Go with sqlite', note: 'still open' })
+})
+
+test('reopen puts a sent item back to open, unread, with its press, answer and reply cleared; any other item is left as it is', () => {
+  const replied = expire(reply(store, 3, 1000, 'Use postgres'), 3, 1000).store
+  const out = reopen(replied, 3)
+  expect(out.reopened).toBe(true)
+  expect(out.store.items[0]).toMatchObject({ state: 'open', pressedAt: null, answer: null, replied: false, unread: true })
+  const waiting = press(store, 3, 1000, 'Use sqlite')
+  expect(reopen(waiting, 3)).toEqual({ store: waiting, reopened: false })
+  expect(reopen(store, 3)).toEqual({ store, reopened: false })
+  expect(reopen(replied, 9)).toEqual({ store: replied, reopened: false })
+})
+
+test('a window running when the agent changes the item still sends what the human gave', () => {
+  const changed = applied(reply(store, 3, 1000, 'Use postgres'), { action: 'append', id: 3, text: 'more context' })
+  expect(changed.items[0]).toMatchObject({ state: 'done-waiting', pressedAt: 1000 })
+  const sent = expire(changed, 3, 1000).sent
+  expect(sent && doneNotice(sent)).toContain('The human replied on #3: Use postgres')
 })

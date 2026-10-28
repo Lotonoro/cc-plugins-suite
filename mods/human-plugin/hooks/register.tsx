@@ -153,7 +153,7 @@ const answer = async ($: EngineInterface, e: unknown) => {
   if (out === null) throw new Error('human_items: the list was not read')
   if ('deny' in out) return { deny: out.deny }
   if (out.added !== null) await saveCounter($, out.store.next)
-  await followShown($, out.store.items)
+  await followShown($, out)
   if (out.added?.blocking) {
     $.ui.toast(`Blocking: #${out.added.id} ${out.added.title}`)
     inBackground($, $.process.run(['afplay', SOUND]).then(r => $.ui.log(`human-plugin: sound ${SOUND}, afplay exit ${r.exitCode}`, { to: 'debug' })))

@@ -61,7 +61,15 @@ export const reply = (store: Store, id: number, now: number, text: string): Stor
     it.state === 'open' ? { ...it, state: 'done-waiting', pressedAt: now, answer: oneLine(text), replied: true } : it,
   )
 
-// The window of press `token` has passed. It sends only if that press is still the open window: a cancelled or reopened
+// The agent changed a sent item in a way that asks the human something (items.ts decides): it goes back to open, with the press's
+// answer and reply cleared, and unread so the band shows the follow-up. Any other item is left as it is, a window that is running included.
+export const reopen = (store: Store, id: number): { store: Store; reopened: boolean } => {
+  const target = store.items.find(it => it.id === id)
+  if (target === undefined || target.state !== 'done-pending') return { store, reopened: false }
+  return { store: mapItem(store, id, it => ({ ...it, state: 'open', pressedAt: null, answer: null, replied: false, unread: true })), reopened: true }
+}
+
+// The window of press `token` has passed. It sends only if that press is still the open window: a cancelled
 // item sends nothing, and a second expiry of the same press finds it already sent.
 export const expire = (store: Store, id: number, token: number): { store: Store; sent: Item | null } => {
   const target = store.items.find(it => it.id === id)

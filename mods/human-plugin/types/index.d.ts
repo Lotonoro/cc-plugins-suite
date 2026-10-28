@@ -3,7 +3,8 @@
 export type ItemOption = { label: string; description: string; recommended: boolean }
 
 // One ask the agent has of the human. `state` is `done-pending` once the human marks it done, until the agent removes it
-// or reopens it with a note. `agent` is null when the main agent filed it, else the subagent's id.
+// or changes it in a way that asks the human something (an append, or an update that sets a title, detail, blocking, options, note or
+// done label), which reopens it. `agent` is null when the main agent filed it, else the subagent's id.
 // `done-waiting` is the undo window after a done press: nothing is sent yet. `done-pending` is sent, until the agent acts.
 export type ItemState = 'open' | 'done-waiting' | 'done-pending'
 

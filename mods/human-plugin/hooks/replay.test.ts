@@ -63,9 +63,35 @@ test('a line may be split at any piece boundary', async () => {
   }
 })
 
-test('a done notice marks the item done-pending, and a later note reopens it', async () => {
+test('a done notice marks the item done-pending', async () => {
   const { store } = await replay([sourceOf(MAIN.split('\n').slice(0, 5).join('\n') + '\n')])
   expect(store.items[0]?.state).toBe('done-pending')
+})
+
+const REPLY_NOTICE = '#1 is done: Pick a db\nThe human replied on #1: use sqlite\nAct on that reply, then remove it.'
+
+test('a reply notice then an append rebuilds the item open, with no answer and not unread', async () => {
+  const text = [
+    call('2026-10-20T10:00:00.000Z', 'a', { action: 'add', title: 'Pick a db' }),
+    result('2026-10-20T10:00:01.000Z', 'a', 'added #1'),
+    notice('2026-10-20T10:00:02.000Z', REPLY_NOTICE),
+    call('2026-10-20T10:00:03.000Z', 'b', { action: 'append', id: 1, text: 'sqlite needs a file' }),
+    result('2026-10-20T10:00:04.000Z', 'b', 'appended to #1'),
+  ].join('\n') + '\n'
+  const { store } = await replay([sourceOf(text)])
+  expect(store.items[0]).toMatchObject({ state: 'open', answer: null, replied: false, unread: false, detail: 'sqlite needs a file' })
+})
+
+test('an append made before the reply notice reached the transcript rebuilds the item sent: the resume order puts the change first', async () => {
+  const text = [
+    call('2026-10-20T10:00:00.000Z', 'a', { action: 'add', title: 'Pick a db' }),
+    result('2026-10-20T10:00:01.000Z', 'a', 'added #1'),
+    call('2026-10-20T10:00:02.000Z', 'b', { action: 'append', id: 1, text: 'sqlite needs a file' }),
+    result('2026-10-20T10:00:03.000Z', 'b', 'appended to #1'),
+    notice('2026-10-20T10:00:04.000Z', REPLY_NOTICE),
+  ].join('\n') + '\n'
+  const { store } = await replay([sourceOf(text)])
+  expect(store.items[0]).toMatchObject({ state: 'done-pending', answer: 'use sqlite', replied: true })
 })
 
 test('a failed or denied tool result is not replayed', async () => {

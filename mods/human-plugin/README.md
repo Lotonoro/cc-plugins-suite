@@ -20,7 +20,7 @@ To do for you 3 open
   alone tells you whether the agent is stuck.
 - **`[✓]`** says you've done it. You get three seconds to change your mind (`[↶ 3s]`; the window ends on the
   countdown's next one-second tick, so up to a second later), then the agent is told, checks, and removes the item. You can also say so in chat. Only the agent removes items, because it is the one that knows
-  when an ask is settled. A choice (a decision with options) gets answer buttons in the pane instead (see below).
+  when an ask is settled; when it adds to a sent item instead, the item comes back open, with its reply field, marked `•`. A choice (a decision with options) gets answer buttons in the pane instead (see below).
   A to-do the agent files with a `done` label, such as `Go with sqlite`, draws `[✓ Go with sqlite]`, and that press is
   what the label says. A label is at most 24 columns (a wide character takes two). A bare `[✓]` on a proposal or a
   recommendation is a go-ahead for it.
@@ -30,7 +30,7 @@ To do for you 3 open
   marked `(recommended)`, below the brief that explains the options. Pressing one gets the same three seconds to change
   your mind, then the agent is told your choice and acts on it. A choice's row in the band shows no answer buttons: open
   the decision to answer it.
-- **Reply field.** Under an open item's buttons in the pane is a one-line field: type a reply and press Enter, and it is sent with the same three seconds to change your mind (terminal and desktop only).
+- **Reply field.** Under an open item's buttons in the pane is a one-line field: type a reply and press Enter, and it is sent with the same three seconds to change your mind (terminal and desktop only). A sent item has no field until the agent adds to it, which opens it again.
 - **`[…]`** on a title means the item is a choice, whose answers are in the pane alone. A to-do or a yes/no shows none,
   even with a brief or a note, because its buttons are on the row. The summary row always shows `[…]` (`+N more […]`).
   A press on a title, or on the summary row, opens the pane on that item; the summary opens on the first item it folds, a blocking one first. The pane shows the
@@ -66,6 +66,7 @@ Then start a new session and let the agent do the asking.
   turn; during a turn it is read before the agent's next model request; if you interrupt with Esc, it waits for your
   next prompt. A press on an item the agent has already removed sends nothing. What is read during a turn or beside
   your prompt also shows in your transcript as a dim line, `sent to Claude: …`, which the agent never reads.
+  When the agent adds to a sent item (an append, or an update that sets a title, brief, blocking mark, options, note or label), the item comes back open, with its reply field, marked `•`; a change that only clears a field does not reopen it. A change made during the three seconds leaves them running, and your press is sent as given.
 - **Survives compaction and resume.** `claude --resume` rebuilds the list from the session's transcript, subagents
   included, and leaves out anything on a branch that `/rewind` abandoned. `/clear` empties the list. Item numbers
   are never reused.
@@ -80,6 +81,7 @@ Then start a new session and let the agent do the asking.
 - The restatement check is a heuristic. It reads only the reply's last message, after the final tool call. It misses a
   paraphrase, a recap that puts no ask to the reader, and a block that names any listed item's id. It can mistake a block about an item's
   subject for an ask, at the cost of one extra note. A resumed conversation can note an item once more.
+- A resumed conversation orders an item's change before the notice that preceded it in time, so an item the agent changed after your reply but before the agent read the reply comes back sent, and a second reply you sent from the reopened item in that gap is not rebuilt. The agent's next change to the item, or removing it, settles it.
 - A session that enables the plugin partway through may keep asking in chat until a `/clear` or a new session.
 - `/rewind` inside a running session does not rewind the list, because Claude Code gives a plugin no signal that a
   rewind happened. The agent can still remove what no longer applies, and a resume rebuilds the list correctly.
