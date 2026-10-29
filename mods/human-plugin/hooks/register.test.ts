@@ -289,7 +289,7 @@ test('a phone prompt whose wait for a rebuild runs out carries the rebuilding bl
   }
 })
 
-test('a phone prompt whose block cannot be built goes through with its live held notices and no block, and the failure is logged', async () => {
+test('a phone prompt whose wait for a rebuild fails goes through with its live held notices and no block, and the failure is logged', async () => {
   freshModule()
   const wired = wire()
   startTurn()
@@ -300,7 +300,7 @@ test('a phone prompt whose block cannot be built goes through with its live held
   // Item 1 is not on the list, so its notice is dropped; item 2 is, so its notice is carried.
   const { env } = memEnv([made(2, { title: 'Live ask', detail: '' })], [], null, [], [])
   const { host, finish } = rebuilding(env)
-  // The wait for a rebuild arms a timer, and this host cannot arm one, so the block cannot be built.
+  // The wait for a rebuild arms a timer, and this host cannot arm one, so the wait fails and no block is built.
   const failure = new Error('no timer')
   const failing = {
     ...host,
