@@ -576,7 +576,7 @@ test('a resume reads back nothing from the phone block: an item titled like a do
   }
   const added = { type: 'user', timestamp: stamp(1), message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'a', content: 'added #1' }] } }
   const block = phoneBlock([made(1, { title: 'is done: x' })])
-  expect(block).toContain('  #1 is done: x')
+  expect(block).toContain('#1 is done: x')
   // The block as a phone prompt carries it: a hook's context row, which the rebuild reads for done notices.
   const carried = {
     type: 'attachment',

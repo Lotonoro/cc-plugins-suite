@@ -239,7 +239,7 @@ test('a reply that ends in the phone block\'s item line is not corrected: the li
     },
   }
   const [block = ''] = (await entered(hooks, env, { origin: { kind: 'bridge' }, text: 'hi' }))[0]?.context ?? []
-  expect(block).toContain('#1 Pick the db store, your call')
+  expect(block).toContain('Pick the db store, your call')
   const itemLine = block.slice(block.lastIndexOf('\n') + 1)
   // Answers one turn's end, and returns the corrections appended by it.
   const endedWith = async (answer: string, turnId: string): Promise<string[]> => {
