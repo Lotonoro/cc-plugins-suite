@@ -143,7 +143,7 @@ describe('step', () => {
   })
 
   test('with no known TTL there is nothing to count from, so nothing is scheduled, whatever the time', () => {
-    for (const view of [{ kind: 'no-cache' }, { kind: 'unread' }, { kind: 'ttl-unknown' }] as const) {
+    for (const view of [{ kind: 'unread' }, { kind: 'ttl-unknown' }] as const) {
       expect(step(on(60000, 2), view, null, true, T + 999999999)).toEqual({
         kind: 'wait',
         heading: 'on, no count',
@@ -151,6 +151,12 @@ describe('step', () => {
         lines: ['no live cache to count from, nothing scheduled'],
       })
     }
+    expect(step(on(60000, 2), { kind: 'no-cache' }, null, true, T + 999999999)).toEqual({
+      kind: 'wait',
+      heading: 'on, no count',
+      why: null,
+      lines: ['no live cache to count from, nothing scheduled; there is no cache until the next reply'],
+    })
   })
 
   test('a lead at the TTL pauses keepalive and says why, and so does a lead above it', () => {
@@ -216,7 +222,7 @@ describe('step', () => {
     expect(step({ ...on(60000, 2), runCount: 0, remaining: 0 }, known, null, true, T + 100000)).toEqual({
       kind: 'wait',
       heading: 'paused',
-      why: 'no refreshes this pause: your pauses rarely outlast the cache',
+      why: `no refreshes this pause: your pauses rarely outlast the cache${RESUMES}`,
       lines: [F],
     })
   })
@@ -231,7 +237,7 @@ describe('step', () => {
     const grown = { ...known, promptTokens: 40000 }
     expect(step(k, grown, null, true, T + 100000).lines[0]).toBe('Next refresh: ~40k cached tokens read, every 4 min')
     expect(step({ ...k, stop: 'count used' }, known, null, true, T).lines).toEqual([REREAD])
-    expect(step(k, { kind: 'no-cache' }, null, true, T).lines).toEqual(['no live cache to count from, nothing scheduled'])
+    expect(step(k, { kind: 'no-cache' }, null, true, T).lines).toEqual(['no live cache to count from, nothing scheduled; there is no cache until the next reply'])
   })
 
   test('the last ping is its own line after the figures, so a live session can check the served threshold', () => {
@@ -275,7 +281,7 @@ describe('step', () => {
       [
         'no live cache',
         run({}, { kind: 'no-cache' }, true, T),
-        { kind: 'wait', heading: 'on, no count', why: null, lines: ['no live cache to count from, nothing scheduled', LAST] },
+        { kind: 'wait', heading: 'on, no count', why: null, lines: ['no live cache to count from, nothing scheduled; there is no cache until the next reply', LAST] },
       ],
       [
         'the cache expired',
@@ -285,7 +291,7 @@ describe('step', () => {
       [
         'a learned count of none',
         run({ runCount: 0, remaining: 0 }, known, true, T + 100000),
-        { kind: 'wait', heading: 'paused', why: 'no refreshes this pause: your pauses rarely outlast the cache', lines: [F, LAST] },
+        { kind: 'wait', heading: 'paused', why: `no refreshes this pause: your pauses rarely outlast the cache${RESUMES}`, lines: [F, LAST] },
       ],
       [
         'the count used',
