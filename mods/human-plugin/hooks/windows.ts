@@ -1,7 +1,7 @@
 import type { EngineInterface } from 'claude-code'
 import type { Item, Store } from '../types'
 import { send } from './deliver'
-import { expire, press, reply, stateOf } from './done'
+import { answerOf, expire, isNumbered, press, reply, type AnswerOutcome, type Form } from './done'
 import { followSent } from './pane'
 import { inBackground, readList, updateList } from './shared'
 
@@ -42,41 +42,64 @@ async function tick($: EngineInterface, windowMs: number): Promise<void> {
   $.ui.invalidate('ui.render')
 }
 
-// A press that changes an item's state, made at `now` by `change`: a done press or a reply on an open item opens its undo window (nothing
-// is sent yet), which the ticker ends once its time has run out. Each press leaves a debug line with its token (the time it was pressed)
-// and the state change it made.
-async function openWindow(
+// The state of the item a number names, as the debug line and the zero window read it: 'missing' when no item carries the number.
+const stateNamed = (store: Store, digits: string): Item['state'] | 'missing' => store.items.find(it => isNumbered(it, digits))?.state ?? 'missing'
+
+// The one write a press or a command makes on the list, and the undo window it leaves, which the ticker ends once its time has run out. `digits`
+// names the item as `/asks <n>` does (a press passes its id). The write's time is the clock's less `back`: a press counts from when it was made,
+// a command from one window earlier, so its window is due at once and the first tick ends it. A zero window that a press opens ends inside the
+// write (`endsAtOnce`); a command's never does, since its notice is the ticker's to send. Each write leaves a debug line with its time and the
+// state change it made. What fails after the write is logged, and the write stands.
+async function openWindow<T>(
   $: EngineInterface,
-  id: number,
   windowMs: number,
-  kind: 'done press' | 'reply',
-  change: (store: Store, now: number) => Store,
-): Promise<void> {
-  const now = await $.clock.now()
-  const moved: { from: string; to: string } = { from: 'missing', to: 'missing' }
+  digits: string,
+  { source, back, endsAtOnce }: { source: string; back: number; endsAtOnce: boolean },
+  change: (store: Store, token: number) => { store: Store; outcome: T },
+): Promise<T> {
+  const token = (await $.clock.now()) - back
+  const moved: { from: string; to: string; outcome?: T } = { from: 'missing', to: 'missing' }
   const written = await updateList($, store => {
-    const next = change(store, now)
-    moved.from = stateOf(store, id)
-    moved.to = stateOf(next, id)
-    return next
+    const next = change(store, token)
+    moved.from = stateNamed(store, digits)
+    moved.to = stateNamed(next.store, digits)
+    moved.outcome = next.outcome
+    return next.store
   })
-  $.ui.log(`human-plugin: ${kind} #${id} at ${now}: ${moved.from} -> ${moved.to}`, { to: 'debug' })
-  // A zero window has no time to wait for, so it ends now rather than at the next tick.
-  if (moved.from === 'open' && moved.to === 'done-waiting' && windowMs === 0) {
-    await expireWindow($, id, now, windowMs)
-    return
+  try {
+    $.ui.log(`human-plugin: ${source} #${digits} at ${token}: ${moved.from} -> ${moved.to}`, { to: 'debug' })
+    if (endsAtOnce && moved.from === 'open' && moved.to === 'done-waiting' && windowMs === 0) {
+      // A zero window has no time to wait for, so it ends now rather than at the next tick. A press names its item by its id, so digits is the id.
+      await expireWindow($, Number(digits), token, windowMs)
+    } else {
+      keepTicker($, written, windowMs)
+    }
+  } catch (err) {
+    $.ui.log(`human-plugin: ${source} #${digits} was written; a step after the write failed: ${String(err)}`)
   }
-  keepTicker($, written, windowMs)
+  return moved.outcome as T
 }
 
 // A done press on an open item opens its undo window; the same press again, inside the window, cancels it.
 export function pressDone($: EngineInterface, id: number, answer: string | null, windowMs: number): Promise<void> {
-  return openWindow($, id, windowMs, 'done press', (store, now) => press(store, id, now, answer))
+  return openWindow($, windowMs, String(id), { source: 'done press', back: 0, endsAtOnce: true }, (store, token) => ({
+    store: press(store, id, token, answer),
+    outcome: undefined,
+  }))
 }
 
 // A reply typed in the pane: the same window as a done press with the text as its answer.
 export function pressReply($: EngineInterface, id: number, text: string, windowMs: number): Promise<void> {
-  return openWindow($, id, windowMs, 'reply', (store, now) => reply(store, id, now, text))
+  return openWindow($, windowMs, String(id), { source: 'reply', back: 0, endsAtOnce: true }, (store, token) => ({
+    store: reply(store, id, token, text),
+    outcome: undefined,
+  }))
+}
+
+// A `/asks <n> <form>`: the resolver's write (answerOf), and the undo window an applied form leaves. The window counts from one window back, so the
+// first tick after the write ends it; the notice is sent from the ticker's callback, never from the command's hook.
+export function pressAnswer($: EngineInterface, digits: string, form: Form, windowMs: number): Promise<AnswerOutcome> {
+  return openWindow($, windowMs, digits, { source: '/asks', back: windowMs, endsAtOnce: false }, (store, token) => answerOf(store, digits, form, token))
 }
 
 // The window of press `token` has passed: sends the item, unless the press was cancelled or already sent. Returns the list its write left.

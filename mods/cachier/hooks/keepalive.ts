@@ -237,6 +237,9 @@ export type Step =
   | ({ kind: 'stop'; reason: string } & Shown)
   | ({ kind: 'wait' } & Shown)
 
+// The settled verdict in the pieces `step` composes its lines from: the figure lines, then the schedule line where the branch gives one.
+type Settled = { heading: Heading; why: string | null; figure: string[]; schedule?: string } & ({ kind: 'ping' } | { kind: 'wait' } | { kind: 'stop'; reason: string })
+
 // The last refresh's read and write, a line of its own after the figures, so a live session can check the served threshold.
 const lastOf = (k: KeepaliveState): string[] => (k.last === null ? [] : [`last refresh read ${k.last.read}, wrote ${k.last.write}`])
 
@@ -273,40 +276,56 @@ const rereadFigure = (view: CacheView, money: Money): string | null => {
   return usd === null ? `each refresh reads ${read}` : `each refresh costs ${dollars(usd)} (reads ${read})`
 }
 
-// A paused-by-design verdict: the stop's by-design sentence, and what a refresh would read once it resumes.
-const pausedBy = (k: KeepaliveState, view: CacheView, money: Money, reason: string): Shown => {
+// A paused-by-design verdict: the stop's by-design sentence, what a refresh would read once it resumes, and how often one would be
+// sent wherever figureAt gives the figure of one at the run's lead.
+const pausedBy = (view: CacheView, leadMs: number, money: Money, reason: string): { heading: Heading; why: string; figure: string[] } => {
   const reread = rereadFigure(view, money)
-  return { heading: 'paused', why: byDesignSentence(reason), lines: [...(reread === null ? [] : [reread]), ...lastOf(k)] }
+  const interval = figureAt(view, leadMs, money)
+  return { heading: 'paused', why: byDesignSentence(reason), figure: [...(reread === null ? [] : [reread]), ...(interval === null ? [] : [interval.figures])] }
 }
 
-// `gap` is whether the main thread is idle: no turn running.
-export const step = (k: KeepaliveState, view: CacheView, liveMs: number | null, gap: boolean, nowMs: number, money: Money): Step => {
-  if (k.config === null) return { kind: 'wait', heading: 'off', why: null, lines: [] }
-  const { leadMs } = k.config
+// The settled verdict: the one a state with no cold mark pending gives, `gap` being whether the main thread is idle (no turn running).
+// It reads no pending flag, so `step` lays the pending-write overlay over it.
+const settledOf = (k: KeepaliveState, leadMs: number, view: CacheView, liveMs: number | null, gap: boolean, nowMs: number, money: Money): Settled => {
   const figures = figuresOf(view, leadMs, money)
   const running = figures === null ? [] : [figures]
-  if (armedOf(k)) return { kind: 'wait', ...pausedBy(k, view, money, k.stop ?? '') }
-  if (k.stop !== null) return { kind: 'wait', heading: 'stopped', why: failureSentence(k.stop), lines: [...running, ...lastOf(k)] }
-  if (k.coldPending) return { kind: 'wait', heading: 'paused', why: 'until the cache reset is recorded', lines: lastOf(k) }
+  if (armedOf(k)) return { kind: 'wait', ...pausedBy(view, leadMs, money, k.stop ?? '') }
+  if (k.stop !== null) return { kind: 'wait', heading: 'stopped', why: failureSentence(k.stop), figure: running }
   const r = readiness(view, leadMs, liveMs, nowMs)
   if (r.kind === 'not-ready' || figures === null) {
     if (view.kind === 'known' && leadMs >= view.ttlMs) {
-      return { kind: 'wait', heading: 'paused', why: `lead ${secs(leadMs)} is not below the ${secs(view.ttlMs)} TTL`, lines: lastOf(k) }
+      return { kind: 'wait', heading: 'paused', why: `lead ${secs(leadMs)} is not below the ${secs(view.ttlMs)} TTL`, figure: [] }
     }
-    return { kind: 'wait', heading: 'on, no count', why: null, lines: ['no live cache to count from, nothing scheduled', ...lastOf(k)] }
+    // A no-cache view's next reply is what writes a cache, so its line says so; a TTL-unknown or unread view may hold one unseen, so it says nothing of replies.
+    const reply = view.kind === 'no-cache' ? '; there is no cache until the next reply' : ''
+    return { kind: 'wait', heading: 'on, no count', why: null, figure: [`no live cache to count from, nothing scheduled${reply}`] }
   }
-  if (r.expired) return { kind: 'stop', reason: 'cache expired', ...pausedBy(k, view, money, 'cache expired') }
+  if (r.expired) return { kind: 'stop', reason: 'cache expired', ...pausedBy(view, leadMs, money, 'cache expired') }
   // A learned count of no pings: nothing is sent, and the run stays on, so a prompt that learns otherwise can still ping.
   if (k.runCount === 0) {
-    return { kind: 'wait', heading: 'paused', why: 'no refreshes this pause: your pauses rarely outlast the cache', lines: [figures, ...lastOf(k)] }
+    return { kind: 'wait', heading: 'paused', why: 'no refreshes this pause: your pauses rarely outlast the cache; it resumes after your next prompt', figure: [figures] }
   }
-  if (k.remaining <= 0) return { kind: 'stop', reason: 'count used', ...pausedBy(k, view, money, 'count used') }
+  if (k.remaining <= 0) return { kind: 'stop', reason: 'count used', ...pausedBy(view, leadMs, money, 'count used') }
   const refreshing = { heading: 'on, refreshing' as const, why: null }
   if (nowMs < r.dueMs) {
-    return { kind: 'wait', ...refreshing, lines: [figures, `next refresh in ${clock(r.dueMs - nowMs)}, ${k.remaining} left`, ...lastOf(k)] }
+    return { kind: 'wait', ...refreshing, figure: [figures], schedule: `next refresh in ${clock(r.dueMs - nowMs)}, ${k.remaining} left` }
   }
-  if (!gap) return { kind: 'wait', ...refreshing, lines: [figures, 'refresh due, waits for the turn to end', ...lastOf(k)] }
-  return { kind: 'ping', ...refreshing, lines: [figures, ...lastOf(k)] }
+  if (!gap) return { kind: 'wait', ...refreshing, figure: [figures], schedule: 'refresh due, waits for the turn to end' }
+  return { kind: 'ping', ...refreshing, figure: [figures] }
+}
+
+// While a cold mark's write is pending and no stop is held, the verdict is paused until the write is recorded: the settled reason and
+// figure stay, and the schedule line goes, since a refresh is held while the write is pending.
+export const step = (k: KeepaliveState, view: CacheView, liveMs: number | null, gap: boolean, nowMs: number, money: Money): Step => {
+  if (k.config === null) return { kind: 'wait', heading: 'off', why: null, lines: [] }
+  const settled = settledOf(k, k.config.leadMs, view, liveMs, gap, nowMs, money)
+  const last = lastOf(k)
+  if (k.stop === null && k.coldPending) {
+    return { kind: 'wait', heading: 'paused', why: 'until the cache reset is recorded', lines: [...(settled.why === null ? [] : [settled.why]), ...settled.figure, ...last] }
+  }
+  const lines = [...settled.figure, ...(settled.schedule === undefined ? [] : [settled.schedule]), ...last]
+  const verdict = { heading: settled.heading, why: settled.why, lines }
+  return settled.kind === 'stop' ? { kind: 'stop', reason: settled.reason, ...verdict } : { kind: settled.kind, ...verdict }
 }
 
 // What one ping on the current cache costs: a read of its whole context, at the model and speed that wrote it.
@@ -323,25 +342,31 @@ const nextPing = (view: KnownView, money: Money): string => {
   return usd === null ? `Next refresh: ${read}` : `Next refresh: ${dollars(usd)} (${read})`
 }
 
-// The figure of one refresh at a lead: what it costs, or the context it reads. Null with no known cache,
+// The figure of one refresh at a lead, worked out where it is stated: its label, which the footer and the hover keep, and the explanation and
+// figures lines the Keepalive section states.
+export type Figure = HintCost & { explain: string; figures: string }
+
+// The figure of one refresh at a lead: what it costs, or the context it reads, and how often at that lead. Null with no known cache,
 // or a lead at or above its TTL, which sends no refresh.
-const figureAt = (view: CacheView, leadMs: number, money: Money): HintCost | null => {
+const figureAt = (view: CacheView, leadMs: number, money: Money): Figure | null => {
   if (view.kind !== 'known' || leadMs >= view.ttlMs) return null
   const usd = pingUsd(view, money)
   return {
     label: usd === null ? `${kTokens(view.promptTokens)} read/refresh` : `${dollars(usd)}/refresh`,
+    explain: `${nextPing(view, money)}.`,
+    figures: `One refresh every ${intervalOf(view.ttlMs - leadMs)}.`,
   }
 }
 
-// The figure keepalive's refreshes show while it runs: what each refresh costs, or the context it reads. Shown
+// The figure keepalive's refreshes show while it runs: what each refresh costs, or the context it reads, and how often. Shown
 // while it runs, a refresh in flight included; null when it is off, stopped, paused, or learned no refreshes for this pause, so
 // the pie warns instead.
-export const costOf = (k: KeepaliveState, view: CacheView, money: Money): HintCost | null =>
+export const costOf = (k: KeepaliveState, view: CacheView, money: Money): Figure | null =>
   k.config === null || k.stop !== null || k.runCount === 0 ? null : figureAt(view, k.config.leadMs, money)
 
 // The figure a press would show while keepalive is off: the run a press would start, at the lead and count it would use. The hover
-// above the time shows it. Null where that run sends no refresh.
-export const offerOf = (view: CacheView, money: Money, leadMs: number, runCount: number): HintCost | null =>
+// above the time shows its label, the Keepalive section its lines. Null where that run sends no refresh.
+export const offerOf = (view: CacheView, money: Money, leadMs: number, runCount: number): Figure | null =>
   runCount === 0 ? null : figureAt(view, leadMs, money)
 
 // Stops that end keepalive by design. Any other stop, and a pause from a lead at or above the TTL, is a failure the status

@@ -143,9 +143,17 @@ export function showItem($: EngineInterface, id: number): Promise<unknown> {
   return Promise.all([opening, select($, id)])
 }
 
-// Marks one item read: an item the pane switches to is shown, so its unread mark goes.
-function markRead($: EngineInterface, id: number): Promise<unknown> {
-  return updateList($, store => ({ ...store, items: store.items.map(it => (it.id === id ? { ...it, unread: false } : it)) }))
+// The item as printed, against the item now: the same content, the unread mark aside (a clear changes that, and a print does not show it).
+// Both are normalized (normalizeItem), so their keys come in one order and the JSON compares the content.
+const sameContent = (now: Item, printed: Item): boolean => JSON.stringify({ ...now, unread: false }) === JSON.stringify({ ...printed, unread: false })
+
+// Marks one item read: an item the pane switches to is shown, so its unread mark goes. `/asks <n>` passes the item as it printed it, and the mark
+// goes only while the item is still that one: a change made since the print is not in the text, so the mark it raised stays.
+export function markRead($: EngineInterface, id: number, printed?: Item): Promise<unknown> {
+  return updateList($, store => ({
+    ...store,
+    items: store.items.map(it => (it.id === id && (printed === undefined || sameContent(it, printed)) ? { ...it, unread: false } : it)),
+  }))
 }
 
 // The flag clears before the close is awaited: an open made while the close is in flight counts as open, and the close's settling

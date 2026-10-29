@@ -46,8 +46,9 @@ export type Item = {
   windowChanged: boolean
 }
 
-// The whole list, in one value so a write checks it at once: the items, and the number the next item takes.
-export type Store = { items: Item[]; next: number }
+// The whole list, in one value so a write checks it at once: the items, the number the next item takes, and the term the agent states for
+// the human (null until one is stated, '' once the agent clears it).
+export type Store = { items: Item[]; next: number; term: string | null }
 
 // A done notice the agent is still owed (turns.ts). It is kept in the state, since a reload starts the module's own variables over.
 export type Notice = { id: number; text: string }

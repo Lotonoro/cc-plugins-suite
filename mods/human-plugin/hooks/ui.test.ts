@@ -1,6 +1,6 @@
 import { expect, test } from 'claude-code/testing'
 import { act, listText, normalizeItem } from './items'
-import { expire, reply } from './done'
+import { answerOf, doneNotice, expire, press, reply, type Form } from './done'
 import { band, pane, paneRows, toolLine, type Handlers, type Table, type View } from './ui'
 import type { Item, Store, Turn } from '../types'
 
@@ -46,10 +46,10 @@ const item: Item = {
   unread: false,
   options: [], answer: null, yesno: false, replied: false, doneLabel: null, thread: [], windowTurns: [], windowChanged: false,
 }
-const store: Store = { items: [item], next: 2 }
+const store: Store = { items: [item], next: 2, term: null }
 
 test('the pane draws the shown item alone: no other item\'s title or button, and its whole detail and controls', () => {
-  const two: Store = { items: [item, { ...item, id: 2, title: 'Pick a cache', detail: 'Second brief.', blocking: false, note: null }], next: 3 }
+  const two: Store = { items: [item, { ...item, id: 2, title: 'Pick a cache', detail: 'Second brief.', blocking: false, note: null }], next: 3, term: null }
   const tree = pane(table, handlers, two, { ...view(), selected: 2 })
   expect(nodes(tree, 'Markdown').map(n => n.text)).toEqual(['Second brief.'])
   expect(texts(tree).join('')).not.toContain('We compared')
@@ -59,7 +59,7 @@ test('the pane draws the shown item alone: no other item\'s title or button, and
 
 test('the pane draws a brief\'s table as a list, and the stored detail keeps the table', () => {
   const detail = 'Pick one.\n\n| Store | Cost |\n|---|---|\n| sqlite | low |'
-  const stored: Store = { items: [{ ...item, detail, note: null }], next: 2 }
+  const stored: Store = { items: [{ ...item, detail, note: null }], next: 2, term: null }
   const tree = pane(table, handlers, stored, { ...view(), selected: 1 })
   expect(nodes(tree, 'Markdown').map(n => n.text)).toEqual(['Pick one.\n\n- **sqlite**: Cost: low'])
   expect(stored.items[0]?.detail).toBe(detail)
@@ -71,33 +71,33 @@ test('with nothing selected the pane shows the first item', () => {
 })
 
 test('a selection whose item is gone draws no other item: the pane is closing, and it shows nothing', () => {
-  const three: Store = { items: [1, 3, 5].map(id => ({ ...item, id, title: `t${id}`, detail: `brief ${id}` })), next: 6 }
+  const three: Store = { items: [1, 3, 5].map(id => ({ ...item, id, title: `t${id}`, detail: `brief ${id}` })), next: 6, term: null }
   const gone = pane(table, handlers, three, { ...view(), selected: 2 })
   expect(nodes(gone, 'Markdown')).toEqual([])
   expect(nodes(gone, 'Button')).toEqual([])
 })
 
 test('an empty list draws the empty-state text', () => {
-  expect(texts(pane(table, handlers, { items: [], next: 2 }, { ...view(), selected: null })).join('')).toBe('Nothing to do for you.')
+  expect(texts(pane(table, handlers, { items: [], next: 2, term: null }, { ...view(), selected: null })).join('')).toBe('Nothing to do for you.')
 })
 // A decision brief as the steering asks for it: the question on its first line, then sections.
 const BRIEF = ['**Which store for the cache?**', '', '## Recommendation', 'Postgres.', '', '## Options', '- A: sqlite. Costs: slower reads under load.', '- B: postgres. Costs: one more service.'].join('\n')
 
 test('the band shows no detail: a brief is read in the pane, which draws all of it', () => {
-  const briefed: Store = { items: [{ ...item, detail: BRIEF, note: null }], next: 2 }
+  const briefed: Store = { items: [{ ...item, detail: BRIEF, note: null }], next: 2, term: null }
   expect(texts(band(table, handlers, briefed, view())).join('')).not.toContain('Which store')
   expect(nodes(pane(table, handlers, briefed, view()), 'Markdown').map(n => n.text)).toEqual([BRIEF])
 })
 
 test('a waiting item shows a check and an undo countdown on its done control', () => {
-  const waiting: Store = { items: [{ ...item, options: [], answer: null, state: 'done-waiting', pressedAt: 0 }], next: 2 }
+  const waiting: Store = { items: [{ ...item, options: [], answer: null, state: 'done-waiting', pressedAt: 0 }], next: 2, term: null }
   const tree = band(table, handlers, waiting, { maxRows: 50, now: 2000, windowMs: 5000 })
   expect(texts(tree).join('')).toContain('✓')
   expect(nodes(tree, 'Button').some(b => b.label === '[↶ 3s]' && b.plain === true)).toBe(true)
 })
 
 test('the band\'s buttons are plain glyphs in brackets: a check to press done, and a row\'s title is plain', () => {
-  const tree = band(table, handlers, { items: [store.items[0] as Item, { ...item, id: 2, blocking: false }], next: 3 }, view())
+  const tree = band(table, handlers, { items: [store.items[0] as Item, { ...item, id: 2, blocking: false }], next: 3, term: null }, view())
   const buttons = nodes(tree, 'Button')
   const done = buttons.find(b => b.key === 'done-1')
   expect(done?.label).toBe('[✓]')
@@ -131,16 +131,16 @@ test('the fixed labels beside text that can wrap do not shrink: the header chip,
   const header = (band(table, handlers, store, view()) as Node).children?.[0] as Node
   expect(header.children?.[0]).toMatchObject({ type: 'Box', flexShrink: 0 })
   const decision: Item = { ...item, detail: '', options: [{ label: 'Use sqlite', description: '', recommended: false }] }
-  const answerRow = nodes(pane(table, handlers, { items: [decision], next: 2 }, { ...view(), selected: 1 }), 'Box').find(box => box.key === 'answer-row-1-0')
+  const answerRow = nodes(pane(table, handlers, { items: [decision], next: 2, term: null }, { ...view(), selected: 1 }), 'Box').find(box => box.key === 'answer-row-1-0')
   expect((answerRow?.children as Node[])[0]).toMatchObject({ type: 'Box', flexShrink: 0 })
-  const waiting = band(table, handlers, { items: [{ ...item, state: 'done-waiting', pressedAt: 0, options: [], answer: null }], next: 2 }, { maxRows: 50, now: 2000, windowMs: 5000 })
+  const waiting = band(table, handlers, { items: [{ ...item, state: 'done-waiting', pressedAt: 0, options: [], answer: null }], next: 2, term: null }, { maxRows: 50, now: 2000, windowMs: 5000 })
   expect(holder(waiting, 'done-1')).toMatchObject({ flexShrink: 0 })
 })
 
 const at = (id: number, blocking: boolean): Item => ({ ...item, id, blocking, detail: '', note: null, options: [], answer: null })
 
 test('the summary row is a button that opens the pane on the first folded item, a blocking one first, and says what it folds', () => {
-  const crowded: Store = { items: [1, 2, 3, 4, 5].map(id => at(id, true)).concat(at(6, false)), next: 7 }
+  const crowded: Store = { items: [1, 2, 3, 4, 5].map(id => at(id, true)).concat(at(6, false)), next: 7, term: null }
   const opened: number[] = []
   const press: Handlers = { ...handlers, more: id => void opened.push(id) }
   const tree = band(table, press, crowded, { maxRows: 4, now: 0, windowMs: 5000 })
@@ -155,7 +155,7 @@ test('the summary row is a button that opens the pane on the first folded item, 
 test('a summary of only non-blocking items opens the pane on the first folded one, and is dim', () => {
   const opened: number[] = []
   const press: Handlers = { ...handlers, more: id => void opened.push(id) }
-  const tree = band(table, press, { items: [at(1, false), at(2, false), at(3, false)], next: 4 }, { ...view(), maxRows: 3 })
+  const tree = band(table, press, { items: [at(1, false), at(2, false), at(3, false)], next: 4, term: null }, { ...view(), maxRows: 3 })
   const more = nodes(tree, 'Button').find(b => b.key === 'band-more')
   expect(more).toMatchObject({ label: '+2 more […]', dimColor: true })
   const onPress = more?.onPress as () => void
@@ -165,21 +165,21 @@ test('a summary of only non-blocking items opens the pane on the first folded on
 
 test('a summary holding a blocking item sits in a warning box; one of only non-blocking items sits in none', () => {
   const holderOfMore = (tree: unknown) => nodes(tree, 'Box').find(box => (box.children ?? []).some(c => (c as Node).key === 'band-more'))
-  const blocked = band(table, handlers, { items: [at(1, true), at(2, true), at(3, false)], next: 4 }, { ...view(), maxRows: 2 })
+  const blocked = band(table, handlers, { items: [at(1, true), at(2, true), at(3, false)], next: 4, term: null }, { ...view(), maxRows: 2 })
   expect(holderOfMore(blocked)?.backgroundColor).toBe('warning')
-  const quiet = band(table, handlers, { items: [at(1, false), at(2, false), at(3, false)], next: 4 }, { ...view(), maxRows: 3 })
+  const quiet = band(table, handlers, { items: [at(1, false), at(2, false), at(3, false)], next: 4, term: null }, { ...view(), maxRows: 3 })
   expect(holderOfMore(quiet)?.backgroundColor).toBeUndefined()
 })
 
 test('the header is the chip and the count only: it has no button, with items shown or folded', () => {
-  const folded = band(table, handlers, { items: [at(1, true), at(2, false)], next: 3 }, { ...view(), maxRows: 2 })
+  const folded = band(table, handlers, { items: [at(1, true), at(2, false)], next: 3, term: null }, { ...view(), maxRows: 2 })
   expect(nodes((folded as Node).children?.[0], 'Button')).toEqual([])
   expect(buttonKeys(folded)).not.toContain('details')
-  expect(buttonKeys(band(table, handlers, { items: [{ ...at(1, true), detail: 'One line.' }], next: 2 }, view()))).not.toContain('details')
+  expect(buttonKeys(band(table, handlers, { items: [{ ...at(1, true), detail: 'One line.' }], next: 2, term: null }, view()))).not.toContain('details')
 })
 
 test('a title gets […] only for a decision with options, whose answers are in the pane alone; a to-do or a yes/no never does, even with a brief or a note', () => {
-  const titleOf = (one: Item) => nodes(band(table, handlers, { items: [one], next: 2 }, view()), 'Button').find(b => b.key === 'title-1')?.label
+  const titleOf = (one: Item) => nodes(band(table, handlers, { items: [one], next: 2, term: null }, view()), 'Button').find(b => b.key === 'title-1')?.label
   expect(titleOf(at(1, true))).toBe('Pick a db')
   expect(titleOf({ ...at(1, true), detail: 'One line.' })).toBe('Pick a db')
   expect(titleOf({ ...at(1, true), note: 'still open' })).toBe('Pick a db')
@@ -191,7 +191,7 @@ test('a title gets […] only for a decision with options, whose answers are in 
 const yesNo = (over: Partial<Item> = {}): Item => ({ ...at(1, true), yesno: true, ...over })
 
 test('a yes/no row draws its yes and no marks after the title, plain', () => {
-  const tree = band(table, handlers, { items: [yesNo()], next: 2 }, view())
+  const tree = band(table, handlers, { items: [yesNo()], next: 2, term: null }, view())
   expect(buttonKeys(tree)).toEqual(['title-1', 'yes-1', 'no-1'])
   const marks = nodes(tree, 'Button').filter(b => b.key === 'yes-1' || b.key === 'no-1')
   expect(marks.map(b => b.label)).toEqual(['[✓]', '[✗]'])
@@ -201,7 +201,7 @@ test('a yes/no row draws its yes and no marks after the title, plain', () => {
 test('a yes/no row\'s marks answer yes and no, through the done handler', () => {
   const answers: (string | null)[] = []
   const press: Handlers = { ...handlers, done: (_id, answer) => void answers.push(answer) }
-  const tree = band(table, press, { items: [yesNo()], next: 2 }, view())
+  const tree = band(table, press, { items: [yesNo()], next: 2, term: null }, view())
   const pressKey = (key: string) => (nodes(tree, 'Button').find(b => b.key === key)?.onPress as () => void)()
   pressKey('yes-1')
   pressKey('no-1')
@@ -209,20 +209,20 @@ test('a yes/no row\'s marks answer yes and no, through the done handler', () => 
 })
 
 test('a yes/no question\'s marks are plain and bare in the pane, as the band\'s are', () => {
-  const shown = pane(table, handlers, { items: [yesNo({ detail: 'Brief.' })], next: 2 }, { ...view(), selected: 1 })
+  const shown = pane(table, handlers, { items: [yesNo({ detail: 'Brief.' })], next: 2, term: null }, { ...view(), selected: 1 })
   for (const key of ['yes-1', 'no-1']) {
     const mark = nodes(shown, 'Button').find(b => b.key === key)
     expect(mark).toMatchObject({ plain: true })
     expect(mark?.variant).toBeUndefined()
     expect(nodes(shown, 'Box').find(box => (box.children ?? []).some(c => c === mark))?.backgroundColor).toBeUndefined()
   }
-  const bandTree = band(table, handlers, { items: [yesNo()], next: 2 }, view())
+  const bandTree = band(table, handlers, { items: [yesNo()], next: 2, term: null }, view())
   expect(nodes(bandTree, 'Box').find(box => (box.children ?? []).some(c => (c as Node).key === 'yes-1'))?.backgroundColor).toBeUndefined()
 })
 
 test('a yes/no answer pressed draws its answer and the undo countdown in place of both marks', () => {
   const waiting = yesNo({ state: 'done-waiting', pressedAt: 0, answer: 'no' })
-  const tree = band(table, handlers, { items: [waiting], next: 2 }, { maxRows: 50, now: 2000, windowMs: 5000 })
+  const tree = band(table, handlers, { items: [waiting], next: 2, term: null }, { maxRows: 50, now: 2000, windowMs: 5000 })
   expect(buttonKeys(tree)).toEqual(['title-1', 'done-1'])
   expect(nodes(tree, 'Button').find(b => b.key === 'done-1')?.label).toBe('[↶ 3s]')
   expect(texts(tree).join('')).toContain('✗ no ')
@@ -230,20 +230,33 @@ test('a yes/no answer pressed draws its answer and the undo countdown in place o
 })
 
 test('a yes/no answer pressed yes draws a check in its undo window, and a no a cross', () => {
-  const yes = band(table, handlers, { items: [yesNo({ state: 'done-waiting', pressedAt: 0, answer: 'yes' })], next: 2 }, { maxRows: 50, now: 2000, windowMs: 5000 })
+  const yes = band(table, handlers, { items: [yesNo({ state: 'done-waiting', pressedAt: 0, answer: 'yes' })], next: 2, term: null }, { maxRows: 50, now: 2000, windowMs: 5000 })
   expect(texts(yes).join('')).toContain('✓ yes ')
   expect(texts(yes).join('')).not.toContain('✗')
 })
 
 test('the header is a chip filled in warning while a blocking item is open, and in permission otherwise; the count is plain', () => {
   const chip = (tree: unknown) => nodes(tree, 'Text').find(n => texts(n).join('').includes('To do for you'))
-  const quiet = band(table, handlers, { items: [at(1, false)], next: 2 }, view())
+  const quiet = band(table, handlers, { items: [at(1, false)], next: 2, term: null }, view())
   expect(chip(quiet)?.backgroundColor).toBe('permission')
   expect(chip(quiet)?.color).toBe('inverseText')
-  const blocked = band(table, handlers, { items: [at(1, false), at(2, true)], next: 3 }, view())
+  const blocked = band(table, handlers, { items: [at(1, false), at(2, true)], next: 3, term: null }, view())
   expect(chip(blocked)?.backgroundColor).toBe('warning')
   const count = nodes(blocked, 'Text').find(n => texts(n).join('').includes('2 open'))
   expect(count?.backgroundColor).toBeUndefined()
+})
+
+test('the chip reads To do for you until the agent states a term, and To do for the term once it does; a term the agent cleared reads To do for you', () => {
+  const chipText = (tree: unknown) => nodes(tree, 'Text').map(n => texts(n).join('')).find(text => text.includes('To do for'))
+  expect(chipText(band(table, handlers, store, view()))).toBe(' To do for you ')
+  expect(chipText(band(table, handlers, { ...store, term: 'owner' }, view()))).toBe(' To do for owner ')
+  expect(chipText(band(table, handlers, { ...store, term: 'Team lead' }, view()))).toBe(' To do for Team lead ')
+  expect(chipText(band(table, handlers, { ...store, term: '' }, view()))).toBe(' To do for you ')
+})
+
+test('the pane draws no term: an empty list still reads Nothing to do for you, and an item\'s pane shows none', () => {
+  expect(texts(pane(table, handlers, { items: [], next: 2, term: 'owner' }, { ...view(), selected: null })).join('')).toBe('Nothing to do for you.')
+  expect(JSON.stringify(pane(table, handlers, { ...store, term: 'owner' }, { ...view(), selected: 1 }))).not.toContain('owner')
 })
 
 test('the shown item draws no frame of its own inside the pane\'s', () => {
@@ -272,6 +285,17 @@ test('a call to the mod\'s tool draws one line: the action, the id, and for an a
     .toBe('human-plugin: updated #3')
   expect(toolLine({ input: { action: 'remove', id: 2 }, output: 'removed #2', isRunning: false, isErrored: false }))
     .toBe('human-plugin: removed #2')
+})
+
+test('a term note in an add\'s or an update\'s reply is left out of the transcript row: each row reads as the same call without a term', () => {
+  const row = (input: unknown, output: string) => toolLine({ input, output, isRunning: false, isErrored: false })
+  const add = { action: 'add', title: 'Pick a db', blocking: true }
+  expect(row(add, 'added #3 (term set to "owner")')).toBe('human-plugin: added #3 Pick a db (blocking)')
+  expect(row(add, 'added #3')).toBe('human-plugin: added #3 Pick a db (blocking)')
+  expect(row({ action: 'add', title: 'Pick (a) db' }, 'added #4 (term not used: only the main agent sets it)')).toBe('human-plugin: added #4 Pick (a) db')
+  expect(row({ action: 'add', title: 'Sub ask', term: 'x'.repeat(21) }, 'added #5 (term not used: only the main agent sets it)')).toBe('human-plugin: added #5 Sub ask')
+  expect(row({ action: 'update', id: 3, note: 'recheck', term: 'owner' }, 'updated #3 (term set to "owner")')).toBe('human-plugin: updated #3')
+  expect(row({ action: 'update', id: 3, term: 'owner' }, 'no change to #3 (term cleared)')).toBe('human-plugin: no change to #3')
 })
 
 test('an append draws one line naming the item it grew', () => {
@@ -316,7 +340,7 @@ test('a decision\'s answers are the pane\'s buttons, recommended first and marke
     { label: 'Use sqlite', description: 'Simpler', recommended: false },
     { label: 'Use postgres', description: 'Shared', recommended: true },
   ] }
-  const tree = pane(table, handlers, { items: [decision], next: 2 }, { ...view(), selected: 1 })
+  const tree = pane(table, handlers, { items: [decision], next: 2, term: null }, { ...view(), selected: 1 })
   const labels = nodes(tree, 'Button').filter(n => String(n.key).startsWith('answer-')).map(n => n.label)
   expect(labels).toEqual(['[Use postgres (recommended)]', '[Use sqlite]'])
   expect(nodes(tree, 'Button').some(n => n.key === 'done-1')).toBe(false)
@@ -327,7 +351,7 @@ test('each answer is a keyed row: a ▸ in the inline-code colour, then a plain 
     { label: 'Use sqlite', description: '', recommended: false },
     { label: 'Use postgres', description: '', recommended: true },
   ] }
-  const tree = pane(table, handlers, { items: [decision], next: 2 }, { ...view(), selected: 1 })
+  const tree = pane(table, handlers, { items: [decision], next: 2, term: null }, { ...view(), selected: 1 })
   const rows = nodes(tree, 'Box').filter(box => String(box.key).startsWith('answer-row-'))
   expect(rows.length).toBe(2)
   for (const row of rows) {
@@ -345,10 +369,10 @@ test('each answer is a keyed row: a ▸ in the inline-code colour, then a plain 
 test('no pane control sits in a background Box: the answers, the done and undo controls, and the marks', () => {
   const decision: Item = { ...item, detail: '', options: [{ label: 'Use sqlite', description: '', recommended: false }] }
   const trees = [
-    pane(table, handlers, { items: [decision], next: 2 }, { ...view(), selected: 1 }),
-    pane(table, handlers, { items: [at(1, true)], next: 2 }, view()),
-    pane(table, handlers, { items: [{ ...at(1, true), state: 'done-waiting', pressedAt: 0 }], next: 2 }, { ...view(), now: 0, windowMs: 3000 }),
-    pane(table, handlers, { items: [yesNo({ detail: 'Brief.' })], next: 2 }, { ...view(), selected: 1 }),
+    pane(table, handlers, { items: [decision], next: 2, term: null }, { ...view(), selected: 1 }),
+    pane(table, handlers, { items: [at(1, true)], next: 2, term: null }, view()),
+    pane(table, handlers, { items: [{ ...at(1, true), state: 'done-waiting', pressedAt: 0 }], next: 2, term: null }, { ...view(), now: 0, windowMs: 3000 }),
+    pane(table, handlers, { items: [yesNo({ detail: 'Brief.' })], next: 2, term: null }, { ...view(), selected: 1 }),
   ]
   for (const tree of trees) {
     expect(nodes(tree, 'Button').length).toBeGreaterThan(0)
@@ -361,7 +385,7 @@ test('an answer draws its label only: no option description is in the pane', () 
     { label: 'Use sqlite', description: 'Simpler to run', recommended: false },
     { label: 'Use postgres', description: 'Shared with the team', recommended: true },
   ] }
-  const drawn = JSON.stringify(pane(table, handlers, { items: [decision], next: 2 }, { ...view(), selected: 1 }))
+  const drawn = JSON.stringify(pane(table, handlers, { items: [decision], next: 2, term: null }, { ...view(), selected: 1 }))
   expect(drawn).not.toContain('Simpler to run')
   expect(drawn).not.toContain('Shared with the team')
 })
@@ -371,23 +395,23 @@ test('a decision\'s answers are not in the band: answering means opening the ite
     { label: 'Use sqlite', description: '', recommended: false },
     { label: 'Use postgres', description: '', recommended: true },
   ] }
-  const tree = band(table, handlers, { items: [decision], next: 2 }, view())
+  const tree = band(table, handlers, { items: [decision], next: 2, term: null }, view())
   expect(nodes(tree, 'Button').some(n => String(n.key).startsWith('answer-') || n.key === 'done-1')).toBe(false)
 })
 
 test('a plain item is a plain check in the pane, with or without a brief', () => {
   const plain: Item = { ...item, detail: '', options: [] }
-  expect(nodes(pane(table, handlers, { items: [plain], next: 2 }, { ...view(), selected: 1 }), 'Button').find(n => n.key === 'done-1')?.label).toBe('[✓]')
-  expect(nodes(pane(table, handlers, { items: [item], next: 2 }, { ...view(), selected: 1 }), 'Button').find(n => n.key === 'done-1')?.label).toBe('[✓]')
+  expect(nodes(pane(table, handlers, { items: [plain], next: 2, term: null }, { ...view(), selected: 1 }), 'Button').find(n => n.key === 'done-1')?.label).toBe('[✓]')
+  expect(nodes(pane(table, handlers, { items: [item], next: 2, term: null }, { ...view(), selected: 1 }), 'Button').find(n => n.key === 'done-1')?.label).toBe('[✓]')
 })
 
 test('a labelled to-do\'s check reads its label, in the band and in the pane, and its press passes the label on', () => {
   const labelled: Item = { ...item, detail: '', doneLabel: 'Go with sqlite' }
   const calls: [number, string | null][] = []
   const h: Handlers = { ...handlers, done: (id, answer) => calls.push([id, answer]) }
-  const bandButton = nodes(band(table, h, { items: [labelled], next: 2 }, view()), 'Button').find(b => b.key === 'done-1')
+  const bandButton = nodes(band(table, h, { items: [labelled], next: 2, term: null }, view()), 'Button').find(b => b.key === 'done-1')
   expect(bandButton?.label).toBe('[✓ Go with sqlite]')
-  const paneButton = nodes(pane(table, h, { items: [labelled], next: 2 }, { ...view(), selected: 1 }), 'Button').find(b => b.key === 'done-1')
+  const paneButton = nodes(pane(table, h, { items: [labelled], next: 2, term: null }, { ...view(), selected: 1 }), 'Button').find(b => b.key === 'done-1')
   expect(paneButton?.label).toBe('[✓ Go with sqlite]')
   ;(bandButton?.onPress as () => void)()
   ;(paneButton?.onPress as () => void)()
@@ -396,31 +420,31 @@ test('a labelled to-do\'s check reads its label, in the band and in the pane, an
 
 test('an item an older release stored draws a bare check: its done label normalizes to none', () => {
   const old = normalizeItem({ id: 1, title: 'Pick a db', detail: '', blocking: false, createdAt: 5, state: 'open' }) as Item
-  const drawn = band(table, handlers, { items: [old], next: 2 }, view())
+  const drawn = band(table, handlers, { items: [old], next: 2, term: null }, view())
   expect(nodes(drawn, 'Button').find(b => b.key === 'done-1')?.label).toBe('[✓]')
 })
 
 test('a bare to-do\'s press passes no label, so the notice is the bare one', () => {
   const calls: [number, string | null][] = []
   const h: Handlers = { ...handlers, done: (id, answer) => calls.push([id, answer]) }
-  const button = nodes(band(table, h, { items: [{ ...item, detail: '' }], next: 2 }, view()), 'Button').find(b => b.key === 'done-1')
+  const button = nodes(band(table, h, { items: [{ ...item, detail: '' }], next: 2, term: null }, view()), 'Button').find(b => b.key === 'done-1')
   ;(button?.onPress as () => void)()
   expect(calls).toEqual([[1, null]])
 })
 
 test('a labelled to-do pressed draws its label beside the undo countdown, and a bare to-do draws no label', () => {
   const waiting: Item = { ...item, detail: '', doneLabel: 'Go with sqlite', state: 'done-waiting', pressedAt: 0, answer: 'Go with sqlite' }
-  const drawn = JSON.stringify(pane(table, handlers, { items: [waiting], next: 2 }, { ...view(), selected: 1 }))
+  const drawn = JSON.stringify(pane(table, handlers, { items: [waiting], next: 2, term: null }, { ...view(), selected: 1 }))
   expect(drawn).toContain('✓ Go with sqlite ')
   expect(drawn).toContain('[↶ 5s]')
-  const bare = JSON.stringify(band(table, handlers, { items: [{ ...item, detail: '' }], next: 2 }, view()))
+  const bare = JSON.stringify(band(table, handlers, { items: [{ ...item, detail: '' }], next: 2, term: null }, view()))
   expect(bare).toContain('[✓]')
   expect(bare).not.toContain('Go with sqlite')
 })
 
 test('an answer pressed draws its label with the countdown, and the band\'s check is plain', () => {
   const waiting: Item = { ...item, detail: '', state: 'done-waiting', pressedAt: 0, answer: 'Use postgres', options: [{ label: 'Use postgres', description: '', recommended: true }, { label: 'Use sqlite', description: '', recommended: false }] }
-  const drawn = JSON.stringify(pane(table, handlers, { items: [waiting], next: 2 }, { ...view(), selected: 1 }))
+  const drawn = JSON.stringify(pane(table, handlers, { items: [waiting], next: 2, term: null }, { ...view(), selected: 1 }))
   expect(drawn).toContain('✓ Use postgres ')
   expect(drawn).toContain('[↶ 5s]')
   expect(drawn).not.toContain('Use sqlite')
@@ -433,7 +457,7 @@ test('a decision\'s title press reaches the pane for that item', () => {
   ] }
   const picked: [number, boolean][] = []
   const press: Handlers = { ...handlers, pick: (id, isSelected) => void picked.push([id, isSelected]) }
-  const tree = band(table, press, { items: [decision], next: 2 }, view())
+  const tree = band(table, press, { items: [decision], next: 2, term: null }, view())
   const titlePress = nodes(tree, 'Button').find(n => n.key === 'title-1')?.onPress as (() => void) | undefined
   titlePress?.()
   expect(picked).toEqual([[1, true]])
@@ -442,7 +466,7 @@ test('a decision\'s title press reaches the pane for that item', () => {
 test('a band title says whether the pane shows its item, so a press on the shown item closes the pane; with none chosen the first is shown', () => {
   const picked: [number, boolean][] = []
   const press: Handlers = { ...handlers, pick: (id, isSelected) => void picked.push([id, isSelected]) }
-  const two: Store = { items: [at(1, true), at(2, true)], next: 3 }
+  const two: Store = { items: [at(1, true), at(2, true)], next: 3, term: null }
   const press2 = (tree: unknown, key: string) => (nodes(tree, 'Button').find(n => n.key === key)?.onPress as () => void)()
   press2(band(table, press, two, { ...view(), selected: 2 }), 'title-1')
   press2(band(table, press, two, { ...view(), selected: 2 }), 'title-2')
@@ -456,7 +480,7 @@ const buttonKeys = (tree: unknown): string[] => nodes(tree, 'Button').map(b => S
 test('an item whose undo window has ended keeps its button, so the window ending moves no other button in the focus ring', () => {
   const buttons = (state: Item['state']): string[] => {
     const one: Item = { ...at(1, true), state, pressedAt: state === 'done-waiting' ? 0 : null }
-    return buttonKeys(band(table, handlers, { items: [one, at(2, true)], next: 3 }, view()))
+    return buttonKeys(band(table, handlers, { items: [one, at(2, true)], next: 3, term: null }, view()))
   }
   expect(buttons('done-pending')).toEqual(buttons('done-waiting'))
 })
@@ -483,21 +507,21 @@ test('a one-item list with no detail asks for the bare item, and no shown item a
 
 test('a whitespace-only brief is no brief: the title is bare, the pane asks for no brief row and draws no markdown', () => {
   const blank = { ...at(1, true), detail: '  \n ', note: null }
-  const titleOf = nodes(band(table, handlers, { items: [blank], next: 2 }, view()), 'Button').find(b => b.key === 'title-1')?.label
+  const titleOf = nodes(band(table, handlers, { items: [blank], next: 2, term: null }, view()), 'Button').find(b => b.key === 'title-1')?.label
   expect(titleOf).toBe('Pick a db')
   expect(paneRows(blank)).toBe(3)
-  expect(nodes(pane(table, handlers, { items: [blank], next: 2 }, view()), 'Markdown')).toEqual([])
+  expect(nodes(pane(table, handlers, { items: [blank], next: 2, term: null }, view()), 'Markdown')).toEqual([])
 })
 
 test('the done button draws its label as written in the pane: plain, so the terminal adds no brackets of its own', () => {
-  const done = nodes(pane(table, handlers, { items: [at(1, true)], next: 2 }, view()), 'Button').find(b => b.key === 'done-1')
+  const done = nodes(pane(table, handlers, { items: [at(1, true)], next: 2, term: null }, view()), 'Button').find(b => b.key === 'done-1')
   expect(done).toMatchObject({ plain: true, label: '[✓]' })
   expect(done?.variant).toBeUndefined()
 })
 
 test('the undo button in the pane is plain too: its countdown reads [↶ 3s] as written', () => {
   const waiting: Item = { ...at(1, true), state: 'done-waiting', pressedAt: 0 }
-  const undo = nodes(pane(table, handlers, { items: [waiting], next: 2 }, { ...view(), now: 0, windowMs: 3000 }), 'Button').find(b => b.key === 'done-1')
+  const undo = nodes(pane(table, handlers, { items: [waiting], next: 2, term: null }, { ...view(), now: 0, windowMs: 3000 }), 'Button').find(b => b.key === 'done-1')
   expect(undo).toMatchObject({ plain: true, label: '[↶ 3s]' })
   expect(undo?.variant).toBeUndefined()
 })
@@ -506,11 +530,11 @@ test('the undo button in the pane is plain too: its countdown reads [↶ 3s] as 
 const holderOf = (tree: unknown): Node | undefined => nodes(tree, 'Box').find(box => (box.children ?? []).some(c => (c as Node).key === 'done-1'))
 
 test('the pane\'s done buttons sit bare, as the band\'s do', () => {
-  const one = { items: [at(1, true)], next: 2 }
+  const one = { items: [at(1, true)], next: 2, term: null }
   expect(holderOf(pane(table, handlers, one, view()))?.backgroundColor).toBeUndefined()
   expect(holderOf(band(table, handlers, one, view()))?.backgroundColor).toBeUndefined()
   const waiting: Item = { ...at(1, true), state: 'done-waiting', pressedAt: 0 }
-  expect(holderOf(pane(table, handlers, { items: [waiting], next: 2 }, { ...view(), now: 0, windowMs: 3000 }))?.backgroundColor).toBeUndefined()
+  expect(holderOf(pane(table, handlers, { items: [waiting], next: 2, term: null }, { ...view(), now: 0, windowMs: 3000 }))?.backgroundColor).toBeUndefined()
 })
 
 test('a list reply counts its items, not its lines: two items with multi-line details are listed 2 open', () => {
@@ -533,8 +557,8 @@ test('the pane draws a one-line reply field after an open item\'s controls, keye
 })
 
 test('no reply field for an item whose press is in its undo window, or sent', () => {
-  const waiting = { items: [{ ...item, state: 'done-waiting' as const, pressedAt: 0 }], next: 2 }
-  const sent = { items: [{ ...item, state: 'done-pending' as const }], next: 2 }
+  const waiting = { items: [{ ...item, state: 'done-waiting' as const, pressedAt: 0 }], next: 2, term: null }
+  const sent = { items: [{ ...item, state: 'done-pending' as const }], next: 2, term: null }
   expect(nodes(pane(withInput, handlers, waiting, view()), 'Input')).toEqual([])
   expect(nodes(pane(withInput, handlers, sent, view()), 'Input')).toEqual([])
 })
@@ -559,9 +583,69 @@ test('a reply submitted is trimmed and handed to reply; an empty or blank one is
   expect(sent).toEqual([[1, 'Use sqlite']])
 })
 
+test('a reply of only U+00A0 is not sent: the field trims as JavaScript does, so U+00A0 around a reply is trimmed and alone is nothing', () => {
+  const nbsp = String.fromCharCode(0xa0)
+  const sent: [number, string][] = []
+  const h: Handlers = { ...handlers, reply: (id, text) => sent.push([id, text]) }
+  const field = nodes(pane(withInput, h, store, view()), 'Input')[0]
+  submit(field, nbsp)
+  expect(sent).toEqual([])
+  submit(field, `${nbsp}Use sqlite${nbsp}`)
+  expect(sent).toEqual([[1, 'Use sqlite']])
+})
+
+// The form a control of the pane answers with, by the control's own kind or place: a decision's answer by its place in the pane's order, a yes or a
+// no by its kind, and a to-do's check as done, whose answer is its label or none.
+const formOf = (key: string): Form => {
+  if (key.startsWith('answer-')) return { kind: 'option', n: Number(key.split('-')[2]) + 1 }
+  if (key.startsWith('yes-')) return { kind: 'yes' }
+  if (key.startsWith('no-')) return { kind: 'no' }
+  return { kind: 'done' }
+}
+
+// The form resolves on the store as the press leaves it, and once each window has ended both give the same item and the same notice.
+const sameAsPress = (store: Store, form: Form, pressed: Store): void => {
+  const resolved = answerOf(store, '1', form, 1000)
+  expect(resolved.outcome.kind).toBe('applied')
+  expect(expire(resolved.store, 1, 1000)).toEqual(expire(pressed, 1, 1000))
+  expect(doneNotice(expire(resolved.store, 1, 1000).sent as Item)).toBe(doneNotice(expire(pressed, 1, 1000).sent as Item))
+}
+
+test('each answer the pane\'s controls send is a form the resolver applies, and gives the notice its press gives, for every kind of item', () => {
+  const options = [
+    { label: 'Use sqlite', description: '', recommended: false },
+    { label: 'Use postgres', description: '', recommended: false },
+    { label: 'Use mysql', description: '', recommended: true },
+  ]
+  for (const kind of [{ detail: '' }, { detail: '', doneLabel: 'Ship it' }, { detail: '', yesno: true }, { detail: '', options }] as Partial<Item>[]) {
+    const store0: Store = { items: [{ ...item, ...kind }], next: 2, term: null }
+    // The pane drawn afresh, its handlers recording what each control sends.
+    const drawn = (sent: [number, string | null][], replies: [number, string][]) =>
+      pane(withInput, { ...handlers, done: (id, answer) => void sent.push([id, answer]), reply: (id, text) => void replies.push([id, text]) }, store0, {
+        ...view(),
+        selected: 1,
+      })
+    const keys = nodes(drawn([], []), 'Button')
+      .map(b => String(b.key))
+      .filter(key => /^(answer-1-\d+|done-1|yes-1|no-1)$/.test(key))
+    expect(keys.length).toBeGreaterThan(0)
+    for (const key of keys) {
+      const sent: [number, string | null][] = []
+      const tree = drawn(sent, [])
+      ;(nodes(tree, 'Button').find(b => b.key === key)?.onPress as () => void)()
+      expect(sent.length).toBe(1)
+      sameAsPress(store0, formOf(key), press(store0, 1, 1000, sent[0]?.[1] ?? null))
+    }
+    const replies: [number, string][] = []
+    submit(nodes(drawn([], replies), 'Input')[0], '  Use sqlite  ')
+    expect(replies).toEqual([[1, 'Use sqlite']])
+    sameAsPress(store0, { kind: 'reply', text: 'Use sqlite' }, reply(store0, 1, 1000, 'Use sqlite'))
+  }
+})
+
 test('a reply in its undo window draws its text as a check, not a cross even on a yes or no, with the undo countdown', () => {
   const replied = { ...yesNo(), state: 'done-waiting' as const, pressedAt: 0, answer: 'no', replied: true }
-  const tree = pane(table, handlers, { items: [replied], next: 2 }, { ...view(), now: 0, windowMs: 3000 })
+  const tree = pane(table, handlers, { items: [replied], next: 2, term: null }, { ...view(), now: 0, windowMs: 3000 })
   expect(texts(tree).join('')).toContain('✓ replied: no')
   expect(texts(tree).join('')).not.toContain('✗')
   expect(nodes(tree, 'Button').map(b => [b.key, b.label])).toEqual([['done-1', '[↶ 3s]']])
@@ -570,10 +654,10 @@ test('a reply in its undo window draws its text as a check, not a cross even on 
 test('the band\'s reply check names no reply text: a 200-character reply draws ✓ replied alone, and the pane draws it whole', () => {
   const long = 'Use the staging cache, not production, because ' + 'x'.repeat(150)
   const replied = { ...item, state: 'done-waiting' as const, pressedAt: 0, answer: long, replied: true }
-  const bandTree = band(table, handlers, { items: [replied], next: 2 }, { ...view(), now: 0, windowMs: 3000 })
+  const bandTree = band(table, handlers, { items: [replied], next: 2, term: null }, { ...view(), now: 0, windowMs: 3000 })
   expect(texts(bandTree).join('')).toContain('✓ replied')
   expect(texts(bandTree).join('')).not.toContain('Use the staging cache')
-  const paneTree = pane(table, handlers, { items: [replied], next: 2 }, { ...view(), now: 0, windowMs: 3000 })
+  const paneTree = pane(table, handlers, { items: [replied], next: 2, term: null }, { ...view(), now: 0, windowMs: 3000 })
   expect(texts(paneTree).join('')).toContain(long)
 })
 
@@ -581,7 +665,7 @@ test('the undo button of a running window calls done with no answer, which is wh
   const calls: [number, string | null][] = []
   const h: Handlers = { ...handlers, done: (id, answer) => calls.push([id, answer]) }
   const waiting = { ...item, state: 'done-waiting' as const, pressedAt: 0, answer: 'Use sqlite' }
-  const tree = pane(table, h, { items: [waiting], next: 2 }, { ...view(), now: 0, windowMs: 3000 })
+  const tree = pane(table, h, { items: [waiting], next: 2, term: null }, { ...view(), now: 0, windowMs: 3000 })
   ;(nodes(tree, 'Button').find(b => b.key === 'done-1')?.onPress as () => void)()
   expect(calls).toEqual([[1, null]])
 })
@@ -589,16 +673,16 @@ test('the undo button of a running window calls done with no answer, which is wh
 test('the header counts the open items, and the sent ones by their own count: an item in its undo window is in neither', () => {
   const waiting = { ...at(2, false), state: 'done-waiting' as const, pressedAt: 0, answer: null }
   const sent = { ...at(3, false), state: 'done-pending' as const }
-  const tree = band(table, handlers, { items: [at(1, false), waiting, sent], next: 4 }, { ...view(), now: 1000 })
+  const tree = band(table, handlers, { items: [at(1, false), waiting, sent], next: 4, term: null }, { ...view(), now: 1000 })
   const count = nodes(tree, 'Text').find(n => /\d+ open/.test(texts(n).join('')))
   expect(texts(count).join('')).toBe(' 1 open, 1 sent ')
 })
 
 test('the header is amber only while a blocking item is open: one already sent or in its undo window does not make the chip warning', () => {
   const chip = (tree: unknown) => nodes(tree, 'Text').find(n => texts(n).join('').includes('To do for you'))
-  const sent = band(table, handlers, { items: [{ ...at(1, true), state: 'done-pending' as const }], next: 2 }, view())
+  const sent = band(table, handlers, { items: [{ ...at(1, true), state: 'done-pending' as const }], next: 2, term: null }, view())
   expect(chip(sent)?.backgroundColor).toBe('permission')
-  const waiting = band(table, handlers, { items: [{ ...at(1, true), state: 'done-waiting' as const, pressedAt: 0, answer: null }], next: 2 }, { ...view(), now: 1000 })
+  const waiting = band(table, handlers, { items: [{ ...at(1, true), state: 'done-waiting' as const, pressedAt: 0, answer: null }], next: 2, term: null }, { ...view(), now: 1000 })
   expect(chip(waiting)?.backgroundColor).toBe('permission')
 })
 
@@ -611,7 +695,7 @@ test('each fenced block in a brief has a copy button after it that copies the bl
   const copied: [string, unknown][] = []
   const h: Handlers = { ...handlers, copy: (text, surface) => void copied.push([text, surface]) }
   const brief = 'Run this:\n\n```sh\nls -la\ncd /tmp\n```\n\nThen this:\n\n```\nmake test\n```\n\nDone.'
-  const tree = pane(table, h, { items: [{ ...item, detail: brief, note: null }], next: 2 }, view())
+  const tree = pane(table, h, { items: [{ ...item, detail: brief, note: null }], next: 2, term: null }, view())
   expect(nodes(tree, 'Markdown').map(n => n.text)).toEqual(['Run this:', '```sh\nls -la\ncd /tmp\n```', 'Then this:', '```\nmake test\n```', 'Done.'])
   const copies = nodes(tree, 'Button').filter(b => String(b.key).startsWith('copy-'))
   expect(copies.map(b => [b.key, b.label, b.plain])).toEqual([['copy-1-1', '[copy]', true], ['copy-1-3', '[copy]', true]])
@@ -636,7 +720,7 @@ const SIX: Turn[] = [
 ]
 
 test('an item with six turns draws its two older turns as one dim line each, then the last four whole, then its controls and reply field', () => {
-  const tree = pane(withInput, handlers, { items: [{ ...item, detail: '', note: null, thread: SIX }], next: 2 }, view())
+  const tree = pane(withInput, handlers, { items: [{ ...item, detail: '', note: null, thread: SIX }], next: 2, term: null }, view())
   const kids = (tree as Node).children as Node[]
   expect(kids.slice(1).map(k => k.key ?? k.type)).toEqual(['turn-1-0', 'turn-1-1', 'turn-1-2', 'turn-1-3', 'turn-1-4', 'turn-1-5', 'done-1', 'reply-1'])
   expect(kids.slice(1, 3).map(k => [texts(k).join(''), nodes(k, 'Text')[0]?.dimColor, nodes(k, 'Text')[0]?.wrap])).toEqual([['you: Use sqlite', true, 'truncate-end'], ['agent: Noted.', true, 'truncate-end']])
@@ -645,7 +729,7 @@ test('an item with six turns draws its two older turns as one dim line each, the
 
 test('a sent reply is drawn as the newest turn, just above its ✓ sent', () => {
   const sent: Item = { ...item, detail: '', note: null, state: 'done-pending', answer: 'Use sqlite', replied: true, thread: [{ speaker: 'agent', words: 'Which store?' }] }
-  const tree = pane(withInput, handlers, { items: [sent], next: 2 }, view())
+  const tree = pane(withInput, handlers, { items: [sent], next: 2, term: null }, view())
   const kids = (tree as Node).children as Node[]
   expect(kids.slice(-2).map(k => k.key ?? k.type)).toEqual(['turn-1-1', 'done-1'])
   expect(texts(kids.at(-2)).join('')).toBe('you: Use sqlite')
@@ -654,7 +738,7 @@ test('a sent reply is drawn as the newest turn, just above its ✓ sent', () => 
 
 test('a reply in its undo window is drawn as the newest turn above its controls, with the agent turn it took after it', () => {
   const waiting: Item = { ...item, detail: '', note: null, state: 'done-waiting', pressedAt: 0, answer: 'Use sqlite', replied: true, windowTurns: [{ speaker: 'agent', words: 'Noted.' }] }
-  const kids = (pane(withInput, handlers, { items: [waiting], next: 2 }, { ...view(), now: 0, windowMs: 3000 }) as Node).children as Node[]
+  const kids = (pane(withInput, handlers, { items: [waiting], next: 2, term: null }, { ...view(), now: 0, windowMs: 3000 }) as Node).children as Node[]
   expect(kids.length).toBe(4)
   expect(texts(kids[1]).join('')).toBe('you: Use sqlite')
   expect(nodes(kids[2], 'Markdown').map(m => m.text)).toEqual(['Noted.'])
@@ -665,7 +749,7 @@ test('an agent turn with fenced blocks is drawn as a brief: a copy button under 
   const copied: [string, unknown][] = []
   const h: Handlers = { ...handlers, copy: (text, surface) => void copied.push([text, surface]) }
   const turn: Turn = { speaker: 'agent', words: 'Run this:\n\n```sh\nls -la\ncd /tmp\n```\n\nThen this:\n\n```\nmake test\n```' }
-  const tree = pane(table, h, { items: [{ ...item, detail: '', note: null, thread: [turn] }], next: 2 }, view())
+  const tree = pane(table, h, { items: [{ ...item, detail: '', note: null, thread: [turn] }], next: 2, term: null }, view())
   expect(nodes(tree, 'Markdown').map(n => n.text)).toEqual(['Run this:', '```sh\nls -la\ncd /tmp\n```', 'Then this:', '```\nmake test\n```'])
   const copies = nodes(tree, 'Button').filter(b => String(b.key).startsWith('copy-'))
   expect(copies.map(b => [b.key, b.label])).toEqual([['copy-turn-1-0-1', '[copy]'], ['copy-turn-1-0-3', '[copy]']])
@@ -703,7 +787,7 @@ test('the pane\'s row request for an item with a thread equals the rows its draw
   ]
   const one: Item = { ...item, detail: 'Brief.\n\nMore.', note: 'still open\nsecond line', thread }
   const decision: Item['options'] = [{ label: 'Postgres', description: '', recommended: true }, { label: 'sqlite', description: '', recommended: false }]
-  const drawn = (shown: Item): number => drawnRows(pane(withInput, handlers, { items: [shown], next: 2 }, view()))
+  const drawn = (shown: Item): number => drawnRows(pane(withInput, handlers, { items: [shown], next: 2, term: null }, view()))
   expect(paneRows(one)).toBe(drawn(one))
   expect(paneRows({ ...one, options: decision })).toBe(drawn({ ...one, options: decision }))
   const sent: Item = { ...one, options: decision, state: 'done-pending', answer: 'Postgres' }
@@ -715,7 +799,7 @@ test('the pane\'s row request for an item with a thread equals the rows its draw
 test('the pane\'s row request equals the drawn rows for fenced blocks in list items, in the brief and in a thread turn', () => {
   const nested = '# Options\n\n- a\n  - b\n    ```sh\n    # not a heading\n    ls\n    ```\n  - c\n\n1. step\n   ~~~\n   make\n   ~~~\n\nAfter.'
   const withTurn: Item = { ...item, detail: nested, note: null, thread: [{ speaker: 'human', words: 'Ok' }, { speaker: 'agent', words: nested }] }
-  const drawn = (shown: Item): number => drawnRows(pane(withInput, handlers, { items: [shown], next: 2 }, view()))
+  const drawn = (shown: Item): number => drawnRows(pane(withInput, handlers, { items: [shown], next: 2, term: null }, view()))
   expect(paneRows(withTurn)).toBe(drawn(withTurn))
   expect(paneRows({ ...withTurn, thread: [] })).toBe(drawn({ ...withTurn, thread: [] }))
 })
@@ -723,14 +807,14 @@ test('the pane\'s row request equals the drawn rows for fenced blocks in list it
 test('the pane asks for the rows a reply in its undo window draws: its header, the reply as a turn, the agent turn it took, and the undo button', () => {
   const waiting: Item = { ...at(1, true), state: 'done-waiting', pressedAt: 0, answer: 'Use sqlite', replied: true, windowTurns: [{ speaker: 'agent', words: 'Noted.' }] }
   expect(paneRows(waiting)).toBe(1 + 1 + 2 + 1)
-  expect(paneRows(waiting)).toBe(drawnRows(pane(withInput, handlers, { items: [waiting], next: 2 }, { ...view(), now: 0, windowMs: 3000 })))
+  expect(paneRows(waiting)).toBe(drawnRows(pane(withInput, handlers, { items: [waiting], next: 2, term: null }, { ...view(), now: 0, windowMs: 3000 })))
 })
 
 test('a fence in a second-level list item has a copy button, its block is drawn without the item\'s indent, and the pane asks for its row', () => {
   const copied: [string, unknown][] = []
   const h: Handlers = { ...handlers, copy: (text, surface) => void copied.push([text, surface]) }
   const brief = '- a\n  - b\n    ```sh\n    ls\n    ```'
-  const tree = pane(table, h, { items: [{ ...item, detail: brief, note: null }], next: 2 }, view())
+  const tree = pane(table, h, { items: [{ ...item, detail: brief, note: null }], next: 2, term: null }, view())
   expect(nodes(tree, 'Markdown').map(n => n.text)).toEqual(['- a\n  - b', '```sh\nls\n```'])
   const copies = nodes(tree, 'Button').filter(b => String(b.key).startsWith('copy-'))
   expect(copies.map(b => [b.key, b.label, b.plain])).toEqual([['copy-1-1', '[copy]', true]])
@@ -744,7 +828,7 @@ test('a fence on a list marker\'s own line reaches the pane as one block that st
   const copied: [string, unknown][] = []
   const h: Handlers = { ...handlers, copy: (text, surface) => void copied.push([text, surface]) }
   const brief = '1. x\n   - ```sh\n     ls\n     ```\nafter'
-  const tree = pane(table, h, { items: [{ ...item, detail: brief, note: null }], next: 2 }, view())
+  const tree = pane(table, h, { items: [{ ...item, detail: brief, note: null }], next: 2, term: null }, view())
   expect(nodes(tree, 'Markdown').map(n => n.text)).toEqual(['1. x', '- ```sh\n  ls\n  ```', 'after'])
   const copies = nodes(tree, 'Button').filter(b => String(b.key).startsWith('copy-'))
   expect(copies.map(b => b.key)).toEqual(['copy-1-1'])
@@ -754,21 +838,21 @@ test('a fence on a list marker\'s own line reaches the pane as one block that st
 
 test('a fence indented four spaces outside a list is no fence: no copy button, and a table after it is drawn as a list', () => {
   const brief = '    ```sh\n    ls\n    ```\n\n| a | b |\n|---|---|\n| 1 | 2 |'
-  const tree = pane(table, handlers, { items: [{ ...item, detail: brief, note: null }], next: 2 }, view())
+  const tree = pane(table, handlers, { items: [{ ...item, detail: brief, note: null }], next: 2, term: null }, view())
   expect(nodes(tree, 'Markdown').map(n => n.text)).toEqual(['    ```sh\n    ls\n    ```\n\n- **1**: b: 2'])
   expect(nodes(tree, 'Button').filter(b => String(b.key).startsWith('copy-'))).toEqual([])
 })
 
 test('a fence four or more columns past its list item\'s content column is no fence: no copy button, and its lines stay prose', () => {
   const brief = '- a\n      ```sh\n      ls\n      ```'
-  const tree = pane(table, handlers, { items: [{ ...item, detail: brief, note: null }], next: 2 }, view())
+  const tree = pane(table, handlers, { items: [{ ...item, detail: brief, note: null }], next: 2, term: null }, view())
   expect(nodes(tree, 'Markdown').map(n => n.text)).toEqual([brief])
   expect(nodes(tree, 'Button').filter(b => String(b.key).startsWith('copy-'))).toEqual([])
 })
 
 test('a backtick run with a backtick in its info string is no fence: no copy button, and the table after it is drawn as a list', () => {
   const brief = '```x```\n| a | b |\n|---|---|\n| 1 | 2 |'
-  const tree = pane(table, handlers, { items: [{ ...item, detail: brief, note: null }], next: 2 }, view())
+  const tree = pane(table, handlers, { items: [{ ...item, detail: brief, note: null }], next: 2, term: null }, view())
   expect(nodes(tree, 'Markdown').map(n => n.text)).toEqual(['```x```\n\n- **1**: b: 2'])
   expect(nodes(tree, 'Button').filter(b => String(b.key).startsWith('copy-'))).toEqual([])
 })
@@ -777,7 +861,7 @@ test('a tilde fence with a backtick line inside has one copy button, and a table
   const copied: [string, unknown][] = []
   const h: Handlers = { ...handlers, copy: (text, surface) => void copied.push([text, surface]) }
   const brief = '~~~\n```\n| a | b |\n|---|---|\n| 1 | 2 |\n~~~\n| c | d |\n|---|---|\n| 3 | 4 |'
-  const tree = pane(table, h, { items: [{ ...item, detail: brief, note: null }], next: 2 }, view())
+  const tree = pane(table, h, { items: [{ ...item, detail: brief, note: null }], next: 2, term: null }, view())
   expect(nodes(tree, 'Markdown').map(n => n.text)).toEqual(['~~~\n```\n| a | b |\n|---|---|\n| 1 | 2 |\n~~~', '- **3**: d: 4'])
   const copies = nodes(tree, 'Button').filter(b => String(b.key).startsWith('copy-'))
   expect(copies.map(b => b.key)).toEqual(['copy-1-0'])
@@ -787,6 +871,6 @@ test('a tilde fence with a backtick line inside has one copy button, and a table
 
 test('a table after a fence in a second-level list item is drawn as a list, with no indent of four or more columns', () => {
   const brief = '- a\n  - b\n    ```sh\n    ls\n    ```\n    | x | y |\n    |---|---|\n    | 1 | 2 |'
-  const tree = pane(table, handlers, { items: [{ ...item, detail: brief, note: null }], next: 2 }, view())
+  const tree = pane(table, handlers, { items: [{ ...item, detail: brief, note: null }], next: 2, term: null }, view())
   expect(nodes(tree, 'Markdown').map(n => n.text)).toEqual(['- a\n  - b', '```sh\nls\n```', '- **1**: y: 2'])
 })

@@ -80,14 +80,14 @@ export const refreshingOf = (on: boolean, reading: Reading | null, refresh: stri
 export const COLOUR_SENTENCE = "The pie turns amber in the cache's last quarter and red in its last tenth: the cache is about to lapse."
 
 // The pie's whole judgement from its inputs: the reading, whether keepalive is on, and the label of the refresh figure (null when none
-// holds). `footer` is what the pie draws, tone included, null exactly where `footerOf` gives none. `colour` is the sentence wording the
-// pie's warning, present only while the pie is amber or red on a warm cache: the calm tone, a green pie, no reading, and a cold or
-// expired cache have none.
+// holds). `footer` is what the pie draws, tone included, null exactly where `footerOf` gives none. `colour` is the sentence wording where
+// no refresh is coming: not refreshing, and either keepalive is off or a reading is held, whatever the pie's tone. So it is absent only
+// while keepalive refreshes, and with keepalive on and nothing to count.
 export type Pie = { footer: Footer | null; colour: string | null }
 export const pieOf = (reading: Reading | null, on: boolean, refresh: string | null): Pie => {
-  const footer = footerOf(reading, on, refreshingOf(on, reading, refresh))
-  const warns = reading?.state === 'warm' && (footer?.tone === 'warning' || footer?.tone === 'alarm')
-  return { footer, colour: warns ? COLOUR_SENTENCE : null }
+  const refreshing = refreshingOf(on, reading, refresh)
+  const warns = !refreshing && (!on || reading !== null)
+  return { footer: footerOf(reading, on, refreshing), colour: warns ? COLOUR_SENTENCE : null }
 }
 
 // Whether the warmth line draws the rebuild figure: a reading that is not warm, with a figure to draw. The bare command gives the figure's

@@ -71,11 +71,11 @@ test('act stores a done label on a plain to-do, and refuses one on a yes/no or a
   expect(labelled.reply).toBe('updated #1')
   expect(act(labelled.store, input({ action: 'update', id: 1, done: 'Go with sqlite' }), MAIN)).toMatchObject({ reply: 'no change to #1' })
   const yes = added(EMPTY, 'Ship it?', MAIN).store
-  const yesno = { items: yes.items.map(it => ({ ...it, yesno: true })), next: yes.next }
+  const yesno = { items: yes.items.map(it => ({ ...it, yesno: true })), next: yes.next, term: null }
   expect(act(yesno, input({ action: 'update', id: 1, done: 'Ship' }), MAIN)).toEqual({
     deny: '#1 is a yes/no question or a decision: its buttons say what a press means, so it takes no done label',
   })
-  const decision = { items: [{ ...withState(1, 'open'), options: [{ label: 'A', description: '', recommended: false }, { label: 'B', description: '', recommended: false }] }], next: 2 }
+  const decision = { items: [{ ...withState(1, 'open'), options: [{ label: 'A', description: '', recommended: false }, { label: 'B', description: '', recommended: false }] }], next: 2, term: null }
   expect(act(decision, input({ action: 'update', id: 1, done: 'Ship' }), MAIN)).toMatchObject({ deny: expect.any(String) })
   expect(act(labelled.store, input({ action: 'update', id: 1, options: [{ label: 'A' }, { label: 'B' }] }), MAIN)).toEqual({
     deny: "#1 has a done label: it is a to-do, which takes no options; clear the label first with done: ''",
@@ -285,7 +285,7 @@ test('clearing the list keeps the id counter, so the next add never reuses an id
 test('a /clear carries the saved id counter into the new session, and never lowers it', () => {
   expect(carryNext(EMPTY, 7).next).toBe(7)
   expect(added(carryNext(EMPTY, 7), 'after clear').reply).toBe('added #7')
-  expect(carryNext({ items: [], next: 9 }, 7).next).toBe(9)
+  expect(carryNext({ items: [], next: 9, term: null }, 7).next).toBe(9)
   expect(carryNext(EMPTY, undefined).next).toBe(1)
   expect(carryNext(EMPTY, '7').next).toBe(1)
   expect(carryNext(EMPTY, 2.5).next).toBe(1)
@@ -293,13 +293,13 @@ test('a /clear carries the saved id counter into the new session, and never lowe
 
 test('a rebuilt list keeps an item added after the transcript was read, drops one the transcript ended, and never lowers the counter', () => {
   const replayed = added(added(EMPTY, 'from the transcript').store, 'also replayed').store
-  const live = added({ items: [], next: 7 }, 'added meanwhile').store
+  const live = added({ items: [], next: 7, term: null }, 'added meanwhile').store
   const removedInTranscript = { ...live, items: [...live.items, { ...(replayed.items[0] as Item), id: 5 }] }
   const merged = mergeRestored(removedInTranscript, replayed, [1, 2, 5])
   expect(merged.items.map(it => `${it.id} ${it.title}`)).toEqual(['1 from the transcript', '2 also replayed', '7 added meanwhile'])
   expect(merged.next).toBe(8)
-  expect(mergeRestored(EMPTY, { items: [], next: 4 }, [1, 2, 3]).next).toBe(4)
-  expect(mergeRestored({ items: [], next: 9 }, { items: [], next: 4 }, [1, 2, 3]).next).toBe(9)
+  expect(mergeRestored(EMPTY, { items: [], next: 4, term: null }, [1, 2, 3]).next).toBe(4)
+  expect(mergeRestored({ items: [], next: 9, term: null }, { items: [], next: 4, term: null }, [1, 2, 3]).next).toBe(9)
 })
 
 test('append adds a section to the end of the detail, after a blank line, and replies with the id', () => {
@@ -475,7 +475,7 @@ test('an item with no whole-number id from 1, or no title, is dropped', () => {
 })
 
 test('a stored list is normalized item by item, its garbage dropped, and its counter kept above the highest id', () => {
-  expect(normalizeStore({ items: [legacy, { title: 'garbage' }], next: 2 })).toEqual({ items: [normalizeItem(legacy)], next: 2 })
+  expect(normalizeStore({ items: [legacy, { title: 'garbage' }], next: 2 })).toEqual({ items: [normalizeItem(legacy)], next: 2, term: null })
   expect(normalizeStore({ items: [{ ...legacy, id: 5 }], next: 2 }).next).toBe(6)
   expect(normalizeStore(undefined)).toEqual(EMPTY)
   expect(normalizeStore({ items: 'none', next: 'x' })).toEqual(EMPTY)
@@ -500,6 +500,164 @@ test('an update with done: \'\' clears the label; on a plain to-do with none it 
   expect(cleared.store.items[0]?.doneLabel).toBe(null)
   expect(cleared.reply).toBe('updated #1')
   expect(act(cleared.store, input({ action: 'update', id: 1, done: '' }), MAIN)).toMatchObject({ reply: 'no change to #1' })
+})
+
+// A call that is not denied, for the term tests: the outcome, or the test fails with the denial.
+const applied = (store: Store, raw: Record<string, unknown>, ctx: Ctx = MAIN) => {
+  const out = act(store, input(raw), ctx)
+  if ('deny' in out) throw new Error(out.deny)
+  return out
+}
+const TERM_TOO_LONG = 'term must be at most 20 columns: give the short word or name you use for the human'
+const NOT_USED = ' (term not used: only the main agent sets it)'
+
+test('a term is read as one line with single spaces, a blank one clears it, and one that is not text is refused for a main agent, naming the field', () => {
+  const owned = applied(EMPTY, { action: 'add', title: 'Pick a db', term: 'owner' }).store
+  expect(applied(EMPTY, { action: 'add', title: 'Pick a db', term: '  Team\n   lead  ' }).store.term).toBe('Team lead')
+  expect(applied(owned, { action: 'add', title: 'Second', term: '   ' }).store.term).toBe('')
+  expect(applied(owned, { action: 'update', id: 1, term: '' }).store.term).toBe('')
+  expect(act(owned, input({ action: 'add', title: 'Second', term: 3 }), MAIN)).toEqual({ deny: 'term must be text' })
+  expect(act(owned, input({ action: 'update', id: 1, term: null }), MAIN)).toEqual({ deny: 'term must be text' })
+})
+
+test('a term is at most 20 columns, a wide character taking two: 20 is accepted, 21 refused with the limit named; 10 wide characters accepted, 11 refused', () => {
+  const owned = applied(EMPTY, { action: 'add', title: 'Pick a db' }).store
+  expect(applied(EMPTY, { action: 'add', title: 'Pick', term: 'a'.repeat(20) }).store.term).toBe('a'.repeat(20))
+  expect(act(EMPTY, input({ action: 'add', title: 'Pick', term: 'a'.repeat(21) }), MAIN)).toEqual({ deny: TERM_TOO_LONG })
+  expect(applied(owned, { action: 'update', id: 1, term: '中'.repeat(10) }).store.term).toBe('中'.repeat(10))
+  expect(act(owned, input({ action: 'update', id: 1, term: '中'.repeat(11) }), MAIN)).toEqual({ deny: TERM_TOO_LONG })
+})
+
+test('a main agent\'s refused term refuses the whole call: an add is not made and an update applies none of its fields', () => {
+  const owned = applied(EMPTY, { action: 'add', title: 'Pick a db', term: 'owner' }).store
+  expect(act(owned, input({ action: 'update', id: 1, title: 'Renamed', term: 'x'.repeat(21) }), MAIN)).toEqual({ deny: TERM_TOO_LONG })
+  expect(act(owned, input({ action: 'update', id: 1, title: 'Renamed', term: 3 }), MAIN)).toEqual({ deny: 'term must be text' })
+  expect(act(owned, input({ action: 'add', title: 'Second', term: 'x'.repeat(21) }), MAIN)).toEqual({ deny: TERM_TOO_LONG })
+})
+
+test('a subagent\'s term is not used, so one that would not check, over the limit or not text, does not refuse its add or its update', () => {
+  const owned = applied(EMPTY, { action: 'add', title: 'Pick a db', term: 'owner' }).store
+  const added = applied(owned, { action: 'add', title: 'Sub ask', term: 'x'.repeat(21) }, SUB)
+  expect(added.store.items.map(it => it.title)).toEqual(['Pick a db', 'Sub ask'])
+  expect(added.store.term).toBe('owner')
+  expect(added.reply).toBe(`added #2${NOT_USED}`)
+  const edited = applied(owned, { action: 'update', id: 1, note: 'recheck', term: 3 }, SUB)
+  expect(edited.store.items[0]?.note).toBe('recheck')
+  expect(edited.reply).toBe(`updated #1${NOT_USED}`)
+  expect(applied(owned, { action: 'update', id: 1, term: 'x'.repeat(21) }, SUB).reply).toBe(`no change to #1${NOT_USED}`)
+})
+
+test('an update that gives neither an item field nor a term is refused, and the reason lists the term', () => {
+  expect(parseInput({ action: 'update', id: 1 })).toEqual({ ok: false, reason: 'update changes nothing: give a title, detail, blocking, note, options, done or term' })
+})
+
+test('an add from the main agent with a term sets it, and its reply names the term after the id', () => {
+  const out = applied(EMPTY, { action: 'add', title: 'Pick a db', term: 'owner' })
+  expect(out.store.term).toBe('owner')
+  expect(out.reply).toBe('added #1 (term set to "owner")')
+  expect(out.added?.id).toBe(1)
+})
+
+test('a call with no term leaves the list\'s term and adds no note; a later term replaces it; a blank one clears it', () => {
+  const first = applied(EMPTY, { action: 'add', title: 'Pick a db', term: 'owner' })
+  const plain = applied(first.store, { action: 'add', title: 'Second' })
+  expect(plain.store.term).toBe('owner')
+  expect(plain.reply).toBe('added #2')
+  const replaced = applied(plain.store, { action: 'add', title: 'Third', term: 'boss' })
+  expect(replaced.store.term).toBe('boss')
+  expect(replaced.reply).toBe('added #3 (term set to "boss")')
+  const cleared = applied(replaced.store, { action: 'add', title: 'Fourth', term: '  ' })
+  expect(cleared.store.term).toBe('')
+  expect(cleared.store.items.map(it => it.title)).toEqual(['Pick a db', 'Second', 'Third', 'Fourth'])
+  expect(cleared.reply).toBe('added #4 (term cleared)')
+})
+
+test('an update of an id no item has is refused, whatever term it states', () => {
+  const owned = applied(EMPTY, { action: 'add', title: 'Pick a db', term: 'owner' }).store
+  expect(act(owned, input({ action: 'update', id: 9, term: 'boss' }), MAIN)).toEqual({ deny: 'no item #9' })
+})
+
+test('a subagent\'s term is not used: its add adds the item, leaves the list\'s term, and its reply says so', () => {
+  const owned = applied(EMPTY, { action: 'add', title: 'Pick a db', term: 'owner' }).store
+  const sub = applied(owned, { action: 'add', title: 'Sub ask', term: 'the user' }, SUB)
+  expect(sub.store.term).toBe('owner')
+  expect(sub.store.items.map(it => it.title)).toEqual(['Pick a db', 'Sub ask'])
+  expect(sub.reply).toBe(`added #2${NOT_USED}`)
+})
+
+test('a subagent\'s update applies its other fields and leaves the term; a term-only one replies no change, with the note', () => {
+  const owned = applied(EMPTY, { action: 'add', title: 'Pick a db', term: 'owner' }).store
+  const edited = applied(owned, { action: 'update', id: 1, note: 'recheck', term: 'the user' }, SUB)
+  expect(edited.store.items[0]?.note).toBe('recheck')
+  expect(edited.store.term).toBe('owner')
+  expect(edited.reply).toBe(`updated #1${NOT_USED}`)
+  const only = applied(owned, { action: 'update', id: 1, term: 'the user' }, SUB)
+  expect(only.store.term).toBe('owner')
+  expect(only.reply).toBe(`no change to #1${NOT_USED}`)
+})
+
+test('a term-only update from the main agent sets the term and leaves an open item as it was; a blank one clears the term', () => {
+  const made = applied(EMPTY, { action: 'add', title: 'Pick a db' }).store
+  const set = applied(made, { action: 'update', id: 1, term: 'owner' })
+  expect(set.store.term).toBe('owner')
+  expect(set.store.items).toEqual(made.items)
+  expect(set.changed).toBe(null)
+  expect(set.reply).toBe('no change to #1 (term set to "owner")')
+  const cleared = applied(set.store, { action: 'update', id: 1, term: '' })
+  expect(cleared.store.term).toBe('')
+  expect(cleared.reply).toBe('no change to #1 (term cleared)')
+})
+
+test('a term-only update on a sent item sets the term and leaves the item sent', () => {
+  const out = applied(sentList(), { action: 'update', id: 1, term: 'owner' })
+  expect(out.store.term).toBe('owner')
+  expect(out.store.items[0]).toMatchObject({ state: 'done-pending', answer: 'Use sqlite', replied: true })
+  expect(out.changed).toBe(null)
+})
+
+test('a blank term on an update clears the term, and the update\'s other fields still apply', () => {
+  const owned = applied(EMPTY, { action: 'add', title: 'Pick a db', term: 'owner' }).store
+  const retitled = applied(owned, { action: 'update', id: 1, title: 'Pick a cache', term: '  ' })
+  expect(retitled.store.term).toBe('')
+  expect(retitled.store.items[0]?.title).toBe('Pick a cache')
+  expect(retitled.reply).toBe('updated #1 (term cleared)')
+})
+
+test('an update with a term that changes a field the human is asked about reopens a sent item, as without the term, and sets the term', () => {
+  const sent = sentList()
+  const withTerm = applied(sent, { action: 'update', id: 1, title: 'Pick a cache', term: 'owner' })
+  const without = applied(sent, { action: 'update', id: 1, title: 'Pick a cache' })
+  expect(withTerm.store.items).toEqual(without.store.items)
+  expect(withTerm.store.items[0]).toMatchObject({ state: 'open', unread: true })
+  expect(withTerm.changed).toEqual({ id: 1, reopened: true, promoted: false })
+  expect(withTerm.changed).toEqual(without.changed)
+  expect(withTerm.store.term).toBe('owner')
+  expect(withTerm.reply).toBe('updated #1 (term set to "owner")')
+})
+
+test('a stored term is kept as text, a stored blank reads as the cleared term, and anything else, or no term at all, reads as none', () => {
+  expect(normalizeStore({ items: [], next: 2, term: 'owner' })).toEqual({ items: [], next: 2, term: 'owner' })
+  expect(normalizeStore({ items: [], next: 2, term: '' })).toEqual({ items: [], next: 2, term: '' })
+  expect(normalizeStore({ items: [], next: 2, term: '  ' })).toEqual({ items: [], next: 2, term: '' })
+  expect(normalizeStore({ items: [], next: 2 })).toEqual({ items: [], next: 2, term: null })
+  expect(normalizeStore({ items: [], next: 2, term: 7 })).toEqual({ items: [], next: 2, term: null })
+})
+
+test('clearing the list clears the term with the items, and keeps the counter', () => {
+  expect(clearAll({ items: [], next: 3, term: 'owner' })).toEqual({ items: [], next: 3, term: null })
+})
+
+test('a rebuilt list keeps a term stated live, a cleared one included, and takes the rebuilt term only when none was stated live', () => {
+  const rebuilt: Store = { items: [], next: 1, term: 'owner' }
+  expect(mergeRestored({ items: [], next: 1, term: 'mine' }, rebuilt, []).term).toBe('mine')
+  expect(mergeRestored({ items: [], next: 1, term: '' }, rebuilt, []).term).toBe('')
+  expect(mergeRestored({ items: [], next: 1, term: null }, rebuilt, []).term).toBe('owner')
+  expect(mergeRestored(EMPTY, { items: [], next: 1, term: null }, []).term).toBe(null)
+})
+
+test('a term the main agent clears live stays cleared when a rebuild joins a transcript that states another', () => {
+  const live = applied(EMPTY, { action: 'add', title: 'Pick a db', term: '  ' }).store
+  expect(mergeRestored(live, { items: [], next: 1, term: 'owner' }, []).term).toBe('')
 })
 
 test('an unknown action names every action it takes', () => {

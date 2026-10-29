@@ -18,7 +18,8 @@ To do for you 3 open
   an open item blocking because its work has come to wait on it. Then come the rest, by item number, while the rows last. When
   they don't all fit, the last row summarises what is left out: `+N blocking` for the blocking items and `+N more` for the
   others. The header turns amber while anything blocking is open, so its colour alone tells you whether any of the agent's work
-  is stuck.
+  is stuck. The header reads `To do for you` until the agent states the term it uses for you, and then `To do for` followed by
+  that term.
 - **`[✓]`** says you've done it. You get three seconds to change your mind (`[↶ 3s]`; the window ends on the
   countdown's next one-second tick, so up to a second later), then the agent is told, checks, and removes the item. You can also say so in chat. Only the agent removes items, because it is the one that knows
   when an ask is settled; when it adds to a sent item instead, the item comes back open, with its reply field, marked `•`. A choice (a decision with options) gets answer buttons in the pane instead (see below).
@@ -40,6 +41,7 @@ To do for you 3 open
   question, the agent's recommendation, the options with their costs, and the context. The pane draws any table in a brief as a list, so it fits the narrow pane. Each fenced block (backtick or tilde) in a brief has a `[copy]` button under it that puts just that block's lines on your clipboard, with no frame characters; a toast says whether it took. A fence gets no button when it is inside a block quote, when it is indented four or more columns past its list item's text, or when it is four or more columns from the margin under a list item whose wrapped line is not indented. Ask for more and the agent adds
   to the item (to the brief, or to the thread once you have answered) instead of burying the answer in chat.
 - When the agent works out the answer itself, it tells you why in one line.
+- **`/asks` and `/asks <n>`.** `/asks` prints the list as text: the open items first, then the answered ones, blocking first in each group, an answered item with its answer, and an item still in its undo window marked as still undoable. `/asks <n>` prints one item, with its note, brief, thread and, for a choice, its options numbered, and ends with the forms that answer it: `/asks <n> done` for a to-do, `yes` and `no` for a yes/no, `1-<k>` for a choice's k options, and `reply <text>` for any open item. Typing one answers the item as its button or the reply field would, with the same three seconds to change your mind, and the command confirms it with `answered #<n> with` the answer. An item in its undo window or already sent takes no answer. The print is cut at 4,000 characters when the item runs longer, with a line that says so; the forms at its end are never cut. Both run during a turn too.
 
 Quick questions with a couple of clear options still arrive as Claude Code's usual question dialog. The list is for
 things you do outside the chat, things that can wait, and decisions that need room to explain.
@@ -88,10 +90,15 @@ Then start a new session and let the agent do the asking.
   rewind happened. The agent can still remove what no longer applies, and a resume rebuilds the list correctly.
 - A session forked with `--fork-session` after a compaction starts from that compaction, so items filed before it
   are not carried over. No fork carries over items its subagents filed.
+- A forked session whose transcript is not yet written at session start is rebuilt at its first turn, so until then `/asks`, and the agent's tool, can show an empty or partial list.
 - A done press that arrives just as a turn starts relies on Claude Code's documented handling of a row appended to a
   running turn, which has not been observed live; if it differs, a done press that lands as a turn starts is read one
   model request later, never lost.
-- Tested on the terminal only: the desktop app is untested, though it draws the reply field too. The chime plays on macOS only.
+- Tested on the terminal only: the desktop app is untested, though it draws the reply field too. A Remote Control phone draws no band or pane, so there the list is read through `/asks`. The chime plays on macOS only.
+- The band's `To do for <term>` chip draws a term of up to 20 columns in a header that does not wrap, so on a very narrow
+  terminal the header can overflow or wrap.
+- A term read back from stored state is not re-checked against the 20-column and one-line limits that the tool applies to
+  live input, so a hand-edited or corrupt stored list can show a longer or multi-line term.
 
 ## Development checks
 

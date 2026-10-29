@@ -1214,6 +1214,55 @@ describe('keepalive', () => {
     expect(await toggle($, '')).toContain('Keepalive  on, no count no live cache to count from, nothing scheduled')
   })
 
+  test('a /clear with keepalive on: the line under the on, no count heading says there is no cache until the next reply, and no sentence', async ($, on) => {
+    kaWorld(on, cached())
+    const clock = mock.clock(on, { now: T0 })
+    await $.classic.SessionStart({ source: 'startup', transcript_path: PATH })
+    await clock.settle()
+    await $.classic.SessionStart({ source: 'clear', transcript_path: PATH })
+    await clock.advance(1000)
+    await toggle($, 'on 60 2')
+    const text = await toggle($, '')
+    expect(text).toContain('Keepalive  on, no count no live cache to count from, nothing scheduled; there is no cache until the next reply')
+    expect(text).not.toContain('about to lapse')
+  })
+
+  test('nothing written yet, with keepalive on: the line under the on, no count heading says there is no cache until the next reply', async ($, on) => {
+    kaWorld(on, { text: '' })
+    const clock = mock.clock(on, { now: T0 })
+    await $.classic.SessionStart({ source: 'startup', transcript_path: PATH })
+    await clock.advance(1000)
+    await toggle($, 'on 60 2')
+    const text = await toggle($, '')
+    expect(text).toContain('Keepalive  on, no count no live cache to count from, nothing scheduled; there is no cache until the next reply')
+    expect(text).not.toContain('about to lapse')
+  })
+
+  test('an unread view with keepalive on: the line under the on, no count heading has no clause', async ($, on) => {
+    kaWorld(on, { text: '', broken: true })
+    const clock = mock.clock(on, { now: T0 })
+    await $.classic.SessionStart({ source: 'startup', transcript_path: PATH })
+    await clock.advance(1000)
+    await toggle($, 'on 60 2')
+    const text = await toggle($, '')
+    expect(text).toContain('Keepalive  on, no count no live cache to count from, nothing scheduled')
+    expect(text).not.toContain('there is no cache until the next reply')
+  })
+
+  test('a TTL-unknown view with keepalive on: the line under the on, no count heading has no clause', async ($, on) => {
+    const doc = { text: lines([user({ uuid: 'u1', parent: null, ts: iso(T0) }), assistant({ uuid: 'a1', parent: 'u1', ts: iso(T0), write: 5 })]) }
+    kaWorld(on, doc)
+    const clock = mock.clock(on, { now: T0 })
+    await $.classic.SessionStart({ source: 'startup', transcript_path: PATH })
+    await toggle($, 'on 60 2')
+    await mainStep($)
+    await turnEnd($)
+    await clock.advance(600000)
+    const text = await toggle($, '')
+    expect(text).toContain('Keepalive  on, no count no live cache to count from, nothing scheduled')
+    expect(text).not.toContain('there is no cache until the next reply')
+  })
+
   test('a TTL change that leaves the lead at or above the TTL pauses keepalive and says why', async ($, on) => {
     const doc: any = cached(ONE_HOUR)
     const rec = kaWorld(on, doc)
@@ -1246,7 +1295,7 @@ describe('keepalive', () => {
     await $.classic.PostModelSwitch({ from_model: 'a', to_model: 'b', requested_model: 'b', source: 'command', prompt_cache_warm: true, cache_ttl: '5m', context_tokens: 1, estimated_cache_write_usd: 0, pricing: 'catalog' } as any)
     await clock.advance(240000)
     expect(rec.forks).toEqual([])
-    expect(await toggle($, '')).toContain('Keepalive  on, no count no live cache to count from, nothing scheduled')
+    expect(await toggle($, '')).toContain('Keepalive  on, no count The pie turns amber in the cache\'s last quarter and red in its last tenth: the cache is about to lapse. no live cache to count from, nothing scheduled; there is no cache until the next reply')
   })
 
   test('a compaction leaves the cache cold: no ping is sent until a main-thread write lands', async ($, on) => {
@@ -1260,7 +1309,7 @@ describe('keepalive', () => {
     await $.classic.PostCompact({ trigger: 'manual', compact_summary: 's' } as any)
     await clock.advance(240000)
     expect(rec.forks).toEqual([])
-    expect(await toggle($, '')).toContain('Keepalive  on, no count no live cache to count from, nothing scheduled')
+    expect(await toggle($, '')).toContain('Keepalive  on, no count The pie turns amber in the cache\'s last quarter and red in its last tenth: the cache is about to lapse. no live cache to count from, nothing scheduled; there is no cache until the next reply')
     await mainStep($)
     await turnEnd($)
     await clock.advance(240000)
@@ -1542,7 +1591,7 @@ describe('keepalive: the queue and the race', () => {
     expect(rec.forks.length).toBe(1)
   })
 
-  test('a /keepalive answer while a cold mark is being written says the cache reset is being recorded, and shows no cost', async ($, on) => {
+  test('a /keepalive answer while a cold mark is being written says the cache reset is being recorded, and keeps the running figure', async ($, on) => {
     const doc: any = { text: '', exists: false }
     const rec = kaWorld(on, doc)
     let release: () => void = () => {}
@@ -1569,7 +1618,7 @@ describe('keepalive: the queue and the race', () => {
     await clock.settle()
     expect(holding).toBe(true)
     expect(await toggle($, '')).toContain('paused until the cache reset is recorded')
-    expect(await toggle($, '')).not.toContain('Next refresh')
+    expect(await toggle($, '')).toContain('Next refresh: ~19k cached tokens read, every 4 min')
     release()
     await switching
     await clock.advance(1000)
@@ -1579,6 +1628,31 @@ describe('keepalive: the queue and the race', () => {
     await turnEnd($)
     await clock.advance(1000)
     expect(await toggle($, '')).toContain('Next refresh: ~19k cached tokens read')
+  })
+
+  test('a cold mark whose write throws before the mark is set keeps the running figure under the pending reason until the next turn begins', async ($, on) => {
+    const doc: any = cached()
+    const rec = kaWorld(on, doc)
+    let failing = false
+    // A thrown hook is skipped by the engine, so the write would land; a refused write is how a write fails here.
+    on('state.set', (_$: any, e: any, next: any) => (failing && e.key === 'cold' && e.value !== null ? { deny: 'cold write refused' } : next(e)))
+    const clock = mock.clock(on, { now: T0 })
+    await $.classic.SessionStart({ source: 'startup', transcript_path: PATH })
+    await clock.settle()
+    await toggle($, 'on 60 2')
+    await mainStep($)
+    await turnEnd($)
+    failing = true
+    await $.classic.PostModelSwitch({ from_model: 'a', to_model: 'b', requested_model: 'b', source: 'command', prompt_cache_warm: true, cache_ttl: '5m', context_tokens: 1, estimated_cache_write_usd: 0, pricing: 'catalog' } as any)
+    failing = false
+    await clock.advance(1000)
+    const held = await toggle($, '')
+    expect(held).toContain('Keepalive  paused until the cache reset is recorded Next refresh: ~19k cached tokens read, every 4 min')
+    expect(held).not.toContain('next refresh in')
+    expect(lastStatus(rec)).toContain('a state write failed')
+    await mainStep($)
+    await clock.advance(1000)
+    expect(await toggle($, '')).not.toContain('until the cache reset is recorded')
   })
 
   test('a cost not yet shown with figures does not hold the first refresh: it is sent when due, and no tick toasts', async ($, on) => {
@@ -1782,6 +1856,42 @@ describe('keepalive: the queue and the race', () => {
     await switching
     await clock.advance(1000)
     expect(rec.forks.length).toBe(0)
+  })
+
+  test('a cache that expires while the cold mark of a model switch is being written records no stop', async ($, on) => {
+    const doc: any = cached()
+    const rec = kaWorld(on, doc)
+    const stops: string[] = []
+    let watching = false
+    let writeHeld = false
+    let releaseWrite: () => void = () => {}
+    const writeGate = new Promise<void>((resolve) => {
+      releaseWrite = resolve
+    })
+    // The switch's cold-mark write holds before the mark is set, so the tick runs past the cache's expiry while the write is pending.
+    on('state.set', async (_$: any, e: any, next: any) => {
+      if (e.key === 'keepalive' && typeof e.value?.stop === 'string') stops.push(e.value.stop)
+      if (watching && !writeHeld && e.key === 'cold') {
+        writeHeld = true
+        await writeGate
+      }
+      return next(e)
+    })
+    const clock = mock.clock(on, { now: T0 })
+    await $.classic.SessionStart({ source: 'startup', transcript_path: PATH })
+    await toggle($, 'on 60 2')
+    // The turn stays open: the gap stays shut, so no refresh goes out before the expiry, and the tick past it has a stop to write.
+    await mainStep($)
+    watching = true
+    const switching = $.classic.PostModelSwitch({ from_model: 'a', to_model: 'b', requested_model: 'b', source: 'command', prompt_cache_warm: true, cache_ttl: '5m', context_tokens: 1, estimated_cache_write_usd: 0, pricing: 'catalog' } as any)
+    for (let i = 0; i < 200 && !writeHeld; i++) await clock.advance(0)
+    expect(writeHeld).toBe(true)
+    await clock.advance(301000)
+    expect(stops).toEqual([])
+    expect(rec.forks.length).toBe(0)
+    releaseWrite()
+    await switching
+    await clock.advance(1000)
   })
 
   test('a model switch marks the cache cold before the hooks beneath it run: a due ping sends no fork while one of them holds the switch', async ($, on) => {
@@ -3949,7 +4059,7 @@ describe('long pauses: the debug line, and the pane ping count from the lead in 
     await toggle($, 'on 60 2')
     await clock.advance(1000)
     expect(rec.forks).toEqual([])
-    expect(await toggle($, '')).toContain('Keepalive  paused the cache expired; it resumes after your next prompt each refresh reads ~19k cached tokens')
+    expect(await toggle($, '')).toContain('Keepalive  paused the cache expired; it resumes after your next prompt The pie turns amber in the cache\'s last quarter and red in its last tenth: the cache is about to lapse. each refresh reads ~19k cached tokens')
   })
 
 })
@@ -5267,6 +5377,12 @@ describe('the bare command answers whole: the text its sections lay out, for fix
         '  Prompt cache warm, 4:59 left (5-minute cache)',
         '',
         'Keepalive  off',
+        "  The pie turns amber in the cache's last",
+        '    quarter and red in its last tenth: the cache',
+        '    is about to lapse.',
+        '  Next refresh: $0.004 (~19k cached tokens',
+        '    read).',
+        '  One refresh every 4:45.',
         '  Each pause sends at most 24 refreshes: the',
         '    break-even count, the most refreshes that',
         '    cost no more than the rewrite they avoid.',
@@ -5336,6 +5452,12 @@ describe('the bare command answers whole: the text its sections lay out, for fix
         '  Prompt cache expired, ~$0.13 to rebuild.',
         '',
         'Keepalive  off',
+        "  The pie turns amber in the cache's last",
+        '    quarter and red in its last tenth: the cache',
+        '    is about to lapse.',
+        '  Next refresh: $0.004 (~19k cached tokens',
+        '    read).',
+        '  One refresh every 4:45.',
         '  Each pause sends at most 24 refreshes: the',
         '    break-even count, the most refreshes that',
         '    cost no more than the rewrite they avoid.',
@@ -5370,6 +5492,11 @@ describe('the bare command answers whole: the text its sections lay out, for fix
         '  Prompt cache expired, ~26k tokens to rebuild.',
         '',
         'Keepalive  off',
+        "  The pie turns amber in the cache's last",
+        '    quarter and red in its last tenth: the cache',
+        '    is about to lapse.',
+        '  Next refresh: ~19k cached tokens read.',
+        '  One refresh every 4:45.',
         '  Each pause sends at most 24 refreshes: the',
         '    break-even count, the most refreshes that',
         '    cost no more than the rewrite they avoid.',
@@ -5396,7 +5523,7 @@ describe('the bare command answers whole: the text its sections lay out, for fix
     )
   })
 
-  test('a cold mark being written: the whole answer says the cache reset is being recorded, and gives no next-refresh figure', { options: { keepalive_lead_s: 60, keepalive_count: 2 } }, async ($, on) => {
+  test('a cold mark being written: the whole answer says the cache reset is being recorded, and keeps the running figure', { options: { keepalive_lead_s: 60, keepalive_count: 2 } }, async ($, on) => {
     const doc: any = { text: '', exists: false }
     kaWorld(on, doc)
     let release: () => void = () => {}
@@ -5423,32 +5550,26 @@ describe('the bare command answers whole: the text its sections lay out, for fix
     await clock.settle()
     try {
       expect(holding).toBe(true)
-      expect(await commandText($, '')).toBe(
+      // The rows are compared joined: a row's 48-column wrap is not what this pins, only the rows and their order.
+      expect((await commandText($, '')).replace(/\n {4}/g, ' ')).toBe(
         [
           'Cache',
           '  Prompt cache warm, 5:00 left (5-minute cache)',
           '',
           'Keepalive  paused',
           '  until the cache reset is recorded',
-          '  Each pause sends at most 2 refreshes: the',
-          '    count you pinned with /keepalive on.',
+          '  Next refresh: ~19k cached tokens read, every 4 min',
+          '  Each pause sends at most 2 refreshes: the count you pinned with /keepalive on.',
           '',
           'Advice',
-          '  Shown in tokens: no price for an unnamed',
-          '    model.',
+          '  Shown in tokens: no price for an unnamed model.',
           '',
           'Settings',
-          '  TTL 5 min (read from the last response): set',
-          '    "promptCacheTtl": "1h" in settings.json for',
-          '    1 h (new sessions).',
+          '  TTL 5 min (read from the last response): set "promptCacheTtl": "1h" in settings.json for 1 h (new sessions).',
           '  lead 60 s: /keepalive on <lead seconds>.',
-          '  refreshes a pause 2, pinned: /keepalive on',
-          '    <lead seconds> <refreshes>, or',
-          '    keepalive_count.',
-          '  start mode off (keepalive_default option):',
-          '    /keepalive default on|off, for new sessions.',
-          '  unit dollars (cost_unit option): /keepalive',
-          '    unit tokens|dollars.',
+          '  refreshes a pause 2, pinned: /keepalive on <lead seconds> <refreshes>, or keepalive_count.',
+          '  start mode off (keepalive_default option): /keepalive default on|off, for new sessions.',
+          '  unit dollars (cost_unit option): /keepalive unit tokens|dollars.',
         ].join('\n'),
       )
       // The accepted window: the heading reads paused while the reset is being recorded, and the pie is still green with keepalive on.
@@ -5497,6 +5618,12 @@ describe('the bare command answers whole: the text its sections lay out, for fix
         '  Prompt cache expired, ~$0.20 to rebuild.',
         '',
         'Keepalive  off',
+        "  The pie turns amber in the cache's last",
+        '    quarter and red in its last tenth: the cache',
+        '    is about to lapse.',
+        '  Next refresh: $0.008 (~20k cached tokens',
+        '    read).',
+        '  One refresh every 4:45.',
         '  Each pause sends at most 3 refreshes:',
         '    keepalive_count, which caps the break-even',
         '    count of 24.',
@@ -5534,6 +5661,9 @@ describe('the bare command answers whole: the text its sections lay out, for fix
     expect(await commandText($, '')).toBe(
       [
         'Keepalive  off',
+        "  The pie turns amber in the cache's last",
+        '    quarter and red in its last tenth: the cache',
+        '    is about to lapse.',
         '',
         'Settings',
         '  TTL 5 min (read from the last response): set',
@@ -5570,6 +5700,9 @@ describe('the bare command answers whole: the text its sections lay out, for fix
         '  Prompt cache reset, ~$0.13 to rebuild.',
         '',
         'Keepalive  off',
+        "  The pie turns amber in the cache's last",
+        '    quarter and red in its last tenth: the cache',
+        '    is about to lapse.',
         '',
         'Settings',
         '  TTL 5 min (read from the last response): set',
@@ -5597,6 +5730,9 @@ describe('the bare command answers whole: the text its sections lay out, for fix
         '  Prompt cache reset, ~26k tokens to rebuild.',
         '',
         'Keepalive  off',
+        "  The pie turns amber in the cache's last",
+        '    quarter and red in its last tenth: the cache',
+        '    is about to lapse.',
         '',
         'Settings',
         '  TTL 5 min (read from the last response): set',
@@ -5636,9 +5772,10 @@ describe('the bare command reads each state it states once per call', () => {
   })
 })
 
-// The pie's colour sentence in the Keepalive section: it words the pie's warning only while the pie is amber or red on a warm cache.
-// The answer's rows are joined, since the sentence wraps at 48 columns.
-describe('the Keepalive section words the pie\'s warning only while the pie warns on a warm cache', () => {
+// The Keepalive section's colour sentence and offer. The sentence shows wherever no refresh is coming: not refreshing, and with keepalive off
+// or a reading held, whatever the pie's colour. The offer's explanation and figures show with keepalive off and an offer. The answer's rows
+// are joined, since the sentence wraps at 48 columns. A paused keepalive's refresh cost is followed by its interval row wherever the lead is below the TTL.
+describe('the Keepalive section: the colour sentence wherever no refresh is coming, the offer while keepalive is off, and the interval a paused keepalive names', () => {
   const SENTENCE = "The pie turns amber in the cache's last quarter and red in its last tenth: the cache is about to lapse."
   const LONG = { 'pauses/old': Array.from({ length: 10 }, (_, i) => ({ startMs: 1000 + i, pausedMs: 3 * 3600000, hour: 10, weekday: 2, ratio: 24, ttlMs: 300000 })) }
   const started = async ($: any, on: any, doc: any = opusCached()) => {
@@ -5648,11 +5785,29 @@ describe('the Keepalive section words the pie\'s warning only while the pie warn
     await clock.advance(1000)
     return clock
   }
+  // The refresh's cost in dollars, as the section's rows read it joined: the cost wraps at 48 columns, and the interval row follows it.
+  const REFRESH = 'each refresh costs $0.004 (reads ~19k cached tokens)'
+  // Holds the write that records a stop of the given kind, so the section is read between the tick's verdict and its record.
+  const holdingStop = (on: any, stop: string) => {
+    let release: () => void = () => {}
+    const gate = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    const held = { holding: false }
+    on('state.set', (_$: any, e: any, next: any) => {
+      if (e.key === 'keepalive' && e.value?.stop === stop && !held.holding) {
+        held.holding = true
+        return gate.then(() => next(e))
+      }
+      return next(e)
+    })
+    return { held, release }
+  }
 
-  test('keepalive off, in the last quarter: the sentence follows the heading, ahead of the section\'s other lines', async ($, on) => {
+  test('keepalive off, in the last quarter: the sentence follows the heading, then the offer, ahead of the section\'s other lines', async ($, on) => {
     const clock = await started($, on)
     await clock.advance(240000)
-    expect(await toggle($, '')).toContain(`Keepalive  off ${SENTENCE} Each pause sends at most 24 refreshes`)
+    expect(await toggle($, '')).toContain(`Keepalive  off ${SENTENCE} Next refresh: $0.004 (~19k cached tokens read). One refresh every 4:45. Each pause sends at most 24 refreshes`)
   })
 
   test('keepalive off, in the last tenth: the sentence is there', async ($, on) => {
@@ -5661,10 +5816,10 @@ describe('the Keepalive section words the pie\'s warning only while the pie warn
     expect(await toggle($, '')).toContain(`Keepalive  off ${SENTENCE} `)
   })
 
-  test('keepalive off, before the last quarter: no sentence, since the pie is the normal colour and "about to lapse" would mislead', async ($, on) => {
+  test('keepalive off, before the last quarter: the sentence is there too, though the pie is the normal colour', async ($, on) => {
     const clock = await started($, on)
     await clock.advance(100000)
-    expect(await toggle($, '')).not.toContain('about to lapse')
+    expect(await toggle($, '')).toContain(`Keepalive  off ${SENTENCE} Next refresh: $0.004 (~19k cached tokens read). One refresh every 4:45.`)
   })
 
   test('keepalive on and refreshing, in the last quarter: no sentence, the pie is green', async ($, on) => {
@@ -5705,34 +5860,38 @@ describe('the Keepalive section words the pie\'s warning only while the pie warn
     await turnEnd($)
     await clock.advance(250000)
     expect(await drawnHint($)).not.toContain('"color":"success"')
-    expect(await toggle($, '')).toContain(`Keepalive  paused no refreshes this pause: your pauses rarely outlast the cache ${SENTENCE} Next refresh: `)
+    expect(await toggle($, '')).toContain(`Keepalive  paused no refreshes this pause: your pauses rarely outlast the cache; it resumes after your next prompt ${SENTENCE} Next refresh: `)
   })
 
-  test('an expired cache with keepalive on: the pie is red and the section has no sentence', async ($, on) => {
+  test('an expired cache with keepalive on: the pie is red, and the sentence follows the reason, once', async ($, on) => {
     const clock = await started($, on)
-    await toggle($, 'on 60 1')
+    await toggle($, 'on 60 2')
     await mainStep($)
+    await clock.advance(310000)
     await turnEnd($)
-    await clock.advance(20 * MIN)
+    await clock.advance(1000)
     const text = await toggle($, '')
     expect(text).toContain('Prompt cache expired')
-    expect(text).not.toContain('about to lapse')
+    expect(text).toContain(`Keepalive  paused the cache expired; it resumes after your next prompt ${SENTENCE}`)
+    expect(text.split(SENTENCE).length - 1).toBe(1)
     expect(await drawnHint($)).toContain('"color":"error"')
   })
 
-  test('an expired cache with keepalive off: no sentence', async ($, on) => {
+  test('an expired cache with keepalive off: the sentence is there once, as the pane has it', async ($, on) => {
     const clock = await started($, on)
     await clock.advance(20 * MIN)
     const text = await toggle($, '')
     expect(text).toContain('Prompt cache expired')
-    expect(text).not.toContain('about to lapse')
+    expect(text).toContain(`Keepalive  off ${SENTENCE}`)
+    expect(text.split(SENTENCE).length - 1).toBe(1)
   })
 
-  test('with no reading to count from: no sentence', async ($, on) => {
+  test('with no reading to count from, keepalive off: the sentence is there once, and there is no cache line', async ($, on) => {
     await started($, on, { text: '', exists: false })
     const text = await toggle($, '')
     expect(text).not.toContain('Prompt cache')
-    expect(text).not.toContain('about to lapse')
+    expect(text).toContain(`Keepalive  off ${SENTENCE}`)
+    expect(text.split(SENTENCE).length - 1).toBe(1)
   })
 
   test('a cold mark being written in the last quarter, before the reset record lands: the pie is green and the section has no sentence', { options: { keepalive_lead_s: 20, keepalive_count: 2 } }, async ($, on) => {
@@ -5774,7 +5933,7 @@ describe('the Keepalive section words the pie\'s warning only while the pie warn
     await switching
   })
 
-  test('a cold mark being written in the last quarter, after it is set and before its write finishes: the reading is cold, the pie green, and no sentence', { options: { keepalive_lead_s: 20, keepalive_count: 2 } }, async ($, on) => {
+  test('a cold mark being written in the last quarter, after it is set and before its write finishes: the reading is cold, the pie green, and the sentence follows the reason, once', { options: { keepalive_lead_s: 20, keepalive_count: 2 } }, async ($, on) => {
     const doc: any = { text: '', exists: false }
     kaWorld(on, doc)
     let release: () => void = () => {}
@@ -5805,10 +5964,46 @@ describe('the Keepalive section words the pie\'s warning only while the pie warn
       const text = await toggle($, '')
       expect(text).toContain('Prompt cache reset')
       expect(text).toContain('Keepalive  paused until the cache reset is recorded')
-      expect(text).not.toContain('about to lapse')
+      expect(text).toContain(`reset is recorded ${SENTENCE}`)
+      expect(text.split(SENTENCE).length - 1).toBe(1)
       expect(await drawnHint($)).toContain('"color":"success"')
       await clock.advance(1000)
       expect(await hint($)).toBe('reset')
+    } finally {
+      release()
+    }
+    await switching
+  })
+
+  test('a cold mark from a model switch with its mark set and its write unrecorded, in the last quarter: the sentence is followed by the no-live-cache line', { options: { keepalive_lead_s: 20, keepalive_count: 2 } }, async ($, on) => {
+    const doc: any = { text: '', exists: false }
+    kaWorld(on, doc)
+    let release: () => void = () => {}
+    const gate = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    let holding = false
+    on('state.set', (_$: any, e: any, next: any) => {
+      if (e.key === 'stats' && e.value?.coldSince?.length > 0 && !holding) {
+        holding = true
+        return gate.then(() => next(e))
+      }
+      return next(e)
+    })
+    const clock = mock.clock(on, { now: T0 })
+    await $.classic.SessionStart({ source: 'startup', transcript_path: PATH })
+    await clock.settle()
+    await toggle($, 'on 20 2')
+    doc.exists = undefined
+    doc.text = cached().text
+    await mainStep($)
+    await turnEnd($)
+    await clock.advance(250000)
+    const switching = $.classic.PostModelSwitch({ from_model: 'a', to_model: 'b', requested_model: 'b', source: 'command', prompt_cache_warm: true, cache_ttl: '5m', context_tokens: 1, estimated_cache_write_usd: 0, pricing: 'catalog' } as any)
+    await clock.settle()
+    try {
+      expect(holding).toBe(true)
+      expect(await toggle($, '')).toContain(`Keepalive  paused until the cache reset is recorded ${SENTENCE} no live cache to count from, nothing scheduled; there is no cache until the next reply`)
     } finally {
       release()
     }
@@ -5849,6 +6044,190 @@ describe('the Keepalive section words the pie\'s warning only while the pie warn
       release()
     }
     await advancing
+  })
+
+  test('keepalive off with an offer: the section and the pane give the same explanation and figures', async ($, on) => {
+    await started($, on)
+    expect(await toggle($, '')).toContain('Next refresh: $0.004 (~19k cached tokens read). One refresh every 4:45.')
+    const pane = await drawnPane($)
+    expect(pane).toContain('Next refresh: $0.004 (~19k cached tokens read).')
+    expect(pane).toContain('One refresh every 4:45.')
+  })
+
+  test('keepalive off with no cache to offer from: the sentence is there, and neither the explanation nor the figures', async ($, on) => {
+    await started($, on, { text: '', exists: false })
+    const text = await toggle($, '')
+    expect(text).toContain(`Keepalive  off ${SENTENCE}`)
+    expect(text).not.toContain('Next refresh')
+    expect(text).not.toContain('One refresh every')
+  })
+
+  test('keepalive off with a lead at the TTL, which offers no refresh: the sentence is there, and neither the explanation nor the figures', { options: { keepalive_lead_s: 300 } }, async ($, on) => {
+    await started($, on)
+    const text = await toggle($, '')
+    expect(text).toContain(`Keepalive  off ${SENTENCE}`)
+    expect(text).not.toContain('Next refresh')
+    expect(text).not.toContain('One refresh every')
+  })
+
+  test('keepalive off: the sentence is there exactly once on a calm, an amber and a red pie', async ($, on) => {
+    const clock = await started($, on)
+    const once = async () => (await toggle($, '')).split(SENTENCE).length - 1
+    expect(await once()).toBe(1)
+    await clock.advance(239000)
+    expect(await drawnHint($)).toContain('"color":"warning"')
+    expect(await once()).toBe(1)
+    await clock.advance(40000)
+    expect(await drawnHint($)).toContain('"color":"error"')
+    expect(await once()).toBe(1)
+  })
+
+  test('keepalive on and paused on a calm pie: the sentence follows the reason, once, and the pie is not green', async ($, on) => {
+    const clock = await started($, on)
+    await toggle($, 'on 300')
+    await clock.advance(1000)
+    expect(await drawnHint($)).not.toContain('"color":"success"')
+    const text = await toggle($, '')
+    expect(text).toContain(`Keepalive  paused lead 300 s is not below the 300 s TTL ${SENTENCE}`)
+    expect(text.split(SENTENCE).length - 1).toBe(1)
+  })
+
+  test('keepalive on, paused after its count is used: the section gives the interval row, and no next-refresh line', async ($, on) => {
+    const clock = await started($, on)
+    await toggle($, 'on 60 1')
+    await mainStep($)
+    await turnEnd($)
+    await clock.advance(240000 + 500)
+    await clock.advance(1000)
+    await clock.advance(240000)
+    const text = await toggle($, '')
+    expect(text).toContain('Keepalive  paused its refreshes for this pause are used up')
+    expect(text).toContain('One refresh every 4 min.')
+    expect(text).not.toContain('Next refresh: ')
+  })
+
+  test('keepalive on and refreshing: the section names the next refresh\'s cost and interval, and gives no offer', async ($, on) => {
+    await started($, on)
+    await toggle($, 'on 15')
+    const text = await toggle($, '')
+    expect(text).toContain('Keepalive  on, refreshing Next refresh: $0.004 (~19k cached tokens read), every 4:45')
+    expect(text).not.toContain('One refresh every')
+  })
+
+  test('keepalive on and refreshing on a calm pie: the sentence is absent', async ($, on) => {
+    const clock = await started($, on)
+    await toggle($, 'on 15')
+    await clock.advance(1000)
+    expect(await drawnHint($)).toContain('"color":"success"')
+    expect((await toggle($, '')).split(SENTENCE).length - 1).toBe(0)
+  })
+
+  test('a count used with its stop recorded: the refresh cost, and directly after it the interval row', async ($, on) => {
+    const clock = await started($, on)
+    await toggle($, 'on 60 1')
+    await mainStep($)
+    await turnEnd($)
+    await clock.advance(240000 + 500)
+    await clock.advance(1000)
+    await clock.advance(240000)
+    const text = await toggle($, '')
+    expect(text).toContain('Keepalive  paused its refreshes for this pause are used up')
+    expect(text).toContain(`${REFRESH} One refresh every 4 min.`)
+  })
+
+  test('recording a count-used stop leaves the section\'s figure rows unchanged: the cost and the interval read the same before the stop is recorded and after', async ($, on) => {
+    kaWorld(on, opusCached())
+    const { held, release } = holdingStop(on, 'count used')
+    const clock = mock.clock(on, { now: T0 })
+    await $.classic.SessionStart({ source: 'startup', transcript_path: PATH })
+    await clock.settle()
+    await toggle($, 'on 60 1')
+    await mainStep($)
+    await turnEnd($)
+    await clock.advance(240000 + 500)
+    const advancing = clock.advance(240000 + 1000)
+    await clock.settle()
+    let before = ''
+    try {
+      expect(held.holding).toBe(true)
+      before = await toggle($, '')
+    } finally {
+      release()
+    }
+    await advancing
+    const after = await toggle($, '')
+    expect(before).toContain(`${REFRESH} One refresh every 4 min.`)
+    expect(after).toContain(`${REFRESH} One refresh every 4 min.`)
+  })
+
+  test('a cache expired, its stop recorded: the refresh cost, and directly after it the interval row', async ($, on) => {
+    const clock = await started($, on)
+    await toggle($, 'on 60 2')
+    await mainStep($)
+    await clock.advance(310000)
+    await turnEnd($)
+    await clock.advance(1000)
+    const text = await toggle($, '')
+    expect(text).toContain('Keepalive  paused the cache expired; it resumes after your next prompt')
+    expect(text).toContain(`${REFRESH} One refresh every 4 min.`)
+  })
+
+  test('a cache expired, its stop not yet recorded: the refresh cost, and directly after it the interval row', async ($, on) => {
+    kaWorld(on, opusCached())
+    const { held, release } = holdingStop(on, 'cache expired')
+    const clock = mock.clock(on, { now: T0 })
+    await $.classic.SessionStart({ source: 'startup', transcript_path: PATH })
+    await clock.settle()
+    await toggle($, 'on 60 2')
+    await mainStep($)
+    // The turn runs through the cache's expiry: the stop is written at that tick, and the hold keeps it unrecorded while the clock runs on.
+    await clock.advance(310000)
+    try {
+      expect(held.holding).toBe(true)
+      expect(await toggle($, '')).toContain(`${REFRESH} One refresh every 4 min.`)
+    } finally {
+      release()
+      await clock.settle()
+    }
+  })
+
+  test('a learned count of none whose cache expired, its stop recorded: the refresh cost, and directly after it the interval row', async ($, on) => {
+    const clock = await started($, on, { ...opusCached(), store: LONG })
+    await toggle($, 'on 60')
+    await mainStep($)
+    await turnEnd($)
+    await clock.advance(310000)
+    await clock.advance(1000)
+    const text = await toggle($, '')
+    expect(text).toContain('Keepalive  paused the cache expired; it resumes after your next prompt')
+    expect(text).toContain(`${REFRESH} One refresh every 4 min.`)
+  })
+
+  test('a learned count of none whose cache expired, its stop not yet recorded: the refresh cost, and directly after it the interval row', async ($, on) => {
+    kaWorld(on, { ...opusCached(), store: LONG })
+    const { held, release } = holdingStop(on, 'cache expired')
+    const clock = mock.clock(on, { now: T0 })
+    await $.classic.SessionStart({ source: 'startup', transcript_path: PATH })
+    await clock.settle()
+    await toggle($, 'on 60')
+    await mainStep($)
+    await turnEnd($)
+    await clock.advance(310000)
+    try {
+      expect(held.holding).toBe(true)
+      expect(await toggle($, '')).toContain(`${REFRESH} One refresh every 4 min.`)
+    } finally {
+      release()
+      await clock.settle()
+    }
+  })
+
+  test('keepalive on with no reading to count from: the sentence is absent', async ($, on) => {
+    await started($, on, { text: '', exists: false })
+    await toggle($, 'on 15')
+    const text = await toggle($, '')
+    expect(text).toContain('Keepalive  on, no count')
+    expect(text.split(SENTENCE).length - 1).toBe(0)
   })
 })
 

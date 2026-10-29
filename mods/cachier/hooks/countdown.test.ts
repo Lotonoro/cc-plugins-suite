@@ -186,11 +186,11 @@ describe('pieOf: the pie\'s tone and the colour sentence, from the reading, keep
   ]
   type Expected = [tone: Tone | null, sentence: boolean]
   const cases: { name: string; reading: ReturnType<typeof readingOf>; expected: [Expected, Expected, Expected, Expected] }[] = [
-    { name: 'no cache', reading: readingOf({ kind: 'no-cache' }, null, null, T, UPON), expected: [[null, false], [null, false], ['on', false], ['on', false]] },
-    { name: 'cold', reading: readingOf(known, null, COLD, T + 1000, UPON), expected: [['gone', false], ['gone', false], ['on', false], ['on', false]] },
-    { name: 'expired', reading: readingOf(known, null, null, T + 300000, UPON), expected: [['gone', false], ['gone', false], ['alarm', false], ['alarm', false]] },
-    { name: 'warm, calm', reading: readingOf(known, null, null, T + 100000, UPON), expected: [['quiet', false], ['quiet', false], ['quiet', false], ['on', false]] },
-    { name: 'warm, just above a quarter left', reading: readingOf(known, null, null, T + 224999, UPON), expected: [['quiet', false], ['quiet', false], ['quiet', false], ['on', false]] },
+    { name: 'no cache', reading: readingOf({ kind: 'no-cache' }, null, null, T, UPON), expected: [[null, true], [null, true], ['on', false], ['on', false]] },
+    { name: 'cold', reading: readingOf(known, null, COLD, T + 1000, UPON), expected: [['gone', true], ['gone', true], ['on', true], ['on', true]] },
+    { name: 'expired', reading: readingOf(known, null, null, T + 300000, UPON), expected: [['gone', true], ['gone', true], ['alarm', true], ['alarm', true]] },
+    { name: 'warm, calm', reading: readingOf(known, null, null, T + 100000, UPON), expected: [['quiet', true], ['quiet', true], ['quiet', true], ['on', false]] },
+    { name: 'warm, just above a quarter left', reading: readingOf(known, null, null, T + 224999, UPON), expected: [['quiet', true], ['quiet', true], ['quiet', true], ['on', false]] },
     { name: 'warm, exactly a quarter left', reading: readingOf(known, null, null, T + 225000, UPON), expected: [['warning', true], ['warning', true], ['warning', true], ['on', false]] },
     { name: 'warm, inside the last quarter', reading: readingOf(known, null, null, T + 250000, UPON), expected: [['warning', true], ['warning', true], ['warning', true], ['on', false]] },
     { name: 'warm, just above a tenth left', reading: readingOf(known, null, null, T + 269999, UPON), expected: [['warning', true], ['warning', true], ['warning', true], ['on', false]] },
@@ -212,8 +212,33 @@ describe('pieOf: the pie\'s tone and the colour sentence, from the reading, keep
     expect(pieOf(quarter, false, null).colour).toBe("The pie turns amber in the cache's last quarter and red in its last tenth: the cache is about to lapse.")
     expect(COLOUR_SENTENCE).toBe(pieOf(quarter, false, null).colour)
     expect(pieOf(quarter, true, FIGURE).footer).toEqual(footerOf(quarter, true, refreshingOf(true, quarter, FIGURE)))
-    expect(pieOf(null, false, null)).toEqual({ footer: null, colour: null })
+    expect(pieOf(null, false, null)).toEqual({ footer: null, colour: COLOUR_SENTENCE })
   })
+})
+
+// The colour sentence's rule as a literal oracle: it shows exactly where no refresh is coming, that is, not refreshing, and either keepalive
+// is off or a reading is held. Each reading lists, in order: keepalive off, on and refreshing, on and not refreshing. The expected values are
+// literals, not derived from the rule.
+describe('pieOf: the colour sentence as a literal oracle, by the reading and keepalive', () => {
+  const FIGURE = '$0.004/refresh'
+  const STATES: [boolean, string | null][] = [
+    [false, null],
+    [true, FIGURE],
+    [true, null],
+  ]
+  const cases: { name: string; reading: ReturnType<typeof readingOf>; expected: [boolean, boolean, boolean] }[] = [
+    { name: 'green, a warm reading calm', reading: readingOf(known, null, null, T + 100000, UPON), expected: [true, false, true] },
+    { name: 'amber, a warm reading in the last quarter', reading: readingOf(known, null, null, T + 240000, UPON), expected: [true, false, true] },
+    { name: 'red, a warm reading in the last tenth', reading: readingOf(known, null, null, T + 280000, UPON), expected: [true, false, true] },
+    { name: 'cold', reading: readingOf(known, null, COLD, T + 1000, UPON), expected: [true, true, true] },
+    { name: 'expired', reading: readingOf(known, null, null, T + 300000, UPON), expected: [true, true, true] },
+    { name: 'no reading', reading: readingOf({ kind: 'no-cache' }, null, null, T, UPON), expected: [true, false, false] },
+  ]
+  for (const { name, reading, expected } of cases) {
+    test(`${name}: the sentence by keepalive off, on and refreshing, and on and not refreshing`, () => {
+      expect(STATES.map(([on, refresh]) => pieOf(reading, on, refresh).colour !== null)).toEqual(expected)
+    })
+  }
 })
 
 describe('cueOf: the glyph and tone after the footer words', () => {

@@ -1,7 +1,7 @@
 import type { EngineInterface, Register, RenderElement } from 'claude-code'
 import type { ModelForkResult, ModelUsage } from 'claude-code'
 import type { CacheView, ColdMark, HintCost, HintState, Judged, KeepaliveState, PriceCue, Spend, StatsState, TallyState, Unit } from '../types'
-import { pieOf, readingOf, rebuildDrawnOf, refreshingOf, settleCold, touchedAt, warmthOf } from './countdown'
+import { pieOf, readingOf, rebuildDrawnOf, settleCold, touchedAt, warmthOf } from './countdown'
 import {
   coldBegun,
   coldLanded,
@@ -42,6 +42,7 @@ import {
   usageOf,
   recount,
   offerOf,
+  type Figure,
   type Mode,
 } from './keepalive'
 import { singleFlight } from './guard'
@@ -888,6 +889,8 @@ const snapshotNow = async ($: Dollar): Promise<Snapshot> => {
   const verdict = step(held, view, live, gapOpen(held), nowMs, money)
   // The pie's own judgement, from the held state and the view under the cold mark, so the sentence agrees with the heading above it.
   const { colour } = pieOf(reading, held.config !== null, costOf(held, view, money)?.label ?? null)
+  // While keepalive is off, the offer a press would start: the same figure the tick writes, from the same inputs.
+  const offer = held.config === null && defaultRun !== undefined ? offerNow(held, view, money, nowMs, defaultRun) : null
   return {
     cache: [warmthOf(reading, raw.kind === 'known' ? raw.ttlLabel : '5m', rebuild)].filter((line) => line !== ''),
     keepalive: {
@@ -895,6 +898,7 @@ const snapshotNow = async ($: Dollar): Promise<Snapshot> => {
       lines: [
         ...(verdict.why === null ? [] : [verdict.why]),
         ...(colour === null ? [] : [colour]),
+        ...(offer === null ? [] : [offer.explain, offer.figures]),
         ...verdict.lines,
         ...countLines(held, view, money, nowMs, kept),
         ...(defaultRun === undefined ? [] : [breakEvenLine(held, view, money, defaultsNow(defaultRun, view, money, nowMs))]),
@@ -1257,6 +1261,9 @@ const judgedWrite = async ($: Dollar, change: (j: Judged) => Judged) => {
   }
 }
 
+// The part of a figure the hint keeps: its label.
+const labelOf = (figure: Figure | null): HintCost | null => (figure === null ? null : { label: figure.label })
+
 // The hint's state is written only when it changes, so a tick that changes nothing writes nothing.
 const setHint = async ($: Dollar, hint: HintState | null) => {
   const held = (await $.state.get(HINT)).value ?? null
@@ -1265,8 +1272,9 @@ const setHint = async ($: Dollar, hint: HintState | null) => {
 
 // The figure the time's hover shows while keepalive is off: the run a press would start, at the lead and count it would use, as the press
 // itself reads them. While it is on but paused or spent, the figure is the run it is on, at its lead and count, which a resume sends.
-// Written by the tick with the other figures, so the hover only draws what the state holds.
-const offerNow = (k: KeepaliveState, view: CacheView, money: Money, nowMs: number, defaults: Defaults): HintCost | null => {
+// The tick writes its label with the other figures for the hover, and the gather works the whole figure out from the same inputs rather than
+// reading the stored hint.
+const offerNow = (k: KeepaliveState, view: CacheView, money: Money, nowMs: number, defaults: Defaults): Figure | null => {
   if (k.config !== null) return offerOf(view, money, k.config.leadMs, k.runCount)
   const press = pressOf(k, defaults)
   return press.kind === 'on' ? offerOf(view, money, press.leadMs, countNow(press.count, view, money, press.leadMs, nowMs)) : null
@@ -1296,17 +1304,14 @@ const drawStatus = async ($: Dollar) => {
     return next === k ? undefined : next
   })
   const held = (await $.state.get(KEEPALIVE)).value ?? INITIAL
-  const cost = costOf(held, counted, money)
+  const figure = costOf(held, counted, money)
   // The figure to rebuild an expired cache: what the next prompt pays to write it again, in the unit shown.
   const rebuild = rebuildOf(view, money)
   const reading = readingOf(view, live, cold, nowMs, rebuild)
-  // The lifetime a warm reading counts in: a reading is warm only with a known view.
-  const ttl = view.kind === 'known' ? view.ttlLabel : '5m'
-  const refreshing = refreshingOf(held.config !== null, reading, cost?.label ?? null)
   const hint: HintState = {
     reading,
-    cost,
-    offer: defaultRun === undefined ? null : offerNow(held, counted, money, nowMs, defaultRun),
+    cost: labelOf(figure),
+    offer: defaultRun === undefined ? null : labelOf(offerNow(held, counted, money, nowMs, defaultRun)),
   }
   await setHint($, hint)
   // An open pane follows the size its draw recorded; nothing is built here to know it.

@@ -248,6 +248,6 @@ export const replay = async (sources: readonly Source[]): Promise<Replayed> => {
   const replayed = steps.reduce<Store>((store, step) => step.run(store), EMPTY)
   let next = replayed.next
   for (const id of known) next = Math.max(next, id + 1)
-  const store = { items: replayed.items.map(it => ({ ...it, unread: false })), next }
+  const store = { items: replayed.items.map(it => ({ ...it, unread: false })), next, term: replayed.term }
   return { store, skipped, unreadable, known: [...known] }
 }
