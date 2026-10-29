@@ -4256,12 +4256,33 @@ describe('the pair: keeping the cache warm against rebuilding it if it goes cold
     )
   })
 
-  test('a lead at the TTL on a warm cache offers no refresh, and states no price and no rebuild', { options: { keepalive_lead_s: 300 } }, async ($, on) => {
+  test('a lead at the TTL on a warm cache offers no refresh: with keepalive off the hover states the rebuild alone, with it on nothing, and the section no price', { options: { keepalive_lead_s: 300 } }, async ($, on) => {
     await started($, on, opusCached())
     const m = await mountHint($)
-    expect(JSON.stringify(await m.drawn())).not.toMatch(/keep warm|if cold/)
+    expect(JSON.stringify(await m.drawn())).toContain('if cold ~$0.09 rebuild')
+    expect(JSON.stringify(await m.drawn())).not.toContain('keep warm')
+    expect(await toggle($, '')).not.toMatch(/warm cache|if it goes cold|One refresh every/)
     expect(await toggle($, 'on 300')).toBe('keepalive on: lead 300 s, 24 refreshes. Paused: lead 300 s is not below the 300 s TTL.')
     expect(await toggle($, '')).not.toMatch(/warm cache|if it goes cold/)
+    await m.unmount()
+  })
+
+  test('with keepalive off and a learned count of 0, the hover states the rebuild alone; stored, cost is null and offer holds the label; keepalive on says nothing', { options: { keepalive_lead_s: 60 } }, async ($, on) => {
+    let latest: any
+    on('state.set', async (_$: any, e: any, next: any) => {
+      if (e.plugin === 'cachier' && e.key === 'hint') latest = e.value
+      return next(e)
+    })
+    const clock = await started($, on, { ...opusCached(), store: LONG_PAUSES })
+    const m = await mountHint($)
+    expect(JSON.stringify(await m.drawn())).toContain('if cold ~$0.09 rebuild')
+    expect(JSON.stringify(await m.drawn())).not.toContain('keep warm')
+    expect(latest.cost).toBeNull()
+    expect(latest.offer).toEqual({ label: 'if cold ~$0.09 rebuild' })
+    expect(await toggle($, '')).not.toMatch(/warm cache|if it goes cold|One refresh every/)
+    await toggle($, 'on 60')
+    await clock.advance(1000)
+    expect(JSON.stringify(await m.drawn())).not.toMatch(/keep warm|if cold/)
     await m.unmount()
   })
 
@@ -6211,8 +6232,9 @@ describe('the Keepalive section: the colour sentence wherever no refresh is comi
     expect(text).not.toContain('One refresh every')
   })
 
-  test('keepalive off with a lead at the TTL, which offers no refresh: the sentence is there, and neither the explanation nor the figures', { options: { keepalive_lead_s: 300 } }, async ($, on) => {
+  test('keepalive off with a lead at the TTL, which offers no refresh: the hover states the rebuild, the sentence is there, and neither the explanation nor the figures', { options: { keepalive_lead_s: 300 } }, async ($, on) => {
     await started($, on)
+    expect(await drawnHint($)).toContain('if cold ~$0.09 rebuild')
     const text = await toggle($, '')
     expect(text).toContain(`Keepalive  off ${SENTENCE}`)
     expect(text).not.toContain('warm cache')
@@ -7355,7 +7377,8 @@ const SCENARIOS: Scenario[] = [
     return paneRows($)
   } },
   { name: 'keepalive off with no cache to count from', old: { status: `Keepalive is off. ${COLOUR}` }, run: async ($, on) => (await startedWorld($, on, { text: '', exists: false }), paneRows($)) },
-  { name: 'keepalive off with a lead at the TTL, which offers no refresh', old: { warmth: 'Prompt cache warm, 4:59 left (5-minute cache)', status: `Keepalive is off. ${COLOUR}`, breakEven: "Keepalive doesn't pay off on this context" }, options: { keepalive_lead_s: 300 }, run: async ($, on) => (await startedWorld($, on), paneRows($)) },
+  { name: 'keepalive off with a lead at the TTL, which offers no refresh', old: { warmth: 'Prompt cache warm, 4:59 left (5-minute cache)', status: `Keepalive is off. ${COLOUR}`, breakEven: "Keepalive doesn't pay off on this context" }, options: { keepalive_lead_s: 300 }, run: async ($, on) => (await startedWorld($, on), expect(await drawnHint($)).toContain('if cold ~$0.09 rebuild'), paneRows($)) },
+  { name: 'keepalive off with a learned run count of 0', old: { warmth: 'Prompt cache warm, 4:59 left (5-minute cache)', status: `Keepalive is off. ${COLOUR}` }, run: async ($, on) => (await startedWorld($, on, { ...opusCached(), store: LONG_PAUSES }), expect(await drawnHint($)).toContain('if cold ~$0.09 rebuild'), paneRows($)) },
   { name: 'keepalive on and refreshing', old: { warmth: 'Prompt cache warm, 4:58 left (5-minute cache)', status: 'Keepalive is on and refreshing the cache.', explain: 'Next refresh: $0.004 (~19k cached tokens read).', figures: 'One refresh every 4:45.', breakEven: "Keepalive pays off if you're back between 5:00 and 1:54:00" }, figure: 'running', heading: 'on, refreshing', run: async ($, on) => {
     const clock = await startedWorld($, on)
     await toggle($, 'on 15')

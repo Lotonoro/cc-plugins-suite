@@ -43,7 +43,7 @@ export type Judged = { netUsd: number; pauses: number }
 export type Reading = { words: string; state: 'warm' | 'expired' | 'cold'; quarter: number; warn: 'calm' | 'quarter' | 'tenth' }
 
 // The footer line's state, written each tick. `reading` is what the countdown counts, null for nothing to count. `cost` is the
-// refresh figure while keepalive refreshes (the price to keep warm, with the rebuild price beside it while the cache is warm). `offer` is the figure a press would turn keepalive on at while it is off, or while it is on the
+// refresh figure while keepalive refreshes (the price to keep warm, with the rebuild price beside it while the cache is warm). `offer` is the figure a press would turn keepalive on at while it is off (the rebuild-alone label where a press would send no refresh: a lead at or above the TTL, or a learned count of 0), or while it is on the
 // figure of the run it is on, which a resume sends; null where that run sends no refresh.
 // The details pane's text is not kept here: its draw gathers the sections itself.
 export type HintState = {

@@ -359,18 +359,20 @@ const capital = (text: string): string => text.charAt(0).toUpperCase() + text.sl
 // answers `warm` from the expiry owner: keepalive counts a refresh's price, and the pair states it, only while the cache is warm.
 export type Pair = { warm: boolean; rebuild: Spend | null }
 
-// The pair of prices a warm cache states, each half worded once: the hover's label, the Keepalive section's phrase for the refresh, and
-// its line for the rebuild, which is empty where no rebuild is priced. Null for an expired cache or a view with no figures, which keep
-// the refresh's price alone.
-const pairing = (view: CacheView, money: Money, pair: Pair): { label: string; phrase: string; rebuild: string[] } | null => {
+// The pair of prices a warm cache states, each half worded once: the hover's label, the rebuild half of it alone as `bare`, the Keepalive
+// section's phrase for the refresh, and its line for the rebuild, which is empty where no rebuild is priced. Null for an expired cache or
+// a view with no figures, which keep the refresh's price alone.
+const pairing = (view: CacheView, money: Money, pair: Pair): { label: string; bare: string | null; phrase: string; rebuild: string[] } | null => {
   if (view.kind !== 'known' || !pair.warm) return null
   const usd = pingUsd(view, money)
   const tokens = `${kTokens(view.promptTokens)} cached tokens`
   const spend = pair.rebuild
   const written = spend === null ? '' : `${kTokens(spend.write5m + spend.write1h)} tokens written`
   const rebuilt = spend !== null && money.unit === 'dollars' && spend.usd !== null ? `${uponOf(spend, money.unit)} (${written})` : written
+  const bare = spend === null ? null : `if cold ${uponOf(spend, money.unit)} rebuild`
   return {
-    label: `keep warm ${usd === null ? `${kTokens(view.promptTokens)} read` : dollars(usd)}/refresh${spend === null ? '' : ` · if cold ${uponOf(spend, money.unit)} rebuild`}`,
+    label: `keep warm ${usd === null ? `${kTokens(view.promptTokens)} read` : dollars(usd)}/refresh${bare === null ? '' : ` · ${bare}`}`,
+    bare,
     phrase: usd === null ? `a refresh reads the warm cache: ${tokens}` : `a refresh reads the warm cache: ${dollars(usd)} (${tokens})`,
     rebuild: spend === null ? [] : [`if it goes cold, your next prompt rebuilds it: ${rebuilt}`],
   }
@@ -401,10 +403,19 @@ const figureAt = (view: CacheView, leadMs: number, money: Money, pair: Pair): Fi
 export const costOf = (k: KeepaliveState, view: CacheView, money: Money, pair: Pair): Figure | null =>
   k.config === null || k.stop !== null || k.runCount === 0 ? null : figureAt(view, k.config.leadMs, money, pair)
 
-// The figure a press would show while keepalive is off: the run a press would start, at the lead and count it would use. The hover
-// above the time shows its label, the Keepalive section its lines. Null where that run sends no refresh.
+// The figure of a run at the lead and count it would use: what a resume sends, and what a press would start. The hover above the time
+// shows its label, the Keepalive section its lines. Null where that run sends no refresh.
 export const offerOf = (view: CacheView, money: Money, leadMs: number, runCount: number, pair: Pair): Figure | null =>
   runCount === 0 ? null : figureAt(view, leadMs, money, pair)
+
+// The figure a press would show while keepalive is off: the resume's figure where the run sends refreshes. Where it sends none, at a lead
+// at or above the TTL or a count of 0, a warm cache states the rebuild's price alone, with no section lines.
+export const pressOfferOf = (view: CacheView, money: Money, leadMs: number, runCount: number, pair: Pair): Figure | null => {
+  const sends = offerOf(view, money, leadMs, runCount, pair)
+  if (sends !== null || view.kind !== 'known') return sends
+  const bare = pairing(view, money, pair)?.bare
+  return bare === undefined || bare === null ? null : { label: bare, lines: [] }
+}
 
 // Stops that end keepalive by design. Any other stop, and a pause from a lead at or above the TTL, is a failure the status
 // line names in one clause; the footer names neither.

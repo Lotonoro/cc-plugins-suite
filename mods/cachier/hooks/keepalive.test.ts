@@ -36,6 +36,7 @@ import {
   turnBegun,
   turnEnded,
   offerOf as offerWith,
+  pressOfferOf as pressOfferWith,
   coldBegun,
   coldLanded,
   modeOf,
@@ -734,6 +735,20 @@ describe('the footer line and the status line: what each shows', () => {
     expect(offer(known, TOKENS, 15000, 0)).toBeNull()
     expect(offer(known, TOKENS, 300000, 3)).toBeNull()
     expect(offer({ kind: 'no-cache' }, TOKENS, 15000, 3)).toBeNull()
+  })
+
+  test('pressOfferOf is the resume\'s figure where the press sends refreshes, and the rebuild price alone, with no section lines, on a warm cache where it sends none', () => {
+    const press = (v: CacheView, money: Money, lead: number, count: number, warm = true) => pressOfferWith(v, money, lead, count, pairOf(v, money, warm))
+    expect(press(known, TOKENS, 15000, 3)).toEqual(offerWith(known, TOKENS, 15000, 3, pairOf(known, TOKENS)))
+    expect(press(known, TOKENS, 15000, 3, false)).toEqual(offerWith(known, TOKENS, 15000, 3, pairOf(known, TOKENS, false)))
+    expect(press(known, TOKENS, 300000, 3)).toEqual({ label: 'if cold ~33k tokens rebuild', lines: [] })
+    expect(press(known, TOKENS, 300000, 0)).toEqual({ label: 'if cold ~33k tokens rebuild', lines: [] })
+    expect(press(known, TOKENS, 15000, 0)).toEqual({ label: 'if cold ~33k tokens rebuild', lines: [] })
+    expect(press(known, DOLLARS, 15000, 0)?.label).toMatch(/^if cold ~\$[\d.]+ rebuild$/)
+    expect(press(known, TOKENS, 15000, 0, false)).toBeNull()
+    expect(press(known, TOKENS, 300000, 3, false)).toBeNull()
+    expect(press({ kind: 'no-cache' }, TOKENS, 300000, 0)).toBeNull()
+    expect(pressOfferWith(known, TOKENS, 15000, 0, { warm: true, rebuild: null })).toBeNull()
   })
 
   test('the interval a run pings at is minutes and seconds when the seconds are not zero, whole minutes otherwise', () => {

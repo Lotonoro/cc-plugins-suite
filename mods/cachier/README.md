@@ -34,7 +34,10 @@ lifetime is left, and next to it the time left, or a word where there is no time
   clickable. While the cache is warm it shows what keeping it warm costs beside what the next prompt pays to rebuild it if it goes
   cold:
   `keep warm $0.006/refresh · if cold ~$0.21 rebuild`
-  Once the cache has expired it shows the refresh figure alone, as `$0.006/refresh`.
+  Once the cache has expired it shows the refresh figure alone, as `$0.006/refresh`. With keepalive off, where a press would send no
+  refresh (a lead at or above the TTL, or a learned count of 0), a warm cache shows the rebuild price alone, as
+  `if cold ~$0.21 rebuild`
+  and keepalive on shows nothing there.
 - Hovering the pie shows keepalive's state in a popup just above it: `cache keepalive is on`, `cache keepalive is paused`
   (on, but sending no more), or `cache keepalive is off`. It moves nothing on the line either.
 - On the phone cachier draws no mod UI, so the footer and the pane don't show there. Keepalive keeps running on the Mac.

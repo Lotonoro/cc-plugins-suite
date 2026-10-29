@@ -42,6 +42,7 @@ import {
   usageOf,
   recount,
   offerOf,
+  pressOfferOf,
   type Figure,
   type Mode,
   type Pair,
@@ -1274,13 +1275,14 @@ const setHint = async ($: Dollar, hint: HintState | null) => {
 }
 
 // The figure the time's hover shows while keepalive is off: the run a press would start, at the lead and count it would use, as the press
-// itself reads them. While it is on but paused or spent, the figure is the run it is on, at its lead and count, which a resume sends.
+// itself reads them, which on a warm cache is the rebuild's price alone where the run sends no refresh. While it is on but paused or
+// spent, the figure is the run it is on, at its lead and count, which a resume sends.
 // The tick writes its label with the other figures for the hover, and the gather works the whole figure out from the same inputs rather than
 // reading the stored hint.
 const offerNow = (k: KeepaliveState, view: CacheView, money: Money, nowMs: number, defaults: Defaults, pair: Pair): Figure | null => {
   if (k.config !== null) return offerOf(view, money, k.config.leadMs, k.runCount, pair)
   const press = pressOf(k, defaults)
-  return press.kind === 'on' ? offerOf(view, money, press.leadMs, countNow(press.count, view, money, press.leadMs, nowMs), pair) : null
+  return press.kind === 'on' ? pressOfferOf(view, money, press.leadMs, countNow(press.count, view, money, press.leadMs, nowMs), pair) : null
 }
 
 // Drawn on every tick, outside the lookup's single flight, so a held lookup cannot freeze it.
