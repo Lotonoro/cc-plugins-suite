@@ -1,5 +1,5 @@
 import { expect, test } from 'claude-code/testing'
-import { cutLine, cutText, doneNotice, expire, orderedOptions, pointerText, press, reopen, reply, turnsOf } from './done'
+import { answerOf, cutLine, cutText, doneNotice, expire, formsOf, isNumbered, orderedOptions, pointerText, press, reopen, reply, replyText, turnsOf, type Form } from './done'
 import { act, parseInput } from './items'
 import type { Item, Store, Turn } from '../types'
 
@@ -332,4 +332,111 @@ test('orderedOptions puts the recommended option first and keeps the rest in the
   ]
   expect(orderedOptions({ ...item, options }).map(option => option.label)).toEqual(['C', 'A', 'B', 'D'])
   expect(options.map(option => option.label)).toEqual(['A', 'B', 'C', 'D'])
+})
+
+const DECISION = [
+  { label: 'Use sqlite', description: '', recommended: false },
+  { label: 'Use postgres', description: '', recommended: true },
+]
+const TOKEN = 5000
+// The same list with every item read: an answer clears the unread mark, which a press does not.
+const readOf = (s: Store): Store => ({ ...s, items: s.items.map(it => ({ ...it, unread: false })) })
+
+test('an item takes the forms its kind takes, a reply among them: a decision its option numbers, a yes/no yes and no, a to-do done', () => {
+  expect(formsOf({ ...item, options: DECISION })).toEqual(['option', 'reply'])
+  expect(formsOf({ ...item, yesno: true })).toEqual(['yes', 'no', 'reply'])
+  expect(formsOf(item)).toEqual(['done', 'reply'])
+  expect(formsOf({ ...item, doneLabel: 'Go with sqlite' })).toEqual(['done', 'reply'])
+})
+
+test('an item with options and a yes/no marker takes its options, as the pane draws it', () => {
+  expect(formsOf({ ...item, yesno: true, options: DECISION })).toEqual(['option', 'reply'])
+})
+
+test('reply text is trimmed as the pane trims it, and text blank after that is no reply', () => {
+  expect(replyText('  Use sqlite  ')).toBe('Use sqlite')
+  expect(replyText(' Use sqlite ')).toBe('Use sqlite')
+  expect(replyText('')).toBe(null)
+  expect(replyText(' \t ')).toBe(null)
+  expect(replyText(' ')).toBe(null)
+})
+
+test('a number names an item when it is the item\'s id as text, so digits with a leading zero name none', () => {
+  expect(isNumbered(item, '3')).toBe(true)
+  expect(isNumbered(item, '03')).toBe(false)
+  expect(isNumbered(item, '30')).toBe(false)
+})
+
+test('a form on a number no item has changes nothing and is missing, a number beyond the safe range included', () => {
+  expect(answerOf(store, '9', { kind: 'done' }, TOKEN)).toEqual({ store, outcome: { kind: 'missing' } })
+  expect(answerOf(store, '12345678901234567890', { kind: 'reply', text: 'x' }, TOKEN)).toEqual({ store, outcome: { kind: 'missing' } })
+})
+
+test('a done on a to-do applies its press: its label as it stands at the write, or a bare press without one, and reads the item', () => {
+  const labelled: Store = { items: [{ ...item, doneLabel: 'Go with sqlite', unread: true }], next: 4, term: null }
+  const answered = answerOf(labelled, '3', { kind: 'done' }, TOKEN)
+  expect(answered.outcome).toEqual({ kind: 'applied', item: labelled.items[0], answer: 'Go with sqlite' })
+  expect(answered.store).toEqual(readOf(press(labelled, 3, TOKEN, 'Go with sqlite')))
+  const bare = answerOf(store, '3', { kind: 'done' }, TOKEN)
+  expect(bare.outcome).toEqual({ kind: 'applied', item, answer: 'done' })
+  expect(bare.store).toEqual(readOf(press(store, 3, TOKEN, null)))
+})
+
+test('a yes and a no on a yes/no apply that answer, as a press of it does', () => {
+  const question: Store = { items: [{ ...item, yesno: true, unread: true }], next: 4, term: null }
+  const yes = answerOf(question, '3', { kind: 'yes' }, TOKEN)
+  expect(yes.outcome).toEqual({ kind: 'applied', item: question.items[0], answer: 'yes' })
+  expect(yes.store).toEqual(readOf(press(question, 3, TOKEN, 'yes')))
+  const no = answerOf(question, '3', { kind: 'no' }, TOKEN)
+  expect(no.outcome).toEqual({ kind: 'applied', item: question.items[0], answer: 'no' })
+  expect(no.store).toEqual(readOf(press(question, 3, TOKEN, 'no')))
+})
+
+test('an option number applies the option at that number in the pane\'s order, the recommended one first', () => {
+  const decision: Store = { items: [{ ...item, options: DECISION }], next: 4, term: null }
+  const first = answerOf(decision, '3', { kind: 'option', n: 1 }, TOKEN)
+  expect(first.outcome).toEqual({ kind: 'applied', item: decision.items[0], answer: 'Use postgres' })
+  expect(first.store).toEqual(readOf(press(decision, 3, TOKEN, 'Use postgres')))
+  expect(answerOf(decision, '3', { kind: 'option', n: 2 }, TOKEN).outcome).toMatchObject({ kind: 'applied', answer: 'Use sqlite' })
+})
+
+test('a reply on an open item applies as a reply does: one line, marked as a reply, and the item is read', () => {
+  const unread: Store = { items: [{ ...item, unread: true }], next: 4, term: null }
+  const out = answerOf(unread, '3', { kind: 'reply', text: 'Use sqlite\nnot postgres' }, TOKEN)
+  expect(out.outcome).toEqual({ kind: 'applied', item: unread.items[0], answer: 'Use sqlite\nnot postgres' })
+  expect(out.store).toEqual(readOf(reply(unread, 3, TOKEN, 'Use sqlite\nnot postgres')))
+  expect(out.store.items[0]).toMatchObject({ state: 'done-waiting', pressedAt: TOKEN, answer: 'Use sqlite not postgres', replied: true, unread: false })
+})
+
+test('an item in its undo window or sent takes no form: whatever the form, it changes nothing and the outcome names the state', () => {
+  const waiting = press(store, 3, 1000, 'Use sqlite')
+  const sent = expire(press(store, 3, 1000, null), 3, 1000).store
+  const forms: Form[] = [{ kind: 'done' }, { kind: 'yes' }, { kind: 'option', n: 1 }, { kind: 'reply', text: 'x' }]
+  for (const form of forms) {
+    expect(answerOf(waiting, '3', form, TOKEN)).toEqual({ store: waiting, outcome: { kind: 'undoing', item: waiting.items[0] } })
+    expect(answerOf(sent, '3', form, TOKEN)).toEqual({ store: sent, outcome: { kind: 'sent', item: sent.items[0] } })
+  }
+})
+
+test('a form the item\'s kind does not take changes nothing and is takes: a done on a decision, a yes or a no or an option on a to-do, a done on a yes/no', () => {
+  const decision: Store = { items: [{ ...item, options: DECISION }], next: 4, term: null }
+  const question: Store = { items: [{ ...item, yesno: true }], next: 4, term: null }
+  expect(answerOf(decision, '3', { kind: 'done' }, TOKEN)).toEqual({ store: decision, outcome: { kind: 'takes', item: decision.items[0] } })
+  expect(answerOf(store, '3', { kind: 'yes' }, TOKEN)).toEqual({ store, outcome: { kind: 'takes', item } })
+  expect(answerOf(store, '3', { kind: 'no' }, TOKEN)).toEqual({ store, outcome: { kind: 'takes', item } })
+  expect(answerOf(store, '3', { kind: 'option', n: 1 }, TOKEN)).toEqual({ store, outcome: { kind: 'takes', item } })
+  expect(answerOf(question, '3', { kind: 'done' }, TOKEN)).toEqual({ store: question, outcome: { kind: 'takes', item: question.items[0] } })
+})
+
+test('an option number out of the decision\'s range is takes: zero, one past the last, and a number beyond every safe integer', () => {
+  const decision: Store = { items: [{ ...item, options: DECISION }], next: 4, term: null }
+  for (const n of [0, 3, Number('9'.repeat(400))]) {
+    expect(answerOf(decision, '3', { kind: 'option', n }, TOKEN)).toEqual({ store: decision, outcome: { kind: 'takes', item: decision.items[0] } })
+  }
+})
+
+test('a refused form leaves an unread item unread, and a number no item has leaves the list as it is', () => {
+  const unread: Store = { items: [{ ...item, unread: true }], next: 4, term: null }
+  expect(answerOf(unread, '3', { kind: 'yes' }, TOKEN).store).toEqual(unread)
+  expect(answerOf(unread, '9', { kind: 'done' }, TOKEN).store).toEqual(unread)
 })
