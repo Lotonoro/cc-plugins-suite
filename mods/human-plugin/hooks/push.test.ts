@@ -416,10 +416,14 @@ test('a push answered user_present after its 10 seconds have passed schedules no
 
 test('a clear ends the retries of the items filed before it: none is tried again', async ($, on) => {
   const { clock } = kit(on)
+  const list = stateHeld(on)
   const messages = pushes(on, userPresent)
   await $.tool.call({ tool: TOOL, action: 'add', blocking: true, title: 'Pick a db' })
   await clock.settle()
+  const listed = list.list()
   await $.session.end({ reason: 'clear', sessionId: 's1', resume: { id: 's1' } })
+  // The clear empties the list, and a retry that finds its item gone ends anyway: the list is put back, so only the chain's end stops it.
+  list.replaceList(listed)
   await clock.advance(3600000)
   expect(messages).toEqual(['Blocking: #1 Pick a db'])
 })
