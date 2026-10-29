@@ -1,5 +1,6 @@
 import type { Item, Turn } from '../types'
 import { cutLine, cutText, humanTurn, labelOf, orderedOptions, turnsOf } from './done'
+import { LINE_BREAK } from './items'
 import { bandOrder } from './layout'
 
 // The bounds the answers keep, in UTF-16 units. `cap` is the most `/asks <n>` prints, the cut line included; `floor` is the least its cut newest
@@ -90,11 +91,8 @@ const answerItem = (item: Item): string =>
 
 const blockingWord = (item: Item): string => (item.blocking ? 'blocking' : 'non-blocking')
 
-// Line breaks of any kind, as the tool's list reads them: each is printed as a line feed.
-const BREAK = /\r\n|[\r\n\u2028\u2029]/
-
 // A text as printed: each of its lines indented, and a line holding nothing but blanks printed as the indent alone.
-const printed = (text: string): string => text.split(BREAK).map(line => (line.trim() === '' ? INDENT : `${INDENT}${line}`)).join('\n')
+const printed = (text: string): string => text.split(LINE_BREAK).map(line => (line.trim() === '' ? INDENT : `${INDENT}${line}`)).join('\n')
 
 // A section: its heading line, and its text printed under it.
 type Section = { heading: string; body: string }

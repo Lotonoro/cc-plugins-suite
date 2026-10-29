@@ -265,6 +265,15 @@ test('a brief smaller than the excess goes whole, then the oldest turn, and the 
   expect(text.endsWith('\n  The rest was cut.')).toBe(true)
 })
 
+test('a brief cut to six units keeps every line indented: its ellipsis ends the first line, and no line keeps only part of its indent', () => {
+  // The answer is 4,001 units, 21 over the cap, so the brief (27 units: "  a", "  bcdef" and the x's) is cut by 21, to six. Every cut to six that
+  // lands on the second line comes to seven units, so the brief keeps its first line alone.
+  const brief = `a\nbcdef\n${'x'.repeat(13)}`
+  const text = whole([made(3, { blocking: true, title: 'T', note: 'n'.repeat(3937), detail: brief })], '3')
+  expect(text).toBe(`  #3 blocking: T\n  note:\n  ${'n'.repeat(3937)}\n  brief:\n  a…\n  The rest was cut.`)
+  for (const line of lineList(text)) expect(line.startsWith('  ')).toBe(true)
+})
+
 test('a 300-character note prints whole even with a 10,000-character brief', () => {
   const text = whole([made(3, { detail: 'b'.repeat(10000), note: 'n'.repeat(300) })], '3')
   expect(text).toContain(`  note:\n  ${'n'.repeat(300)}\n  brief:\n  `)

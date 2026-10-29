@@ -409,7 +409,7 @@ export const mergeRestored = (live: Store, replayed: Store, known: readonly numb
 }
 
 // A line break as the tool row's `^` takes one: a carriage return, a line feed, a Unicode line or paragraph separator, or a CRLF pair as one.
-const LINE_BREAK = /\r\n|[\r\n\u2028\u2029]/
+export const LINE_BREAK = /\r\n|[\r\n\u2028\u2029]/
 
 // An entry's text as `list` prints it: its first line as it is, and every later line indented, so no later line of an entry reads as an item's
 // header in the tool row's count (ui.ts). Each break is printed as a line feed.
