@@ -162,13 +162,15 @@ const answer = async ($: EngineInterface, e: unknown) => {
 }
 
 // The `/asks` command's answer: the list, or one item whole. It waits for a rebuild in progress as the tool does, and clears the unread mark of
-// the one item it shows; the wording and the parse are commands.ts's.
+// the one item it shows, if that item is still the one it printed (markRead); the wording and the parse are commands.ts's.
 const asks = async ($: EngineInterface, args: string): Promise<string> => {
   const ask = parseAsk(args)
   if (ask.kind === 'usage') return USAGE
   if (!(await restored($))) return REBUILDING
-  const { text, shown } = answerTo((await readList($)).items, ask)
-  if (shown !== null) await markRead($, shown)
+  const { items } = await readList($)
+  const { text, shown } = answerTo(items, ask)
+  const printed = items.find(it => it.id === shown)
+  if (printed !== undefined) await markRead($, printed.id, printed)
   return text
 }
 

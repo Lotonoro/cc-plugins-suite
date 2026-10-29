@@ -1,7 +1,7 @@
 import { expect, test } from 'claude-code/testing'
 import { register, wireHooks } from './register'
 import { offer, reset, setOnChange, startTurn, takeHeld, endTurn } from './turns'
-import { EMPTY, TOOL } from './items'
+import { EMPTY, TOOL, act, normalizeStore } from './items'
 import { paneRows } from './ui'
 import { correctionText } from './restatement'
 import { DESCRIPTION, FAILED, REBUILDING } from './commands'
@@ -2088,6 +2088,31 @@ test('/asks <n> clears the unread mark of the one item it shows, and /asks alone
   const afterShow = JSON.stringify(await band(hooks, env))
   expect(afterShow).toContain('• #1 ')
   expect(afterShow).not.toContain('• #2 ')
+})
+
+test('/asks <n> keeps the unread mark an agent turn raised after it read the item: the turn is not in the text the read printed', async () => {
+  freshModule()
+  const { hooks } = wire()
+  const { env, values } = memEnv([made(1, { state: 'done-pending', answer: 'Use sqlite' })], [], null)
+  // The agent appends a turn to #1 between /asks's read of the list and its clear of the mark: the first read returns the list as it was.
+  const getState = env.state.get
+  let appended = false
+  env.state.get = async ref => {
+    const got = await getState(ref)
+    if (ref.key === 'list' && !appended) {
+      appended = true
+      const out = act(normalizeStore(values.list), { action: 'append', id: 1, text: 'A later turn.' }, { agent: null, now: 0 })
+      if ('store' in out) values.list = out.store
+    }
+    return got
+  }
+  expect(await asksOf(hooks)(env as never, { args: '1' } as never, next(false) as never)).toEqual({
+    text: '  #1 non-blocking: Item 1\n  brief:\n  Brief 1.\n  thread:\n  you:\n  Use sqlite',
+  })
+  expect(values.list).toMatchObject({
+    items: [{ state: 'open', unread: true, thread: [{ speaker: 'human', words: 'Use sqlite' }, { speaker: 'agent', words: 'A later turn.' }] }],
+  })
+  expect(JSON.stringify(await band(hooks, env))).toContain('• #1 ')
 })
 
 test('/asks answers that the list is being rebuilt while the rebuild runs past its wait, and lists the rebuilt items once it has finished', async () => {
