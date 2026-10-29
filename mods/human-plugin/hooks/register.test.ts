@@ -2564,6 +2564,26 @@ test('with the pane open on the item, a phone reply leaves the pane on it once i
   expect(shown).not.toContain('Item 2')
 })
 
+test('a reply sent by /asks leaves a human turn with its words on the item once the agent reopens it, under the reply notice', async () => {
+  reset()
+  stopTicker()
+  const { hooks } = wire()
+  const submitted: unknown[] = []
+  const timers: Timer[] = []
+  const { env, values, clock } = replyEnv([made(1, { detail: 'Brief 1.' })], [], null, submitted, timers)
+  await (hooks['session.end'] as Handler)(env as never, { reason: 'exit' } as never, next(false) as never)
+  clock.now = 1000
+  await askText(hooks, env, '1 reply Use sqlite')
+  await tickAt(timers, clock, 1000)
+  expect(submitted).toEqual([{ text: '#1 is done: Item 1\nThe human replied on #1: Use sqlite\nIf that reply settles the ask, act on it, then remove the item; if you need more from the human, or they asked you something, append what you have to say to #1; the item is then open for their next reply. Your own follow-up work never stays on the list.' }])
+  expect((values.list as { items: Item[] }).items[0]).toMatchObject({ state: 'done-pending', replied: true, answer: 'Use sqlite' })
+  await (hooks['tool.call'] as Handler)(env as never, { tool: TOOL, action: 'append', id: 1, text: 'more' } as never, next(false) as never)
+  await settle()
+  expect((values.list as { items: Item[] }).items[0]).toMatchObject({
+    state: 'open', answer: null, replied: false, thread: [{ speaker: 'human', words: 'Use sqlite' }, { speaker: 'agent', words: 'more' }],
+  })
+})
+
 test('every form an open item\'s foot names is accepted by the command: a range names each of its numbers, and a reply is given the text its foot line leaves out', async () => {
   const options = [
     { label: 'Use sqlite', description: '', recommended: false },
