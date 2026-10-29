@@ -30,8 +30,11 @@ lifetime is left, and next to it the time left, or a word where there is no time
   reload or a session end clears it, and no toast is raised. The pie and the words stay clickable.
 - A click on the pie switches keepalive, as `/keepalive on` with the last-used lead and count (else the defaults) or
   `/keepalive off` does. A click on the time, the rebuild figure, `reset` or `no count` opens the details pane, at any terminal width. Esc closes it.
-- Hovering the time or the figure shows the refresh cost in a popup just above it (`$0.006/refresh`); nothing on the
-  line moves, so the time stays clickable.
+- Hovering the time or the figure shows the refresh cost in a popup just above it; nothing on the line moves, so the time stays
+  clickable. While the cache is warm it shows what keeping it warm costs beside what the next prompt pays to rebuild it if it goes
+  cold:
+  `keep warm $0.006/refresh · if cold ~$0.21 rebuild`
+  Once the cache has expired it shows the refresh figure alone, as `$0.006/refresh`.
 - Hovering the pie shows keepalive's state in a popup just above it: `cache keepalive is on`, `cache keepalive is paused`
   (on, but sending no more), or `cache keepalive is off`. It moves nothing on the line either.
 - On the phone cachier draws no mod UI, so the footer and the pane don't show there. Keepalive keeps running on the Mac.
@@ -49,7 +52,8 @@ and a close another plugin refuses leaves the pane open to be closed by the next
   figure to rebuild it (the context plus the last reply's output, which the next prompt writes with it). The figure is priced
   at the model that last wrote the cache, so after a model switch it is at the rates of the model switched from;
 - **Keepalive**: its state on the heading (`off`, `on, refreshing`, `paused`, `stopped`), and beneath it why it is paused or stopped and
-  that it resumes after your next prompt, what the pie's colours warn of while it is amber or red, what a refresh costs and when the next is due, how many
+  that it resumes after your next prompt, what the pie's colours warn of while it is amber or red, what a refresh costs and when the next is due (while
+  the cache is warm, with a line of its own for what your next prompt pays to rebuild it, opening `if it goes cold`), how many
   refreshes a pause sends, when keepalive pays off (`Keepalive pays off if you're back between 5:00 and 1:54:00`), and this
   pause's and this session's refreshes and their cost;
 - **Advice**: the best setup's sentence (see [Best setup](#best-setup)), priced from your recorded pauses, and the notes on the TTL
@@ -66,8 +70,10 @@ a short terminal the lower sections are scrolled to with the wheel.
   back. The pie, or `/keepalive on <lead_s> [count]` or `/keepalive off`, changes only the session it's made in, so
   "off everywhere but here" takes `/keepalive default on` and a click on the pie.
 - While it's on, a refresh is sent shortly before the cache expires, so the next prompt reads the cache instead of
-  rewriting it. A refresh reads the whole cached context, so each one costs a cache read. That cost shows on hover over
-  the time (`$0.006/refresh`, or `~19k read/refresh` in tokens) and in the pane.
+  rewriting it. A refresh reads the whole cached context, so each one costs a cache read. While the cache is warm that cost
+  shows on hover over the time and in the pane beside the cost of the rebuild if the cache goes cold:
+  `keep warm ~19k read/refresh · if cold ~19k tokens rebuild`
+  in tokens, `keep warm $0.006/refresh · if cold ~$0.21 rebuild` in dollars.
 - Output tokens are never priced: a refresh's cost is its cache read, plus any uncached input or cache write its reply reports.
 - Refreshes stop after a count per pause, learned from your own pauses or the break-even count until they say otherwise
   (see [How many refreshes](#how-many-refreshes)). Then keepalive is paused until your next prompt. It is paused too if
@@ -135,7 +141,8 @@ a short terminal the lower sections are scrolled to with the wheel.
   whole and logged as unreadable. An unknown field or section is ignored and named in the debug log.
 - A figure with no price is shown in tokens, and the bare `/keepalive` answer says why (`Shown in tokens: no price for …`). That covers a
   model neither the page nor the built-in table lists, fast mode, and a response that names no model. This holds for the figure to
-  rebuild an expired or reset cache too, wherever the Cache section draws one.
+  rebuild an expired or reset cache too, wherever the Cache section draws one. Both prices of the pair fall to tokens together: the
+  rebuild figure reads `~33k tokens`, `<1k tokens` or `0 tokens`, the tokens of the context plus the last reply's output.
 - Tokens name what was done with them (`~19k tokens read`, `~20k tokens written`), since a write costs many reads. The
   bare `/keepalive` answer says how many reads a 5 m write costs on the current model.
 
@@ -155,7 +162,9 @@ start mode apply to new sessions). The Keepalive heading names keepalive's state
 coming, the Keepalive section words the pie's warning (the pie turns amber in the cache's last quarter and red in its last
 tenth: the cache is about to lapse) just below the heading or that reason, whatever the pie's colour, with keepalive off or on
 with a reading and not refreshing, on a reset or expired cache too. With keepalive off, and where a press would send refreshes,
-the refresh's cost or the context it reads, and how often one is sent, come straight after the warning. A keepalive paused by design
+the refresh's cost or the context it reads, and how often one is sent, come straight after the warning. While the cache is warm, each price
+of a refresh is followed by a line of its own for what the next prompt pays to rebuild the cache if it goes cold (`if it goes cold, your next prompt rebuilds it: ~$0.21 (~33k tokens written)`);
+once it has expired the refresh's price stands alone. A keepalive paused by design
 (its count used, or its cache expired) names what a refresh reads or costs and, where the cache is known and the lead is below the TTL, how often one would
 be sent. With keepalive on and no stop held, the heading reads `paused` while a cache reset is being recorded, and the first line
 beneath it says so; the reason the section would give with no reset pending, when it has one, follows as a second reason row, after

@@ -8,7 +8,7 @@
 import type { CacheView, Judged, KeepaliveState, Spend, Unit, Verdict } from '../types'
 import { clockOf, expiredAt } from './countdown'
 import type { Defaults } from './keepalive'
-import { dollars, NO_KINDS, spendOf, uponOf, type Money } from './prices'
+import { dollars, NO_KINDS, spendOf, type Money } from './prices'
 
 export type Pause = {
   // Whether keepalive is on: the reality the session is in.
@@ -92,9 +92,6 @@ export const rebuildSpendOf = (view: Extract<CacheView, { kind: 'known' }>, mone
   const write = view.ttlLabel === '1h' ? { ...NO_KINDS, write1h: total } : { ...NO_KINDS, write5m: total }
   return spendOf(money.list, view.model, view.speed, write, total)
 }
-
-// The rebuild figure in the unit shown, for the footer and the Cache section's warmth line; empty for a view that isn't known.
-export const rebuildOf = (view: CacheView, money: Money): string => (view.kind === 'known' ? uponOf(rebuildSpendOf(view, money), money.unit) : '')
 
 // One refresh's dollars, and what a rewrite costs over a read, for the context a warm cache holds; null with no warm cache or no
 // price for either.

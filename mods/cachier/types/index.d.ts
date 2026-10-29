@@ -30,7 +30,8 @@ export type Kinds = { input: number; read: number; write5m: number; write1h: num
 // null when any part had no price, and `why` says why the first such part had none.
 export type Spend = Kinds & { usd: number | null; why: string | null }
 
-// The refresh figure the line shows while keepalive refreshes (`$0.006/refresh`).
+// The label the hover above the time shows: the refresh figure beside the rebuild figure while the cache is warm (`keep warm $0.006/refresh · if cold ~$0.21 rebuild`),
+// the refresh figure alone once it has expired (`$0.006/refresh`).
 export type HintCost = { label: string }
 // Whether the keepalive toggle, as it stands, is saving or wasting money now, against the toggle the other way.
 export type Verdict = 'par' | 'saving' | 'wasting'
@@ -42,7 +43,7 @@ export type Judged = { netUsd: number; pauses: number }
 export type Reading = { words: string; state: 'warm' | 'expired' | 'cold'; quarter: number; warn: 'calm' | 'quarter' | 'tenth' }
 
 // The footer line's state, written each tick. `reading` is what the countdown counts, null for nothing to count. `cost` is the
-// refresh figure while keepalive refreshes. `offer` is the figure a press would turn keepalive on at while it is off, or while it is on the
+// refresh figure while keepalive refreshes (the price to keep warm, with the rebuild price beside it while the cache is warm). `offer` is the figure a press would turn keepalive on at while it is off, or while it is on the
 // figure of the run it is on, which a resume sends; null where that run sends no refresh.
 // The details pane's text is not kept here: its draw gathers the sections itself.
 export type HintState = {

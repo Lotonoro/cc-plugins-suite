@@ -44,6 +44,7 @@ import {
   offerOf,
   type Figure,
   type Mode,
+  type Pair,
 } from './keepalive'
 import { singleFlight } from './guard'
 import { footerLine, paneOf, paneSizeOf } from './hint'
@@ -51,7 +52,7 @@ import { followDraw, isPaneOpen, lastRows, paneAlarm, PANE, pressSize, readPane,
 import { appended, HISTORY_BOUND, keyOf, KEY_PREFIX, merged, recordOf, recordsOf, staleKeys, type PauseRecord } from './history'
 import { adviceOf, ratesOfView, type Inputs } from './advice'
 import { learnedLine, learnedOf, ttlAdviceLine, ttlAdviceOf, ttlSwitchOf, type Learned } from './learn'
-import { breakEvenLine, countLineOf, judge, KEPT_COUNT, ratioOf, rebuildOf, rebuildSpendOf, runCountOf, sessionBalanceLine, NO_JUDGED, pauseOf, type Pause } from './verdict'
+import { breakEvenLine, countLineOf, judge, KEPT_COUNT, ratioOf, rebuildSpendOf, runCountOf, sessionBalanceLine, NO_JUDGED, pauseOf, type Pause } from './verdict'
 import { answerOf, layoutOf, type AnswerRow, type Setting, type Snapshot } from './sections'
 import { stampLabel, withStamp } from './stamp'
 import { foldStatsEvents, INITIAL_STATS, pendingFor, rundownSections, sessionLineOf, type MissEvent, type LongPauseEvent } from './stats'
@@ -738,7 +739,7 @@ const keepaliveTick = async ($: Dollar) => {
     const decidedMs = await $.clock.now()
     const view = await effectiveView($)
     const live = (await $.state.get(TOUCH)).value ?? null
-    const verdict = step(k, view, live, gapOpen(k), decidedMs, await moneyOf($, view))
+    const verdict = step(k, view, live, gapOpen(k), decidedMs, await moneyOf($, view), null)
     if (verdict.kind === 'stop') {
       await $.state.set(KEEPALIVE, { ...k, stop: verdict.reason }, { ifVersion: held.version })
       return
@@ -880,17 +881,19 @@ const snapshotNow = async ($: Dollar): Promise<Snapshot> => {
   const rebuildPriced = raw.kind === 'known' ? rebuildSpendOf(raw, money) : null
   const rebuild = rebuildPriced === null ? '' : uponOf(rebuildPriced, money.unit)
   const reading = readingOf(raw, live, cold, nowMs, rebuild)
+  // The lines that state a refresh price state the rebuild beside it while the cache is warm.
+  const pair = { warm: reading?.state === 'warm', rebuild: rebuildPriced }
   // The reason is given only where the warmth line draws the figure (rebuildDrawnOf): not on a warm cache, nor after /clear, which leaves the view known and no reading.
   const rebuildSpend = rebuildDrawnOf(reading, rebuild) ? rebuildPriced : null
   const judged = (await $.state.get(JUDGED)).value ?? NO_JUDGED
   const run = runOf(held, defaultRun)
   const rundown = rundownSections(tally, stats, money)
   const kept = keptOf(held, view, money, nowMs)
-  const verdict = step(held, view, live, gapOpen(held), nowMs, money)
+  const verdict = step(held, view, live, gapOpen(held), nowMs, money, rebuildPriced)
   // The pie's own judgement, from the held state and the view under the cold mark, so the sentence agrees with the heading above it.
-  const { colour } = pieOf(reading, held.config !== null, costOf(held, view, money)?.label ?? null)
+  const { colour } = pieOf(reading, held.config !== null, costOf(held, view, money, pair)?.label ?? null)
   // While keepalive is off, the offer a press would start: the same figure the tick writes, from the same inputs.
-  const offer = held.config === null && defaultRun !== undefined ? offerNow(held, view, money, nowMs, defaultRun) : null
+  const offer = held.config === null && defaultRun !== undefined ? offerNow(held, view, money, nowMs, defaultRun, pair) : null
   return {
     cache: [warmthOf(reading, raw.kind === 'known' ? raw.ttlLabel : '5m', rebuild)].filter((line) => line !== ''),
     keepalive: {
@@ -898,7 +901,7 @@ const snapshotNow = async ($: Dollar): Promise<Snapshot> => {
       lines: [
         ...(verdict.why === null ? [] : [verdict.why]),
         ...(colour === null ? [] : [colour]),
-        ...(offer === null ? [] : [offer.explain, offer.figures]),
+        ...(offer === null ? [] : offer.lines),
         ...verdict.lines,
         ...countLines(held, view, money, nowMs, kept),
         ...(defaultRun === undefined ? [] : [breakEvenLine(held, view, money, defaultsNow(defaultRun, view, money, nowMs))]),
@@ -924,7 +927,7 @@ const keepaliveCommand = async ($: Dollar, args: string, origin: { kind: string 
       // Only the user's own toggle turns keepalive on: a command from a plugin, a schedule or a peer is refused.
       if (!isUserPrompt(origin)) return "keepalive stays off: only the user's own /keepalive turns it on."
       const { view, money, runCount, stop } = await turnOn($, request.leadMs, request.count)
-      return enableText(view, request.leadMs, runCount, stop, money)
+      return enableText(view, request.leadMs, runCount, stop, money, view.kind === 'known' ? rebuildSpendOf(view, money) : null)
     }
     case 'default':
       // As with on, only the user's own command makes keepalive start on in later sessions.
@@ -1274,10 +1277,10 @@ const setHint = async ($: Dollar, hint: HintState | null) => {
 // itself reads them. While it is on but paused or spent, the figure is the run it is on, at its lead and count, which a resume sends.
 // The tick writes its label with the other figures for the hover, and the gather works the whole figure out from the same inputs rather than
 // reading the stored hint.
-const offerNow = (k: KeepaliveState, view: CacheView, money: Money, nowMs: number, defaults: Defaults): Figure | null => {
-  if (k.config !== null) return offerOf(view, money, k.config.leadMs, k.runCount)
+const offerNow = (k: KeepaliveState, view: CacheView, money: Money, nowMs: number, defaults: Defaults, pair: Pair): Figure | null => {
+  if (k.config !== null) return offerOf(view, money, k.config.leadMs, k.runCount, pair)
   const press = pressOf(k, defaults)
-  return press.kind === 'on' ? offerOf(view, money, press.leadMs, countNow(press.count, view, money, press.leadMs, nowMs)) : null
+  return press.kind === 'on' ? offerOf(view, money, press.leadMs, countNow(press.count, view, money, press.leadMs, nowMs), pair) : null
 }
 
 // Drawn on every tick, outside the lookup's single flight, so a held lookup cannot freeze it.
@@ -1304,14 +1307,15 @@ const drawStatus = async ($: Dollar) => {
     return next === k ? undefined : next
   })
   const held = (await $.state.get(KEEPALIVE)).value ?? INITIAL
-  const figure = costOf(held, counted, money)
   // The figure to rebuild an expired cache: what the next prompt pays to write it again, in the unit shown.
-  const rebuild = rebuildOf(view, money)
-  const reading = readingOf(view, live, cold, nowMs, rebuild)
+  const rebuildPriced = view.kind === 'known' ? rebuildSpendOf(view, money) : null
+  const reading = readingOf(view, live, cold, nowMs, rebuildPriced === null ? '' : uponOf(rebuildPriced, money.unit))
+  const pair = { warm: reading?.state === 'warm', rebuild: rebuildPriced }
+  const figure = costOf(held, counted, money, pair)
   const hint: HintState = {
     reading,
     cost: labelOf(figure),
-    offer: defaultRun === undefined ? null : labelOf(offerNow(held, counted, money, nowMs, defaultRun)),
+    offer: defaultRun === undefined ? null : labelOf(offerNow(held, counted, money, nowMs, defaultRun, pair)),
   }
   await setHint($, hint)
   // An open pane follows the size its draw recorded; nothing is built here to know it.

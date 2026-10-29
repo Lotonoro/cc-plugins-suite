@@ -1,8 +1,8 @@
 import { describe, expect, test } from 'claude-code/testing'
 import type { CacheView } from '../types'
 import { INITIAL } from './keepalive'
-import { NO_SPEND, PRICES, type Money } from './prices'
-import { breakEvenLine, countLineOf, judge, runCountOf, sessionBalanceLine, NO_JUDGED, pauseOf, rebuildOf, rebuildSpendOf, rewriteSpendOf, verdictOf, type Pause } from './verdict'
+import { NO_SPEND, PRICES, uponOf, type Money } from './prices'
+import { breakEvenLine, countLineOf, judge, runCountOf, sessionBalanceLine, NO_JUDGED, pauseOf, rebuildSpendOf, rewriteSpendOf, verdictOf, type Pause } from './verdict'
 
 // A 32k context on Opus 5.5 at list prices: a ping reads it at $0.20 per million, and a rewrite costs the 5 m write
 // ($5 per million) over that read. A rewrite is worth 24 pings. The TTL is 5 m and the lead 15 s, so a ping every 285 s.
@@ -70,10 +70,12 @@ describe('rewriteSpendOf: what the next prompt pays to write an expired cache ag
   })
 })
 
-describe('rebuildSpendOf and rebuildOf: what the next prompt pays, the last reply\'s output included', () => {
+describe('rebuildSpendOf: what the next prompt pays, the last reply\'s output included', () => {
   const view = { kind: 'known' as const, touchMs: 0, ttlMs: 300 * S, ttlLabel: '5m' as const, promptTokens: 900000, outputTokens: 100000, model: 'claude-opus-5-5', speed: null }
   const money: Money = { unit: 'dollars', list: PRICES, model: 'claude-opus-5-5', speed: null, ttl: '5m' }
   const micro = (usd: number | null) => Math.round((usd ?? -1) * 1e6) / 1e6
+  // The figure in the unit shown, as the footer and the Cache section word the spend.
+  const worded = (v: Extract<CacheView, { kind: 'known' }>, m: Money) => uponOf(rebuildSpendOf(v, m), m.unit)
 
   test('prices the prefix plus the output at the write rate for the TTL, and the lapse price stays over the prefix', () => {
     // Opus 5.5: a 5 m write is $5 per million. 900k + 100k is $5; the prefix alone is $4.50.
@@ -88,22 +90,21 @@ describe('rebuildSpendOf and rebuildOf: what the next prompt pays, the last repl
     expect(micro(rebuildSpendOf(view, tiered).usd)).toBe(10)
   })
 
-  test('rebuildOf words the figure in the unit shown, and gives none for a view that is not known', () => {
-    expect(rebuildOf(view, money)).toBe('~$5.00')
-    expect(rebuildOf(view, { ...money, unit: 'tokens' })).toBe('~1000k tokens')
-    expect(rebuildOf({ kind: 'unread' }, money)).toBe('')
+  test('the spend is worded in the unit shown', () => {
+    expect(worded(view, money)).toBe('~$5.00')
+    expect(worded(view, { ...money, unit: 'tokens' })).toBe('~1000k tokens')
   })
 
   test('prices the model and speed of the view it is handed, whatever model the money names', () => {
     // Under a cold mark the money names no model, yet the stored view does: the figure is the view's own model's.
     const none: Money = { ...money, model: null, speed: null }
     expect(micro(rebuildSpendOf(view, none).usd)).toBe(5)
-    expect(rebuildOf(view, none)).toBe('~$5.00')
+    expect(worded(view, none)).toBe('~$5.00')
     // The money's own model is not the figure's: Sonnet 5.5's 5 m write is $2.50 per million, Opus 5.5's is $5.
     expect(micro(rebuildSpendOf(view, { ...money, model: 'claude-sonnet-5-5' }).usd)).toBe(5)
     expect(micro(rebuildSpendOf({ ...view, model: 'claude-sonnet-5-5' }, money).usd)).toBe(2.5)
     // The unit and the list are the money's.
-    expect(rebuildOf(view, { ...none, unit: 'tokens' })).toBe('~1000k tokens')
+    expect(worded(view, { ...none, unit: 'tokens' })).toBe('~1000k tokens')
   })
 
   test('a view that is fast mode, names no model or a model with no price leaves the figure in tokens, whatever the money names', () => {
@@ -112,7 +113,7 @@ describe('rebuildSpendOf and rebuildOf: what the next prompt pays, the last repl
       const spend = rebuildSpendOf({ ...view, ...odd }, named)
       expect(spend.usd).toBeNull()
       expect(spend.write5m).toBe(1000000)
-      expect(rebuildOf({ ...view, ...odd }, named)).toBe('~1000k tokens')
+      expect(worded({ ...view, ...odd }, named)).toBe('~1000k tokens')
     }
     expect(rebuildSpendOf({ ...view, speed: 'fast' }, money).why).toBe('no price for fast mode')
     expect(rebuildSpendOf({ ...view, model: null }, money).why).toBe('no price for an unnamed model')
