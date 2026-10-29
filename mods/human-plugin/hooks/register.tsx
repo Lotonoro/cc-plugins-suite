@@ -4,7 +4,7 @@ import type { OwedNotices, Store } from '../types'
 import { TOOL, act, carryNext, clearAll, parseInput, type Outcome } from './items'
 import { STEERING, TOOL_SPEC } from './steering'
 import { oneLine, stateOf } from './done'
-import { ARG_HINT, COMMAND, DESCRIPTION, FAILED, REBUILDING, USAGE, answerLine, answerTo, parseAsk } from './commands'
+import { ARG_HINT, COMMAND, DESCRIPTION, FAILED, REBUILDING, USAGE, answerLine, answerTo, parseAsk, phoneBlock } from './commands'
 import { carried, carryHeld, endTurn, giveBack, handOver, notEntered, offer, pending, reset, setOnChange, startTurn } from './turns'
 import { band, pane, toolLine, type Handlers, type View } from './ui'
 import { correctionText, newlyRestated, restatedIds } from './restatement'
@@ -269,10 +269,16 @@ export const wireHooks = (on: On, windowMs: number): void => {
   })
 
   // The human's own prompt carries the notices an interrupt held, as context beside it: once, and only when it enters. A
-  // held notice whose item the agent has removed since is dropped, the list being read here as at the turn's end.
+  // held notice whose item the agent has removed since is dropped, the list being read here as at the turn's end. A prompt
+  // from the phone also carries the open items (commands.ts's phoneBlock), as context the person does not see. The block is
+  // in the one call that passes the prompt on, ahead of the held notices. A failure here is logged by the catch, which lets
+  // the prompt through with its held notices and no block.
   on('prompt.submit', async ($, e, next) => {
+    const phone = e.origin.kind === 'bridge' && e.command === undefined
     const store = await readList($)
-    return carryHeld(e, next, id => stateOf(store, id) !== 'missing', text => showSent($, text))
+    const block = phone ? phoneBlock(store.items) : null
+    const withBlock = block === null ? e : { ...e, context: [...(e.context ?? []), block] }
+    return carryHeld(withBlock, next, id => stateOf(store, id) !== 'missing', text => showSent($, text))
   }).catch(($, e, next) => {
     failed($, 'prompt.submit', next.error)
     // An unreadable list carries the held notices unchecked rather than holding them back.
