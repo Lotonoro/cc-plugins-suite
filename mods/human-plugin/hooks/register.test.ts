@@ -2171,3 +2171,25 @@ test('a /asks whose list read throws answers one error line, logs the failure, a
   expect(logs).toEqual(['human-plugin: the command.run hook throw: list unreadable'])
   expect(writes).toEqual([])
 })
+
+test('/asks <n> still returns the item when its unread mark cannot be cleared: the failed write is logged, and the mark stays', async () => {
+  freshModule()
+  const { hooks } = wire()
+  const { env, values } = memEnv([made(1, { unread: true })], [], null)
+  const logs: string[] = []
+  // The write to the list is refused; the reads and every other write are memEnv's.
+  const refusing = {
+    ...env,
+    ui: { ...env.ui, log: (text: string) => void logs.push(text) },
+    state: {
+      ...env.state,
+      set: async (ref: { key: string }, value: unknown) => {
+        if (ref.key === 'list') throw new Error('list write refused')
+        return env.state.set(ref, value)
+      },
+    },
+  }
+  expect(await asksOf(hooks)(refusing as never, { args: '1' } as never, next(false) as never)).toEqual({ text: '  #1 non-blocking: Item 1\n  brief:\n  Brief 1.' })
+  expect(logs).toEqual(['human-plugin: the unread mark of #1 was not cleared: Error: list write refused'])
+  expect(values.list).toMatchObject({ items: [{ id: 1, unread: true }] })
+})

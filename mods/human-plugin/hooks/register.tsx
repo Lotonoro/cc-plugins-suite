@@ -162,7 +162,8 @@ const answer = async ($: EngineInterface, e: unknown) => {
 }
 
 // The `/asks` command's answer: the list, or one item whole. It waits for a rebuild in progress as the tool does, and clears the unread mark of
-// the one item it shows, if that item is still the one it printed (markRead); the wording and the parse are commands.ts's.
+// the one item it shows, if that item is still the one it printed (markRead); the wording and the parse are commands.ts's. A mark that cannot
+// be cleared is logged, and the text is still returned: the item is what the person asked for.
 const asks = async ($: EngineInterface, args: string): Promise<string> => {
   const ask = parseAsk(args)
   if (ask.kind === 'usage') return USAGE
@@ -170,7 +171,13 @@ const asks = async ($: EngineInterface, args: string): Promise<string> => {
   const { items } = await readList($)
   const { text, shown } = answerTo(items, ask)
   const printed = items.find(it => it.id === shown)
-  if (printed !== undefined) await markRead($, printed.id, printed)
+  if (printed !== undefined) {
+    try {
+      await markRead($, printed.id, printed)
+    } catch (err) {
+      $.ui.log(`human-plugin: the unread mark of #${printed.id} was not cleared: ${String(err)}`)
+    }
+  }
   return text
 }
 
