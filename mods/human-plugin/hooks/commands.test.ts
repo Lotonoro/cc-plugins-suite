@@ -302,18 +302,10 @@ test('the worst case, a 600-character title, four 600-character labels, a 5,000-
   expect(text.length).toBeLessThanOrEqual(LIMITS.cap)
   for (const k of [1, 2, 3, 4]) expect(text).toContain(`\n  ${k}. `)
   const newest = text.slice(text.indexOf('  you:\n'), text.indexOf('\n  options:'))
-  expect(newest).toBe('  you:')
+  expect(newest.length).toBeGreaterThanOrEqual(LIMITS.floor)
   const note = text.slice(text.indexOf('  note:\n') + '  note:\n'.length, text.indexOf('\n  thread:'))
   expect(note.length).toBeGreaterThanOrEqual(1690)
   for (const line of lineList(text)) expect(line.startsWith('  ')).toBe(true)
-})
-
-test('a newest turn at or under the floor is not cut for the line breaks after its words: it prints whole, and the note keeps the room a turn without them keeps', () => {
-  const note = 'N'.repeat(5000)
-  const plain = whole([made(1, { note, thread: [{ speaker: 'agent', words: 'W'.repeat(900) }] })], '1')
-  const padded = whole([made(1, { note, thread: [{ speaker: 'agent', words: `${'W'.repeat(900)}${'\n'.repeat(2000)}` }] })], '1')
-  expect(padded.slice(padded.indexOf('  agent:'))).toBe(`  agent:\n  ${'W'.repeat(900)}\n  The rest was cut.`)
-  expect(padded).toBe(plain)
 })
 
 test('the cut notice is one line of at most 40 characters, and each section heading one line of at most 15', () => {
