@@ -47,6 +47,7 @@ import { PRICES, TOKENS, type Money } from './prices'
 const T = 1_000_000
 const F = 'Next refresh: ~33k cached tokens read, every 4 min'
 const REREAD = 'each refresh reads ~33k cached tokens'
+const INTERVAL = 'One refresh every 4 min.'
 const RESUMES = '; it resumes after your next prompt'
 const known = { kind: 'known' as const, touchMs: T, ttlMs: 300000, ttlLabel: '5m' as const, promptTokens: 32884, outputTokens: 0, model: 'claude-opus-5-5', speed: 'standard' }
 // The tests below word their figures in tokens, as a session with no price list does; the dollar wording has its own tests.
@@ -194,7 +195,7 @@ describe('step', () => {
       reason: 'cache expired',
       heading: 'paused',
       why: `the cache expired${RESUMES}`,
-      lines: [REREAD],
+      lines: [REREAD, INTERVAL],
     })
   })
 
@@ -204,7 +205,7 @@ describe('step', () => {
       reason: 'count used',
       heading: 'paused',
       why: `its refreshes for this pause are used up${RESUMES}`,
-      lines: [REREAD],
+      lines: [REREAD, INTERVAL],
     })
   })
 
@@ -236,7 +237,7 @@ describe('step', () => {
     const k = on(60000, 2)
     const grown = { ...known, promptTokens: 40000 }
     expect(step(k, grown, null, true, T + 100000).lines[0]).toBe('Next refresh: ~40k cached tokens read, every 4 min')
-    expect(step({ ...k, stop: 'count used' }, known, null, true, T).lines).toEqual([REREAD])
+    expect(step({ ...k, stop: 'count used' }, known, null, true, T).lines).toEqual([REREAD, INTERVAL])
     expect(step(k, { kind: 'no-cache' }, null, true, T).lines).toEqual(['no live cache to count from, nothing scheduled; there is no cache until the next reply'])
   })
 
@@ -247,7 +248,7 @@ describe('step', () => {
 
   test('a stopped keepalive still names the last ping', () => {
     const k = { ...on(60000, 2, { stop: 'count used' }), last: { read: 0, write: 18000 } }
-    expect(step(k, known, null, true, T)).toMatchObject({ why: `its refreshes for this pause are used up${RESUMES}`, lines: [REREAD, 'last refresh read 0, wrote 18000'] })
+    expect(step(k, known, null, true, T)).toMatchObject({ why: `its refreshes for this pause are used up${RESUMES}`, lines: [REREAD, INTERVAL, 'last refresh read 0, wrote 18000'] })
   })
 
   // One row per branch of step, in its order: the heading word, the reason line and the lines, each branch with a last refresh sent.
@@ -261,7 +262,7 @@ describe('step', () => {
       [
         'a recorded stop by design',
         run({ stop: 'count used' }, known, true, T),
-        { kind: 'wait', heading: 'paused', why: `its refreshes for this pause are used up${RESUMES}`, lines: [REREAD, LAST] },
+        { kind: 'wait', heading: 'paused', why: `its refreshes for this pause are used up${RESUMES}`, lines: [REREAD, INTERVAL, LAST] },
       ],
       [
         'a recorded failure',
@@ -286,7 +287,7 @@ describe('step', () => {
       [
         'the cache expired',
         run({}, known, true, T + 300000),
-        { kind: 'stop', reason: 'cache expired', heading: 'paused', why: `the cache expired${RESUMES}`, lines: [REREAD, LAST] },
+        { kind: 'stop', reason: 'cache expired', heading: 'paused', why: `the cache expired${RESUMES}`, lines: [REREAD, INTERVAL, LAST] },
       ],
       [
         'a learned count of none',
@@ -296,7 +297,7 @@ describe('step', () => {
       [
         'the count used',
         run({ remaining: 0 }, known, true, T + 240000),
-        { kind: 'stop', reason: 'count used', heading: 'paused', why: `its refreshes for this pause are used up${RESUMES}`, lines: [REREAD, LAST] },
+        { kind: 'stop', reason: 'count used', heading: 'paused', why: `its refreshes for this pause are used up${RESUMES}`, lines: [REREAD, INTERVAL, LAST] },
       ],
       [
         'a refresh scheduled',
@@ -321,6 +322,58 @@ describe('step', () => {
         }
       }
     })
+  })
+})
+
+// A stop by design names how often a refresh would be sent wherever the figure of one refresh is given: the view known and the lead below
+// its TTL. The twelve-branch rows above pin the unrecorded stops and a recorded count used.
+describe('a stop by design names how often a refresh would be sent, wherever the lead is below the TTL', () => {
+  const last = { read: 14361, write: 18523 }
+  const LAST = 'last refresh read 14361, wrote 18523'
+
+  test('a recorded stop of the cache expired gives the figure, the interval row and the last refresh, as its unrecorded stop does', () => {
+    expect(step({ ...on(60000, 2, { stop: 'cache expired' }), last }, known, null, true, T)).toEqual({
+      kind: 'wait',
+      heading: 'paused',
+      why: `the cache expired${RESUMES}`,
+      lines: [REREAD, INTERVAL, LAST],
+    })
+  })
+
+  test('recording a count-used stop changes neither the figure of what a refresh reads nor the interval row', () => {
+    const unrecorded = step({ ...on(60000, 2, { remaining: 0 }), last }, known, null, true, T + 240000)
+    expect(unrecorded.lines).toEqual([REREAD, INTERVAL, LAST])
+    expect(step({ ...on(60000, 2, { remaining: 0, stop: 'count used' }), last }, known, null, true, T + 240000).lines).toEqual(unrecorded.lines)
+  })
+
+  test('a by-design stop with the lead at or above the TTL keeps the figure and gives no interval row, recorded or not', () => {
+    for (const leadMs of [300000, 400000]) {
+      for (const stop of ['count used', 'cache expired']) {
+        expect(step(on(leadMs, 2, { stop }), known, null, true, T).lines).toEqual([REREAD])
+      }
+    }
+  })
+
+  test('a learned count of none whose cache expired gives the figure, the interval row and the last refresh, recorded or not', () => {
+    const none = { ...on(60000, 2, { runCount: 0, remaining: 0 }), last }
+    expect(step(none, known, null, true, T + 300000)).toEqual({
+      kind: 'stop',
+      reason: 'cache expired',
+      heading: 'paused',
+      why: `the cache expired${RESUMES}`,
+      lines: [REREAD, INTERVAL, LAST],
+    })
+    expect(step({ ...none, stop: 'cache expired' }, known, null, true, T + 300000)).toEqual({
+      kind: 'wait',
+      heading: 'paused',
+      why: `the cache expired${RESUMES}`,
+      lines: [REREAD, INTERVAL, LAST],
+    })
+  })
+
+  test('the interval row is the interval the figures line gives at the same lead', () => {
+    expect(costOf(on(15000, 3), known)?.figures).toBe('One refresh every 4:45.')
+    expect(step(on(15000, 3, { stop: 'count used' }), known, null, true, T).lines).toEqual([REREAD, 'One refresh every 4:45.'])
   })
 })
 
@@ -529,7 +582,7 @@ describe('the debug lines and the tallies', () => {
   test('in dollars, the ping is priced on every surface; a model with no price is worded in tokens', () => {
     expect(costWith(on(60000, 3), known, DOLLARS)).toEqual({ label: '$0.007/refresh', explain: 'Next refresh: $0.007 (~33k cached tokens read).', figures: 'One refresh every 4 min.' })
     expect(stepWith(on(60000, 2), known, null, true, T + 100000, DOLLARS).lines).toEqual(['Next refresh: $0.007 (~33k cached tokens read), every 4 min', 'next refresh in 2:20, 2 left'])
-    expect(stepWith(on(60000, 2, { remaining: 0 }), known, null, true, T + 240000, DOLLARS).lines).toEqual(['each refresh costs $0.007 (reads ~33k cached tokens)'])
+    expect(stepWith(on(60000, 2, { remaining: 0 }), known, null, true, T + 240000, DOLLARS).lines).toEqual(['each refresh costs $0.007 (reads ~33k cached tokens)', INTERVAL])
     const fable = { ...known, model: 'claude-nonesuch-1' }
     expect(costWith(on(60000, 3), fable, DOLLARS)?.label).toBe('~33k read/refresh')
     expect(costTextWith(fable, 60000, 3, DOLLARS)).toContain('Next refresh: ~33k cached tokens read, every 4 min')
@@ -630,10 +683,10 @@ describe('defaultsOf: the click values from the plugin options', () => {
     expect(() => defaultsOf({ keepalive_lead_s: 60, keepalive_count: 0 })).toThrow('keepalive_count')
   })
 
-  test('a paused keepalive says what a refresh reads, never the interval: each by-design stop, the enable reply, and a lapsed enable', () => {
+  test('a paused keepalive\'s lines say what a refresh reads and how often: each by-design stop, the enable reply, and a lapsed enable', () => {
     const paused = (stop: string) => step(on(60000, 2, { stop }), known, null, true, T)
-    expect(paused('cache expired')).toMatchObject({ heading: 'paused', why: `the cache expired${RESUMES}`, lines: [REREAD] })
-    expect(paused('count used')).toMatchObject({ heading: 'paused', why: `its refreshes for this pause are used up${RESUMES}`, lines: [REREAD] })
+    expect(paused('cache expired')).toMatchObject({ heading: 'paused', why: `the cache expired${RESUMES}`, lines: [REREAD, INTERVAL] })
+    expect(paused('count used')).toMatchObject({ heading: 'paused', why: `its refreshes for this pause are used up${RESUMES}`, lines: [REREAD, INTERVAL] })
     const lapsed = { ...known, touchMs: T - 400000 }
     expect(step(on(60000, 2), lapsed, null, true, T)).toMatchObject({ heading: 'paused', why: `the cache expired${RESUMES}` })
     const reply = enableText(lapsed, 60000, 2, 'cache expired')

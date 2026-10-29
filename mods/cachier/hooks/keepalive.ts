@@ -273,10 +273,12 @@ const rereadFigure = (view: CacheView, money: Money): string | null => {
   return usd === null ? `each refresh reads ${read}` : `each refresh costs ${dollars(usd)} (reads ${read})`
 }
 
-// A paused-by-design verdict: the stop's by-design sentence, and what a refresh would read once it resumes.
+// A paused-by-design verdict: the stop's by-design sentence, what a refresh would read once it resumes, and how often one would be
+// sent wherever figureAt gives the figure of one at the run's lead.
 const pausedBy = (k: KeepaliveState, view: CacheView, money: Money, reason: string): Shown => {
   const reread = rereadFigure(view, money)
-  return { heading: 'paused', why: byDesignSentence(reason), lines: [...(reread === null ? [] : [reread]), ...lastOf(k)] }
+  const interval = k.config === null ? null : figureAt(view, k.config.leadMs, money)
+  return { heading: 'paused', why: byDesignSentence(reason), lines: [...(reread === null ? [] : [reread]), ...(interval === null ? [] : [interval.figures]), ...lastOf(k)] }
 }
 
 // `gap` is whether the main thread is idle: no turn running.

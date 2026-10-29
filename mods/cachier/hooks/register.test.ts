@@ -5335,8 +5335,8 @@ describe('the bare command reads each state it states once per call', () => {
 
 // The Keepalive section's colour sentence and offer. The sentence shows wherever no refresh is coming: not refreshing, and with keepalive off
 // or a reading held, whatever the pie's colour. The offer's explanation and figures show with keepalive off and an offer. The answer's rows
-// are joined, since the sentence wraps at 48 columns.
-describe('the Keepalive section: the colour sentence wherever no refresh is coming, and the offer while keepalive is off', () => {
+// are joined, since the sentence wraps at 48 columns. A paused keepalive's refresh cost is followed by its interval row wherever the lead is below the TTL.
+describe('the Keepalive section: the colour sentence wherever no refresh is coming, the offer while keepalive is off, and the interval a paused keepalive names', () => {
   const SENTENCE = "The pie turns amber in the cache's last quarter and red in its last tenth: the cache is about to lapse."
   const LONG = { 'pauses/old': Array.from({ length: 10 }, (_, i) => ({ startMs: 1000 + i, pausedMs: 3 * 3600000, hour: 10, weekday: 2, ratio: 24, ttlMs: 300000 })) }
   const started = async ($: any, on: any, doc: any = opusCached()) => {
@@ -5345,6 +5345,24 @@ describe('the Keepalive section: the colour sentence wherever no refresh is comi
     await $.classic.SessionStart({ source: 'startup', transcript_path: PATH })
     await clock.advance(1000)
     return clock
+  }
+  // The refresh's cost in dollars, as the section's rows read it joined: the cost wraps at 48 columns, and the interval row follows it.
+  const REFRESH = 'each refresh costs $0.004 (reads ~19k cached tokens)'
+  // Holds the write that records a stop of the given kind, so the section is read between the tick's verdict and its record.
+  const holdingStop = (on: any, stop: string) => {
+    let release: () => void = () => {}
+    const gate = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    const held = { holding: false }
+    on('state.set', (_$: any, e: any, next: any) => {
+      if (e.key === 'keepalive' && e.value?.stop === stop && !held.holding) {
+        held.holding = true
+        return gate.then(() => next(e))
+      }
+      return next(e)
+    })
+    return { held, release }
   }
 
   test('keepalive off, in the last quarter: the sentence follows the heading, then the offer, ahead of the section\'s other lines', async ($, on) => {
@@ -5600,7 +5618,7 @@ describe('the Keepalive section: the colour sentence wherever no refresh is comi
     expect(text.split(SENTENCE).length - 1).toBe(1)
   })
 
-  test('keepalive on, paused after its count is used: neither offer row is shown', async ($, on) => {
+  test('keepalive on, paused after its count is used: the section gives the interval row, and no next-refresh line', async ($, on) => {
     const clock = await started($, on)
     await toggle($, 'on 60 1')
     await mainStep($)
@@ -5610,7 +5628,7 @@ describe('the Keepalive section: the colour sentence wherever no refresh is comi
     await clock.advance(240000)
     const text = await toggle($, '')
     expect(text).toContain('Keepalive  paused its refreshes for this pause are used up')
-    expect(text).not.toContain('One refresh every')
+    expect(text).toContain('One refresh every 4 min.')
     expect(text).not.toContain('Next refresh: ')
   })
 
@@ -5628,6 +5646,106 @@ describe('the Keepalive section: the colour sentence wherever no refresh is comi
     await clock.advance(1000)
     expect(await drawnHint($)).toContain('"color":"success"')
     expect((await toggle($, '')).split(SENTENCE).length - 1).toBe(0)
+  })
+
+  test('a count used with its stop recorded: the refresh cost, and directly after it the interval row', async ($, on) => {
+    const clock = await started($, on)
+    await toggle($, 'on 60 1')
+    await mainStep($)
+    await turnEnd($)
+    await clock.advance(240000 + 500)
+    await clock.advance(1000)
+    await clock.advance(240000)
+    const text = await toggle($, '')
+    expect(text).toContain('Keepalive  paused its refreshes for this pause are used up')
+    expect(text).toContain(`${REFRESH} One refresh every 4 min.`)
+  })
+
+  test('recording a count-used stop leaves the section\'s figure rows unchanged: the cost and the interval read the same before the stop is recorded and after', async ($, on) => {
+    kaWorld(on, opusCached())
+    const { held, release } = holdingStop(on, 'count used')
+    const clock = mock.clock(on, { now: T0 })
+    await $.classic.SessionStart({ source: 'startup', transcript_path: PATH })
+    await clock.settle()
+    await toggle($, 'on 60 1')
+    await mainStep($)
+    await turnEnd($)
+    await clock.advance(240000 + 500)
+    const advancing = clock.advance(240000 + 1000)
+    await clock.settle()
+    let before = ''
+    try {
+      expect(held.holding).toBe(true)
+      before = await toggle($, '')
+    } finally {
+      release()
+    }
+    await advancing
+    const after = await toggle($, '')
+    expect(before).toContain(`${REFRESH} One refresh every 4 min.`)
+    expect(after).toContain(`${REFRESH} One refresh every 4 min.`)
+  })
+
+  test('a cache expired, its stop recorded: the refresh cost, and directly after it the interval row', async ($, on) => {
+    const clock = await started($, on)
+    await toggle($, 'on 60 2')
+    await mainStep($)
+    await clock.advance(310000)
+    await turnEnd($)
+    await clock.advance(1000)
+    const text = await toggle($, '')
+    expect(text).toContain('Keepalive  paused the cache expired; it resumes after your next prompt')
+    expect(text).toContain(`${REFRESH} One refresh every 4 min.`)
+  })
+
+  test('a cache expired, its stop not yet recorded: the refresh cost, and directly after it the interval row', async ($, on) => {
+    kaWorld(on, opusCached())
+    const { held, release } = holdingStop(on, 'cache expired')
+    const clock = mock.clock(on, { now: T0 })
+    await $.classic.SessionStart({ source: 'startup', transcript_path: PATH })
+    await clock.settle()
+    await toggle($, 'on 60 2')
+    await mainStep($)
+    // The turn runs through the cache's expiry: the stop is written at that tick, and the hold keeps it unrecorded while the clock runs on.
+    await clock.advance(310000)
+    try {
+      expect(held.holding).toBe(true)
+      expect(await toggle($, '')).toContain(`${REFRESH} One refresh every 4 min.`)
+    } finally {
+      release()
+      await clock.settle()
+    }
+  })
+
+  test('a learned count of none whose cache expired, its stop recorded: the refresh cost, and directly after it the interval row', async ($, on) => {
+    const clock = await started($, on, { ...opusCached(), store: LONG })
+    await toggle($, 'on 60')
+    await mainStep($)
+    await turnEnd($)
+    await clock.advance(310000)
+    await clock.advance(1000)
+    const text = await toggle($, '')
+    expect(text).toContain('Keepalive  paused the cache expired; it resumes after your next prompt')
+    expect(text).toContain(`${REFRESH} One refresh every 4 min.`)
+  })
+
+  test('a learned count of none whose cache expired, its stop not yet recorded: the refresh cost, and directly after it the interval row', async ($, on) => {
+    kaWorld(on, { ...opusCached(), store: LONG })
+    const { held, release } = holdingStop(on, 'cache expired')
+    const clock = mock.clock(on, { now: T0 })
+    await $.classic.SessionStart({ source: 'startup', transcript_path: PATH })
+    await clock.settle()
+    await toggle($, 'on 60')
+    await mainStep($)
+    await turnEnd($)
+    await clock.advance(310000)
+    try {
+      expect(held.holding).toBe(true)
+      expect(await toggle($, '')).toContain(`${REFRESH} One refresh every 4 min.`)
+    } finally {
+      release()
+      await clock.settle()
+    }
   })
 
   test('keepalive on with no reading to count from: the sentence is absent', async ($, on) => {

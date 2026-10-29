@@ -154,9 +154,10 @@ start mode apply to new sessions). The Keepalive heading names keepalive's state
 coming, the Keepalive section words the pie's warning (the pie turns amber in the cache's last quarter and red in its last
 tenth: the cache is about to lapse) just below the heading or that reason, whatever the pie's colour, with keepalive off or on
 with a reading and not refreshing, on a reset or expired cache too. With keepalive off, and where a press would send refreshes,
-the refresh's cost or the context it reads, and how often one is sent, come straight after the warning. The Keepalive section
-is always shown, as its heading alone when it has nothing else to say. Cache, Advice and Settings are left out
-when they have nothing to say. The text wraps at 48 columns. A count pins the refreshes per pause for the session;
+the refresh's cost or the context it reads, and how often one is sent, come straight after the warning. A keepalive paused by design
+(its count used, or its cache expired) names what a refresh reads or costs and, where the cache is known and the lead is below the TTL, how often one would
+be sent. The Keepalive section is always shown, as its heading alone when it has nothing else to say. Cache, Advice and Settings
+are left out when they have nothing to say. The text wraps at 48 columns. A count pins the refreshes per pause for the session;
 without one, each pause sends the learned count, else the break-even count.
 
 Options: `keepalive_lead_s` (default 15), the lead the pie uses until a command sets one; `keepalive_count` (unset by default), a cap on the
