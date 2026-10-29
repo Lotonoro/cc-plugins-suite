@@ -75,7 +75,7 @@ async function openWindow<T>(
       keepTicker($, written, windowMs)
     }
   } catch (err) {
-    $.ui.log(`human-plugin: the ${source} #${digits} was written, but its window was not followed: ${String(err)}`)
+    $.ui.log(`human-plugin: ${source} #${digits} was written; a step after the write failed: ${String(err)}`)
   }
   return moved.outcome as T
 }

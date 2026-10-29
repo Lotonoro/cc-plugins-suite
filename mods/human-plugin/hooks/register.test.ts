@@ -6,7 +6,7 @@ import { paneRows } from './ui'
 import { correctionText } from './restatement'
 import { ARG_HINT, DESCRIPTION, FAILED, REBUILDING, USAGE } from './commands'
 import { resetRebuild, setForkedTranscript } from './rebuild'
-import { pressAnswer, stopTicker } from './windows'
+import { pressAnswer, pressDone, stopTicker } from './windows'
 import type { Item } from '../types'
 
 // The hook wiring, read off `register` with a recording `on`: each event's hook, and the `.catch` it was given. The kit can't
@@ -2257,7 +2257,18 @@ test('a failure after an answer form\'s write is logged and contained: the answe
   const failing = { ...env, clock: { ...env.clock, every: () => { throw new Error('no clock') } }, ui: { ...env.ui, log: (text: string) => void logs.push(text) } }
   expect(await pressAnswer(failing as never, '1', { kind: 'done' }, 3000)).toMatchObject({ kind: 'applied', answer: 'done' })
   expect(values.list).toMatchObject({ items: [{ id: 1, state: 'done-waiting' }] })
-  expect(logs.filter(line => line.includes('no clock')).length).toBe(1)
+  expect(logs.filter(line => line.includes('no clock'))).toEqual(['human-plugin: /asks #1 was written; a step after the write failed: Error: no clock'])
+})
+
+test('a send that fails once a zero undo window has ended a press is logged as a step after the write, and the press stands', async () => {
+  reset()
+  stopTicker()
+  const logs: string[] = []
+  const { env, values } = memEnv([made(1, { detail: '' })], [], null)
+  const refused = { ...env, prompt: { submit: async () => { throw new Error('prompt refused') } }, ui: { ...env.ui, log: (text: string) => void logs.push(text) } }
+  await pressDone(refused as never, 1, null, 0)
+  expect(logs.filter(line => line.includes('prompt refused'))).toEqual(['human-plugin: done press #1 was written; a step after the write failed: Error: prompt refused'])
+  expect(values.list).toMatchObject({ items: [{ id: 1, state: 'done-pending' }] })
 })
 
 test('a failure before an answer form\'s write rejects, and the list is not written', async () => {
