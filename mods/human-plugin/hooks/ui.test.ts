@@ -1,6 +1,6 @@
 import { expect, test } from 'claude-code/testing'
 import { act, listText, normalizeItem } from './items'
-import { expire, reply } from './done'
+import { answerOf, doneNotice, expire, press, reply, type Form } from './done'
 import { band, pane, paneRows, toolLine, type Handlers, type Table, type View } from './ui'
 import type { Item, Store, Turn } from '../types'
 
@@ -581,6 +581,66 @@ test('a reply submitted is trimmed and handed to reply; an empty or blank one is
   submit(field, '')
   submit(field, ' \t ')
   expect(sent).toEqual([[1, 'Use sqlite']])
+})
+
+test('a reply of only U+00A0 is not sent: the field trims as JavaScript does, so U+00A0 around a reply is trimmed and alone is nothing', () => {
+  const nbsp = String.fromCharCode(0xa0)
+  const sent: [number, string][] = []
+  const h: Handlers = { ...handlers, reply: (id, text) => sent.push([id, text]) }
+  const field = nodes(pane(withInput, h, store, view()), 'Input')[0]
+  submit(field, nbsp)
+  expect(sent).toEqual([])
+  submit(field, `${nbsp}Use sqlite${nbsp}`)
+  expect(sent).toEqual([[1, 'Use sqlite']])
+})
+
+// The form a control of the pane answers with, by the control's own kind or place: a decision's answer by its place in the pane's order, a yes or a
+// no by its kind, and a to-do's check as done, whose answer is its label or none.
+const formOf = (key: string): Form => {
+  if (key.startsWith('answer-')) return { kind: 'option', n: Number(key.split('-')[2]) + 1 }
+  if (key.startsWith('yes-')) return { kind: 'yes' }
+  if (key.startsWith('no-')) return { kind: 'no' }
+  return { kind: 'done' }
+}
+
+// The form resolves on the store as the press leaves it, and once each window has ended both give the same item and the same notice.
+const sameAsPress = (store: Store, form: Form, pressed: Store): void => {
+  const resolved = answerOf(store, '1', form, 1000)
+  expect(resolved.outcome.kind).toBe('applied')
+  expect(expire(resolved.store, 1, 1000)).toEqual(expire(pressed, 1, 1000))
+  expect(doneNotice(expire(resolved.store, 1, 1000).sent as Item)).toBe(doneNotice(expire(pressed, 1, 1000).sent as Item))
+}
+
+test('each answer the pane\'s controls send is a form the resolver applies, and gives the notice its press gives, for every kind of item', () => {
+  const options = [
+    { label: 'Use sqlite', description: '', recommended: false },
+    { label: 'Use postgres', description: '', recommended: false },
+    { label: 'Use mysql', description: '', recommended: true },
+  ]
+  for (const kind of [{ detail: '' }, { detail: '', doneLabel: 'Ship it' }, { detail: '', yesno: true }, { detail: '', options }] as Partial<Item>[]) {
+    const store0: Store = { items: [{ ...item, ...kind }], next: 2, term: null }
+    // The pane drawn afresh, its handlers recording what each control sends.
+    const drawn = (sent: [number, string | null][], replies: [number, string][]) =>
+      pane(withInput, { ...handlers, done: (id, answer) => void sent.push([id, answer]), reply: (id, text) => void replies.push([id, text]) }, store0, {
+        ...view(),
+        selected: 1,
+      })
+    const keys = nodes(drawn([], []), 'Button')
+      .map(b => String(b.key))
+      .filter(key => /^(answer-1-\d+|done-1|yes-1|no-1)$/.test(key))
+    expect(keys.length).toBeGreaterThan(0)
+    for (const key of keys) {
+      const sent: [number, string | null][] = []
+      const tree = drawn(sent, [])
+      ;(nodes(tree, 'Button').find(b => b.key === key)?.onPress as () => void)()
+      expect(sent.length).toBe(1)
+      sameAsPress(store0, formOf(key), press(store0, 1, 1000, sent[0]?.[1] ?? null))
+    }
+    const replies: [number, string][] = []
+    submit(nodes(drawn([], replies), 'Input')[0], '  Use sqlite  ')
+    expect(replies).toEqual([[1, 'Use sqlite']])
+    sameAsPress(store0, { kind: 'reply', text: 'Use sqlite' }, reply(store0, 1, 1000, 'Use sqlite'))
+  }
 })
 
 test('a reply in its undo window draws its text as a check, not a cross even on a yes or no, with the undo countdown', () => {

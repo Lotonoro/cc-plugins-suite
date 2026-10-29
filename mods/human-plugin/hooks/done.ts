@@ -140,3 +140,60 @@ export const expire = (store: Store, id: number, token: number): { store: Store;
   const sent: Item = { ...target, state: 'done-pending', pressedAt: null }
   return { store: mapItem(store, id, () => (sent.windowTurns.length > 0 || sent.windowChanged ? archive(sent) : sent)), sent }
 }
+
+// A form an answer takes, as `/asks <n> <form>` names it (commands.ts parses it): done, yes or no, a decision's option by its number, or a
+// reply with its text.
+export type Form = { kind: 'done' } | { kind: 'yes' } | { kind: 'no' } | { kind: 'option'; n: number } | { kind: 'reply'; text: string }
+export type FormKind = Form['kind']
+
+// The forms an item takes, by its kind, classified as the pane draws it: a decision's options first, then a yes/no's yes and no, else a to-do's
+// done. Every item takes a reply. The foot of `/asks <n>` lists these and answerOf takes only these, so the two cannot differ.
+export const formsOf = (item: Item): FormKind[] => (item.options.length > 0 ? ['option', 'reply'] : item.yesno ? ['yes', 'no', 'reply'] : ['done', 'reply'])
+
+// Whether an item is the one a number names: its id as text is the digits, which carry no leading zero.
+export const isNumbered = (item: Item, digits: string): boolean => String(item.id) === digits
+
+// A reply's text as the pane's reply field sends it: trimmed as JavaScript trims, or null when nothing is left. The pane and `/asks <n> reply` both take it.
+export const replyText = (text: string): string | null => {
+  const trimmed = text.trim()
+  return trimmed === '' ? null : trimmed
+}
+
+// What an answer did, for the hook to word. An applied answer carries the answer the item took, as its notice names it.
+export type AnswerOutcome =
+  | { kind: 'applied'; item: Item; answer: string }
+  | { kind: 'missing' }
+  | { kind: 'sent'; item: Item }
+  | { kind: 'undoing'; item: Item }
+  | { kind: 'takes'; item: Item }
+
+// The answer a press of a form carries, for a form that is not a reply: a to-do's label as it stands, `yes` or `no`, or the option's label in the
+// order the pane draws the options.
+const pressOf = (item: Item, form: Exclude<Form, { kind: 'reply' }>): string | null => {
+  switch (form.kind) {
+    case 'done':
+      return item.doneLabel
+    case 'yes':
+    case 'no':
+      return form.kind
+    case 'option':
+      return orderedOptions(item)[form.n - 1]?.label ?? null
+  }
+}
+
+// The resolver: one answer form on the list, decided at `token`, the time its window counts from. The number names the item, and the checks run in
+// this order: missing; state (anything not open is refused: sent, or in its undo window); kind (formsOf); option range. An applied form is the press's
+// own transition, or the reply's, so its notice is the press's. It clears the item's unread mark in the same write, since answering reads the item.
+// A refused form changes nothing.
+export const answerOf = (store: Store, digits: string, form: Form, token: number): { store: Store; outcome: AnswerOutcome } => {
+  const target = store.items.find(it => isNumbered(it, digits))
+  if (target === undefined) return { store, outcome: { kind: 'missing' } }
+  if (target.state === 'done-pending') return { store, outcome: { kind: 'sent', item: target } }
+  if (target.state === 'done-waiting') return { store, outcome: { kind: 'undoing', item: target } }
+  const taken = formsOf(target).includes(form.kind) && (form.kind !== 'option' || (form.n >= 1 && form.n <= target.options.length))
+  if (!taken) return { store, outcome: { kind: 'takes', item: target } }
+  const readItem = (s: Store): Store => mapItem(s, target.id, it => ({ ...it, unread: false }))
+  if (form.kind === 'reply') return { store: readItem(reply(store, target.id, token, form.text)), outcome: { kind: 'applied', item: target, answer: form.text } }
+  const answer = pressOf(target, form)
+  return { store: readItem(press(store, target.id, token, answer)), outcome: { kind: 'applied', item: target, answer: answer ?? 'done' } }
+}
