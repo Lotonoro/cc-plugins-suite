@@ -133,12 +133,13 @@ export const reopen = (store: Store, id: number): { store: Store; reopened: bool
 
 // The window of press `token` has passed. It sends only if that press is still the open window: a cancelled item sends nothing, and a second
 // expiry of the same press finds it already sent. The item it sends is returned as sent, for its notice. An agent turn or an update the window took
-// reopens the item here, with the answer archived ahead of those turns: the reply first, the agent's after.
-export const expire = (store: Store, id: number, token: number): { store: Store; sent: Item | null } => {
+// reopens the item here, with the answer archived ahead of those turns: the reply first, the agent's after; `reopened` says whether it did.
+export const expire = (store: Store, id: number, token: number): { store: Store; sent: Item | null; reopened: boolean } => {
   const target = store.items.find(it => it.id === id)
-  if (target === undefined || target.state !== 'done-waiting' || target.pressedAt !== token) return { store, sent: null }
+  if (target === undefined || target.state !== 'done-waiting' || target.pressedAt !== token) return { store, sent: null, reopened: false }
   const sent: Item = { ...target, state: 'done-pending', pressedAt: null }
-  return { store: mapItem(store, id, () => (sent.windowTurns.length > 0 || sent.windowChanged ? archive(sent) : sent)), sent }
+  const reopened = sent.windowTurns.length > 0 || sent.windowChanged
+  return { store: mapItem(store, id, () => (reopened ? archive(sent) : sent)), sent, reopened }
 }
 
 // A form an answer takes, as `/asks <n> <form>` names it (commands.ts parses it): done, yes or no, a decision's option by its number, or a
