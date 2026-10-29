@@ -1,5 +1,5 @@
 import { expect, test } from 'claude-code/testing'
-import { doneNotice, expire, pointerText, press, reopen, reply, turnsOf } from './done'
+import { cutLine, cutText, doneNotice, expire, orderedOptions, pointerText, press, reopen, reply, turnsOf } from './done'
 import { act, parseInput } from './items'
 import type { Item, Store, Turn } from '../types'
 
@@ -300,4 +300,36 @@ test('a window the agent added a turn to ends by sending the reply and reopening
   expect(out.store.items[0]).toMatchObject({ state: 'open', unread: true, answer: null, replied: false, windowTurns: [] })
   expect(turnsOf(out.store.items[0] as Item)).toEqual([{ speaker: 'human', words: 'Use sqlite' }, agentTurn])
   expect(doneNotice(out.sent as Item)).toContain('The human replied on #3: Use sqlite')
+})
+
+test('cutText keeps a text within the bound as it is, and otherwise ends it in an ellipsis that is counted within the bound', () => {
+  expect(cutText('abc', 3)).toBe('abc')
+  expect(cutText('abcd', 3)).toBe('ab…')
+  expect(cutText('abcd', 1)).toBe('…')
+  expect(cutText('abcd', 0)).toBe('')
+})
+
+test('cutText never splits a surrogate pair: a cut that would is one unit shorter', () => {
+  const pair = String.fromCodePoint(0x1f600)
+  expect(cutText(`${pair}x`, 2)).toBe('…')
+  expect(cutText(`a${pair}x`, 3)).toBe('a…')
+  expect(cutText(`a${pair}x`, 4)).toBe(`a${pair}x`)
+  expect(cutText(`${pair}${pair}x`, 4)).toBe(`${pair}…`)
+})
+
+test('cutText keeps the line breaks of a multi-line text, and cutLine cuts the same text to one line with every break as a space', () => {
+  expect(cutText('one\ntwo\nthree', 9)).toBe('one\ntwo\n…')
+  expect(cutLine('one\ntwo\nthree', 9)).toBe('one two …')
+  expect(cutLine(`a\r\nb${String.fromCharCode(0x2028)}c${String.fromCharCode(0x2029)}d`, 20)).toBe('a b c d')
+})
+
+test('orderedOptions puts the recommended option first and keeps the rest in their order, and leaves the item\'s options as they are', () => {
+  const options = [
+    { label: 'A', description: '', recommended: false },
+    { label: 'B', description: '', recommended: false },
+    { label: 'C', description: '', recommended: true },
+    { label: 'D', description: '', recommended: false },
+  ]
+  expect(orderedOptions({ ...item, options }).map(option => option.label)).toEqual(['C', 'A', 'B', 'D'])
+  expect(options.map(option => option.label)).toEqual(['A', 'B', 'C', 'D'])
 })

@@ -4,6 +4,8 @@ import { offer, reset, setOnChange, startTurn, takeHeld, endTurn } from './turns
 import { EMPTY, TOOL } from './items'
 import { paneRows } from './ui'
 import { correctionText } from './restatement'
+import { DESCRIPTION, FAILED, REBUILDING } from './commands'
+import { resetRebuild, setForkedTranscript } from './rebuild'
 import type { Item } from '../types'
 
 // The hook wiring, read off `register` with a recording `on`: each event's hook, and the `.catch` it was given. The kit can't
@@ -588,6 +590,7 @@ const memEnv = (items: unknown[], open: string[], selection: number | null, subm
       },
     },
     store: { get: async () => undefined, set: async () => {} },
+    command: { register: async () => ({ value: undefined }) },
     clock: {
       now: async () => clock.now,
       after: (_ms: number, fn: () => unknown) => {
@@ -2004,4 +2007,142 @@ test('a session end drops the stored notices with the module\'s own', async () =
   await (wired.hooks['session.end'] as Handler)(env as never, { reason: 'exit' } as never, next(false) as never)
   await settle()
   expect(values.notices).toEqual({ held: [], waiting: [] })
+})
+
+// The `/asks` command: registered at session start, answered by its command hook, and waiting for a rebuild as the tool does.
+const asksOf = (hooks: Record<string, Handler>): Handler => hooks['command.run {"command":"asks"}'] as Handler
+
+test('/asks is registered at session start with the flag that runs it mid-turn, under the name its hook\'s matcher spells out', async () => {
+  freshModule()
+  const wired = wire()
+  const { env } = memEnv([], [], null)
+  const registered: Record<string, unknown>[] = []
+  await started(wired, { ...env, command: { register: async (spec: Record<string, unknown>) => void registered.push(spec) } })
+  expect(registered).toEqual([{ name: 'asks', description: DESCRIPTION, argumentHint: '[n]', immediate: true }])
+  expect(typeof asksOf(wired.hooks)).toBe('function')
+})
+
+test('a failed /asks registration is logged, and the rest of the session start still delivers an owed notice', async () => {
+  freshModule()
+  const logs: string[] = []
+  const submitted: unknown[] = []
+  const { env, values } = memEnv([made(1, { detail: '' })], [], null, submitted)
+  values.notices = { held: [], waiting: [{ id: 1, text: '#1 is done: Item 1' }] }
+  const failing = {
+    ...env,
+    ui: { ...env.ui, log: (text: string) => void logs.push(text) },
+    command: {
+      register: async () => {
+        throw new Error('no room for the command')
+      },
+    },
+  }
+  await started(wire(), failing)
+  await settle()
+  expect(logs).toEqual(['human-plugin: the /asks command was not registered: Error: no room for the command'])
+  expect(submitted).toEqual([{ text: '#1 is done: Item 1' }])
+})
+
+test('a failed /asks registration leaves an undo window to be restored at session start: its tick sends the answer once the window has run', async () => {
+  freshModule()
+  const submitted: unknown[] = []
+  const timers: Timer[] = []
+  const { env, clock } = memEnv([made(1, { detail: '', state: 'done-waiting', pressedAt: 1000 })], [], null, submitted, timers)
+  const failing = {
+    ...env,
+    command: {
+      register: async () => {
+        throw new Error('no room for the command')
+      },
+    },
+  }
+  await started(wire(), failing)
+  await tickAt(timers, clock, 3999)
+  expect(submitted).toEqual([])
+  await tickAt(timers, clock, 4000)
+  expect(submitted.length).toBe(1)
+})
+
+test('/asks prints the list through its command, /asks <n> prints that item whole, and a number no item has, or a usage, answers so', async () => {
+  freshModule()
+  const { hooks } = wire()
+  const { env } = memEnv([made(1, { title: 'Pick a db', blocking: true, detail: 'postgres or sqlite' }), made(2, { detail: '' })], [], null)
+  const ask = asksOf(hooks)
+  expect(await ask(env as never, { args: '' } as never, next(false) as never)).toEqual({ text: '  #1 blocking: Pick a db\n  #2 non-blocking: Item 2' })
+  expect(await ask(env as never, { args: '1' } as never, next(false) as never)).toEqual({ text: '  #1 blocking: Pick a db\n  brief:\n  postgres or sqlite' })
+  expect(await ask(env as never, { args: ' 001 ' } as never, next(false) as never)).toEqual({ text: '  #1 blocking: Pick a db\n  brief:\n  postgres or sqlite' })
+  expect(await ask(env as never, { args: '3' } as never, next(false) as never)).toEqual({ text: '  There is no such item.' })
+  expect(await ask(env as never, { args: '3.5' } as never, next(false) as never)).toEqual({ text: '  Usage: /asks, or /asks <n> for one item.' })
+})
+
+test('/asks <n> clears the unread mark of the one item it shows, and /asks alone clears none', async () => {
+  freshModule()
+  const { hooks } = wire()
+  const { env } = memEnv([made(1, { unread: true }), made(2, { unread: true })], [], null)
+  const ask = asksOf(hooks)
+  await ask(env as never, { args: '' } as never, next(false) as never)
+  const both = JSON.stringify(await band(hooks, env))
+  expect(both).toContain('• #1 ')
+  expect(both).toContain('• #2 ')
+  await ask(env as never, { args: '2' } as never, next(false) as never)
+  const afterShow = JSON.stringify(await band(hooks, env))
+  expect(afterShow).toContain('• #1 ')
+  expect(afterShow).not.toContain('• #2 ')
+})
+
+test('/asks answers that the list is being rebuilt while the rebuild runs past its wait, and lists the rebuilt items once it has finished', async () => {
+  freshModule()
+  const wired = wire()
+  const timers: Timer[] = []
+  const { env, clock } = memEnv([], [], null, [], timers)
+  let finish = (): void => {}
+  const gate = new Promise<void>(resolve => {
+    finish = resolve
+  })
+  const transcript = [
+    { type: 'assistant', timestamp: '2026-10-20T10:00:00.000Z', message: { role: 'assistant', content: [{ type: 'tool_use', id: 'a', name: TOOL, input: { action: 'add', title: 'Rebuilt ask' } }] } },
+    { type: 'user', timestamp: '2026-10-20T10:00:01.000Z', message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'a', content: 'added #1' }] } },
+  ]
+    .map(row => `${JSON.stringify(row)}\n`)
+    .join('')
+  // The transcript's `cat` holds its output until the test lets it finish.
+  const child = {
+    async *[Symbol.asyncIterator]() {
+      await gate
+      yield { stream: 'stdout', text: transcript }
+    },
+    result: gate.then(() => ({ code: 0 })),
+  }
+  const host = { ...env, fs: { exists: async () => true, list: async () => [] }, process: { spawn: () => child } }
+  const ask = asksOf(wired.hooks)
+  setForkedTranscript('/sessions/s.jsonl')
+  try {
+    await started(wired, host)
+    const waiting = ask(host as never, { args: '' } as never, next(false) as never)
+    await tickAt(timers, clock, 5000)
+    expect(await waiting).toEqual({ text: REBUILDING })
+    finish()
+    expect(await ask(host as never, { args: '' } as never, next(false) as never)).toEqual({ text: '  #1 non-blocking: Rebuilt ask' })
+  } finally {
+    resetRebuild()
+  }
+})
+
+test('a /asks whose list read throws answers one error line, logs the failure, and writes no list', async () => {
+  freshModule()
+  const { hooks, catches } = wire()
+  const logs: string[] = []
+  const submits: unknown[] = []
+  const writes: unknown[] = []
+  let thrown: unknown = null
+  try {
+    await asksOf(hooks)(broken(logs, submits, {}, writes) as never, { args: '' } as never, next(false) as never)
+  } catch (err) {
+    thrown = err
+  }
+  expect(String(thrown)).toContain('list unreadable')
+  const answer = await (catches['command.run'] as Handler)(broken(logs, submits, {}, writes) as never, { args: '' } as never, next(false) as never)
+  expect(answer).toEqual({ text: FAILED })
+  expect(logs).toEqual(['human-plugin: the command.run hook throw: list unreadable'])
+  expect(writes).toEqual([])
 })

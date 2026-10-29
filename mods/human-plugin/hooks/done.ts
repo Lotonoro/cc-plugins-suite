@@ -1,4 +1,4 @@
-import type { Item, Store, Turn } from '../types'
+import type { Item, ItemOption, Store, Turn } from '../types'
 
 // The text the agent reads when the human's done press is sent: the item's title, and the answer the press chose, if an option or
 // a yes or no was pressed, the label a labelled to-do's ✓ carries, or the reply the human typed. It carries no brief: the agent wrote
@@ -12,6 +12,21 @@ const THEN = 'then remove it. Keep it only if the human still has a step of thei
 // and the replay reads a reply's text to its line's end. Only a line break, with the blanks around it, becomes a space: the human's own
 // spacing is kept.
 export const oneLine = (text: string): string => text.replace(/\s*[\r\n\u2028\u2029]+\s*/g, ' ')
+
+// The text cut to at most `max` UTF-16 units, the ellipsis counted within them. A cut never splits a surrogate pair: one that would is a unit
+// shorter. Line breaks stay as they are, so a multi-line text is cut to a multi-line text; cutLine is the one-line cut.
+export const cutText = (text: string, max: number): string => {
+  if (text.length <= max) return text
+  if (max <= 0) return ''
+  let end = max - 1
+  const before = text.charCodeAt(end - 1)
+  const after = text.charCodeAt(end)
+  if (end > 0 && before >= 0xd800 && before <= 0xdbff && after >= 0xdc00 && after <= 0xdfff) end--
+  return `${text.slice(0, end)}\u2026`
+}
+
+// A title or a label cut to one line: its line breaks become spaces (oneLine), then cutText.
+export const cutLine = (text: string, max: number): string => cutText(oneLine(text), max)
 
 export const doneNotice = (item: Item): string => {
   const answer = item.answer === null ? null : oneLine(item.answer)
@@ -49,7 +64,7 @@ const mapItem = (store: Store, id: number, change: (item: Item) => Item): Store 
 const BARE_DONE = 'pressed done'
 
 // The human's turn for the answer an item carries: the words the press or the reply sent, or the phrase of a bare done.
-const humanTurn = (item: Item): Turn => ({ speaker: 'human', words: item.answer ?? BARE_DONE })
+export const humanTurn = (item: Item): Turn => ({ speaker: 'human', words: item.answer ?? BARE_DONE })
 
 // The item's exchange as it reads: its thread, then the human's answer while its undo window runs or once it is sent and awaits the agent (the
 // newest human turn), then the agent's turns its window took (none once sent, since the window's end reopens the item with them: expire). The
@@ -58,6 +73,9 @@ export const turnsOf = (item: Item): Turn[] => [...item.thread, ...(item.state =
 
 // The label a turn is listed and drawn under: who spoke.
 export const labelOf = (turn: Turn): string => (turn.speaker === 'human' ? 'you' : 'agent')
+
+// A decision's options in the order the pane draws them and `/asks` numbers them: the recommended one first, the rest in their own order.
+export const orderedOptions = (item: Item): ItemOption[] => [...item.options].sort((a, b) => Number(b.recommended) - Number(a.recommended))
 
 // Whether the human has answered the item, so an agent addition is a turn and not a change to the brief: a human turn is in the thread, or an
 // answer is out (in its undo window, or sent).

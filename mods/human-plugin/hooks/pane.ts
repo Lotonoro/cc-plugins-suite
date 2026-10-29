@@ -143,8 +143,8 @@ export function showItem($: EngineInterface, id: number): Promise<unknown> {
   return Promise.all([opening, select($, id)])
 }
 
-// Marks one item read: an item the pane switches to is shown, so its unread mark goes.
-function markRead($: EngineInterface, id: number): Promise<unknown> {
+// Marks one item read: an item the pane switches to is shown, so its unread mark goes, and so does the one `/asks <n>` shows.
+export function markRead($: EngineInterface, id: number): Promise<unknown> {
   return updateList($, store => ({ ...store, items: store.items.map(it => (it.id === id ? { ...it, unread: false } : it)) }))
 }
 

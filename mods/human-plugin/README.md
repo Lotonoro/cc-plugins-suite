@@ -41,6 +41,7 @@ To do for you 3 open
   question, the agent's recommendation, the options with their costs, and the context. The pane draws any table in a brief as a list, so it fits the narrow pane. Each fenced block (backtick or tilde) in a brief has a `[copy]` button under it that puts just that block's lines on your clipboard, with no frame characters; a toast says whether it took. A fence gets no button when it is inside a block quote, when it is indented four or more columns past its list item's text, or when it is four or more columns from the margin under a list item whose wrapped line is not indented. Ask for more and the agent adds
   to the item (to the brief, or to the thread once you have answered) instead of burying the answer in chat.
 - When the agent works out the answer itself, it tells you why in one line.
+- **`/asks` and `/asks <n>`.** `/asks` prints the list as text: the open items first, then the answered ones, blocking first in each group, an answered item with its answer, and an item still in its undo window marked as still undoable. `/asks <n>` prints one item, with its note, brief, thread and, for a choice, its options numbered. The print is cut at 4,000 characters when the item runs longer, with a line that says so. Both run during a turn too.
 
 Quick questions with a couple of clear options still arrive as Claude Code's usual question dialog. The list is for
 things you do outside the chat, things that can wait, and decisions that need room to explain.
@@ -89,10 +90,11 @@ Then start a new session and let the agent do the asking.
   rewind happened. The agent can still remove what no longer applies, and a resume rebuilds the list correctly.
 - A session forked with `--fork-session` after a compaction starts from that compaction, so items filed before it
   are not carried over. No fork carries over items its subagents filed.
+- A forked session whose transcript is not yet written at session start is rebuilt at its first turn, so until then `/asks`, and the agent's tool, can show an empty or partial list.
 - A done press that arrives just as a turn starts relies on Claude Code's documented handling of a row appended to a
   running turn, which has not been observed live; if it differs, a done press that lands as a turn starts is read one
   model request later, never lost.
-- Tested on the terminal only: the desktop app is untested, though it draws the reply field too. The chime plays on macOS only.
+- Tested on the terminal only: the desktop app is untested, though it draws the reply field too. A Remote Control phone draws no band or pane, so there the list is read through `/asks`. The chime plays on macOS only.
 - The band's `To do for <term>` chip draws a term of up to 20 columns in a header that does not wrap, so on a very narrow
   terminal the header can overflow or wrap.
 - A term read back from stored state is not re-checked against the 20-column and one-line limits that the tool applies to

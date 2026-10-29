@@ -1,6 +1,6 @@
 import type { ButtonProps, BoxProps, ElementConstructor, InputProps, MarkdownProps, RenderElement, TextProps, UiCopyArgs } from 'claude-code'
 import type { Item, Store, Turn } from '../types'
-import { labelOf, oneLine, turnsOf } from './done'
+import { labelOf, oneLine, orderedOptions, turnsOf } from './done'
 import { briefParts } from './fences'
 import { outcomeOf, parseInput, selectedItem, type ToolInput } from './items'
 import { bandRows } from './layout'
@@ -42,23 +42,21 @@ const CHECK = { color: 'green' }
 const answers = (t: Table, h: Handlers, item: Item): RenderElement =>
   t.Box({
     flexDirection: 'column',
-    children: [...item.options]
-      .sort((a, b) => Number(b.recommended) - Number(a.recommended))
-      .map((option, i) =>
-        t.Box({
-          key: `answer-row-${item.id}-${i}`,
-          children: [
-            t.Box({ flexShrink: 0, children: [t.Text({ color: 'suggestion', children: ['▸'] }), t.Text({ children: [' '] })] }),
-            t.Button({
-              key: `answer-${item.id}-${i}`,
-              plain: true,
-              label: `[${option.label}${option.recommended ? ' (recommended)' : ''}]`,
-              hover: { color: 'suggestion', bold: true },
-              onPress: () => h.done(item.id, option.label),
-            }),
-          ],
-        }),
-      ),
+    children: orderedOptions(item).map((option, i) =>
+      t.Box({
+        key: `answer-row-${item.id}-${i}`,
+        children: [
+          t.Box({ flexShrink: 0, children: [t.Text({ color: 'suggestion', children: ['▸'] }), t.Text({ children: [' '] })] }),
+          t.Button({
+            key: `answer-${item.id}-${i}`,
+            plain: true,
+            label: `[${option.label}${option.recommended ? ' (recommended)' : ''}]`,
+            hover: { color: 'suggestion', bold: true },
+            onPress: () => h.done(item.id, option.label),
+          }),
+        ],
+      }),
+    ),
   })
 
 // A yes/no question's two marks, yes then no, each drawn as the done check is.

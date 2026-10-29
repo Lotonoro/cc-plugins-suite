@@ -4,11 +4,12 @@ import type { OwedNotices, Store } from '../types'
 import { TOOL, act, carryNext, clearAll, parseInput, type Outcome } from './items'
 import { STEERING, TOOL_SPEC } from './steering'
 import { oneLine, stateOf } from './done'
+import { COMMAND, DESCRIPTION, FAILED, REBUILDING, USAGE, answerTo, parseAsk } from './commands'
 import { carried, carryHeld, endTurn, giveBack, handOver, notEntered, offer, pending, reset, setOnChange, startTurn } from './turns'
 import { band, pane, toolLine, type Handlers, type View } from './ui'
 import { correctionText, newlyRestated, restatedIds } from './restatement'
 import { enter } from './deliver'
-import { PANE, endPane, followShown, personClosed, pickItem, setDrawn, shownSelection, showItem, syncPane } from './pane'
+import { PANE, endPane, followShown, markRead, personClosed, pickItem, setDrawn, shownSelection, showItem, syncPane } from './pane'
 import { pressDone, pressReply, rearmWindows, stopTicker } from './windows'
 import { restored, resetRebuild, setForkedTranscript, startForkRestore, startRestore } from './rebuild'
 import { emptyList, inBackground, readList, updateList } from './shared'
@@ -160,6 +161,17 @@ const answer = async ($: EngineInterface, e: unknown) => {
   return { result: out.reply }
 }
 
+// The `/asks` command's answer: the list, or one item whole. It waits for a rebuild in progress as the tool does, and clears the unread mark of
+// the one item it shows; the wording and the parse are commands.ts's.
+const asks = async ($: EngineInterface, args: string): Promise<string> => {
+  const ask = parseAsk(args)
+  if (ask.kind === 'usage') return USAGE
+  if (!(await restored($))) return REBUILDING
+  const { text, shown } = answerTo((await readList($)).items, ask)
+  if (shown !== null) await markRead($, shown)
+  return text
+}
+
 // The id counter outlives a /clear in the plugin store: the old session saves it (never lower than what is stored) and the
 // new session, which starts with a fresh state, carries it back.
 const NEXT_KEY = 'next'
@@ -191,6 +203,12 @@ export const wireHooks = (on: On, windowMs: number): void => {
     owed.catch(() => {})
     setOnChange(() => saveNotices($))
     await $.tool.register(TOOL_SPEC)
+    // A failed registration is logged, and the rest of the start still runs: the rebuild, the undo windows and the owed notices.
+    try {
+      await $.command.register({ name: COMMAND, description: DESCRIPTION, argumentHint: '[n]', immediate: true })
+    } catch (err) {
+      $.ui.log(`human-plugin: the /${COMMAND} command was not registered: ${String(err)}`)
+    }
     await startForkRestore($)
     await rearmWindows($, windowMs)
     await restoreNotices($, await owed)
@@ -210,6 +228,12 @@ export const wireHooks = (on: On, windowMs: number): void => {
   on('tool.call', { tool: 'mcp__human-plugin__human_items' }, ($, e) => answer($, e)).catch(($, e, next) =>
     next.called ? next(e) : { deny: 'human_items: the mod failed to answer the call' },
   )
+
+  // The matcher spells the name out, as the tool's do. A throw is logged and answers one error line; the list is left as it was.
+  on('command.run', { command: 'asks' }, ($, e) => asks($, e.args).then(text => ({ text }))).catch(($, _e, next) => {
+    failed($, 'command.run', next.error)
+    return { text: FAILED }
+  })
 
   // A done notice reaches a running turn at a read point the engine holds before its next request (turns.ts): the end of
   // a tool batch. A request that starts afterwards carries it; a turn that ends first hands what is left to a turn of its
