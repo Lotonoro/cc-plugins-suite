@@ -277,8 +277,8 @@ export const wireHooks = (on: On, windowMs: number): void => {
   // from the phone also carries the open items (commands.ts's phoneBlock), as context the person does not see: it waits for a
   // rebuild in progress, as /asks does, and when the wait runs out it carries the rebuilding line instead. The block is in the
   // one call that passes the prompt on, ahead of the held notices. The wait comes before the read, so the read sees what a rebuild filled
-  // in. The wait and the block each have their own try: a failure in either is logged, and the prompt goes through with its held notices,
-  // filtered as above, and no block. The read sits outside both tries, so an unreadable list still reaches the catch.
+  // in. A failed wait has its own try: it is logged, and the prompt goes through with its held notices, filtered as above, and no block.
+  // The read sits outside that try, so an unreadable list still reaches the catch.
   on('prompt.submit', async ($, e, next) => {
     const phone = e.origin.kind === 'bridge' && e.command === undefined
     // Null when the wait failed: no block is built then.
@@ -292,14 +292,7 @@ export const wireHooks = (on: On, windowMs: number): void => {
       }
     }
     const store = await readList($)
-    let block: string | null = null
-    if (phone && rebuilt !== null) {
-      try {
-        block = rebuilt ? phoneBlock(store.items) : PHONE_REBUILDING
-      } catch (err) {
-        failed($, 'prompt.submit', { kind: 'throw', message: messageOf(err) })
-      }
-    }
+    const block = phone && rebuilt !== null ? (rebuilt ? phoneBlock(store.items) : PHONE_REBUILDING) : null
     const withBlock = block === null ? e : { ...e, context: [...(e.context ?? []), block] }
     return carryHeld(withBlock, next, id => stateOf(store, id) !== 'missing', text => showSent($, text))
   }).catch(($, e, next) => {
