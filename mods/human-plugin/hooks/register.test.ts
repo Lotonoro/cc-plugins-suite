@@ -4,8 +4,8 @@ import { offer, reset, setOnChange, startTurn, takeHeld, endTurn } from './turns
 import { EMPTY, TOOL, act, normalizeStore } from './items'
 import { paneRows } from './ui'
 import { correctionText } from './restatement'
-import { ARG_HINT, DESCRIPTION, FAILED, REBUILDING, USAGE } from './commands'
-import { resetRebuild, setForkedTranscript } from './rebuild'
+import { ARG_HINT, DESCRIPTION, FAILED, PHONE_REBUILDING, REBUILDING, USAGE } from './commands'
+import { resetRebuild, setForkedTranscript, startRestore } from './rebuild'
 import { pressAnswer, pressDone, stopTicker } from './windows'
 import type { Item } from '../types'
 
@@ -249,6 +249,83 @@ test('a reply that ends in the phone block\'s item line is not corrected: the li
   }
   expect(await endedWith(`Here is where things stand.\n\n${itemLine}`, 't1')).toEqual([])
   expect(await endedWith(`Here is where things stand.\n\n${itemLine.replace('#1 ', '')}`, 't2')).toEqual([correctionText([1])])
+})
+
+test('a phone prompt sent while the list is being rebuilt waits for it, and its block names the rebuilt items; a composer prompt in the same rebuild waits for nothing', async () => {
+  freshModule()
+  const wired = wire()
+  const timers: Timer[] = []
+  const { env } = memEnv([], [], null, [], timers)
+  const { host, finish } = rebuilding(env)
+  setForkedTranscript('/sessions/s.jsonl')
+  try {
+    await started(wired, host)
+    expect(await entered(wired.hooks, host, { origin: { kind: 'composer' }, text: 'hi' })).toEqual([{ origin: { kind: 'composer' }, text: 'hi' }])
+    expect(timers).toEqual([])
+    const phone = entered(wired.hooks, host, { origin: { kind: 'bridge' }, text: 'hi' })
+    expect(timers).toHaveLength(1)
+    finish()
+    expect((await phone)[0]?.context?.[0]).toContain('  #1 Rebuilt ask')
+  } finally {
+    resetRebuild()
+  }
+})
+
+test('a phone prompt whose wait for a rebuild runs out carries the rebuilding block, and names no item the list holds', async () => {
+  freshModule()
+  const wired = wire()
+  const timers: Timer[] = []
+  const { env, clock } = memEnv([made(2, { title: 'Live ask', detail: '' })], [], null, [], timers)
+  const { host, finish } = rebuilding(env)
+  setForkedTranscript('/sessions/s.jsonl')
+  try {
+    await started(wired, host)
+    const phone = entered(wired.hooks, host, { origin: { kind: 'bridge' }, text: 'hi' })
+    await tickAt(timers, clock, 5000)
+    expect((await phone)[0]?.context).toEqual([PHONE_REBUILDING])
+  } finally {
+    finish()
+    resetRebuild()
+  }
+})
+
+test('a phone prompt whose block cannot be built goes through with its held notices and no block, and the failure is logged', async () => {
+  freshModule()
+  const wired = wire()
+  startTurn()
+  offer({ id: 1, text: '#1 is done: Item 1' })
+  endTurn('t1', true, () => true)
+  const logs: string[] = []
+  const { env } = memEnv([], [], null, [], [])
+  const { host, finish } = rebuilding(env)
+  // The wait for a rebuild arms a timer, and this host cannot arm one, so the block cannot be built.
+  const failing = {
+    ...host,
+    ui: { ...env.ui, log: (text: string) => void logs.push(text) },
+    clock: { ...env.clock, after: () => { throw new Error('no timer') } },
+  }
+  startRestore(failing as never, '/sessions/s.jsonl')
+  try {
+    const e = { origin: { kind: 'bridge' }, text: 'hi' }
+    const seen: { context?: readonly string[] }[] = []
+    const passed = (async (prompt: { context?: readonly string[] }) => {
+      seen.push(prompt)
+      return { text: 'hi' }
+    }) as unknown as Next
+    passed.called = false
+    passed.error = { kind: 'throw', message: 'no timer', budget: 1000 }
+    const outcome = await Promise.resolve((wired.hooks['prompt.submit'] as Handler)(failing as never, e as never, passed as never)).then(
+      () => 'entered',
+      () => 'failed',
+    )
+    expect(outcome).toBe('failed')
+    await (wired.catches['prompt.submit'] as Handler)(failing as never, e as never, passed as never)
+    expect(seen).toEqual([{ origin: { kind: 'bridge' }, text: 'hi', context: ['#1 is done: Item 1'] }])
+    expect(logs).toEqual(['human-plugin: the prompt.submit hook throw: no timer', 'sent to Claude: #1 is done: Item 1'])
+  } finally {
+    finish()
+    resetRebuild()
+  }
 })
 
 test('a session.end whose carry throws still empties the list, with the id counter the store holds', async () => {
