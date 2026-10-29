@@ -412,9 +412,9 @@ export const offerOf = (view: CacheView, money: Money, leadMs: number, runCount:
 // at or above the TTL or a count of 0, a warm cache states the rebuild's price alone, with no section lines.
 export const pressOfferOf = (view: CacheView, money: Money, leadMs: number, runCount: number, pair: Pair): Figure | null => {
   const sends = offerOf(view, money, leadMs, runCount, pair)
-  if (sends !== null || view.kind !== 'known') return sends
-  const bare = pairing(view, money, pair)?.bare
-  return bare === undefined || bare === null ? null : { label: bare, lines: [] }
+  if (sends !== null) return sends
+  const bare = pairing(view, money, pair)?.bare ?? null
+  return bare === null ? null : { label: bare, lines: [] }
 }
 
 // Stops that end keepalive by design. Any other stop, and a pause from a lead at or above the TTL, is a failure the status
