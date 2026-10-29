@@ -173,3 +173,44 @@ test('a list rebuilt on resume pushes nothing, and the rebuilt blocking item is 
   expect(String((await $.tool.call({ tool: TOOL, action: 'list' })).result)).toContain('Pick a db')
   expect(messages).toEqual([])
 })
+
+test('the push is one line: a line break in the title is drawn as a space', async ($, on) => {
+  const clock = mock.clock(on)
+  mock.store(on)
+  on('ui.panes', () => ({ value: [] }))
+  const messages = pushes(on)
+  await $.tool.call({ tool: TOOL, action: 'add', blocking: true, title: 'Pick\na db\r\nnow' })
+  await clock.settle()
+  expect(messages).toEqual(['Blocking: #1 Pick a db now'])
+})
+
+test('a title too long for the push is cut to 180 characters in all, the ellipsis counted within them', async ($, on) => {
+  const clock = mock.clock(on)
+  mock.store(on)
+  on('ui.panes', () => ({ value: [] }))
+  const messages = pushes(on)
+  await $.tool.call({ tool: TOOL, action: 'add', blocking: true, title: 'b'.repeat(200) })
+  await clock.settle()
+  expect(messages).toEqual([`Blocking: #1 ${'b'.repeat(166)}…`])
+  expect(messages[0]?.length).toBe(180)
+})
+
+test('a cut push never splits a surrogate pair: one that would is one unit shorter', async ($, on) => {
+  const clock = mock.clock(on)
+  mock.store(on)
+  on('ui.panes', () => ({ value: [] }))
+  const messages = pushes(on)
+  await $.tool.call({ tool: TOOL, action: 'add', blocking: true, title: `${'a'.repeat(165)}😀tail` })
+  await clock.settle()
+  expect(messages).toEqual([`Blocking: #1 ${'a'.repeat(165)}…`])
+})
+
+test('a title that fits the 180 characters with its prefix is pushed whole', async ($, on) => {
+  const clock = mock.clock(on)
+  mock.store(on)
+  on('ui.panes', () => ({ value: [] }))
+  const messages = pushes(on)
+  await $.tool.call({ tool: TOOL, action: 'add', blocking: true, title: 'b'.repeat(167) })
+  await clock.settle()
+  expect(messages).toEqual([`Blocking: #1 ${'b'.repeat(167)}`])
+})
