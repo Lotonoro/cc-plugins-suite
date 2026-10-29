@@ -90,6 +90,7 @@ test('each notice names the press that sent it, and a reopened item needs a new 
   mock.store(on)
   on('ui.panes', () => ({ value: [] }))
   on('process.run', () => RAN)
+  on('tool.call', { tool: 'PushNotification' }, (_$, e) => ({ result: { message: e.message, pushSent: true } }))
   await $.tool.call({ tool: TOOL, action: 'add', blocking: true, title: 'Pick a db' })
   const ui = await $.ui.mount({ plugin: 'human-plugin', surface: 'terminal', component: 'AbovePrompt', props: BAND_PROPS })
   await ui.press({ key: 'done-1' })
@@ -207,6 +208,7 @@ test('no trace line reaches the band: press, sent and sound all go to the debug 
     return { text: e.text }
   })
   on('process.run', () => RAN)
+  on('tool.call', { tool: 'PushNotification' }, (_$, e) => ({ result: { message: e.message, pushSent: true } }))
   const lines: string[] = []
   const shown: string[] = []
   on('ui.log', (_$, e, next) => {

@@ -302,6 +302,17 @@ test('a window the agent added a turn to ends by sending the reply and reopening
   expect(doneNotice(out.sent as Item)).toContain('The human replied on #3: Use sqlite')
 })
 
+test('expiry reports that it reopened the item when an agent turn or an update its window took is in it, and not otherwise', () => {
+  const agentTurn = { speaker: 'agent' as const, words: 'The sqlite file is in data/.' }
+  const turned: Store = { items: [{ ...item, state: 'done-waiting', pressedAt: 1000, answer: 'Use sqlite', replied: true, windowTurns: [agentTurn] }], next: 4, term: null }
+  const updated: Store = { items: [{ ...item, state: 'done-waiting', pressedAt: 1000, answer: 'Use sqlite', replied: true, windowChanged: true }], next: 4, term: null }
+  expect(expire(turned, 3, 1000).reopened).toBe(true)
+  expect(expire(updated, 3, 1000).reopened).toBe(true)
+  expect(expire(press(store, 3, 1000, 'Use sqlite'), 3, 1000).reopened).toBe(false)
+  expect(expire(press(store, 3, 1000, null), 3, 1000).reopened).toBe(false)
+  expect(expire(store, 3, 1000).reopened).toBe(false)
+})
+
 test('cutText keeps a text within the bound as it is, and otherwise ends it in an ellipsis that is counted within the bound', () => {
   expect(cutText('abc', 3)).toBe('abc')
   expect(cutText('abcd', 3)).toBe('ab…')

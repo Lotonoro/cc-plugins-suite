@@ -19,7 +19,7 @@ To do for you 3 open
   they don't all fit, the last row summarises what is left out: `+N blocking` for the blocking items and `+N more` for the
   others. The header turns amber while anything blocking is open, so its colour alone tells you whether any of the agent's work
   is stuck. The header reads `To do for you` until the agent states the term it uses for you, and then `To do for` followed by
-  that term.
+  that term. A blocking ask is also pushed to your phone, and while you are at the terminal the push is retried each minute, for an hour at most, until it is sent.
 - **`[✓]`** says you've done it. You get three seconds to change your mind (`[↶ 3s]`; the window ends on the
   countdown's next one-second tick, so up to a second later), then the agent is told, checks, and removes the item. You can also say so in chat. Only the agent removes items, because it is the one that knows
   when an ask is settled; when it adds to a sent item instead, the item comes back open, with its reply field, marked `•`. A choice (a decision with options) gets answer buttons in the pane instead (see below).
@@ -68,7 +68,7 @@ Then start a new session and let the agent do the asking.
   have a step of your own to take: the agent's follow-up work is not yours, so it does not stay listed. After a typed reply it stays sent until the agent adds to it or, once your reply settles the ask, removes it. When the session is idle a press or reply starts a short
   turn; during a turn it is read before the agent's next model request; if you interrupt with Esc, it waits for your
   next prompt. A press on an item the agent has already removed sends nothing. What is read during a turn or beside
-  your prompt also shows in your transcript as a dim line, `sent to Claude: …`, which the agent never reads.
+  your prompt also shows in your transcript as a dim line, `sent to Claude: …`, which the agent never reads; a phone prompt's block is the one thing read beside your prompt that does not show.
   When the agent adds to a sent item (an append, or an update that sets a title, brief, blocking mark, options, note or label), the item comes back open, with its reply field, marked `•`; a change that only clears a field does not reopen it. A change made during the three seconds leaves them running, and your press is sent as given; when they end, the item comes back open, your answer first in its thread and any append made then after it. If you undo instead, the change stays on the item, which does not reopen.
 - **Survives compaction and resume.** `claude --resume` rebuilds the list from the session's transcript, subagents
   included, and leaves out anything on a branch that `/rewind` abandoned. `/clear` empties the list. Item numbers
@@ -78,6 +78,7 @@ Then start a new session and let the agent do the asking.
 - **Restatement check.** At the end of a turn the mod checks the agent's closing reply for an open item's ask restated
   without naming any listed item's id. On a catch it leaves the agent one short note, at most once per item, which you see as a dim `sent to Claude: …` line.
   The check starts no turn.
+- **Phone prompts.** A prompt sent from a Remote Control phone tells the agent that you cannot see the list, so it ends its reply by naming the open items.
 
 ## Known limits
 
