@@ -6,6 +6,7 @@ import { paneRows } from './ui'
 import { correctionText } from './restatement'
 import { DESCRIPTION, FAILED, REBUILDING } from './commands'
 import { resetRebuild, setForkedTranscript } from './rebuild'
+import { pressAnswer, stopTicker } from './windows'
 import type { Item } from '../types'
 
 // The hook wiring, read off `register` with a recording `on`: each event's hook, and the `.catch` it was given. The kit can't
@@ -2192,4 +2193,73 @@ test('/asks <n> still returns the item when its unread mark cannot be cleared: t
   expect(await asksOf(hooks)(refusing as never, { args: '1' } as never, next(false) as never)).toEqual({ text: '  #1 non-blocking: Item 1\n  brief:\n  Brief 1.' })
   expect(logs).toEqual(['human-plugin: the unread mark of #1 was not cleared: Error: list write refused'])
   expect(values.list).toMatchObject({ items: [{ id: 1, unread: true }] })
+})
+
+// An answer form's write, called as the hook calls it: the undo window it leaves, what the ticker sends, and what happens after the write.
+test('an answer form writes its window in the write and submits nothing there: the first tick after it submits the notice', async () => {
+  reset()
+  stopTicker()
+  const submitted: unknown[] = []
+  const timers: Timer[] = []
+  const { env, values, clock } = memEnv([made(1, { detail: '' })], [], null, submitted, timers)
+  clock.now = 1000
+  expect(await pressAnswer(env as never, '1', { kind: 'done' }, 3000)).toMatchObject({ kind: 'applied', answer: 'done' })
+  // The window counts from one window back, so it is due at the write: the list shows it waiting, and the ticker is running for it.
+  expect(values.list).toMatchObject({ items: [{ id: 1, state: 'done-waiting', pressedAt: -2000 }] })
+  expect(timers.length).toBe(1)
+  expect(submitted).toEqual([])
+  await tickAt(timers, clock, 999)
+  expect(submitted).toEqual([])
+  await tickAt(timers, clock, 1000)
+  expect(submitted.length).toBe(1)
+  expect((submitted[0] as { text: string }).text.startsWith('#1 is done: Item 1\nThe human marked it done.')).toBe(true)
+})
+
+test('an answer form never ends its window inside the write, whatever the window: a zero window waits for the first tick as well', async () => {
+  reset()
+  stopTicker()
+  const submitted: unknown[] = []
+  const timers: Timer[] = []
+  const { env, clock } = memEnv([made(1, { detail: '' })], [], null, submitted, timers)
+  expect(await pressAnswer(env as never, '1', { kind: 'done' }, 0)).toMatchObject({ kind: 'applied' })
+  expect(submitted).toEqual([])
+  await tickAt(timers, clock, 0)
+  expect(submitted.length).toBe(1)
+})
+
+test('a refused answer form, or a number no item has, changes no item and starts no tick, since no window waits', async () => {
+  reset()
+  stopTicker()
+  const timers: Timer[] = []
+  const { env, values } = memEnv([made(1, { detail: '', state: 'done-pending' })], [], null, [], timers)
+  expect(await pressAnswer(env as never, '1', { kind: 'done' }, 3000)).toMatchObject({ kind: 'sent' })
+  expect(await pressAnswer(env as never, '9', { kind: 'done' }, 3000)).toMatchObject({ kind: 'missing' })
+  expect(values.list).toMatchObject({ items: [{ id: 1, state: 'done-pending' }] })
+  expect(timers.length).toBe(0)
+})
+
+test('a failure after an answer form\'s write is logged and contained: the answer stands, and its outcome is returned', async () => {
+  reset()
+  stopTicker()
+  const logs: string[] = []
+  const { env, values } = memEnv([made(1, { detail: '' })], [], null)
+  const failing = { ...env, clock: { ...env.clock, every: () => { throw new Error('no clock') } }, ui: { ...env.ui, log: (text: string) => void logs.push(text) } }
+  expect(await pressAnswer(failing as never, '1', { kind: 'done' }, 3000)).toMatchObject({ kind: 'applied', answer: 'done' })
+  expect(values.list).toMatchObject({ items: [{ id: 1, state: 'done-waiting' }] })
+  expect(logs.filter(line => line.includes('no clock')).length).toBe(1)
+})
+
+test('a failure before an answer form\'s write rejects, and the list is not written', async () => {
+  reset()
+  stopTicker()
+  const { env, values } = memEnv([made(1, { detail: '' })], [], null)
+  const unreadable = { ...env, state: { ...env.state, get: async () => { throw new Error('list unreadable') } } }
+  let thrown: unknown = null
+  try {
+    await pressAnswer(unreadable as never, '1', { kind: 'done' }, 3000)
+  } catch (err) {
+    thrown = err
+  }
+  expect(String(thrown)).toContain('list unreadable')
+  expect(values.list).toMatchObject({ items: [{ id: 1, state: 'open' }] })
 })
