@@ -289,14 +289,16 @@ test('a phone prompt whose wait for a rebuild runs out carries the rebuilding bl
   }
 })
 
-test('a phone prompt whose block cannot be built goes through with its held notices and no block, and the failure is logged', async () => {
+test('a phone prompt whose block cannot be built goes through with its live held notices and no block, and the failure is logged', async () => {
   freshModule()
   const wired = wire()
   startTurn()
   offer({ id: 1, text: '#1 is done: Item 1' })
+  offer({ id: 2, text: '#2 is done: Live ask' })
   endTurn('t1', true, () => true)
   const logs: string[] = []
-  const { env } = memEnv([], [], null, [], [])
+  // Item 1 is not on the list, so its notice is dropped; item 2 is, so its notice is carried.
+  const { env } = memEnv([made(2, { title: 'Live ask', detail: '' })], [], null, [], [])
   const { host, finish } = rebuilding(env)
   // The wait for a rebuild arms a timer, and this host cannot arm one, so the block cannot be built.
   const failing = {
@@ -308,20 +310,17 @@ test('a phone prompt whose block cannot be built goes through with its held noti
   try {
     const e = { origin: { kind: 'bridge' }, text: 'hi' }
     const seen: { context?: readonly string[] }[] = []
-    const passed = (async (prompt: { context?: readonly string[] }) => {
+    const passed = async (prompt: { context?: readonly string[] }) => {
       seen.push(prompt)
       return { text: 'hi' }
-    }) as unknown as Next
-    passed.called = false
-    passed.error = { kind: 'throw', message: 'no timer', budget: 1000 }
+    }
     const outcome = await Promise.resolve((wired.hooks['prompt.submit'] as Handler)(failing as never, e as never, passed as never)).then(
       () => 'entered',
       () => 'failed',
     )
-    expect(outcome).toBe('failed')
-    await (wired.catches['prompt.submit'] as Handler)(failing as never, e as never, passed as never)
-    expect(seen).toEqual([{ origin: { kind: 'bridge' }, text: 'hi', context: ['#1 is done: Item 1'] }])
-    expect(logs).toEqual(['human-plugin: the prompt.submit hook throw: no timer', 'sent to Claude: #1 is done: Item 1'])
+    expect(outcome).toBe('entered')
+    expect(seen).toEqual([{ origin: { kind: 'bridge' }, text: 'hi', context: ['#2 is done: Live ask'] }])
+    expect(logs).toEqual(['human-plugin: the prompt.submit hook throw: no timer', 'sent to Claude: #2 is done: Live ask'])
   } finally {
     finish()
     resetRebuild()

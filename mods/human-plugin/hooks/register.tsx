@@ -31,10 +31,13 @@ const finishTurn = ($: EngineInterface, turnId: string, interrupted: boolean, is
   if (submit !== null) inBackground($, enter($, submit.text, () => notEntered(submit.notices)))
 }
 
-// A hook that threw or overran is logged with why, to the transcript; its `.catch` then answers in its place.
-const failed = ($: EngineInterface, hook: string, reason: HookFailure): void => {
+// A hook that threw or overran is logged with why, to the transcript; its `.catch` then answers in its place. A failure a hook caught
+// in its own body is logged here too, as a throw.
+const failed = ($: EngineInterface, hook: string, reason: Pick<HookFailure, 'kind' | 'message'>): void => {
   $.ui.log(`human-plugin: the ${hook} hook ${reason.kind}: ${reason.message ?? 'no message'}`)
 }
+// The message of an error a hook caught, as HookFailure gives it for a throw.
+const messageOf = (err: unknown): string => (err instanceof Error ? err.message : String(err))
 
 // The list as it stands now, for the check a notice gets right before its row is appended. An unreadable list checks nothing:
 // the notice is appended, and the failure is logged.
@@ -272,13 +275,30 @@ export const wireHooks = (on: On, windowMs: number): void => {
   // held notice whose item the agent has removed since is dropped, the list being read here as at the turn's end. A prompt
   // from the phone also carries the open items (commands.ts's phoneBlock), as context the person does not see: it waits for a
   // rebuild in progress, as /asks does, and when the wait runs out it carries the rebuilding line instead. The block is in the
-  // one call that passes the prompt on, ahead of the held notices. A failure here is logged by the catch, which lets the prompt
-  // through with its held notices and no block.
+  // one call that passes the prompt on, ahead of the held notices. The wait comes before the read, so the read sees what a rebuild filled
+  // in. The wait and the block each have their own try: a failure in either is logged, and the prompt goes through with its held notices,
+  // filtered as above, and no block. The read sits outside both tries, so an unreadable list still reaches the catch.
   on('prompt.submit', async ($, e, next) => {
     const phone = e.origin.kind === 'bridge' && e.command === undefined
-    const rebuilt = phone ? await restored($) : true
+    // Null when the wait failed: no block is built then.
+    let rebuilt: boolean | null = true
+    if (phone) {
+      try {
+        rebuilt = await restored($)
+      } catch (err) {
+        rebuilt = null
+        failed($, 'prompt.submit', { kind: 'throw', message: messageOf(err) })
+      }
+    }
     const store = await readList($)
-    const block = !phone ? null : rebuilt ? phoneBlock(store.items) : PHONE_REBUILDING
+    let block: string | null = null
+    if (phone && rebuilt !== null) {
+      try {
+        block = rebuilt ? phoneBlock(store.items) : PHONE_REBUILDING
+      } catch (err) {
+        failed($, 'prompt.submit', { kind: 'throw', message: messageOf(err) })
+      }
+    }
     const withBlock = block === null ? e : { ...e, context: [...(e.context ?? []), block] }
     return carryHeld(withBlock, next, id => stateOf(store, id) !== 'missing', text => showSent($, text))
   }).catch(($, e, next) => {
