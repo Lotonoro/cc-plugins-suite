@@ -24,14 +24,15 @@ const pushes = (on: On, answer: (n: number, message: string) => unknown = sent) 
   return messages
 }
 
-// The clock, the store, the pane and the chime a filing plays, for a test that files a blocking item.
+// The clock, the store, the pane, the session's end and the chime a filing plays, for a test that files a blocking item. The chime's
+// record comes back with the clock.
 const kit = (on: On) => {
   const clock = mock.clock(on)
   mock.store(on)
   on('ui.panes', () => ({ value: [] }))
   on('session.end', (_$, e) => ({ sessionId: e.sessionId }))
-  chimes(on)
-  return clock
+  const runs = chimes(on)
+  return { clock, runs }
 }
 
 // The sounds the mod plays: each afplay's argv.
@@ -231,7 +232,7 @@ test('a title that fits the 180 characters with its prefix is pushed whole', asy
 })
 
 test('a push refused as user_present is tried again a minute after its answer, with the title the item has now, until one is sent', async ($, on) => {
-  const clock = kit(on)
+  const { clock } = kit(on)
   const messages = pushes(on, (n, message) => (n === 1 ? userPresent(n, message) : sent(n, message)))
   await $.tool.call({ tool: TOOL, action: 'add', blocking: true, title: 'Pick a db' })
   await clock.settle()
@@ -245,7 +246,7 @@ test('a push refused as user_present is tried again a minute after its answer, w
 })
 
 test('a retry stops once the human has answered the item and its undo window has passed', async ($, on) => {
-  const clock = kit(on)
+  const { clock } = kit(on)
   on('prompt.submit', (_$, e) => ({ text: e.text }))
   const messages = pushes(on, userPresent)
   await $.tool.call({ tool: TOOL, action: 'add', blocking: true, title: 'Pick a db' })
@@ -257,7 +258,7 @@ test('a retry stops once the human has answered the item and its undo window has
 })
 
 test('a retry stops once the item is removed', async ($, on) => {
-  const clock = kit(on)
+  const { clock } = kit(on)
   const messages = pushes(on, userPresent)
   await $.tool.call({ tool: TOOL, action: 'add', blocking: true, title: 'Pick a db' })
   await clock.settle()
@@ -267,7 +268,7 @@ test('a retry stops once the item is removed', async ($, on) => {
 })
 
 test('a retry stops once the item is no longer blocking', async ($, on) => {
-  const clock = kit(on)
+  const { clock } = kit(on)
   const messages = pushes(on, userPresent)
   await $.tool.call({ tool: TOOL, action: 'add', blocking: true, title: 'Pick a db' })
   await clock.settle()
@@ -277,7 +278,7 @@ test('a retry stops once the item is no longer blocking', async ($, on) => {
 })
 
 test('a refused push is tried again each minute until an hour after the first try, and then no more', async ($, on) => {
-  const clock = kit(on)
+  const { clock } = kit(on)
   const messages = pushes(on, userPresent)
   await $.tool.call({ tool: TOOL, action: 'add', blocking: true, title: 'Pick a db' })
   await clock.advance(3540000)
@@ -287,7 +288,7 @@ test('a refused push is tried again each minute until an hour after the first tr
 })
 
 test('a push refused as config_off is not tried again, and is logged once, at debug only', async ($, on) => {
-  const clock = kit(on)
+  const { clock } = kit(on)
   const lines = logs(on)
   const messages = pushes(on, answering({ pushSent: false, disabledReason: 'config_off' }))
   await $.tool.call({ tool: TOOL, action: 'add', blocking: true, title: 'Pick a db' })
@@ -298,7 +299,7 @@ test('a push refused as config_off is not tried again, and is logged once, at de
 })
 
 test('a push refused as no_transport is not tried again, and is logged once, at debug only', async ($, on) => {
-  const clock = kit(on)
+  const { clock } = kit(on)
   const lines = logs(on)
   const messages = pushes(on, answering({ pushSent: false, disabledReason: 'no_transport' }))
   await $.tool.call({ tool: TOOL, action: 'add', blocking: true, title: 'Pick a db' })
@@ -317,7 +318,7 @@ const ENDED: [string, (n: number, message: string) => unknown, string][] = [
 ]
 for (const [kind, answer, said] of ENDED) {
   test(`a push that ${kind} is not tried again, is logged once in the transcript, and leaves the item blocking`, async ($, on) => {
-    const clock = kit(on)
+    const { clock } = kit(on)
     const lines = logs(on)
     const messages = pushes(on, answer)
     await $.tool.call({ tool: TOOL, action: 'add', blocking: true, title: 'Pick a db' })
@@ -332,7 +333,7 @@ for (const [kind, answer, said] of ENDED) {
 }
 
 test('a push unanswered after 10 seconds ends its item\'s tries: it is logged once in the transcript and not tried again', async ($, on) => {
-  const clock = kit(on)
+  const { clock } = kit(on)
   const lines = logs(on)
   const messages = pushes(on, () => new Promise(() => {}))
   await $.tool.call({ tool: TOOL, action: 'add', blocking: true, title: 'Pick a db' })
@@ -346,7 +347,7 @@ test('a push unanswered after 10 seconds ends its item\'s tries: it is logged on
 })
 
 test('a reopen makes its own push when the item\'s earlier push went unanswered', async ($, on) => {
-  const clock = kit(on)
+  const { clock } = kit(on)
   on('prompt.submit', (_$, e) => ({ text: e.text }))
   const messages = pushes(on, (n, message) => (n === 1 ? new Promise(() => {}) : sent(n, message)))
   await $.tool.call({ tool: TOOL, action: 'add', blocking: true, title: 'Pick a db' })
@@ -361,7 +362,7 @@ test('a reopen makes its own push when the item\'s earlier push went unanswered'
 })
 
 test('the first push call of a session logs its whole answer at debug, and no later call does', async ($, on) => {
-  const clock = kit(on)
+  const { clock } = kit(on)
   const lines = logs(on)
   const messages = pushes(on, (_n, message) => ({ result: { message, pushSent: true, sentAt: '2026-10-25T10:00:00.000Z' }, text: 'pushed' }))
   await $.tool.call({ tool: TOOL, action: 'add', blocking: true, title: 'Pick a db' })
@@ -378,7 +379,7 @@ test('the first push call of a session logs its whole answer at debug, and no la
 })
 
 test('a push answered user_present after its 10 seconds have passed schedules no retry', async ($, on) => {
-  const clock = kit(on)
+  const { clock } = kit(on)
   let answerLate: () => void = () => undefined
   const messages = pushes(on, (_n, message) => new Promise(resolve => {
     answerLate = () => resolve({ result: { message, pushSent: false, disabledReason: 'user_present' } })
@@ -392,7 +393,7 @@ test('a push answered user_present after its 10 seconds have passed schedules no
 })
 
 test('a clear ends the retries of the items filed before it: none is tried again', async ($, on) => {
-  const clock = kit(on)
+  const { clock } = kit(on)
   const messages = pushes(on, userPresent)
   await $.tool.call({ tool: TOOL, action: 'add', blocking: true, title: 'Pick a db' })
   await clock.settle()
@@ -402,7 +403,7 @@ test('a clear ends the retries of the items filed before it: none is tried again
 })
 
 test('a resume ends the retries of the items filed before it, and the list it rebuilds pushes nothing', async ($, on) => {
-  const clock = kit(on)
+  const { clock } = kit(on)
   const messages = pushes(on, userPresent)
   hostTranscript(on, transcript('Pick a db'))
   await $.tool.call({ tool: TOOL, action: 'add', blocking: true, title: 'Pick a db' })
@@ -415,7 +416,7 @@ test('a resume ends the retries of the items filed before it, and the list it re
 })
 
 test('a retry from before a resume pushes nothing after it, and an item filed after the resume is pushed by its own chain alone', async ($, on) => {
-  const clock = kit(on)
+  const { clock } = kit(on)
   const messages = pushes(on, userPresent)
   await $.tool.call({ tool: TOOL, action: 'add', blocking: true, title: 'Old' })
   await clock.settle()
@@ -448,7 +449,7 @@ test('a session end whose later steps throw still ends every pending retry', asy
 })
 
 test('a push in flight at a session end that is answered user_present afterwards pushes nothing and schedules no retry', async ($, on) => {
-  const clock = kit(on)
+  const { clock } = kit(on)
   let answerLate: () => void = () => undefined
   const messages = pushes(on, (_n, message) => new Promise(resolve => {
     answerLate = () => resolve({ result: { message, pushSent: false, disabledReason: 'user_present' } })
@@ -462,7 +463,7 @@ test('a push in flight at a session end that is answered user_present afterwards
 })
 
 test('an item answered and reopened within a minute of its refused push has one chain: its push a minute after the reopen is the only retry', async ($, on) => {
-  const clock = kit(on)
+  const { clock } = kit(on)
   on('prompt.submit', (_$, e) => ({ text: e.text }))
   const messages = pushes(on, userPresent)
   await $.tool.call({ tool: TOOL, action: 'add', blocking: true, title: 'Pick a db' })
@@ -480,7 +481,7 @@ test('an item answered and reopened within a minute of its refused push has one 
 })
 
 test('an item turned non-blocking and blocking again within a minute of its refused push has one chain', async ($, on) => {
-  const clock = kit(on)
+  const { clock } = kit(on)
   const messages = pushes(on, userPresent)
   await $.tool.call({ tool: TOOL, action: 'add', blocking: true, title: 'Pick a db' })
   await clock.settle()
@@ -497,7 +498,7 @@ test('an item turned non-blocking and blocking again within a minute of its refu
 })
 
 test('an item answered and reopened while its first push call is in flight: the replaced call logs and schedules nothing, even when it is refused late', async ($, on) => {
-  const clock = kit(on)
+  const { clock } = kit(on)
   on('prompt.submit', (_$, e) => ({ text: e.text }))
   const lines = logs(on)
   let refuseFirst: () => void = () => undefined
@@ -526,7 +527,7 @@ test('an item answered and reopened while its first push call is in flight: the 
 })
 
 test('a new session\'s first push call logs its whole answer at debug, as the first of that session', async ($, on) => {
-  const clock = kit(on)
+  const { clock } = kit(on)
   const lines = logs(on)
   const messages = pushes(on, (_n, message) => ({ result: { message, pushSent: true } }))
   await $.tool.call({ tool: TOOL, action: 'add', blocking: true, title: 'Pick a db' })
@@ -536,4 +537,121 @@ test('a new session\'s first push call logs its whole answer at debug, as the fi
   await clock.settle()
   expect(messages).toEqual(['Blocking: #1 Pick a db', 'Blocking: #2 Next'])
   expect(lines.filter(line => line.text.includes('first push call')).length).toBe(2)
+})
+
+// The undo window is 3 seconds. Its end is what reopens an item the agent changed inside the window, so that end is the push's moment: the
+// call that made the change pushes nothing, and neither does an undo or a window the agent left alone.
+test('an update to blocking inside the undo window pushes nothing at the call, and one push when the window reopens the item, with no chime', async ($, on) => {
+  const { clock, runs } = kit(on)
+  on('prompt.submit', (_$, e) => ({ text: e.text }))
+  const messages = pushes(on)
+  await $.tool.call({ tool: TOOL, action: 'add', title: 'Pick a db' })
+  const ui = await $.ui.mount({ plugin: 'human-plugin', surface: 'terminal', component: 'AbovePrompt', props: BAND_PROPS })
+  await ui.press({ key: 'done-1' })
+  await clock.advance(1000)
+  await $.tool.call({ tool: TOOL, action: 'update', id: 1, blocking: true })
+  await clock.settle()
+  expect(messages).toEqual([])
+  expect(runs).toEqual([])
+  await clock.advance(2000)
+  await clock.settle()
+  expect(messages).toEqual(['Blocking: #1 Pick a db'])
+  expect(runs).toEqual([])
+})
+
+test('an agent turn the undo window takes pushes once when the window reopens the item, and plays no chime', async ($, on) => {
+  const { clock, runs } = kit(on)
+  on('prompt.submit', (_$, e) => ({ text: e.text }))
+  const messages = pushes(on)
+  await $.tool.call({ tool: TOOL, action: 'add', blocking: true, title: 'Pick a db' })
+  await clock.settle()
+  const ui = await $.ui.mount({ plugin: 'human-plugin', surface: 'terminal', component: 'AbovePrompt', props: BAND_PROPS })
+  await ui.press({ key: 'done-1' })
+  await clock.advance(1000)
+  await $.tool.call({ tool: TOOL, action: 'append', id: 1, text: 'The sqlite file is in data/.' })
+  await clock.settle()
+  expect(messages).toEqual(['Blocking: #1 Pick a db'])
+  await clock.advance(2000)
+  await clock.settle()
+  expect(messages).toEqual(['Blocking: #1 Pick a db', 'Blocking: #1 Pick a db'])
+  expect(runs.length).toBe(1)
+})
+
+test('a window the agent changed nothing in pushes nothing when it ends', async ($, on) => {
+  const { clock, runs } = kit(on)
+  on('prompt.submit', (_$, e) => ({ text: e.text }))
+  const messages = pushes(on)
+  await $.tool.call({ tool: TOOL, action: 'add', blocking: true, title: 'Pick a db' })
+  await clock.settle()
+  const ui = await $.ui.mount({ plugin: 'human-plugin', surface: 'terminal', component: 'AbovePrompt', props: BAND_PROPS })
+  await ui.press({ key: 'done-1' })
+  await clock.advance(3000)
+  await clock.settle()
+  expect(messages).toEqual(['Blocking: #1 Pick a db'])
+  expect(runs.length).toBe(1)
+})
+
+test('an undo pushes nothing, and the item stays open and blocking', async ($, on) => {
+  const { clock, runs } = kit(on)
+  on('prompt.submit', (_$, e) => ({ text: e.text }))
+  const messages = pushes(on)
+  await $.tool.call({ tool: TOOL, action: 'add', blocking: true, title: 'Pick a db' })
+  await clock.settle()
+  const ui = await $.ui.mount({ plugin: 'human-plugin', surface: 'terminal', component: 'AbovePrompt', props: BAND_PROPS })
+  await ui.press({ key: 'done-1' })
+  await clock.advance(1000)
+  await ui.press({ key: 'done-1' })
+  await clock.advance(5000)
+  await clock.settle()
+  expect(messages).toEqual(['Blocking: #1 Pick a db'])
+  expect(runs.length).toBe(1)
+  expect(String((await $.tool.call({ tool: TOOL, action: 'list' })).result)).toContain('#1 blocking, open: Pick a db')
+})
+
+test('a retry that fires inside the undo window pushes nothing and waits a minute; an undo leaves the next retry to push', async ($, on) => {
+  const { clock } = kit(on)
+  on('prompt.submit', (_$, e) => ({ text: e.text }))
+  const messages = pushes(on, (n, message) => (n === 1 ? userPresent(n, message) : sent(n, message)))
+  await $.tool.call({ tool: TOOL, action: 'add', blocking: true, title: 'Pick a db' })
+  await clock.settle()
+  await clock.advance(59000)
+  const ui = await $.ui.mount({ plugin: 'human-plugin', surface: 'terminal', component: 'AbovePrompt', props: BAND_PROPS })
+  await ui.press({ key: 'done-1' })
+  await clock.advance(1000)
+  expect(messages.length).toBe(1)
+  await clock.advance(1000)
+  await ui.press({ key: 'done-1' })
+  await clock.advance(59000)
+  expect(messages).toEqual(['Blocking: #1 Pick a db', 'Blocking: #1 Pick a db'])
+})
+
+test('a retry inside the undo window, with the window then ending unchanged, leaves no retry to push', async ($, on) => {
+  const { clock } = kit(on)
+  on('prompt.submit', (_$, e) => ({ text: e.text }))
+  const messages = pushes(on, userPresent)
+  await $.tool.call({ tool: TOOL, action: 'add', blocking: true, title: 'Pick a db' })
+  await clock.settle()
+  await clock.advance(59000)
+  const ui = await $.ui.mount({ plugin: 'human-plugin', surface: 'terminal', component: 'AbovePrompt', props: BAND_PROPS })
+  await ui.press({ key: 'done-1' })
+  await clock.advance(63000)
+  expect(messages.length).toBe(1)
+})
+
+// Both windows end in the same tick, the first's by a reopen whose push hangs: the second's send is checked before the next tick, which would
+// send it whatever the first did.
+test('a push hung at one window\'s end does not hold back another item\'s send that ends in the same tick', async ($, on) => {
+  const { clock } = kit(on)
+  on('prompt.submit', (_$, e) => ({ text: e.text }))
+  const lines = logs(on)
+  const messages = pushes(on, () => new Promise(() => {}))
+  await $.tool.call({ tool: TOOL, action: 'add', title: 'Plain ask' })
+  await $.tool.call({ tool: TOOL, action: 'add', title: 'Second' })
+  const ui = await $.ui.mount({ plugin: 'human-plugin', surface: 'terminal', component: 'AbovePrompt', props: BAND_PROPS })
+  await ui.press({ key: 'done-1' })
+  await ui.press({ key: 'done-2' })
+  await $.tool.call({ tool: TOOL, action: 'update', id: 1, blocking: true })
+  await clock.advance(3000)
+  expect(lines.filter(line => line.text.includes('sent #2 for press')).length).toBe(1)
+  expect(messages).toEqual(['Blocking: #1 Plain ask'])
 })

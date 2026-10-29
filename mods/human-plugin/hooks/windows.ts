@@ -3,6 +3,7 @@ import type { Item, Store } from '../types'
 import { send } from './deliver'
 import { answerOf, expire, isNumbered, press, reply, type AnswerOutcome, type Form } from './done'
 import { followSent } from './pane'
+import { pushBlocking } from './push'
 import { inBackground, readList, updateList } from './shared'
 
 const TICK_MS = 1000
@@ -102,14 +103,19 @@ export function pressAnswer($: EngineInterface, digits: string, form: Form, wind
   return openWindow($, windowMs, digits, { source: '/asks', back: windowMs, endsAtOnce: false }, (store, token) => answerOf(store, digits, form, token))
 }
 
-// The window of press `token` has passed: sends the item, unless the press was cancelled or already sent. Returns the list its write left.
+// The window of press `token` has passed: sends the item, unless the press was cancelled or already sent. An item the window's end reopens is
+// pushed when it is blocking, as a filing is; the push runs in the background, so it holds back neither the send nor the next window. Returns
+// the list its write left.
 async function expireWindow($: EngineInterface, id: number, token: number, windowMs: number): Promise<Store> {
-  const expired: { sent: Item | null } = { sent: null }
+  const expired: { sent: Item | null; reopened: boolean } = { sent: null, reopened: false }
   const store = await updateList($, before => {
     const result = expire(before, id, token)
     expired.sent = result.sent
+    expired.reopened = result.reopened
     return result.store
   })
+  const written = store.items.find(it => it.id === id)
+  if (expired.reopened && written?.blocking) pushBlocking($, written)
   keepTicker($, store, windowMs)
   const sent = expired.sent
   if (sent === null) {
