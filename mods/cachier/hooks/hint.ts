@@ -2,7 +2,7 @@ import type { ButtonProps, BoxProps, ElementConstructor, RenderElement, TextProp
 import type { HintState, PriceCue } from '../types'
 import { cueOf, pieOf, refreshingOf, type CueMark, type Tone } from './countdown'
 import type { PaneSize } from './pane'
-import type { AnswerRow } from './sections'
+import type { AnswerRow, SettingId } from './sections'
 
 // The elements the footer line and the details pane are built from, as the surface's table hands them out.
 type Table = {
@@ -86,9 +86,21 @@ export const paneSizeOf = (rows: AnswerRow[]): PaneSize => ({
 })
 
 // The details pane's body: the answer's rows, one Text each, headings bold and nothing else styled, cut at the pane's width rather than wrapped.
-// A blank row is one space, so the row is drawn whether or not the engine gives an empty Text a line.
-export const paneOf = (t: Table, rows: AnswerRow[]): RenderElement =>
-  t.Box({
-    flexDirection: 'column',
-    children: rows.map((row) => t.Text({ ...(row.heading === true ? { bold: true } : {}), wrap: 'truncate-end', children: [row.text === '' ? ' ' : row.text] })),
-  })
+// A blank row is one space, so the row is drawn whether or not the engine gives an empty Text a line. A setting with a handler is one Button
+// over all its rows, keyed on the setting; a Button holds only strings and Texts, so its rows are one Text joined by newlines.
+export const paneOf = (t: Table, rows: AnswerRow[], handlers: Partial<Record<SettingId, () => void>> = {}): RenderElement => {
+  const text = (row: AnswerRow) => (row.text === '' ? ' ' : row.text)
+  const children: RenderElement[] = []
+  for (let i = 0; i < rows.length; i++) {
+    const row = rows[i]!
+    const onPress = row.setting === undefined ? undefined : handlers[row.setting]
+    if (row.setting === undefined || onPress === undefined) {
+      children.push(t.Text({ ...(row.heading === true ? { bold: true } : {}), wrap: 'truncate-end', children: [text(row)] }))
+      continue
+    }
+    const own = [row]
+    while (rows[i + 1]?.setting === row.setting) own.push(rows[++i]!)
+    children.push(t.Button({ key: `setting-${row.setting}`, plain: true, onPress: () => onPress(), children: [t.Text({ wrap: 'truncate-end', children: [own.map(text).join('\n')] })] }))
+  }
+  return t.Box({ flexDirection: 'column', children })
+}

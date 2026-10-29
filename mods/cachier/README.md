@@ -54,7 +54,10 @@ and a close another plugin refuses leaves the pane open to be closed by the next
   pause's and this session's refreshes and their cost;
 - **Advice**: the best setup's sentence (see [Best setup](#best-setup)), priced from your recorded pauses, and the notes on the TTL
   and the unit;
-- **Settings**: each setting's value, where it came from, and what changes it.
+- **Settings**: each setting's value, where it came from, and what changes it. A click on the unit line switches the unit between
+  dollars and tokens, as `/keepalive unit` does; a click on the start-mode line switches `keepalive_default` between on and off, as
+  `/keepalive default` does, and your own click may turn it on. A second click while one runs is dropped, a refused write shows a toast,
+  and a click that fails is named on the status line. The lead, the refresh count and the TTL stay text.
 
 The pane draws these rows itself, from the same figures the command reads, and its countdown advances each second. A press on the pie
 changes what an open pane shows at once; the pane is re-sized to the new rows by the next second's tick. The rows run to about 30 to 40, so in

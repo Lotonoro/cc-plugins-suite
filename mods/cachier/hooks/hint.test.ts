@@ -207,7 +207,7 @@ const SNAPSHOT: Snapshot = {
   cache: ['Prompt cache warm, 3:12 left (5-minute cache)'],
   keepalive: { state: 'off', lines: ['The pie turns amber in the cache\'s last quarter and red in its last tenth: the cache is about to lapse.'] },
   advice: ['A 1-hour cache with keepalive off would have saved $1.20 over 10 recent pauses.'],
-  settings: [{ name: 'unit', value: 'dollars', source: 'cost_unit option', change: '/keepalive unit tokens|dollars' }],
+  settings: [{ id: 'unit', name: 'unit', value: 'dollars', source: 'cost_unit option', change: '/keepalive unit tokens|dollars' }],
 }
 const ROWS = layoutOf(SNAPSHOT)
 
@@ -236,5 +236,52 @@ describe('paneOf: the answer\'s rows as text, one Text per row, headings bold an
   test('no row is coloured, and no button, hover or absolute position is in it', () => {
     const drawn = JSON.stringify(paneOf(t, ROWS))
     expect(drawn).not.toMatch(/"color"|"dimColor"|"backgroundColor"|"type":"Button"|hover|absolute/)
+  })
+})
+
+describe('paneOf: the buttons of the settings that switch', () => {
+  const SETTINGS_SNAPSHOT: Snapshot = {
+    ...SNAPSHOT,
+    settings: [
+      { id: 'ttl', name: 'TTL', value: '5 min', source: null, change: 'set "promptCacheTtl": "1h" in settings.json for 1 h (new sessions)' },
+      { id: 'lead', name: 'lead', value: '15 s', source: null, change: '/keepalive on <lead seconds>' },
+      { id: 'count', name: 'refreshes a pause', value: 'break-even', source: null, change: 'keepalive_count' },
+      { id: 'startMode', name: 'start mode', value: 'off', source: 'keepalive_default option', change: '/keepalive default on|off, for new sessions' },
+      { id: 'unit', name: 'unit', value: 'dollars', source: 'cost_unit option', change: '/keepalive unit tokens|dollars' },
+    ],
+  }
+  const rows = layoutOf(SETTINGS_SNAPSHOT)
+  const buttonsOf = (pane: any) => pane.children.filter((child: any) => child.type === 'Button')
+
+  test('the unit and the start mode are one button each, keyed on their identity and pressing their handler', () => {
+    const pressed: string[] = []
+    const pane = paneOf(t, rows, { unit: () => pressed.push('unit'), startMode: () => pressed.push('startMode') }) as any
+    const buttons = buttonsOf(pane)
+    expect(buttons.map((b: any) => b.props.key)).toEqual(['setting-startMode', 'setting-unit'])
+    for (const b of buttons) b.props.onPress()
+    expect(pressed).toEqual(['startMode', 'unit'])
+  })
+
+  test('every row of a wrapped line is inside its one button, and the pane has as many rows as before', () => {
+    const pane = paneOf(t, rows, { unit: noop, startMode: noop }) as any
+    const startMode = buttonsOf(pane).find((b: any) => b.props.key === 'setting-startMode')
+    const own = rows.filter((row) => row.setting === 'startMode').map((row) => row.text)
+    expect(own.length).toBeGreaterThan(1)
+    expect(startMode.props.children.map((c: any) => c.children.join('')).join('\n').split('\n')).toEqual(own)
+    const plain = paneOf(t, rows) as any
+    const lines = (p: any) => p.children.flatMap((c: any) => (c.type === 'Button' ? c.props.children.flatMap((x: any) => x.children.join('').split('\n')) : c.children)).length
+    expect(lines(pane)).toBe(lines(plain))
+  })
+
+  test('the TTL, lead and count rows are plain Texts, with handlers or without', () => {
+    const pane = paneOf(t, rows, { unit: noop, startMode: noop }) as any
+    const lead = rows.filter((row) => row.setting === 'lead' || row.setting === 'ttl' || row.setting === 'count').map((row) => row.text)
+    const texts = pane.children.filter((c: any) => c.type === 'Text').map((c: any) => c.children[0])
+    for (const text of lead) expect(texts).toContain(text)
+  })
+
+  test('with no handler for a setting its rows are plain Texts', () => {
+    expect(buttonsOf(paneOf(t, rows) as any)).toEqual([])
+    expect(buttonsOf(paneOf(t, rows, { unit: noop }) as any).map((b: any) => b.props.key)).toEqual(['setting-unit'])
   })
 })
