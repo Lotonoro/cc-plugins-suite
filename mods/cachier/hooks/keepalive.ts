@@ -293,12 +293,14 @@ export const step = (k: KeepaliveState, view: CacheView, liveMs: number | null, 
     if (view.kind === 'known' && leadMs >= view.ttlMs) {
       return { kind: 'wait', heading: 'paused', why: `lead ${secs(leadMs)} is not below the ${secs(view.ttlMs)} TTL`, lines: lastOf(k) }
     }
-    return { kind: 'wait', heading: 'on, no count', why: null, lines: ['no live cache to count from, nothing scheduled', ...lastOf(k)] }
+    // A no-cache view's next reply is what writes a cache, so its line says so; a TTL-unknown or unread view may hold one unseen, so it says nothing of replies.
+    const reply = view.kind === 'no-cache' ? '; there is no cache until the next reply' : ''
+    return { kind: 'wait', heading: 'on, no count', why: null, lines: [`no live cache to count from, nothing scheduled${reply}`, ...lastOf(k)] }
   }
   if (r.expired) return { kind: 'stop', reason: 'cache expired', ...pausedBy(k, view, money, 'cache expired') }
   // A learned count of no pings: nothing is sent, and the run stays on, so a prompt that learns otherwise can still ping.
   if (k.runCount === 0) {
-    return { kind: 'wait', heading: 'paused', why: 'no refreshes this pause: your pauses rarely outlast the cache', lines: [figures, ...lastOf(k)] }
+    return { kind: 'wait', heading: 'paused', why: 'no refreshes this pause: your pauses rarely outlast the cache; it resumes after your next prompt', lines: [figures, ...lastOf(k)] }
   }
   if (k.remaining <= 0) return { kind: 'stop', reason: 'count used', ...pausedBy(k, view, money, 'count used') }
   const refreshing = { heading: 'on, refreshing' as const, why: null }

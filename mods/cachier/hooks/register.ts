@@ -910,6 +910,8 @@ const snapshotNow = async ($: Dollar): Promise<Snapshot> => {
   const verdict = step(held, view, live, gapOpen(held), nowMs, money)
   // The pie's own judgement, from the held state and the view under the cold mark, so the sentence agrees with the heading above it.
   const { colour } = pieOf(reading, held.config !== null, costOf(held, view, money)?.label ?? null)
+  // While keepalive is off, the offer a press would start: the same figure the tick writes, from the same inputs.
+  const offer = held.config === null && defaultRun !== undefined ? offerNow(held, view, money, nowMs, defaultRun) : null
   return {
     cache: [warmthOf(reading, raw.kind === 'known' ? raw.ttlLabel : '5m', rebuild)].filter((line) => line !== ''),
     keepalive: {
@@ -917,6 +919,7 @@ const snapshotNow = async ($: Dollar): Promise<Snapshot> => {
       lines: [
         ...(verdict.why === null ? [] : [verdict.why]),
         ...(colour === null ? [] : [colour]),
+        ...(offer === null ? [] : [offer.explain, offer.figures]),
         ...verdict.lines,
         ...countLines(held, view, money, nowMs, kept),
         ...(defaultRun === undefined ? [] : [breakEvenLine(held, view, money, defaultsNow(defaultRun, view, money, nowMs))]),
@@ -1287,7 +1290,7 @@ const setHint = async ($: Dollar, hint: HintState | null) => {
 
 // The figure the time's hover shows while keepalive is off: the run a press would start, at the lead and count it would use, as the press
 // itself reads them. While it is on but paused or spent, the figure is the run it is on, at its lead and count, which a resume sends.
-// Written by the tick with the other figures, so the pane and the hover only draw what the state holds.
+// The tick writes it with the other figures, and the bare command's gather works it out from the same inputs rather than reading the stored hint.
 const offerNow = (k: KeepaliveState, view: CacheView, money: Money, nowMs: number, defaults: Defaults): HintCost | null => {
   if (k.config !== null) return offerOf(view, money, k.config.leadMs, k.runCount)
   const press = pressOf(k, defaults)
