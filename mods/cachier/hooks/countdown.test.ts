@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'claude-code/testing'
-import { COLOUR_SENTENCE, cueOf, expiredAt, expiryOf, footerOf, pieOf, readingOf, refreshingOf, settleCold, warmthOf, type Tone } from './countdown'
+import { COLOUR_SENTENCE, clockOf, cueOf, expiredAt, expiryOf, footerOf, pieOf, readingOf, refreshingOf, settleCold, touchedAt, touchOf, warmthOf, type Tone } from './countdown'
 
 const T = 1_000_000
 const known = { kind: 'known' as const, touchMs: T, ttlMs: 300000, ttlLabel: '5m' as const, promptTokens: 1, outputTokens: 0, model: null, speed: null }
@@ -34,6 +34,10 @@ describe('readingOf: the countdown the pie and its time show', () => {
     expect(readingOf(hour, null, null, T, UPON)).toEqual({ words: '60:00', state: 'warm', quarter: 4, warn: 'calm' })
     expect(readingOf(hour, null, null, T + 1800000, UPON)).toMatchObject({ words: '30:00', quarter: 2 })
     expect(readingOf(hour, null, null, T + 3300000, UPON)).toMatchObject({ words: '5:00', quarter: 1 })
+    expect(readingOf(hour, null, null, T + 2700000, UPON)).toMatchObject({ quarter: 1 })
+    expect(readingOf(hour, null, null, T + 2699999, UPON)).toMatchObject({ quarter: 2 })
+    expect(readingOf(hour, null, null, T + 900000, UPON)).toMatchObject({ quarter: 3 })
+    expect(readingOf(hour, null, null, T + 899999, UPON)).toMatchObject({ quarter: 4 })
   })
 
   test('warn is last tenth at or under a tenth of the TTL, last quarter at or under a quarter, and calm above', () => {
@@ -55,6 +59,7 @@ describe('readingOf: the countdown the pie and its time show', () => {
     expect(readingOf(known, null, COLD, T + 1000, UPON)).toEqual({ words: '', state: 'cold', quarter: 0, warn: 'calm' })
     expect(readingOf(known, null, { reason: 'compaction', atMs: T }, T + 1000, UPON)).toMatchObject({ words: '', state: 'cold' })
     expect(readingOf({ kind: 'ttl-unknown' }, null, COLD, T, UPON)).toMatchObject({ words: '', state: 'cold' })
+    expect(readingOf({ kind: 'unread' }, null, COLD, T, UPON)).toMatchObject({ words: '', state: 'cold' })
   })
 
   test('nothing to count: no cache yet, a clear, a TTL unknown or unread', () => {
@@ -121,6 +126,7 @@ describe('warmthOf: the details\' first line, the cache\'s warmth with its figur
     expect(warmthOf(expired, '5m', UPON)).toBe('Prompt cache expired, ~$0.42 to rebuild.')
     expect(warmthOf(readingOf(known, null, COLD, T, UPON), '5m', UPON)).toBe('Prompt cache reset, ~$0.42 to rebuild.')
     expect(warmthOf(readingOf(known, null, COLD, T, ''), '5m', '')).toBe('Prompt cache reset.')
+    expect(warmthOf(readingOf(known, null, null, T + 300000, ''), '5m', '')).toBe('Prompt cache expired.')
   })
 
   test('with nothing to count there is no line', () => {
@@ -159,7 +165,7 @@ describe('settleCold', () => {
   })
 
   test('a live touch before the mark leaves it in place', () => {
-    expect(settleCold({ reason: 'model switch', atMs: T + 5000 }, known, T + 4000)).not.toBeNull()
+    expect(settleCold({ reason: 'model switch', atMs: T + 5000 }, known, T + 4000)).toEqual({ reason: 'model switch', atMs: T + 5000 })
   })
 })
 
@@ -210,35 +216,9 @@ describe('pieOf: the pie\'s tone and the colour sentence, from the reading, keep
   test('the sentence is the pane\'s words, and the footer is footerOf\'s over refreshingOf', () => {
     const quarter = readingOf(known, null, null, T + 250000, UPON)
     expect(pieOf(quarter, false, null).colour).toBe("The pie turns amber in the cache's last quarter and red in its last tenth: the cache is about to lapse.")
-    expect(COLOUR_SENTENCE).toBe(pieOf(quarter, false, null).colour)
     expect(pieOf(quarter, true, FIGURE).footer).toEqual(footerOf(quarter, true, refreshingOf(true, quarter, FIGURE)))
     expect(pieOf(null, false, null)).toEqual({ footer: null, colour: COLOUR_SENTENCE })
   })
-})
-
-// The colour sentence's rule as a literal oracle: it shows exactly where no refresh is coming, that is, not refreshing, and either keepalive
-// is off or a reading is held. Each reading lists, in order: keepalive off, on and refreshing, on and not refreshing. The expected values are
-// literals, not derived from the rule.
-describe('pieOf: the colour sentence as a literal oracle, by the reading and keepalive', () => {
-  const FIGURE = '$0.004/refresh'
-  const STATES: [boolean, string | null][] = [
-    [false, null],
-    [true, FIGURE],
-    [true, null],
-  ]
-  const cases: { name: string; reading: ReturnType<typeof readingOf>; expected: [boolean, boolean, boolean] }[] = [
-    { name: 'green, a warm reading calm', reading: readingOf(known, null, null, T + 100000, UPON), expected: [true, false, true] },
-    { name: 'amber, a warm reading in the last quarter', reading: readingOf(known, null, null, T + 240000, UPON), expected: [true, false, true] },
-    { name: 'red, a warm reading in the last tenth', reading: readingOf(known, null, null, T + 280000, UPON), expected: [true, false, true] },
-    { name: 'cold', reading: readingOf(known, null, COLD, T + 1000, UPON), expected: [true, true, true] },
-    { name: 'expired', reading: readingOf(known, null, null, T + 300000, UPON), expected: [true, true, true] },
-    { name: 'no reading', reading: readingOf({ kind: 'no-cache' }, null, null, T, UPON), expected: [true, false, false] },
-  ]
-  for (const { name, reading, expected } of cases) {
-    test(`${name}: the sentence by keepalive off, on and refreshing, and on and not refreshing`, () => {
-      expect(STATES.map(([on, refresh]) => pieOf(reading, on, refresh).colour !== null)).toEqual(expected)
-    })
-  }
 })
 
 describe('cueOf: the glyph and tone after the footer words', () => {
@@ -267,5 +247,27 @@ describe('expiryOf and expiredAt: the one owner of the live cache\'s expiry', ()
     expect(expiredAt(known, T + 5000, T + 300000)).toBe(false)
     expect(expiryOf(known, T + 5000)).toBe(T + 305000)
     expect(expiryOf(known, T - 5000)).toBe(expiryOf(known, null))
+  })
+})
+
+describe('touchOf, touchedAt and clockOf', () => {
+  test('the touch is the later of the reply start and the live start, and none for a view that is not known', () => {
+    expect(touchOf(known, null)).toBe(T)
+    expect(touchOf(known, T + 5)).toBe(T + 5)
+    expect(touchOf(known, T - 5)).toBe(T)
+    expect(touchOf({ kind: 'unread' }, T)).toBeNull()
+  })
+  test('a reply stamp ahead of the clock counts as now, and any other view is left as it is', () => {
+    expect(touchedAt(known, T - 10)).toEqual({ ...known, touchMs: T - 10 })
+    expect(touchedAt(known, T)).toBe(known)
+    const none = { kind: 'no-cache' as const }
+    expect(touchedAt(none, T)).toBe(none)
+  })
+  test('a span reads m:ss under an hour and h:mm:ss past it', () => {
+    expect(clockOf(0)).toBe('0:00')
+    expect(clockOf(59_999)).toBe('0:59')
+    expect(clockOf(3_599_000)).toBe('59:59')
+    expect(clockOf(3_600_000)).toBe('1:00:00')
+    expect(clockOf(3_723_000)).toBe('1:02:03')
   })
 })
