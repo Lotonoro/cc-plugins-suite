@@ -1,6 +1,6 @@
 import type { On } from 'claude-code'
 import { expect, mock, test } from 'claude-code/testing'
-import { TOOL } from './items'
+import { EMPTY, TOOL } from './items'
 
 const SOUND = '/System/Library/Sounds/Glass.aiff'
 const RAN = { value: { exitCode: 0, stdout: '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
@@ -33,6 +33,28 @@ const kit = (on: On) => {
   on('session.end', (_$, e) => ({ sessionId: e.sessionId }))
   const runs = chimes(on)
   return { clock, runs }
+}
+
+// The state the mod keeps, held by the test: the kit gives a test no `$.state` to write the list with, so every reference's reads and writes
+// are answered from this map, in the `{ value }` form the engine's hooks answer with, and a test may replace the list.
+const stateHeld = (on: On) => {
+  const held = new Map<string, { value: unknown; version: number }>()
+  const keyOf = (ref: { plugin: string; key: string; id?: string }) => [ref.plugin, ref.key, ref.id ?? ''].join('\u0000')
+  const read = (ref: { plugin: string; key: string; id?: string }) => held.get(keyOf(ref)) ?? { value: undefined, version: 0 }
+  on('state.get', (_$, e) => ({ value: read(e) }))
+  on('state.set', (_$, e) => {
+    const cur = read(e)
+    if (e.ifVersion !== undefined && e.ifVersion !== cur.version) return { value: { isSet: false, version: cur.version } }
+    held.set(keyOf(e), { value: e.value, version: cur.version + 1 })
+    return { value: { isSet: true, version: cur.version + 1 } }
+  })
+  const listRef = { plugin: 'human-plugin', key: 'list' }
+  return {
+    list: () => read(listRef).value,
+    replaceList: (store: unknown): void => {
+      held.set(keyOf(listRef), { value: store, version: read(listRef).version + 1 })
+    },
+  }
 }
 
 // The sounds the mod plays: each afplay's argv.
@@ -400,6 +422,28 @@ test('a clear ends the retries of the items filed before it: none is tried again
   await $.session.end({ reason: 'clear', sessionId: 's1', resume: { id: 's1' } })
   await clock.advance(3600000)
   expect(messages).toEqual(['Blocking: #1 Pick a db'])
+})
+
+// The list is replaced with the empty one a resumed session starts from, numbering from 1, so the new item takes the id the refused item had.
+// The new item is refused too, so its chain still holds that id when the old chain's retry falls due: the old chain must not push in its place.
+test('a new item that takes the id of an item refused before a session end is pushed by its own chain alone: the old chain pushes nothing, logs nothing and schedules nothing', async ($, on) => {
+  const { clock } = kit(on)
+  const lines = logs(on)
+  const messages = pushes(on, (n, message) => (n <= 2 ? userPresent(n, message) : sent(n, message)))
+  const list = stateHeld(on)
+  await $.tool.call({ tool: TOOL, action: 'add', blocking: true, title: 'Old' })
+  await clock.settle()
+  await clock.advance(10000)
+  await $.session.end({ reason: 'resume', sessionId: 's1', resume: { id: 's1' } })
+  list.replaceList(EMPTY)
+  await $.tool.call({ tool: TOOL, action: 'add', blocking: true, title: 'New' })
+  await clock.settle()
+  expect(String((await $.tool.call({ tool: TOOL, action: 'list' })).result)).toContain('#1 blocking, open: New')
+  await clock.advance(50000)
+  expect(messages).toEqual(['Blocking: #1 Old', 'Blocking: #1 New'])
+  await clock.advance(3600000)
+  expect(messages).toEqual(['Blocking: #1 Old', 'Blocking: #1 New', 'Blocking: #1 New'])
+  expect(lines.filter(line => line.text.includes('the push for #1'))).toEqual([])
 })
 
 test('a resume ends the retries of the items filed before it, and the list it rebuilds pushes nothing', async ($, on) => {
