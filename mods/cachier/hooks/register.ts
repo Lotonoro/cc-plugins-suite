@@ -1628,7 +1628,7 @@ export const register: Register = (on, options) => {
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
     await restoring?.catch(() => null)
     // A throw while drawn draws the engine's own, so a failed state read in the draw is reported (once per run of failures) and the last rows
-    // are drawn again, none before the first draw. The size record stands as the last draw left it.
+    // are drawn again; before the first draw there are none, and one row says so, since nothing else redraws a pane no countdown is running in. The size record stands as the last draw left it.
     let rows: AnswerRow[]
     try {
       // The reads sit after the restore wait, as the HINT read did, and are made here in the hook body as one batch: the keys snapshotNow
@@ -1651,7 +1651,8 @@ export const register: Register = (on, options) => {
     } catch (err) {
       if (!paneDrawFailed) report($, err)
       paneDrawFailed = true
-      return paneOf($.ui.resolve(e), lastRows())
+      const shown = lastRows()
+      return paneOf($.ui.resolve(e), shown.length === 0 ? [{ text: 'The details could not be read; see the debug log.' }] : shown)
     }
     paneDrawFailed = false
     recordSize(paneSizeOf(rows))

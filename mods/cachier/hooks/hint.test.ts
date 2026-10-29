@@ -222,7 +222,7 @@ describe('paneOf: the answer\'s rows as text, one Text per row, headings bold an
   test('one Text per row in the answer\'s order with its text, cut at the pane\'s width rather than wrapped', () => {
     const pane = paneOf(t, ROWS) as any
     expect(pane.children).toHaveLength(ROWS.length)
-    expect(pane.children.map((child: any) => child.children)).toEqual(ROWS.map((row) => [row.text]))
+    expect(pane.children.map((child: any) => child.children)).toEqual(ROWS.map((row) => [row.text === '' ? ' ' : row.text]))
     for (const child of pane.children) expect(child).toMatchObject({ type: 'Text', props: { wrap: 'truncate-end' } })
   })
 

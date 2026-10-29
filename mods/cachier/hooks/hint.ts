@@ -86,8 +86,9 @@ export const paneSizeOf = (rows: AnswerRow[]): PaneSize => ({
 })
 
 // The details pane's body: the answer's rows, one Text each, headings bold and nothing else styled, cut at the pane's width rather than wrapped.
+// A blank row is one space, so the row is drawn whether or not the engine gives an empty Text a line.
 export const paneOf = (t: Table, rows: AnswerRow[]): RenderElement =>
   t.Box({
     flexDirection: 'column',
-    children: rows.map((row) => t.Text({ ...(row.heading === true ? { bold: true } : {}), wrap: 'truncate-end', children: [row.text] })),
+    children: rows.map((row) => t.Text({ ...(row.heading === true ? { bold: true } : {}), wrap: 'truncate-end', children: [row.text === '' ? ' ' : row.text] })),
   })
