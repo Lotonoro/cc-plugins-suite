@@ -52,7 +52,7 @@ import { appended, HISTORY_BOUND, keyOf, KEY_PREFIX, merged, recordOf, recordsOf
 import { adviceOf, ratesOfView, type Inputs } from './advice'
 import { learnedLine, learnedOf, ttlAdviceLine, ttlAdviceOf, ttlSwitchOf, type Learned } from './learn'
 import { breakEvenLine, countLineOf, judge, KEPT_COUNT, ratioOf, rebuildOf, rebuildSpendOf, runCountOf, sessionBalanceLine, NO_JUDGED, pauseOf, type Pause } from './verdict'
-import { answerOf, layoutOf, type AnswerRow, type Setting, type SettingId, type Snapshot } from './sections'
+import { answerOf, layoutOf, type AnswerRow, type Setting, type Snapshot } from './sections'
 import { stampLabel, withStamp } from './stamp'
 import { foldStatsEvents, INITIAL_STATS, pendingFor, rundownSections, sessionLineOf, type MissEvent, type LongPauseEvent } from './stats'
 import { lookupRows, readCache, type History, type Host, type Row } from './transcript'
@@ -187,9 +187,9 @@ let gapBroken = false
 // Set when a stats write failed, and cleared by the next stats write that lands. Stats are not on the cache path, so this
 // alarm blocks nothing.
 let statsBroken = false
-// A press (the countdown's or a pane setting's) that threw: the status line says so until a press completes.
+// A countdown press that threw: the status line says so until a press completes.
 let pressFailure: string | null = null
-const PRESS_FAILED = 'a press failed; see the debug log'
+const PRESS_FAILED = 'the countdown press failed; see the debug log'
 // One press at a time: a second press while one runs is dropped, so two presses cannot both turn keepalive on.
 export const pressOnce = singleFlight()
 
@@ -789,17 +789,11 @@ const startOn = async ($: Dollar) => {
   }
 }
 
-// Writes the option, and says why it was not written, if it was not.
-const writeDefault = async ($: Dollar, mode: Mode): Promise<string | undefined> => {
-  const r = await $.config.set({ key: `${PLUGIN}.keepalive_default`, value: mode })
-  return r.deny === undefined ? undefined : `keepalive default unchanged: ${r.deny}`
-}
-
 // Sets the mode new sessions start in through the plugin's own option, so /config shows the same value. The engine reloads
 // the plugin with it, and a reload keeps this session's state: the session's own mode is left as it is.
 const setDefault = async ($: Dollar, mode: Mode): Promise<string> => {
-  const refused = await writeDefault($, mode)
-  if (refused !== undefined) return refused
+  const r = await $.config.set({ key: `${PLUGIN}.keepalive_default`, value: mode })
+  if (r.deny !== undefined) return `keepalive default unchanged: ${r.deny}`
   return `keepalive default: ${mode}. Sessions started from now on start with keepalive ${mode}; this one stays as it is.`
 }
 
@@ -835,23 +829,6 @@ export const pressCountdown = async ($: Dollar, defaults: Defaults) => {
   }
 }
 
-// A click in the pane on the unit or the start mode: the opposite of the value in force, set as the command sets it. The person's own click
-// may turn the start mode on, as their own command may. A refusal is a toast; a throw is logged and named on the status line as a failed press.
-export const pressSetting = async ($: Dollar, id: 'unit' | 'startMode') => {
-  try {
-    if (id === 'unit') {
-      await setUnit($, (await unitNow($)) === 'dollars' ? 'tokens' : 'dollars')
-    } else {
-      const refused = await writeDefault($, defaultMode === 'on' ? 'off' : 'on')
-      if (refused !== undefined) $.ui.toast(refused)
-    }
-    pressFailure = null
-  } catch (err) {
-    report($, err)
-    pressFailure = PRESS_FAILED
-  }
-}
-
 // The settings the bare command names: each one's value, where the value came from when that is knowable, and what changes it. A
 // setting that changes only new sessions says so. `kept` is the count a run keeps where the reasons give another (keptOf), named as the one
 // the pause started with. `unitPressed` is whether the unit was switched this session.
@@ -862,29 +839,26 @@ const settingsOf = (raw: CacheView, run: { leadMs: number; count: number | null 
   const learned = pinned === null && run !== undefined && view.kind === 'known' && learnedNow(view, money, run.leadMs, nowMs) !== null
   return [
     {
-      id: 'ttl',
       name: 'TTL',
       value: known ? (hour ? '1 h' : '5 min') : 'not read yet',
       source: known ? 'read from the last response' : null,
       change: hour ? `${ttlSwitchOf('5m')} for 5 min (new sessions)` : `${ttlSwitchOf('1h')} for 1 h (new sessions)`,
     },
     {
-      id: 'lead',
       name: 'lead',
       value: run === undefined ? 'not set' : `${run.leadMs / 1000} s`,
       source: tally.raisedMs === null ? null : 'raised after a slow refresh',
       change: '/keepalive on <lead seconds>',
     },
     {
-      id: 'count',
       name: 'refreshes a pause',
       value: pinned !== null ? `${pinned}, pinned` : kept !== null ? `${kept}` : learned ? 'learned' : 'break-even',
       // The cap bounds the break-even and learned counts, never a pinned one (runCountOf) or a kept one.
       source: pinned !== null ? null : kept !== null ? KEPT_COUNT : defaultRun?.cap == null ? null : 'keepalive_count caps it',
       change: '/keepalive on <lead seconds> <refreshes>, or keepalive_count',
     },
-    { id: 'startMode', name: 'start mode', value: defaultMode, source: 'keepalive_default option', change: '/keepalive default on|off, for new sessions' },
-    { id: 'unit', name: 'unit', value: money.unit, source: unitPressed ? 'switched this session' : 'cost_unit option', change: '/keepalive unit tokens|dollars' },
+    { name: 'start mode', value: defaultMode, source: 'keepalive_default option', change: '/keepalive default on|off, for new sessions' },
+    { name: 'unit', value: money.unit, source: unitPressed ? 'switched this session' : 'cost_unit option', change: '/keepalive unit tokens|dollars' },
   ]
 }
 
@@ -1652,11 +1626,6 @@ export const register: Register = (on, options) => {
   // The details pane: the sections the bare command answers with, gathered and laid out by this draw alone, and the size it records for the press
   // and the tick. The hint state is read only to be redrawn with the tick's write each second, as the footer is: the countdown advances.
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
-    // The unit and the start mode switch on a click, through the pie's single-flight guard.
-    const handlers = {
-      unit: () => inBackground($, pressOnce(() => pressSetting($, 'unit'))),
-      startMode: () => inBackground($, pressOnce(() => pressSetting($, 'startMode'))),
-    }
     await restoring?.catch(() => null)
     // A throw while drawn draws the engine's own, so a failed state read in the draw is reported (once per run of failures) and the last rows
     // are drawn again; before the first draw there are none, and one row says so, since nothing else redraws a pane no countdown is running in. The size record stands as the last draw left it.
@@ -1683,12 +1652,12 @@ export const register: Register = (on, options) => {
       if (!paneDrawFailed) report($, err)
       paneDrawFailed = true
       const shown = lastRows()
-      return paneOf($.ui.resolve(e), shown.length === 0 ? [{ text: 'The details could not be read; see the debug log.' }] : shown, handlers)
+      return paneOf($.ui.resolve(e), shown.length === 0 ? [{ text: 'The details could not be read; see the debug log.' }] : shown)
     }
     paneDrawFailed = false
     recordSize(paneSizeOf(rows))
     recordRows(rows)
-    return paneOf($.ui.resolve(e), rows, handlers)
+    return paneOf($.ui.resolve(e), rows)
   })
 
   // Every close of the pane, whoever made it and whether or not another plugin keeps it open: the engine's record is read once the close has

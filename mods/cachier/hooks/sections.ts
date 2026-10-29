@@ -5,11 +5,8 @@
 // The width a line is wrapped at, counting its indent.
 export const WRAP = 48
 
-// The settings the command names, a closed set: a drawing keys a control on one, so rewording a display name cannot drop it.
-export type SettingId = 'ttl' | 'lead' | 'count' | 'startMode' | 'unit'
-
-// A setting the command names: its identity, its value, where the value came from when that is knowable, and what changes it.
-export type Setting = { id: SettingId; name: string; value: string; source: string | null; change: string }
+// A setting the command names: its value, where the value came from when that is knowable, and what changes it.
+export type Setting = { name: string; value: string; source: string | null; change: string }
 
 // The figures and sentences of each section; a section with none is absent, unless it carries a state. Settings are kept as values, so their
 // lines are formed here.
@@ -21,12 +18,11 @@ export type Snapshot = {
 }
 
 // A section's state is written on its heading beside the title; a section that carries one is never left out.
-// The Settings section also carries each line's setting, in the order of its lines.
-export type Section = { title: 'Cache' | 'Keepalive' | 'Advice' | 'Settings'; state: string | null; lines: string[]; settings?: SettingId[] }
+export type Section = { title: 'Cache' | 'Keepalive' | 'Advice' | 'Settings'; state: string | null; lines: string[] }
 
 // One row of the laid-out answer. A section's heading row carries the heading mark, so a drawing bolds it without reading its text;
-// no other row is marked. Every row of a setting's wrapped line carries the setting.
-export type AnswerRow = { text: string; heading?: boolean; setting?: SettingId }
+// no other row is marked.
+export type AnswerRow = { text: string; heading?: boolean }
 
 const settingLine = (s: Setting): string => `${s.name} ${s.value}${s.source === null ? '' : ` (${s.source})`}: ${s.change}.`
 
@@ -36,7 +32,7 @@ export const sectionsOf = (snap: Snapshot): Section[] =>
     { title: 'Cache' as const, state: null, lines: snap.cache },
     { title: 'Keepalive' as const, state: snap.keepalive.state, lines: snap.keepalive.lines },
     { title: 'Advice' as const, state: null, lines: snap.advice },
-    { title: 'Settings' as const, state: null, lines: snap.settings.map(settingLine), settings: snap.settings.map((setting) => setting.id) },
+    { title: 'Settings' as const, state: null, lines: snap.settings.map(settingLine) },
   ].filter((section) => section.state !== null || section.lines.length > 0)
 
 // A sentence wrapped at the width: the first line indented two, each continuation four, no word broken.
@@ -61,10 +57,7 @@ export const layoutOf = (snap: Snapshot): AnswerRow[] =>
   sectionsOf(snap).flatMap((section, i) => [
     ...(i === 0 ? [] : [{ text: '' }]),
     { text: section.state === null ? section.title : `${section.title}  ${section.state}`, heading: true },
-    ...section.lines.flatMap((line, j) => {
-      const setting = section.settings?.[j]
-      return wrapLine(line).map((text) => (setting === undefined ? { text } : { text, setting }))
-    }),
+    ...section.lines.flatMap((line) => wrapLine(line).map((text) => ({ text }))),
   ])
 
 // The answer: the rows of the layout, joined.

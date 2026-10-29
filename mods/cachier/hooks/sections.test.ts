@@ -3,11 +3,11 @@ import { answerOf, layoutOf, sectionsOf, wrapLine, WRAP, type Setting, type Snap
 
 // The builder takes the figures and sentences as plain values: no engine, no `$`.
 const SETTINGS: Setting[] = [
-  { id: 'ttl', name: 'TTL', value: '5 min', source: 'read from the last response', change: 'set "promptCacheTtl": "1h" in settings.json for 1 h (new sessions)' },
-  { id: 'lead', name: 'lead', value: '15 s', source: null, change: '/keepalive on <lead seconds>' },
-  { id: 'count', name: 'refreshes a pause', value: 'break-even, 24', source: 'keepalive_count caps it', change: 'keepalive_count' },
-  { id: 'startMode', name: 'start mode', value: 'off', source: 'keepalive_default option', change: '/keepalive default on|off, for new sessions' },
-  { id: 'unit', name: 'unit', value: 'dollars', source: 'cost_unit option', change: '/keepalive unit tokens|dollars' },
+  { name: 'TTL', value: '5 min', source: 'read from the last response', change: 'set "promptCacheTtl": "1h" in settings.json for 1 h (new sessions)' },
+  { name: 'lead', value: '15 s', source: null, change: '/keepalive on <lead seconds>' },
+  { name: 'refreshes a pause', value: 'break-even, 24', source: 'keepalive_count caps it', change: 'keepalive_count' },
+  { name: 'start mode', value: 'off', source: 'keepalive_default option', change: '/keepalive default on|off, for new sessions' },
+  { name: 'unit', value: 'dollars', source: 'cost_unit option', change: '/keepalive unit tokens|dollars' },
 ]
 const FULL: Snapshot = {
   cache: ['Prompt cache warm, 3:12 left (5-minute cache)'],
@@ -36,27 +36,6 @@ describe('sectionsOf: the four sections in order, each with its lines', () => {
     const lines = sectionsOf({ ...EMPTY, settings: SETTINGS }).find((s) => s.title === 'Settings')!.lines
     expect(lines[0]).toBe('TTL 5 min (read from the last response): set "promptCacheTtl": "1h" in settings.json for 1 h (new sessions).')
     expect(lines[1]).toBe('lead 15 s: /keepalive on <lead seconds>.')
-  })
-})
-
-describe('layoutOf: the identity of a setting rides each of its rows', () => {
-  const rows = layoutOf({ ...EMPTY, settings: SETTINGS })
-
-  test('every row of a setting\'s wrapped line carries its identity, and each of the five is carried by at least one row', () => {
-    expect(rows.filter((row) => row.setting === 'startMode').length).toBeGreaterThan(1)
-    expect([...new Set(rows.flatMap((row) => (row.setting === undefined ? [] : [row.setting])))]).toEqual(['ttl', 'lead', 'count', 'startMode', 'unit'])
-  })
-
-  test('the rows of a setting are consecutive and in order, and its text is the setting\'s line', () => {
-    const unit = rows.filter((row) => row.setting === 'unit')
-    expect(unit.map((row) => row.text.trim()).join(' ')).toBe('unit dollars (cost_unit option): /keepalive unit tokens|dollars.')
-  })
-
-  test('no other row carries one: not a heading, a blank row, or a line of another section', () => {
-    const full = layoutOf(FULL)
-    expect(full.filter((row) => row.setting !== undefined).every((row) => row.heading !== true && row.text !== '')).toBe(true)
-    expect(layoutOf({ ...FULL, settings: [] }).some((row) => row.setting !== undefined)).toBe(false)
-    expect(full.slice(0, full.findIndex((row) => row.text === 'Settings')).some((row) => row.setting !== undefined)).toBe(false)
   })
 })
 

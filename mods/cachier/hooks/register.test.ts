@@ -2,7 +2,7 @@ import { describe, expect, mock, test } from 'claude-code/testing'
 import { assistant, fakeFiles, lines, user } from './fixture'
 import { HISTORY_BOUND, keyOf } from './history'
 import { INITIAL as INITIAL_KEEPALIVE } from './keepalive'
-import { alarmOf, learnTranscript, pressCountdown, pressOnce, pressSetting, restoreState, STATE_SHAPE, unitFrom } from './register'
+import { alarmOf, learnTranscript, pressCountdown, pressOnce, restoreState, STATE_SHAPE, unitFrom } from './register'
 import { INITIAL_STATS } from './stats'
 
 const PATH = '/home/test/.claude/projects/p/s1.jsonl'
@@ -3017,10 +3017,10 @@ describe('the low-key UI: the footer line, the click, the gutter, and what the s
     } as any
     const defaults = { leadMs: 15000, count: null, cap: 3 }
     await pressCountdown(fake, defaults)
-    expect(await alarmOf(fake, { kind: 'no-cache' })).toContain('a press failed; see the debug log')
+    expect(await alarmOf(fake, { kind: 'no-cache' })).toContain('the countdown press failed; see the debug log')
     refuse = false
     await pressCountdown(fake, defaults)
-    expect(await alarmOf(fake, { kind: 'no-cache' })).not.toContain('a press failed')
+    expect(await alarmOf(fake, { kind: 'no-cache' })).not.toContain('the countdown press failed')
   })
 
   test('a failed ping shows on the status line and leaves the countdown; a prompt re-arms keepalive and clears the failure from the status line', async ($, on) => {
@@ -3471,8 +3471,7 @@ const countReads = (on: any, keys: string[]) => {
 }
 // A drawing's text, row by row, from a mounted pane that stays mounted: each call is a fresh draw of what the engine last asked.
 // A blank row is drawn as one space, and read back as the empty row the command's answer has.
-// A setting's button holds its rows as one text joined by newlines.
-const rowsOf = async (pane: any): Promise<string[]> => ((await pane.drawn()) as any).children.flatMap((el: any) => textOf(el).split('\n')).map((row: string) => (row === ' ' ? '' : row))
+const rowsOf = async (pane: any): Promise<string[]> => ((await pane.drawn()) as any).children.map(textOf).map((row: string) => (row === ' ' ? '' : row))
 const boldRows = async (pane: any): Promise<string[]> => ((await pane.drawn()) as any).children.filter((row: any) => JSON.stringify(row).includes('"bold":true')).map(textOf)
 
 describe('the details pane draws the sections /keepalive answers with, built by its draw alone', () => {
@@ -7378,125 +7377,4 @@ describe('the pane\'s sections hold every line the old pane drew, in each state 
       if (s.heading !== undefined) expect(keepalive?.heading).toBe(`Keepalive  ${s.heading}`)
     })
   }
-})
-
-describe('the details pane: the unit and the start mode switch on a click', () => {
-  const opts = { options: { keepalive_lead_s: 15, keepalive_count: 3 } }
-  const recordSets = (on: any, deny?: string) => {
-    const sets: [string, unknown][] = []
-    on('config.set', (_$: any, e: any) => {
-      sets.push([e.key, e.value])
-      return deny === undefined ? { value: e.value } : { deny }
-    })
-    return sets
-  }
-  const clickOn = async ($: any, key: string) => {
-    const pane = await mountPane($)
-    await pane.press({ key })
-    await pane.unmount()
-  }
-
-  test('a click on the unit line switches the session\'s unit, as /keepalive unit does, and the pane, the hover and the command follow', opts, async ($, on) => {
-    kaWorld(on, opusCached())
-    const clock = mock.clock(on, { now: T0 })
-    await $.classic.SessionStart({ source: 'startup', transcript_path: PATH })
-    await clock.advance(1000)
-    const m = await mountHint($)
-    await pressPie($)
-    await clock.advance(1000)
-    expect(JSON.stringify(await m.drawn())).toContain('$0.004/refresh')
-    await clickOn($, 'setting-unit')
-    await clock.advance(1000)
-    expect(JSON.stringify(await m.drawn())).toContain('~19k read/refresh')
-    expect(await drawnPane($)).toContain('unit tokens (switched this session)')
-    expect(await toggle($, '')).toContain('unit tokens (switched this session)')
-    await clickOn($, 'setting-unit')
-    await clock.advance(1000)
-    expect(JSON.stringify(await m.drawn())).toContain('$0.004/refresh')
-    expect(await toggle($, '')).toContain('unit dollars (switched this session)')
-    await m.unmount()
-  })
-
-  test('a click on the start-mode line writes the option /keepalive default writes: on when it was off, off when it was on', async ($, on) => {
-    const sets = recordSets(on)
-    kaWorld(on, cached())
-    mock.clock(on, { now: T0 })
-    await $.classic.SessionStart({ source: 'startup', transcript_path: PATH })
-    await clickOn($, 'setting-startMode')
-    expect(sets).toEqual([['cachier.keepalive_default', 'on']])
-  })
-
-  test('with the option on, a click writes it off', { options: { keepalive_default: 'on' } }, async ($, on) => {
-    const sets = recordSets(on)
-    kaWorld(on, cached())
-    mock.clock(on, { now: T0 })
-    await $.classic.SessionStart({ source: 'startup', transcript_path: PATH })
-    await clickOn($, 'setting-startMode')
-    expect(sets).toEqual([['cachier.keepalive_default', 'off']])
-  })
-
-  test('a refused option write shows a toast naming the refusal', async ($, on) => {
-    const sets = recordSets(on, 'policy')
-    const rec = kaWorld(on, cached())
-    mock.clock(on, { now: T0 })
-    await $.classic.SessionStart({ source: 'startup', transcript_path: PATH })
-    await clickOn($, 'setting-startMode')
-    expect(sets).toHaveLength(1)
-    expect(rec.toasts).toEqual(['keepalive default unchanged: policy'])
-  })
-
-  test('two clicks in quick succession write once', async ($, on) => {
-    let release: () => void = () => {}
-    const gate = new Promise<void>((resolve) => {
-      release = resolve
-    })
-    const sets: unknown[] = []
-    on('config.set', async (_$: any, e: any) => {
-      sets.push(e.value)
-      await gate
-      return { value: e.value }
-    })
-    kaWorld(on, cached())
-    mock.clock(on, { now: T0 })
-    await $.classic.SessionStart({ source: 'startup', transcript_path: PATH })
-    const pane = await mountPane($)
-    await Promise.all([pane.press({ key: 'setting-startMode' }), pane.press({ key: 'setting-startMode' })])
-    release()
-    await pane.unmount()
-    expect(sets).toEqual(['on'])
-  })
-
-  test('the lead, count and TTL lines have no button, and the unit and start mode are one button each', async ($, on) => {
-    kaWorld(on, cached())
-    mock.clock(on, { now: T0 })
-    await $.classic.SessionStart({ source: 'startup', transcript_path: PATH })
-    const pane = await mountPane($)
-    const keys = JSON.stringify(await pane.drawn()).match(/"key":"setting-[A-Za-z]+"/g)
-    await pane.unmount()
-    expect(keys).toEqual(['"key":"setting-startMode"', '"key":"setting-unit"'])
-  })
-
-  test('a click whose setting code throws is logged and named on the status line as a failed press, until a press completes', async () => {
-    const values = new Map<string, unknown>()
-    let failing = true
-    const logged: unknown[] = []
-    const fake = {
-      state: {
-        get: async (k: { key: string }) => ({ value: values.get(k.key), version: 1 }),
-        set: async (k: { key: string }, value: unknown) => {
-          if (failing) throw new Error('write broke')
-          values.set(k.key, value)
-          return { isSet: true }
-        },
-      },
-      clock: { now: async () => T0 },
-      ui: { toast: () => undefined, log: (...a: unknown[]) => logged.push(a), status: () => undefined },
-      log: (...a: unknown[]) => logged.push(a),
-    } as any
-    await pressSetting(fake, 'unit')
-    expect(await alarmOf(fake, { kind: 'no-cache' })).toContain('a press failed; see the debug log')
-    failing = false
-    await pressSetting(fake, 'unit')
-    expect(await alarmOf(fake, { kind: 'no-cache' })).not.toContain('a press failed')
-  })
 })
