@@ -543,7 +543,7 @@ test('every line of the block begins with two spaces, and a title with line brea
 test('the block names /asks and each answer form, and no plan', () => {
   const text = phoneBlock([made(1)]) ?? ''
   expect(text).toContain('/asks')
-  for (const form of ['done', 'yes', 'no', '<option number>', 'reply <text>']) expect(text).toContain(form)
+  expect(text).toContain('done, yes, no, <option number>, or reply <text>')
   expect(text).not.toMatch(/plan/i)
 })
 
