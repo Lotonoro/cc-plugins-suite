@@ -272,7 +272,7 @@ describe('step', () => {
       [
         'a cold mark being written',
         run({ coldPending: true }, known, true, T + 100000),
-        { kind: 'wait', heading: 'paused', why: 'until the cache reset is recorded', lines: [LAST] },
+        { kind: 'wait', heading: 'paused', why: 'until the cache reset is recorded', lines: [F, LAST] },
       ],
       [
         'a lead at or above the TTL',
@@ -322,6 +322,72 @@ describe('step', () => {
         }
       }
     })
+  })
+})
+
+// While a cold mark's write is pending, the verdict is `paused` with the pending reason first, then the reason the settled verdict gives
+// with no write pending when it has one, then its lines without the schedule line. Its kind is `wait`, so the tick sends nothing and records no stop.
+describe('a pending cold-mark write keeps the lines the settled verdict gives, apart from its schedule line', () => {
+  const last = { read: 14361, write: 18523 }
+  const LAST = 'last refresh read 14361, wrote 18523'
+  const PENDING = 'until the cache reset is recorded'
+  const run = (extra: Partial<KeepaliveState>, view: CacheView, gap: boolean, now: number, lead = 60000) =>
+    step({ ...on(lead, 2, { coldPending: true, ...extra }), last }, view, null, gap, now)
+  const rows: [string, ReturnType<typeof step>, ReturnType<typeof step>][] = [
+    ['a refresh scheduled', run({}, known, true, T + 100000), { kind: 'wait', heading: 'paused', why: PENDING, lines: [F, LAST] }],
+    ['a refresh due with the turn running', run({}, known, false, T + 240000), { kind: 'wait', heading: 'paused', why: PENDING, lines: [F, LAST] }],
+    ['a refresh due with the gap open', run({}, known, true, T + 240000), { kind: 'wait', heading: 'paused', why: PENDING, lines: [F, LAST] }],
+    [
+      'a learned count of none',
+      run({ runCount: 0, remaining: 0 }, known, true, T + 100000),
+      { kind: 'wait', heading: 'paused', why: PENDING, lines: [`no refreshes this pause: your pauses rarely outlast the cache${RESUMES}`, F, LAST] },
+    ],
+    [
+      'a lead at or above the TTL',
+      run({}, known, true, T, 300000),
+      { kind: 'wait', heading: 'paused', why: PENDING, lines: ['lead 300 s is not below the 300 s TTL', LAST] },
+    ],
+    [
+      'an expired cache with its stop unrecorded',
+      run({}, known, true, T + 300000),
+      { kind: 'wait', heading: 'paused', why: PENDING, lines: [`the cache expired${RESUMES}`, REREAD, INTERVAL, LAST] },
+    ],
+    [
+      'a count used with its stop unrecorded',
+      run({ remaining: 0 }, known, true, T + 240000),
+      { kind: 'wait', heading: 'paused', why: PENDING, lines: [`its refreshes for this pause are used up${RESUMES}`, REREAD, INTERVAL, LAST] },
+    ],
+    [
+      'a counted view of no cache',
+      run({}, { kind: 'no-cache' }, true, T),
+      { kind: 'wait', heading: 'paused', why: PENDING, lines: ['no live cache to count from, nothing scheduled; there is no cache until the next reply', LAST] },
+    ],
+    [
+      'a TTL-unknown view',
+      run({}, { kind: 'ttl-unknown' }, true, T),
+      { kind: 'wait', heading: 'paused', why: PENDING, lines: ['no live cache to count from, nothing scheduled', LAST] },
+    ],
+  ]
+  for (const [name, got, want] of rows) {
+    test(name, () => expect(got).toEqual(want))
+  }
+
+  test('no line of the overlay is the schedule line, however the settled verdict reads', () => {
+    for (const [, got] of rows) {
+      for (const line of got.lines) expect(line).not.toMatch(/^(next refresh in |refresh due, waits)/)
+    }
+  })
+
+  test('with keepalive off or a stop held, a pending write leaves the verdict as it is', () => {
+    const held = (extra: Partial<KeepaliveState>) => step({ ...on(60000, 2, extra), last }, known, null, true, T)
+    expect(step({ ...INITIAL, coldPending: true, last }, known, null, true, T)).toEqual({ kind: 'wait', heading: 'off', why: null, lines: [] })
+    for (const stop of ['count used', 'cache expired', 'API error 529 (overloaded)']) {
+      expect(held({ stop, coldPending: true })).toEqual(held({ stop }))
+    }
+  })
+
+  test('a recorded stop is held first: the pending write adds nothing to it', () => {
+    expect(run({ stop: 'count used' }, known, true, T)).toEqual({ kind: 'wait', heading: 'paused', why: `its refreshes for this pause are used up${RESUMES}`, lines: [REREAD, INTERVAL, LAST] })
   })
 })
 
