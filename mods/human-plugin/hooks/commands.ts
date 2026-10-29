@@ -138,8 +138,10 @@ const fit = (parts: Parts): string => {
   // The newest turn is cut from its printed text, blank lines included, to what the cap leaves it, and never below the floor.
   const newest = p.turns[p.turns.length - 1]
   if (excess() > 0 && newest !== undefined) {
-    const keep = Math.max(LIMITS.floor, linesOf(wholeOf(newest)).join('\n').length - excess())
-    if (`${newest.heading}\n${newest.body}`.length > keep) p = { ...p, turns: [...p.turns.slice(0, -1), cutTurn(newest, keep)] }
+    const stripped = wholeOf(newest)
+    const size = linesOf(stripped).join('\n').length
+    const keep = Math.max(LIMITS.floor, size - excess())
+    if (size > keep) p = { ...p, turns: [...p.turns.slice(0, -1), cutTurn(stripped, keep)] }
   }
   if (excess() > 0 && p.note !== null) p = { ...p, note: shrink(p.note, excess()) }
   const room = LIMITS.cap - CUT_LINE.length
