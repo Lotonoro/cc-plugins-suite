@@ -30,9 +30,8 @@ export type Kinds = { input: number; read: number; write5m: number; write1h: num
 // null when any part had no price, and `why` says why the first such part had none.
 export type Spend = Kinds & { usd: number | null; why: string | null }
 
-// The refresh figure the line shows while keepalive refreshes (`$0.006/refresh`), and the two lines the details pane adds to
-// explain it.
-export type HintCost = { label: string; explain: string; figures: string }
+// The refresh figure the line shows while keepalive refreshes (`$0.006/refresh`).
+export type HintCost = { label: string }
 // Whether the keepalive toggle, as it stands, is saving or wasting money now, against the toggle the other way.
 export type Verdict = 'par' | 'saving' | 'wasting'
 // The pauses this session's prompts ended that the marker judged: the net its toggle saved over the other way, and how many.
@@ -45,15 +44,11 @@ export type Reading = { words: string; state: 'warm' | 'expired' | 'cold'; quart
 // The footer line's state, written each tick. `reading` is what the countdown counts, null for nothing to count. `cost` is the
 // refresh figure while keepalive refreshes. `offer` is the figure a press would turn keepalive on at while it is off, or while it is on the
 // figure of the run it is on, which a resume sends; null where that run sends no refresh.
-// `paused` is why keepalive is on and not refreshing, null otherwise. The details pane's first line is `warmth` (empty when there is no
-// cache to count) and `breakEven` is its break-even sentence (empty when none). Its history lives in the bare command, not here.
+// The details pane's text is not kept here: its draw gathers the sections itself.
 export type HintState = {
   reading: Reading | null
   cost: HintCost | null
   offer: HintCost | null
-  paused: string | null
-  warmth: string
-  breakEven: string
 }
 
 // The price read's phase on the footer: running, or just landed or failed. The footer draws a cue for it after its words; it clears

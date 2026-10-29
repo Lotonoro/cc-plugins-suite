@@ -21,7 +21,6 @@ import {
   lapsedReason,
   off,
   parseRequest,
-  pausedWhy,
   pingLine,
   pressOf,
   promptDropped,
@@ -46,13 +45,13 @@ import {
   type Mode,
 } from './keepalive'
 import { singleFlight } from './guard'
-import { adviceRowsOf, footerLine, paneLines, paneOf, paneSize } from './hint'
-import { isPaneOpen, paneAlarm, PANE, readPane, resizePane, syncPane, togglePane } from './pane'
+import { footerLine, paneOf, paneSizeOf } from './hint'
+import { followDraw, isPaneOpen, lastRows, paneAlarm, PANE, pressSize, readPane, recordRows, recordSize, syncPane, togglePane } from './pane'
 import { appended, HISTORY_BOUND, keyOf, KEY_PREFIX, merged, recordOf, recordsOf, staleKeys, type PauseRecord } from './history'
 import { adviceOf, ratesOfView, type Inputs } from './advice'
 import { learnedLine, learnedOf, ttlAdviceLine, ttlAdviceOf, ttlSwitchOf, type Learned } from './learn'
 import { breakEvenLine, countLineOf, judge, KEPT_COUNT, ratioOf, rebuildOf, rebuildSpendOf, runCountOf, sessionBalanceLine, NO_JUDGED, pauseOf, type Pause } from './verdict'
-import { answerOf, type Setting, type Snapshot } from './sections'
+import { answerOf, layoutOf, type AnswerRow, type Setting, type Snapshot } from './sections'
 import { stampLabel, withStamp } from './stamp'
 import { foldStatsEvents, INITIAL_STATS, pendingFor, rundownSections, sessionLineOf, type MissEvent, type LongPauseEvent } from './stats'
 import { lookupRows, readCache, type History, type Host, type Row } from './transcript'
@@ -139,6 +138,8 @@ let sessionFailed: string | undefined
 // Whether the tick's last read of the engine's record of the pane failed and was reported: the ticks that fail after it are not reported
 // again, and a tick read that returns a record ends the run.
 let paneTickFailed = false
+// Whether the pane's last draw failed a state read: a run of failed draws is reported once.
+let paneDrawFailed = false
 // A value memoised on the arrays it read and a key of its other inputs. `history`, the appended pauses and each read's records are replaced
 // on every change, never changed in place, so the arrays themselves say whether the pauses changed.
 type Memo<T> = { pauses: readonly (readonly unknown[])[]; key: string; value: T }
@@ -367,6 +368,8 @@ export const learnTranscript = async ($: Dollar, path: string): Promise<boolean>
   // read below lands. The key is unread for this learn, even for a path read before: a tick reads it again should the read below fail.
   sessionKey = keyOf(path)
   stored = undefined
+  // No state write covers the reset above, so an open pane is asked to draw again.
+  if (isPaneOpen()) $.ui.invalidate('ui.render')
   sessionFailed = undefined
   // Not part of the learn: a hook waiting on the learn need not wait on this store read too.
   inBackground($, sessionLoad($, path))
@@ -492,7 +495,7 @@ const resetKeepalive = async ($: Dollar): Promise<void> => {
 
 // The shape of the values this code keeps in the session's state. Bump it with any change to a value's shape in
 // types/index.d.ts: a reload under a new shape resets what the old one wrote, and one under the same shape keeps it.
-export const STATE_SHAPE = 14
+export const STATE_SHAPE = 15
 
 // The cue's writes, one after another, so a read's `started` never lands over its own end; and the timer that clears a cue that has ended.
 let cueWrites: Promise<void> = Promise.resolve()
@@ -793,30 +796,6 @@ const setDefault = async ($: Dollar, mode: Mode): Promise<string> => {
   return `keepalive default: ${mode}. Sessions started from now on start with keepalive ${mode}; this one stays as it is.`
 }
 
-// The details' lines for a footer state, keepalive's state, the view keepalive counts, its money and the tally, all already read: the
-// best setup's sentence above the lines.
-const paneLinesFor = (state: HintState | null, k: KeepaliveState, view: CacheView, money: Money, tally: TallyState): string[] => {
-  const lines = paneLines(state, k.config !== null, sessionLineOf(tally, money))
-  return [...adviceRowsOf(sentenceNow(k, view, money), lines), ...lines]
-}
-
-// The details' lines for a footer state and keepalive's state already read, with the view, money and tally as they stand now.
-const paneLinesOf = async ($: Dollar, state: HintState | null, k: KeepaliveState): Promise<string[]> => {
-  const view = await effectiveView($)
-  const money = await moneyOf($, view)
-  return paneLinesFor(state, k, view, money, (await $.state.get(TALLY)).value ?? INITIAL_TALLY)
-}
-
-// The details' lines as the state and the tally stand now: what the pane draws, and what its size is taken from.
-const paneLinesNow = async ($: Dollar): Promise<string[]> =>
-  paneLinesOf($, (await $.state.get(HINT)).value ?? null, (await $.state.get(KEEPALIVE)).value ?? INITIAL)
-
-// An open pane follows its lines: a press or a tick that changes them re-opens it at the new size. A shut pane has no size to follow, so
-// its lines are not worked out.
-const resizeNow = async ($: Dollar): Promise<void> => {
-  if (isPaneOpen()) await resizePane($, paneSize(await paneLinesNow($)))
-}
-
 // The words a drawing shows, in order: its strings, the labels of its buttons and links, and the text a leaf holds in its props (a
 // Markdown's `text`, a Code's `source`, a picture's `alt`). A drawing with none shows nothing. The engine's own node is opaque, drawn by
 // core from the props: its words are the mode labels it was given (`modes`).
@@ -843,7 +822,6 @@ export const pressCountdown = async ($: Dollar, defaults: Defaults) => {
       await turnOn($, press.leadMs, press.count)
     }
     pressFailure = null
-    inBackground($, resizeNow($))
   } catch (err) {
     report($, err)
     pressFailure = PRESS_FAILED
@@ -885,7 +863,7 @@ const settingsOf = (raw: CacheView, run: { leadMs: number; count: number | null 
 
 // The figures and sentences the bare command's sections state. The clock is read first, then each state key once, in sequence:
 // not an atomic snapshot, so a write that lands between two reads can leave figures from two moments. A surface that states the
-// sections calls it and lays them out with answerOf; only the command calls it today, and the pane will take it too.
+// sections calls it and lays them out with layoutOf: the bare command and the details pane's draw.
 const snapshotNow = async ($: Dollar): Promise<Snapshot> => {
   const nowMs = await $.clock.now()
   const held = (await $.state.get(KEEPALIVE)).value ?? INITIAL
@@ -1036,7 +1014,7 @@ const pauseStartNow = async ($: Dollar): Promise<PauseStart | null> => {
 // carries, never from the transcript state, which may still name the one before. A failed read is logged, once while it keeps failing
 // (sessionFailed), and leaves its key's records unread; the next tick reads again (sessionRetry). A pause a prompt ended while the read ran
 // stays appended, so it is counted whichever way the read was answered. A pane drawn meanwhile priced other pauses, and a still footer state
-// draws nothing again, so the pane is drawn again here and follows its size.
+// draws nothing again, so the pane is drawn again here.
 const sessionLoad = async ($: Dollar, path: string) => {
   const reading = { path }
   sessionReading = reading
@@ -1056,7 +1034,6 @@ const sessionLoad = async ($: Dollar, path: string) => {
   sessionFailed = undefined
   stored = { key, records: recordsOf(held) }
   $.ui.invalidate('ui.render')
-  await resizeNow($)
 }
 
 // A tick reads this session's pauses again while the held path's read has not landed and none is running, so a failed read does not
@@ -1090,6 +1067,8 @@ const historyWrite = async ($: Dollar, started: PauseStart, endMs: number) => {
   appendedPauses = [...appendedPauses, { key, record }].slice(-HISTORY_BOUND)
   appendedKeys.add(key)
   if (heldPath === undefined) sessionKey = key
+  // No state write covers the in-memory changes above, so an open pane is asked to draw again.
+  if (isPaneOpen()) $.ui.invalidate('ui.render')
   if (readFailed) return
   try {
     await $.store.set(key, appended(held, record))
@@ -1162,7 +1141,6 @@ const loadHistory = async ($: Dollar) => {
     .slice(-HISTORY_BOUND)
   // A pane drawn before the read priced no history, and a still footer state draws nothing again, as in sessionLoad.
   $.ui.invalidate('ui.render')
-  inBackground($, resizeNow($))
   await deleteKeys($, stale)
 }
 
@@ -1287,7 +1265,7 @@ const setHint = async ($: Dollar, hint: HintState | null) => {
 
 // The figure the time's hover shows while keepalive is off: the run a press would start, at the lead and count it would use, as the press
 // itself reads them. While it is on but paused or spent, the figure is the run it is on, at its lead and count, which a resume sends.
-// Written by the tick with the other figures, so the pane and the hover only draw what the state holds.
+// Written by the tick with the other figures, so the hover only draws what the state holds.
 const offerNow = (k: KeepaliveState, view: CacheView, money: Money, nowMs: number, defaults: Defaults): HintCost | null => {
   if (k.config !== null) return offerOf(view, money, k.config.leadMs, k.runCount)
   const press = pressOf(k, defaults)
@@ -1329,15 +1307,10 @@ const drawStatus = async ($: Dollar) => {
     reading,
     cost,
     offer: defaultRun === undefined ? null : offerNow(held, counted, money, nowMs, defaultRun),
-    paused: held.config !== null && reading !== null && !refreshing ? pausedWhy(held, counted, reading.state === 'expired') : null,
-    warmth: warmthOf(reading, ttl, rebuild),
-    breakEven: defaultRun === undefined ? '' : breakEvenLine(held, counted, money, defaultsNow(defaultRun, counted, money, nowMs)),
   }
   await setHint($, hint)
-  // An open pane follows the lines the tick draws: it is re-opened when they change its size. A shut one is left, its lines not worked out.
-  if (!isPaneOpen()) return
-  const tally = (await $.state.get(TALLY)).value ?? INITIAL_TALLY
-  inBackground($, resizePane($, paneSize(paneLinesFor(hint, held, counted, money, tally))))
+  // An open pane follows the size its draw recorded; nothing is built here to know it.
+  if (isPaneOpen()) inBackground($, followDraw($))
 }
 
 // Whether a main-thread turn is running. Its first step and its end read the transcript, so growth while it runs needs no reread.
@@ -1442,6 +1415,7 @@ const stamped = (requestId: string, tree: RenderElement): RenderElement => {
 export const register: Register = (on, options) => {
   sync = priceSync()
   paneTickFailed = false
+  paneDrawFailed = false
   const defaults = defaultsOf(options)
   defaultRun = defaults
   defaultUnit = unitOf(options.cost_unit)
@@ -1627,15 +1601,14 @@ export const register: Register = (on, options) => {
     const state = (await $.state.get(HINT)).value ?? null
     const keepalive = (await $.state.get(KEEPALIVE)).value ?? INITIAL
     const cue = (await $.state.get(CUE)).value ?? null
-    // The pane's size is worked out by the draw, not the click: the open must be made inside the press, with nothing awaited (pane.ts).
-    const size = paneSize(await paneLinesOf($, state, keepalive))
     const t = $.ui.resolve(e)
     const line = footerLine(
       t,
       state,
       keepalive.config !== null,
       () => inBackground($, pressOnce(() => pressCountdown($, defaults))),
-      () => inBackground($, togglePane($, size)),
+      // The size is the pane's draw's record, read as the press is made: the open must be made inside the press, with nothing awaited (pane.ts).
+      () => inBackground($, togglePane($, pressSize())),
       cue,
     )
     if (line === null) return tree
@@ -1645,10 +1618,40 @@ export const register: Register = (on, options) => {
     return t.Box({ flexDirection: 'row', children: [tree, ...separator, line] })
   })
 
-  // The details pane: its lines come from the state.
+  // The details pane: the sections the bare command answers with, gathered and laid out by this draw alone, and the size it records for the press
+  // and the tick. The hint state is read only to be redrawn with the tick's write each second, as the footer is: the countdown advances.
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
     await restoring?.catch(() => null)
-    return paneOf($.ui.resolve(e), await paneLinesNow($))
+    // A throw while drawn draws the engine's own, so a failed state read in the draw is reported (once per run of failures) and the last rows
+    // are drawn again, none before the first draw. The size record stands as the last draw left it.
+    let rows: AnswerRow[]
+    try {
+      // The reads sit after the restore wait, as the HINT read did, and are made here in the hook body as one batch: the keys snapshotNow
+      // reads, plus CUE, which the price sink writes as the price list changes. The engine redraws the pane on a write of state it read
+      // while drawing, and the types do not say whether a read made after an await inside the draw counts; HINT is written only when its
+      // JSON changes. The values are not used here: snapshotNow reads the keys again.
+      await Promise.all([
+        $.state.get(HINT),
+        $.state.get(KEEPALIVE),
+        $.state.get(TOUCH),
+        $.state.get(VIEW),
+        $.state.get(COLD),
+        $.state.get(UNIT),
+        $.state.get(TALLY),
+        $.state.get(STATS),
+        $.state.get(JUDGED),
+        $.state.get(CUE),
+      ])
+      rows = layoutOf(await snapshotNow($))
+    } catch (err) {
+      if (!paneDrawFailed) report($, err)
+      paneDrawFailed = true
+      return paneOf($.ui.resolve(e), lastRows())
+    }
+    paneDrawFailed = false
+    recordSize(paneSizeOf(rows))
+    recordRows(rows)
+    return paneOf($.ui.resolve(e), rows)
   })
 
   // Every close of the pane, whoever made it and whether or not another plugin keeps it open: the engine's record is read once the close has

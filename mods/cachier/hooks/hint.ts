@@ -1,8 +1,8 @@
 import type { ButtonProps, BoxProps, ElementConstructor, RenderElement, TextProps } from 'claude-code'
 import type { HintState, PriceCue } from '../types'
-import { COLOUR_SENTENCE, cueOf, pieOf, refreshingOf, type CueMark, type Tone } from './countdown'
+import { cueOf, pieOf, refreshingOf, type CueMark, type Tone } from './countdown'
 import type { PaneSize } from './pane'
-import { WRAP, wrapLine } from './sections'
+import type { AnswerRow } from './sections'
 
 // The elements the footer line and the details pane are built from, as the surface's table hands them out.
 type Table = {
@@ -79,42 +79,15 @@ export const footerLine = (t: Table, state: HintState | null, on: boolean, onTog
   return t.Box({ flexDirection: 'row', children: [pieBox, t.Text({ dimColor: true, children: [' '] }), time, ...cueText] })
 }
 
-// The details pane's lines: the cache's warmth, keepalive's state, and the cost it states. While it refreshes, the cost of its refreshes and
-// their interval; while it is off, `offer`, the cost a press would turn it on at. Then the break-even line and this session's tally, which
-// `session` carries. A line with no text is left out.
-export const paneLines = (state: HintState | null, on: boolean, session: string): string[] => {
-  const refreshing = refreshingOf(on, state?.reading ?? null, state?.cost?.label ?? null)
-  const status = !on
-    ? `Keepalive is off. ${COLOUR_SENTENCE}`
-    : refreshing
-      ? 'Keepalive is on and refreshing the cache.'
-      : state?.reading == null
-        ? 'Keepalive is on, with no cache to count from yet.'
-        : `Keepalive is paused: ${state.paused ?? 'no refresh is due'}. ${COLOUR_SENTENCE}`
-  const figure = refreshing ? state?.cost : !on ? state?.offer : null
-  return [
-    ...(state === null ? [] : [state.warmth]),
-    status,
-    ...(figure ? [figure.explain, figure.figures] : []),
-    ...(state === null ? [] : [state.breakEven]),
-    session,
-  ].filter((line) => line !== '')
-}
-
-// The advice sentence as the pane's first rows: wrapped at the widest of the other lines and at least the bare answer's width, with no
-// indent, so nothing is cut at the pane's edge. No rows when there is no sentence.
-export const adviceRowsOf = (sentence: string, lines: string[]): string[] =>
-  sentence === '' ? [] : wrapLine(sentence, Math.max(WRAP, ...lines.map((line) => line.length)), '', '')
-
-// The size the details pane asks for (PaneSize) for these lines.
-export const paneSize = (lines: string[]): PaneSize => ({
-  rows: lines.length,
-  columns: Math.max(...lines.map((line) => line.length)),
+// The size the details pane asks for (PaneSize) for these laid-out rows: one row each, blank rows included, and the columns of the longest.
+export const paneSizeOf = (rows: AnswerRow[]): PaneSize => ({
+  rows: rows.length,
+  columns: Math.max(0, ...rows.map((row) => row.text.length)),
 })
 
-// The details pane's body: one row per line, cut at the pane's width rather than wrapped.
-export const paneOf = (t: Table, lines: string[]): RenderElement =>
+// The details pane's body: the answer's rows, one Text each, headings bold and nothing else styled, cut at the pane's width rather than wrapped.
+export const paneOf = (t: Table, rows: AnswerRow[]): RenderElement =>
   t.Box({
     flexDirection: 'column',
-    children: lines.map((line) => t.Text({ wrap: 'truncate-end', children: [line] })),
+    children: rows.map((row) => t.Text({ ...(row.heading === true ? { bold: true } : {}), wrap: 'truncate-end', children: [row.text] })),
   })

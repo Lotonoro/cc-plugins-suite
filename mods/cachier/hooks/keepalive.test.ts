@@ -6,7 +6,6 @@ import {
   forkSpend,
   defaultsOf,
   failureOf,
-  pausedWhy,
   enable,
   enableText as enableTextWith,
   gapOpen,
@@ -521,7 +520,7 @@ describe('the debug lines and the tallies', () => {
   })
 
   test('in dollars, the ping is priced on every surface; a model with no price is worded in tokens', () => {
-    expect(costWith(on(60000, 3), known, DOLLARS)).toEqual({ label: '$0.007/refresh', explain: 'Next refresh: $0.007 (~33k cached tokens read).', figures: 'One refresh every 4 min.' })
+    expect(costWith(on(60000, 3), known, DOLLARS)).toEqual({ label: '$0.007/refresh' })
     expect(stepWith(on(60000, 2), known, null, true, T + 100000, DOLLARS).lines).toEqual(['Next refresh: $0.007 (~33k cached tokens read), every 4 min', 'next refresh in 2:20, 2 left'])
     expect(stepWith(on(60000, 2, { remaining: 0 }), known, null, true, T + 240000, DOLLARS).lines).toEqual(['each refresh costs $0.007 (reads ~33k cached tokens)'])
     const fable = { ...known, model: 'claude-nonesuch-1' }
@@ -531,35 +530,30 @@ describe('the debug lines and the tallies', () => {
 })
 
 describe('the footer line and the status line: what each shows', () => {
-  test('costOf gives the context each ping reads and how often while keepalive runs, and nothing when it is off, stopped, or paused', () => {
+  test('costOf gives the context each ping reads while keepalive runs, and nothing when it is off, stopped, or paused', () => {
     expect(costOf(INITIAL, known)).toBeNull()
-    expect(costOf(on(60000, 3), known)).toEqual({
-      label: '~33k read/refresh',
-      explain: 'Next refresh: ~33k cached tokens read.',
-      figures: 'One refresh every 4 min.',
-    })
+    expect(costOf(on(60000, 3), known)).toEqual({ label: '~33k read/refresh' })
     // A run that learned no refreshes for this pause shows no figure: the line says it is paused.
     expect(costOf({ ...on(60000, 3), runCount: 0 }, known)).toBeNull()
     expect(costOf(on(60000, 3, { stop: 'count used' }), known)).toBeNull()
     expect(costOf(on(60000, 3, { stop: 'API error 529 (overloaded)' }), known)).toBeNull()
     expect(costOf(on(400000, 3), known)).toBeNull()
     expect(costOf(on(60000, 3), { kind: 'no-cache' })).toBeNull()
-    expect(costOf(on(15000, 3), known)?.figures).toBe('One refresh every 4:45.')
   })
 
   test('offerOf is the figure of the run a press would start: one refresh at its lead, in the unit given; nothing where it sends no refresh or there is no known cache', () => {
-    expect(offerWith(known, TOKENS, 15000, 3)).toEqual({ label: '~33k read/refresh', explain: 'Next refresh: ~33k cached tokens read.', figures: 'One refresh every 4:45.' })
-    expect(offerWith(known, DOLLARS, 15000, 3)?.explain).toMatch(/^Next refresh: \$[\d.]+ \(~33k cached tokens read\)\.$/)
+    expect(offerWith(known, TOKENS, 15000, 3)).toEqual({ label: '~33k read/refresh' })
+    expect(offerWith(known, DOLLARS, 15000, 3)?.label).toMatch(/^\$[\d.]+\/refresh$/)
     expect(offerWith(known, TOKENS, 15000, 0)).toBeNull()
     expect(offerWith(known, TOKENS, 300000, 3)).toBeNull()
     expect(offerWith({ kind: 'no-cache' }, TOKENS, 15000, 3)).toBeNull()
   })
 
   test('the interval a run pings at is minutes and seconds when the seconds are not zero, whole minutes otherwise', () => {
-    const at = (lead: number) => costOf(on(lead, 2), known)?.figures
-    expect(at(15000)).toBe('One refresh every 4:45.')
-    expect(at(60000)).toBe('One refresh every 4 min.')
-    expect(at(235000)).toBe('One refresh every 1:05.')
+    const at = (lead: number) => stepWith(on(lead, 2), known, null, true, T + 100000, TOKENS).lines[0]
+    expect(at(15000)).toBe('Next refresh: ~33k cached tokens read, every 4:45')
+    expect(at(60000)).toBe('Next refresh: ~33k cached tokens read, every 4 min')
+    expect(at(235000)).toBe('Next refresh: ~33k cached tokens read, every 1:05')
   })
 
   test('failureOf names a stop that is not by design, or a lead at or above the TTL, in one clause; count used and cache expired are by design', () => {
@@ -572,19 +566,6 @@ describe('the footer line and the status line: what each shows', () => {
       'keepalive stopped: a 160 s round trip needs a 320 s lead, over half the 300 s TTL',
     )
     expect(failureOf(on(400000, 3), known)).toBe('keepalive paused: lead 400 s is not below the 300 s TTL')
-  })
-
-  test('pausedWhy says why keepalive is on and not refreshing, and whether the next prompt resumes it', () => {
-    expect(pausedWhy(on(60000, 3), known, false)).toBeNull()
-    expect(pausedWhy(on(60000, 3, { stop: 'count used' }), known, false)).toBe('its refreshes for this pause are used up; it resumes after your next prompt')
-    expect(pausedWhy(on(60000, 3, { stop: 'cache expired' }), known, false)).toBe('the cache expired; it resumes after your next prompt')
-    expect(pausedWhy(on(60000, 3, { stop: 'API error 529 (overloaded)' }), known, false)).toBe('API error 529 (overloaded); your next prompt restarts it')
-    // A cache that expired within the tick, before its stop is set, is paused for the same reason.
-    expect(pausedWhy(on(60000, 3), known, true)).toBe('the cache expired; it resumes after your next prompt')
-    expect(pausedWhy(on(60000, 3), { kind: 'no-cache' }, false)).toBe('there is no cache until the next reply')
-    expect(pausedWhy(on(400000, 3), known, false)).toBe('the lead 400 s is not below the 300 s TTL')
-    expect(pausedWhy({ ...on(60000, 3), runCount: 0 }, known, false)).toBe('your pauses rarely outlast the cache, so no refresh is sent; it resumes after your next prompt')
-    expect(pausedWhy(INITIAL, known, false)).toBeNull()
   })
 })
 

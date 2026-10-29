@@ -38,26 +38,27 @@ lifetime is left, and next to it the time left, or a word where there is no time
 
 ## The details pane
 
-A click on the time, the rebuild figure, `reset` or `no count` opens the pane, sized to its lines: one row per line, as wide as the longest. A
-click on that word while it is open closes it, as Esc or the person's close does. The click acts on the pane as the engine
+A click on the time, the rebuild figure, `reset` or `no count` opens the pane, sized to what it last drew: one row per row, as wide as the longest. Before the
+pane has drawn this session it opens at 12 rows by 48 columns, and an open pane is re-sized to its drawing within a second. A terminal too short for the rows
+scrolls them with the wheel. A click on that word while it is open closes it, as Esc or the person's close does. The click acts on the pane as the engine
 lists it: a pane closed some way cachier did not hear of (a reload, another plugin) is opened by the next click after a second,
-and a close another plugin refuses leaves the pane open to be closed by the next click. The pane says, in short lines with their
-units:
+and a close another plugin refuses leaves the pane open to be closed by the next click. The pane shows the four sections a bare
+`/keepalive` answers with, in the same order with the same text, each heading in bold:
 
-- the cache's warmth: `Prompt cache warm, 3:12 left (5-minute cache)`, or, once the cache has expired or been reset, the
+- **Cache**: the cache's warmth, `Prompt cache warm, 3:12 left (5-minute cache)`, or, once the cache has expired or been reset, the
   figure to rebuild it (the context plus the last reply's output, which the next prompt writes with it). The figure is priced
   at the model that last wrote the cache, so after a model switch it is at the rates of the model switched from;
-- keepalive's state; while it is off or paused, what the pie's colours warn of; while paused, why, and that it resumes
-  after your next prompt;
-- what one refresh costs, or while keepalive is off, what one refresh would cost at the lead and count a click on the pie
-  would use;
-- when keepalive pays off (`Keepalive pays off if you're back between 5:00 and 1:54:00`);
-- this session's refreshes and their cost.
+- **Keepalive**: its state on the heading (`off`, `on, refreshing`, `paused`, `stopped`), and beneath it why it is paused or stopped and
+  that it resumes after your next prompt, what the pie's colours warn of while it is amber or red, what a refresh costs and when the next is due, how many
+  refreshes a pause sends, when keepalive pays off (`Keepalive pays off if you're back between 5:00 and 1:54:00`), and this
+  pause's and this session's refreshes and their cost;
+- **Advice**: the best setup's sentence (see [Best setup](#best-setup)), priced from your recorded pauses, and the notes on the TTL
+  and the unit;
+- **Settings**: each setting's value, where it came from, and what changes it.
 
-The pane follows its lines: when a click on the pie or the countdown changes them, an open pane is re-opened at its new
-size. It opens with the best setup's sentence (see [Best setup](#best-setup)), priced from your recorded pauses, then its
-lines. The rest of what the history says is not in the pane: the learned counts, the one-hour advice, the misses by cause
-and why a figure is in tokens are in the answer to a bare `/keepalive`.
+The pane draws these rows itself, from the same figures the command reads, and its countdown advances each second. A press on the pie
+changes what an open pane shows at once; the pane is re-sized to the new rows by the next second's tick. The rows run to about 30 to 40, so in
+a short terminal the lower sections are scrolled to with the wheel.
 
 ## Keepalive
 
@@ -245,8 +246,8 @@ A keepalive run whose lead is not below a TTL sends no refresh at that TTL, so i
 
 The pauses are this session's once five of them can be priced, else the 50 newest priced pauses across sessions, and
 every sentence says which; with fewer than five priced pauses anywhere there is no sentence. In tokens it names the
-setup and points to `/keepalive unit dollars` for the figure. It opens the details pane and is the first line of the
-Advice section of a bare `/keepalive`.
+setup and points to `/keepalive unit dollars` for the figure. It is the first line of the Advice section, in the
+details pane and in a bare `/keepalive`.
 
 Cachier can't switch the TTL itself: no plugin setting controls it. Set `"promptCacheTtl": "5m"` or `"1h"` in
 settings.json; `FORCE_PROMPT_CACHING_5M` and `CLAUDE_CODE_PROMPT_CACHE_TTL` override it. The docs don't say a running

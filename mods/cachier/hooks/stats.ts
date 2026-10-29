@@ -144,7 +144,7 @@ const missTotal = (s: StatsState): StatCount => {
   return { count: lapse.count + cold.count + unexplained.count, spend: addSpend(addSpend(lapse.spend, cold.spend), unexplained.spend) }
 }
 
-// The details pane's session line: this session's refreshes and their cost, empty while there are none.
+// The session line of the Keepalive section: this session's refreshes and their cost, empty while there are none.
 export const sessionLineOf = (t: TallyState, money: Money): string => (t.session.pings > 0 ? tallyOf('This session', t.session, money.unit) : '')
 
 // The lines that show the tallies and a raised lead, for the rundown. A zero tally is not a line.

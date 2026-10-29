@@ -223,13 +223,6 @@ const pressPie = async ($: any) => {
   await m.press({ key: 'pie' })
   await m.unmount()
 }
-// The details pane's drawing, as text: the sentences a click on the line opens it on.
-const drawnPane = async ($: any) => {
-  const pane = await mountPane($)
-  const drawn = JSON.stringify(await pane.drawn())
-  await pane.unmount()
-  return drawn
-}
 // Everything the line and the details draw, as text: the footer's drawing, then the pane's.
 const drawnHint = async ($: any) => {
   const m = await mountHint($)
@@ -2202,11 +2195,11 @@ describe('keepalive: the queue and the race', () => {
     await clock.advance(241000)
     expect(rec.forks.length).toBe(1)
     expect(await toggle($, '')).toContain('This pause: 1 refresh costing ~19k tokens read.')
-    expect(await drawnHint($)).toContain('This session: 1 refresh costing ~19k tokens read.')
+    expect(await drawnPane($)).toContain('This session: 1 refresh costing ~19k tokens read.')
     await userPrompt($)
     await clock.advance(1000)
-    expect(await drawnHint($)).not.toContain('This pause:')
-    expect(await drawnHint($)).toContain('This session: 1 refresh costing ~19k tokens read.')
+    expect(await drawnPane($)).not.toContain('This pause:')
+    expect(await drawnPane($)).toContain('This session: 1 refresh costing ~19k tokens read.')
   })
 
   test('a bridge prompt re-arms an armed keepalive; a peer prompt does not', async ($, on) => {
@@ -2364,7 +2357,7 @@ describe('the low-key UI: the footer line, the click, the gutter, and what the s
     expect(JSON.stringify(await m.drawn())).toContain('~19k read/refresh')
     expect(await m.find({ type: 'Button', key: 'unit' })).toBeFalsy()
     const pane = await mountPane($)
-    const running = JSON.stringify(await m.drawn()) + JSON.stringify(await pane.drawn())
+    const running = JSON.stringify(await m.drawn()) + flatOf(await rowsOf(pane))
     await pane.unmount()
     expect(running).toContain('~19k read/refresh')
     expect(running).toContain('Next refresh: ~19k cached tokens read')
@@ -2390,7 +2383,7 @@ describe('the low-key UI: the footer line, the click, the gutter, and what the s
     await turnEnd($)
     await clock.advance(285000)
     await clock.advance(2000)
-    expect(await drawnPane($)).toContain('Keepalive is paused: ')
+    expect(await drawnPane($)).toContain('Keepalive  paused ')
     const m = await mountHint($)
     expect(JSON.stringify(await m.drawn())).toContain('~19k read/refresh')
     await m.unmount()
@@ -2410,7 +2403,7 @@ describe('the low-key UI: the footer line, the click, the gutter, and what the s
     expect(await toggle($, '')).toContain('Keepalive  paused its refreshes for this pause are used up')
     expect(lastStatus(rec)).toBeUndefined()
     const m = await mountHint($)
-    expect(await drawnPane($)).toContain('Keepalive is paused: its refreshes for this pause are used up')
+    expect(await drawnPane($)).toContain('Keepalive  paused its refreshes for this pause are used up')
     await pressPie($)
     await clock.advance(1000)
     expect(await toggle($, '')).toContain('Keepalive  off')
@@ -2462,7 +2455,7 @@ describe('the low-key UI: the footer line, the click, the gutter, and what the s
     await pressPie($)
     await clock.advance(1000)
     expect(rec.toasts).toEqual([])
-    expect(await drawnPane($)).toContain('Keepalive is paused: ')
+    expect(await drawnPane($)).toContain('Keepalive  paused ')
     expect(lastStatus(rec)).toContain('keepalive paused: lead 300 s is not below the 300 s TTL')
     expect(await toggle($, '')).toContain('Keepalive  paused lead 300 s is not below the 300 s TTL')
     await pressPie($)
@@ -2533,10 +2526,10 @@ describe('the low-key UI: the footer line, the click, the gutter, and what the s
     await clock.advance(1000)
     const drawn = JSON.stringify(await m.drawn()) + (await drawnPane($))
     expect(await toggle($, '')).toContain('Cache misses: 1 (lapse 1), ~20k tokens rewritten')
-    // Off, the line names no refresh figure; the pane states what one refresh would cost, as the offer a switch on is made in view of.
+    // Off, the line names no refresh figure; the pane's Keepalive section states it is off, and its Cache section the miss.
     expect(await hintOf(m)).not.toContain('refresh')
-    expect(drawn).toMatch(/Next refresh: ~\d+k cached tokens read\./)
-    expect(drawn).toContain('Keepalive is off. The pie turns amber')
+    expect(await drawnPane($)).toContain('Cache misses: 1 (lapse 1), ~20k tokens rewritten')
+    expect(drawn).toContain('Keepalive  off')
     await m.unmount()
     expect(lastStatus(rec)).toBeUndefined()
   })
@@ -2955,18 +2948,162 @@ const paneRows = async ($: any): Promise<string[]> => {
 }
 // The columns a pane asks for: its longest row.
 const widthOf = (rows: string[]) => Math.max(...rows.map((row) => row.length))
+// The details pane's drawing, as text, as the command's answer is read in these tests: a wrapped sentence joined into one line, a section's
+// lines after its heading.
+const flatOf = (rows: string[]) => rows.join('\n').replace(/\n\s*/g, ' ')
+const drawnPane = async ($: any): Promise<string> => flatOf(await paneRows($))
+// A mounted pane whose state reads of `key` (the tally unless another is named) are refused while `failing.on` is set; `redraw` runs the
+// render chain again. `startFailing` refuses them from the mount's own draw on, so the first draw fails; the session start reads normally.
+// `reads` lists every key the hook is asked for, in order.
+const failingPane = async ($: any, on: any, startFailing = false, key = 'tally') => {
+  const rec = kaWorld(on, cached())
+  const clock = mock.clock(on, { now: T0 })
+  const failing = { on: false }
+  const reads: string[] = []
+  on('state.get', (_$: any, e: any, next: any) => {
+    reads.push(e.key)
+    return failing.on && e.key === key ? { deny: `${key} refused` } : next(e)
+  })
+  await $.classic.SessionStart({ source: 'startup', transcript_path: PATH })
+  await clock.advance(1000)
+  failing.on = startFailing
+  const pane = await mountPane($)
+  const refused = () => rec.logs.filter((l: string) => l.includes(`${key} refused`)).length
+  return { rec, failing, pane, refused, reads }
+}
 
-describe('the details pane: a click on the time opens it at its size, a second click closes it, and the pie is the switch', () => {
-  test('a click on the time opens the pane at the rows and columns its lines take, Esc closes it, and keepalive is left as it is', async ($, on) => {
+describe('the details pane draw: a state read that fails', () => {
+  test('a failing state read during the draw reports once and still draws the last rows', async ($, on) => {
+    const { failing, pane, refused } = await failingPane($, on)
+    const good = (await pane.drawn()) as any
+    expect(good.children.length).not.toBe(0)
+    failing.on = true
+    await pane.redraw()
+    expect(refused()).toBe(1)
+    expect(await pane.drawn()).toEqual(good)
+    await pane.unmount()
+  })
+
+  test('two failures in a row report once', async ($, on) => {
+    const { failing, pane, refused } = await failingPane($, on)
+    await pane.drawn()
+    failing.on = true
+    await pane.redraw()
+    await pane.redraw()
+    expect(refused()).toBe(1)
+    await pane.unmount()
+  })
+
+  test('a failure, a success and a failure report twice', async ($, on) => {
+    const { failing, pane, refused } = await failingPane($, on)
+    await pane.drawn()
+    failing.on = true
+    await pane.redraw()
+    failing.on = false
+    await pane.redraw()
+    failing.on = true
+    await pane.redraw()
+    expect(refused()).toBe(2)
+    await pane.unmount()
+  })
+
+  test('a failure with no previous draw does not throw, reports once and draws no rows', async ($, on) => {
+    const { pane, refused } = await failingPane($, on, true)
+    expect(refused()).toBe(1)
+    expect(await pane.drawn()).toEqual({ type: 'Box', props: { flexDirection: 'column' }, part: { plugin: 'cachier' } })
+    await pane.unmount()
+  })
+
+  test('a failing hint state read during the draw reports once and still draws the last rows', async ($, on) => {
+    const { failing, pane, refused } = await failingPane($, on, false, 'hint')
+    const good = (await pane.drawn()) as any
+    expect(good.children.length).not.toBe(0)
+    failing.on = true
+    await pane.redraw()
+    expect(refused()).toBe(1)
+    expect(await pane.drawn()).toEqual(good)
+    await pane.unmount()
+  })
+})
+
+describe('the details pane draw: its state is read in its own hook, and an in-memory change asks an open pane to draw again', () => {
+  const OTHER = '/home/test/.claude/projects/p/s2.jsonl'
+  const LATER = '/home/test/.claude/projects/p/s3.jsonl'
+  // The draws the mod asked for: the `ui.invalidate` calls for `ui.render`, as `world` records them.
+  const rendersAsked = (rec: { invalidations: string[] }) => rec.invalidations.filter((event) => event === 'ui.render').length
+
+  test('the details pane reads the keys its draw uses in its own hook, before the gather reads them', async ($, on) => {
+    const { pane, reads } = await failingPane($, on)
+    reads.length = 0
+    await pane.redraw()
+    expect(reads).toEqual([
+      'hint', 'keepalive', 'touch', 'view', 'cold', 'unit', 'tally', 'stats', 'judged', 'cue',
+      'keepalive', 'touch', 'view', 'cold', 'unit', 'tally', 'stats', 'judged',
+    ])
+    await pane.unmount()
+  })
+
+  // A transcript learned resets the session's pauses in memory, which no state write covers, so an open pane is asked to draw again. A
+  // compaction's session start under a new path makes that reset and also asks for draws of its own, the same with the pane shut or open,
+  // so the test compares the two counts, taken once the clock has moved a second and the start's work has run.
+  const learnDrawsAsked = async ($: any, clock: any, rec: { invalidations: string[] }, path: string) => {
+    const before = rendersAsked(rec)
+    await $.classic.SessionStart({ source: 'compact', transcript_path: path })
+    await clock.advance(1000)
+    return rendersAsked(rec) - before
+  }
+
+  test('a transcript learned asks for one more draw while the details pane is open than while it is shut', async ($, on) => {
     const rec = kaWorld(on, cached())
     const clock = mock.clock(on, { now: T0 })
     await $.classic.SessionStart({ source: 'startup', transcript_path: PATH })
     await clock.advance(1000)
     const m = await mountHint($)
+    const shut = await learnDrawsAsked($, clock, rec, OTHER)
+    await m.press({ key: 'details' })
+    const open = await learnDrawsAsked($, clock, rec, LATER)
+    expect(open - shut).toBe(1)
+    await m.unmount()
+  })
+
+  // A pause a prompt ends is written to the history in memory, which no state write covers. The gap is open after the turn's end.
+  const promptAsked = async ($: any, on: any, open: boolean) => {
+    const rec = kaWorld(on, cached())
+    const clock = mock.clock(on, { now: T0 })
+    await $.classic.SessionStart({ source: 'startup', transcript_path: PATH })
+    await clock.advance(1000)
+    const m = await mountHint($)
+    await mainStep($)
+    await turnEnd($)
+    await clock.advance(1000)
+    if (open) await m.press({ key: 'details' })
+    const before = rendersAsked(rec)
+    await userPrompt($)
+    const asked = rendersAsked(rec) - before
+    await m.unmount()
+    return asked
+  }
+
+  test('a pause a prompt ends while the details pane is open asks for a draw', async ($, on) => {
+    expect(await promptAsked($, on, true)).toBe(1)
+  })
+
+  test('a pause a prompt ends while the details pane is shut asks for no draw', async ($, on) => {
+    expect(await promptAsked($, on, false)).toBe(0)
+  })
+})
+
+describe('the details pane: a click on the time opens it at its size, a second click closes it, and the pie is the switch', () => {
+  test('a click on the time opens the pane at the rows and columns its last draw took, Esc closes it, and keepalive is left as it is', async ($, on) => {
+    const rec = kaWorld(on, cached())
+    const clock = mock.clock(on, { now: T0 })
+    await $.classic.SessionStart({ source: 'startup', transcript_path: PATH })
+    await clock.advance(1000)
+    const m = await mountHint($)
+    const rows = await paneRows($)
     await m.press({ key: 'details' })
     expect(rec.opens.map((o: any) => o.id)).toEqual([PANE_ID])
     expect(rec.opens[0]).toMatchObject({ title: 'Prompt cache', closeOnEscape: true })
-    const rows = await paneRows($)
     expect(rec.opens[0].rows).toBe(rows.length)
     expect(rec.opens[0].columns).toBe(widthOf(rows))
     expect(await toggle($, '')).toContain('Keepalive  off')
@@ -3062,16 +3199,16 @@ describe('the details pane: a click on the time opens it at its size, a second c
     await m.unmount()
   })
 
-  test('the details hold the warmth first, then keepalive\'s state and its figure, and no history sentence', async ($, on) => {
+  test('the details hold the Cache section first, then keepalive\'s state, and no history sentence', async ($, on) => {
     kaWorld(on, cached())
     const clock = mock.clock(on, { now: T0 })
     await $.classic.SessionStart({ source: 'startup', transcript_path: PATH })
     await clock.advance(1000)
     const rows = await paneRows($)
-    expect(rows[0]).toMatch(/^Prompt cache warm, \d+:\d\d left \(5-minute cache\)$/)
-    expect(rows[1]).toBe('Keepalive is off. The pie turns amber in the cache\'s last quarter and red in its last tenth: the cache is about to lapse.')
-    expect(rows[2]).toContain('Next refresh: ~19k cached tokens read.')
-    expect(JSON.stringify(rows)).not.toMatch(/The pie is|Earlier pauses|Learned from|Shown in tokens|Longest pause|Cache misses/)
+    expect(rows[0]).toBe('Cache')
+    expect(rows[1]).toMatch(/^  Prompt cache warm, \d+:\d\d left \(5-minute cache\)$/)
+    expect(rows[3]).toBe('Keepalive  off')
+    expect(JSON.stringify(rows)).not.toMatch(/The pie is|Earlier pauses|Learned from|Longest pause|Cache misses/)
   })
 
   test('the pie switches keepalive as the command does, and the pane has no switch to press', { options: { keepalive_lead_s: 15, keepalive_count: 3 } }, async ($, on) => {
@@ -3089,7 +3226,7 @@ describe('the details pane: a click on the time opens it at its size, a second c
     expect(await toggle($, '')).toContain('Keepalive  off')
   })
 
-  test('while keepalive is off the pane states the figures of the run a press would start, at the lead the last run used', async ($, on) => {
+  test('while keepalive is off the pane\'s Settings state the lead the last run used', async ($, on) => {
     kaWorld(on, cached())
     const clock = mock.clock(on, { now: T0 })
     await $.classic.SessionStart({ source: 'startup', transcript_path: PATH })
@@ -3097,12 +3234,10 @@ describe('the details pane: a click on the time opens it at its size, a second c
     expect(await toggle($, 'on 240 3')).toContain('keepalive on')
     expect(await toggle($, 'off')).toContain('keepalive off')
     await clock.advance(1000)
-    const drawn = await drawnPane($)
-    expect(drawn).toContain('Next refresh: ~19k cached tokens read.')
-    expect(drawn).toContain('One refresh every 1 min.')
+    expect(await drawnPane($)).toContain('lead 240 s: /keepalive on <lead seconds>.')
   })
 
-  test('a pie press re-opens an open pane at the rows and columns its new lines take', { options: { keepalive_lead_s: 15, keepalive_count: 3 } }, async ($, on) => {
+  test('after a pie press, the next tick re-opens an open pane at the rows and columns its new draw took', { options: { keepalive_lead_s: 15, keepalive_count: 3 } }, async ($, on) => {
     const rec = kaWorld(on, cached())
     const clock = mock.clock(on, { now: T0 })
     await $.classic.SessionStart({ source: 'startup', transcript_path: PATH })
@@ -3111,13 +3246,15 @@ describe('the details pane: a click on the time opens it at its size, a second c
     await m.press({ key: 'details' })
     await m.unmount()
     await pressPie($)
+    expect(rec.opens.length).toBe(1)
     const rows = await paneRows($)
+    await clock.advance(1000)
     expect(rec.opens.length).toBe(2)
     expect(rec.opens[1]).toMatchObject({ id: PANE_ID, rows: rows.length, columns: widthOf(rows) })
     expect(rec.closes).toEqual([])
   })
 
-  test('a tick that changes the lines re-opens an open pane at its new size', { options: { keepalive_lead_s: 15, keepalive_count: 3 } }, async ($, on) => {
+  test('a tick that finds the drawn size changed re-opens an open pane at its new size', { options: { keepalive_lead_s: 15, keepalive_count: 3 } }, async ($, on) => {
     const rec = kaWorld(on, cached())
     const clock = mock.clock(on, { now: T0 })
     await $.classic.SessionStart({ source: 'startup', transcript_path: PATH })
@@ -3125,12 +3262,17 @@ describe('the details pane: a click on the time opens it at its size, a second c
     const m = await mountHint($)
     await m.press({ key: 'details' })
     await m.unmount()
+    const off = await paneRows($)
+    await clock.advance(1000)
+    expect(rec.opens.length).toBe(2)
+    expect(rec.opens[1]).toMatchObject({ id: PANE_ID, rows: off.length, columns: widthOf(off) })
     expect(await toggle($, 'on 15 3')).toContain('keepalive on')
     await clock.advance(1000)
-    const rows = await paneRows($)
-    expect(rec.opens.length).toBe(2)
-    expect(rec.opens[1]).toMatchObject({ id: PANE_ID, rows: rows.length, columns: widthOf(rows) })
-    expect(rec.opens[1].columns).toBeLessThan(rec.opens[0].columns)
+    const on3 = await paneRows($)
+    expect(on3.length).not.toBe(off.length)
+    await clock.advance(1000)
+    expect(rec.opens.length).toBe(3)
+    expect(rec.opens[2]).toMatchObject({ id: PANE_ID, rows: on3.length, columns: widthOf(on3) })
   })
 
   test('with the pane shut, a pie press or a tick opens nothing', { options: { keepalive_lead_s: 15, keepalive_count: 3 } }, async ($, on) => {
@@ -3204,7 +3346,267 @@ describe('the details pane: a click on the time opens it at its size, a second c
     await pane.unmount()
     await m.unmount()
     expect(drawn).not.toContain('absolute')
-    expect(JSON.stringify(await drawnPane($))).not.toContain('hover')
+    expect(drawn).not.toContain('hover')
+  })
+})
+
+// How many times the plugin's state key has been read: the footer, the tick and a press are told apart from the pane's draw by what each reads.
+const countReads = (on: any, keys: string[]) => {
+  const reads: Record<string, number> = Object.fromEntries(keys.map((key) => [key, 0]))
+  on('state.get', async (_$: any, e: any, next: any) => {
+    if (e.plugin === 'cachier' && e.key in reads) reads[e.key]!++
+    return next(e)
+  })
+  return reads
+}
+// A drawing's text, row by row, from a mounted pane that stays mounted: each call is a fresh draw of what the engine last asked.
+const rowsOf = async (pane: any): Promise<string[]> => ((await pane.drawn()) as any).children.map(textOf)
+const boldRows = async (pane: any): Promise<string[]> => ((await pane.drawn()) as any).children.filter((row: any) => JSON.stringify(row).includes('"bold":true')).map(textOf)
+
+describe('the details pane draws the sections /keepalive answers with, built by its draw alone', () => {
+  const opts = { options: { keepalive_lead_s: 15, keepalive_count: 3 } }
+
+  test('open, it shows the rows /keepalive answers, in the same order with the same text, in each state keepalive is in', opts, async ($, on) => {
+    const doc: any = cached()
+    kaWorld(on, doc)
+    const clock = mock.clock(on, { now: T0 })
+    await $.classic.SessionStart({ source: 'startup', transcript_path: PATH })
+    await clock.advance(1000)
+    const pane = await mountPane($)
+    for (const args of ['off', 'on 15 3', 'on 400 3']) {
+      await toggle($, args)
+      await clock.settle()
+      const answer = (await commandText($, '')).split('\n')
+      expect(await rowsOf(pane)).toEqual(answer)
+      expect(answer[0]).toBe('Cache')
+    }
+    await clock.advance(400000)
+    await toggle($, 'on 15 3')
+    await clock.settle()
+    expect(await rowsOf(pane)).toEqual((await commandText($, '')).split('\n'))
+    await pane.unmount()
+  })
+
+  test('each section heading is drawn bold, and no row is bold or coloured otherwise', opts, async ($, on) => {
+    kaWorld(on, cached())
+    const clock = mock.clock(on, { now: T0 })
+    await $.classic.SessionStart({ source: 'startup', transcript_path: PATH })
+    await clock.advance(1000)
+    const pane = await mountPane($)
+    const rows = await rowsOf(pane)
+    const headings = rows.filter((row) => /^(Cache|Keepalive|Advice|Settings)\b/.test(row))
+    expect(headings.length).toBeGreaterThanOrEqual(3)
+    expect(await boldRows(pane)).toEqual(headings)
+    expect(JSON.stringify(await pane.drawn())).not.toMatch(/"color"|"dimColor"|"backgroundColor"/)
+    await pane.unmount()
+  })
+
+  test('the pane\'s rows are the command\'s answer: the same snapshot is gathered once per surface and laid out alike', opts, async ($, on) => {
+    kaWorld(on, cached())
+    const clock = mock.clock(on, { now: T0 })
+    await $.classic.SessionStart({ source: 'startup', transcript_path: PATH })
+    await clock.advance(1000)
+    const rows = await paneRows($)
+    expect(rows.join('\n')).toBe(await commandText($, ''))
+  })
+
+  test('with the pane shut, a footer draw, a tick and a pie press build no section text; the pane\'s draw does', opts, async ($, on) => {
+    kaWorld(on, cached())
+    const clock = mock.clock(on, { now: T0 })
+    const reads = countReads(on, ['judged', 'tally'])
+    await $.classic.SessionStart({ source: 'startup', transcript_path: PATH })
+    await clock.advance(3000)
+    const ticked = { ...reads }
+    const m = await mountHint($)
+    await m.unmount()
+    expect(reads.tally).toBe(ticked.tally)
+    await pressPie($)
+    await clock.advance(3000)
+    expect(reads.judged).toBe(0)
+    await paneRows($)
+    expect(reads.judged).toBeGreaterThan(0)
+  })
+
+  test('with the pane open and not yet drawn, a tick and a pie press build no section text either', opts, async ($, on) => {
+    const rec = kaWorld(on, cached())
+    const clock = mock.clock(on, { now: T0 })
+    const reads = countReads(on, ['judged', 'tally'])
+    await $.classic.SessionStart({ source: 'startup', transcript_path: PATH })
+    await clock.advance(1000)
+    const shutFrom = reads.tally!
+    await clock.advance(3000)
+    const shut = reads.tally! - shutFrom
+    const m = await mountHint($)
+    await m.press({ key: 'details' })
+    await m.unmount()
+    expect(rec.opens).toHaveLength(1)
+    const openFrom = reads.tally!
+    await clock.advance(3000)
+    // A tick reads the tally no more with the pane open than it does shut: nothing but the pane's draw builds its rows.
+    expect(reads.tally! - openFrom).toBe(shut)
+    await pressPie($)
+    await clock.advance(3000)
+    expect(reads.judged).toBe(0)
+  })
+
+  test('the open pane\'s countdown advances each second', async ($, on) => {
+    kaWorld(on, cached())
+    const clock = mock.clock(on, { now: T0 })
+    await $.classic.SessionStart({ source: 'startup', transcript_path: PATH })
+    await clock.advance(1000)
+    const pane = await mountPane($)
+    const left = async () => {
+      const rows = await rowsOf(pane)
+      expect(rows[0]).toBe('Cache')
+      const match = rows.find((row) => row.includes('left'))!.match(/(\d+):(\d\d) left/)!
+      return Number(match[1]) * 60 + Number(match[2])
+    }
+    const first = await left()
+    await clock.advance(1000)
+    expect(await left()).toBe(first - 1)
+    await clock.advance(1000)
+    expect(await left()).toBe(first - 2)
+    await pane.unmount()
+  })
+
+  test('the hint state holds the reading and the labels of the cost and the offer, and nothing the pane\'s lines were built from', opts, async ($, on) => {
+    kaWorld(on, cached())
+    const clock = mock.clock(on, { now: T0 })
+    let latest: any
+    on('state.set', async (_$: any, e: any, next: any) => {
+      if (e.plugin === 'cachier' && e.key === 'hint') latest = e.value
+      return next(e)
+    })
+    await $.classic.SessionStart({ source: 'startup', transcript_path: PATH })
+    await clock.advance(1000)
+    const stored = latest
+    expect(Object.keys(stored).sort()).toEqual(['cost', 'offer', 'reading'])
+    expect(stored.cost).toBeNull()
+    expect(stored.offer).toEqual({ label: '~19k read/refresh' })
+    await toggle($, 'on 15 3')
+    await clock.advance(1000)
+    const running = latest
+    expect(Object.keys(running).sort()).toEqual(['cost', 'offer', 'reading'])
+    expect(running.cost).toEqual({ label: '~19k read/refresh' })
+  })
+
+  test('a click on the time opens the pane at 12 rows by 48 columns before any draw, and at the size its last draw recorded after one, a close between them included', async ($, on) => {
+    const rec = kaWorld(on, cached())
+    const clock = mock.clock(on, { now: T0 })
+    await $.classic.SessionStart({ source: 'startup', transcript_path: PATH })
+    await clock.advance(1000)
+    const m = await mountHint($)
+    await m.press({ key: 'details' })
+    expect(rec.opens).toHaveLength(1)
+    expect(rec.opens[0]).toMatchObject({ id: PANE_ID, rows: 12, columns: 48 })
+    await m.press({ key: 'details' })
+    const rows = await paneRows($)
+    await m.press({ key: 'details' })
+    expect(rec.opens).toHaveLength(2)
+    expect(rec.opens[1]).toMatchObject({ id: PANE_ID, rows: rows.length, columns: widthOf(rows) })
+    await m.unmount()
+  })
+
+  test('with the pane open, a tick re-opens it at the size its draw recorded when that differs from the size last asked, once, and a stale size is re-opened by the next tick', async ($, on) => {
+    const rec = kaWorld(on, cached())
+    const clock = mock.clock(on, { now: T0 })
+    await $.classic.SessionStart({ source: 'startup', transcript_path: PATH })
+    await clock.advance(1000)
+    const m = await mountHint($)
+    await m.press({ key: 'details' })
+    await m.unmount()
+    // Asked at the provisional size, and nothing drawn yet: ticks leave it.
+    await clock.advance(2000)
+    expect(rec.opens).toHaveLength(1)
+    const rows = await paneRows($)
+    expect(rows.length).not.toBe(12)
+    await clock.advance(1000)
+    expect(rec.opens).toHaveLength(2)
+    expect(rec.opens[1]).toMatchObject({ id: PANE_ID, rows: rows.length, columns: widthOf(rows) })
+    await clock.advance(2000)
+    expect(rec.opens).toHaveLength(2)
+    expect(rec.closes).toEqual([])
+  })
+
+  test('after a session start with the pane open, no tick re-opens it before its first draw, and the first tick after that draw re-opens it once at the size the draw recorded', async ($, on) => {
+    const rec = kaWorld(on, cached())
+    const clock = mock.clock(on, { now: T0 })
+    await $.classic.SessionStart({ source: 'startup', transcript_path: PATH })
+    await clock.advance(1000)
+    const m = await mountHint($)
+    await m.press({ key: 'details' })
+    await m.unmount()
+    await paneRows($)
+    await clock.advance(1000)
+    const before = rec.opens.length
+    await $.session.start({ cwd: '/home/test', surface: 'terminal', isInteractive: true } as any)
+    await $.classic.SessionStart({ source: 'resume', transcript_path: PATH })
+    await clock.advance(3000)
+    expect(rec.opens.length).toBe(before)
+    const rows = await paneRows($)
+    await clock.advance(1000)
+    expect(rec.opens.length).toBe(before + 1)
+    expect(rec.opens[before]).toMatchObject({ id: PANE_ID, rows: rows.length, columns: widthOf(rows) })
+    await clock.advance(3000)
+    expect(rec.opens.length).toBe(before + 1)
+  })
+
+  test('with the pane open and keepalive off, a pie press that turns it on in a state that pauses draws the pause\'s reason before the next tick', async ($, on) => {
+    kaWorld(on, cached())
+    const clock = mock.clock(on, { now: T0 + 400000 })
+    await $.classic.SessionStart({ source: 'startup', transcript_path: PATH })
+    await clock.advance(1000)
+    const pane = await mountPane($)
+    expect((await rowsOf(pane)).join('\n')).toContain('Keepalive  off')
+    await pressPie($)
+    const rows = await rowsOf(pane)
+    const heading = rows.findIndex((row) => row.startsWith('Keepalive  '))
+    expect(rows[heading]).toMatch(/^Keepalive  (paused|stopped)/)
+    expect(rows[heading]).not.toContain('off')
+    expect(rows[heading + 1]!.trim()).not.toBe('')
+    expect(rows).toEqual((await commandText($, '')).split('\n'))
+    await pane.unmount()
+  })
+
+  test('with the pane open, a pie press that turns keepalive off draws the off state before the next tick', opts, async ($, on) => {
+    kaWorld(on, cached())
+    const clock = mock.clock(on, { now: T0 })
+    await $.classic.SessionStart({ source: 'startup', transcript_path: PATH })
+    await clock.advance(1000)
+    await pressPie($)
+    await clock.advance(1000)
+    const pane = await mountPane($)
+    expect((await rowsOf(pane)).join('\n')).toContain('Keepalive  on, refreshing')
+    await pressPie($)
+    const rows = await rowsOf(pane)
+    expect(rows.some((row) => row === 'Keepalive  off')).toBe(true)
+    expect(rows).toEqual((await commandText($, '')).split('\n'))
+    await pane.unmount()
+  })
+
+  test('no state the judge can give puts "no refresh is due", or a paused or stopped heading with no reason under it, in the pane', opts, async ($, on) => {
+    kaWorld(on, cached())
+    const clock = mock.clock(on, { now: T0 })
+    await $.classic.SessionStart({ source: 'startup', transcript_path: PATH })
+    await clock.advance(1000)
+    const pane = await mountPane($)
+    const seen: string[] = []
+    for (const args of ['off', 'on 15 3', 'on 400 3', 'on 15 3']) {
+      await toggle($, args)
+      await clock.advance(1000)
+      const rows = await rowsOf(pane)
+      expect(rows.join('\n')).not.toContain('no refresh is due')
+      const heading = rows.findIndex((row) => row.startsWith('Keepalive  '))
+      seen.push(rows[heading]!)
+      if (/paused|stopped/.test(rows[heading]!)) expect(rows[heading + 1]!.trim()).not.toBe('')
+    }
+    await clock.advance(400000)
+    const rows = await rowsOf(pane)
+    const heading = rows.findIndex((row) => row.startsWith('Keepalive  '))
+    expect(rows.join('\n')).not.toContain('no refresh is due')
+    expect(rows[heading + 1]!.trim()).not.toBe('')
+    expect(seen.some((row) => /paused/.test(row))).toBe(true)
+    await pane.unmount()
   })
 })
 
@@ -3339,31 +3741,13 @@ describe('the details pane: the flag follows the engine\'s record of the pane', 
     await m.unmount()
     doc.openThrows = true
     expect(await toggle($, 'on 15 3')).toContain('keepalive on')
+    await paneRows($)
     await clock.advance(1000)
     const refused = rec.opens.length
     expect(refused).toBe(2)
     await clock.advance(1000)
     await clock.advance(1000)
     expect(rec.opens.length).toBe(refused)
-  })
-
-  test('after a session start with the pane open, the pane is re-opened at the size it asks for, once per size, and later ticks asking the same size do not re-open it', { options: { keepalive_lead_s: 15, keepalive_count: 3 } }, async ($, on) => {
-    const { rec, clock, m } = await opened($, on)
-    await m.unmount()
-    const before = rec.opens.length
-    await $.session.start({ cwd: '/home/test', surface: 'terminal', isInteractive: true } as any)
-    await $.classic.SessionStart({ source: 'resume', transcript_path: PATH })
-    // The start made the size unknown, so the tick the start runs asks again, once, at the size the pane asked before.
-    expect(rec.opens.length).toBe(before + 1)
-    expect(rec.opens[before]).toMatchObject({ id: PANE_ID, rows: rec.opens[0].rows, columns: rec.opens[0].columns })
-    // The start also empties the hint, so the pane's lines shrink: that is one different size, asked once, and the ticks after it ask nothing.
-    await clock.advance(1000)
-    const rows = await paneRows($)
-    expect(rec.opens.length).toBe(before + 2)
-    expect(rec.opens[before + 1]).toMatchObject({ id: PANE_ID, rows: rows.length, columns: widthOf(rows) })
-    await clock.advance(1000)
-    await clock.advance(1000)
-    expect(rec.opens.length).toBe(before + 2)
   })
 })
 
@@ -4189,7 +4573,7 @@ describe("restoreState: a reload's session.start, over the state an earlier vers
           return { isSet: true }
         },
       },
-      ui: { log: () => {}, status: () => {} },
+      ui: { log: () => {}, status: () => {}, invalidate: () => {} },
     } as any
     await learnTranscript(fake, path)
     expect([values.get('touch'), values.get('cold')]).toEqual([123, { reason: 'cleared', atMs: 100 }])
@@ -4210,7 +4594,7 @@ describe("restoreState: a reload's session.start, over the state an earlier vers
           return { isSet: true }
         },
       },
-      ui: { log: () => {}, status: () => {} },
+      ui: { log: () => {}, status: () => {}, invalidate: () => {} },
     } as any
     await learnTranscript(fake, '/reload/new.jsonl')
     expect([values.get('transcript'), values.get('touch'), values.get('cold')]).toEqual(['/reload/new.jsonl', null, null])
@@ -4675,7 +5059,7 @@ describe("the pie's colour: keepalive's mode on the footer line", () => {
     await mainStep($)
     await turnEnd($)
     await clock.advance(20 * MIN)
-    expect(await drawnPane($)).toContain('Keepalive is paused: ')
+    expect(await drawnPane($)).toContain('Keepalive  paused ')
     expect(await drawnHint($)).not.toContain('"color":"success"')
     await toggle($, 'off')
     await clock.advance(1000)
@@ -5481,14 +5865,17 @@ describe('the best setup: one sentence, in the pane and in the bare command, pri
     expect((await commandText($, '')).replace(/\n\s*/g, ' ')).toContain(`Advice ${CHANGE}`)
   })
 
-  test('the details pane opens with the sentence, wrapped, above the status line', async ($, on) => {
+  test('the details pane carries the sentence, wrapped, in its Advice section', async ($, on) => {
     kaWorld(on, { ...opusCached(), store: { 'pauses/old': Array.from({ length: 10 }, (_, i) => pauseOf(i)) } })
     const clock = mock.clock(on, { now: T0 })
     await $.classic.SessionStart({ source: 'startup', transcript_path: PATH })
     await clock.advance(1000)
-    const drawn = await drawnPane($)
-    expect(drawn.indexOf('"A 5-minute cache with keepalive on')).toBeGreaterThanOrEqual(0)
-    expect(drawn.indexOf('"A 5-minute cache with keepalive on')).toBeLessThan(drawn.indexOf('Keepalive is off'))
+    const rows = await paneRows($)
+    const advice = rows.indexOf('Advice')
+    const sentence = rows.findIndex((row) => row.startsWith('  A 5-minute cache with keepalive on'))
+    expect(advice).toBeGreaterThanOrEqual(0)
+    expect(sentence).toBe(advice + 1)
+    expect(rows.every((row) => row.length <= 48)).toBe(true)
   })
 
   test('while keepalive is off, its "on" setups are priced at the lead and count a click on the pie would send', async ($, on) => {
@@ -5607,7 +5994,7 @@ describe('the best setup: one sentence, in the pane and in the bare command, pri
     const clock = mock.clock(on, { now: T0 })
     await $.classic.SessionStart({ source: 'startup', transcript_path: PATH })
     await clock.advance(1000)
-    expect(await drawnPane($)).toContain('"A 5-minute cache with keepalive on')
+    expect(await drawnPane($)).toContain('A 5-minute cache with keepalive on')
     await $.classic.PostCompact({ trigger: 'manual', compact_summary: 's' } as any)
     await clock.advance(1000)
     expect(await drawnPane($)).not.toContain('would have saved')

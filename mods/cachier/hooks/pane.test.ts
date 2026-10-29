@@ -1,5 +1,5 @@
 import { expect, test } from 'claude-code/testing'
-import { isPaneOpen, paneAlarm, PANE, readPane, resizePane, syncPane, togglePane } from './pane'
+import { followDraw, isPaneOpen, paneAlarm, PANE, pressSize, readPane, recordSize, resizePane, syncPane, togglePane } from './pane'
 
 // The engine's ui calls the pane makes, answered as the engine answers them: each open is recorded and listed in the engine's record of
 // open panes, each close removes it. `refuse` makes an open throw, `unplaced` makes it come back unplaced, `refuseClose` makes a close throw, `listed` is the record at the
@@ -458,4 +458,63 @@ test('a close that is refused leaves the pane counted open, so the next toggle c
   await togglePane($, SIZE)
   expect(rec.closes.length).toBe(2)
   expect(isPaneOpen()).toBe(false)
+})
+
+test('before any draw the press size is 12 rows by 48 columns; a recorded size replaces it, survives a close, and a session-start sync clears it', async () => {
+  const { $ } = engine()
+  await syncPane($)
+  expect(pressSize()).toEqual({ rows: 12, columns: 48 })
+  recordSize(WIDER)
+  expect(pressSize()).toEqual(WIDER)
+  await togglePane($, pressSize())
+  await togglePane($, pressSize())
+  expect(isPaneOpen()).toBe(false)
+  expect(pressSize()).toEqual(WIDER)
+  await syncPane($)
+  expect(pressSize()).toEqual({ rows: 12, columns: 48 })
+})
+
+test('the draw\'s follow with the pane shut opens nothing, whatever size is recorded', async () => {
+  const { $, rec } = engine()
+  await syncPane($)
+  recordSize(WIDER)
+  await followDraw($)
+  expect(rec.opens).toEqual([])
+})
+
+test('the draw\'s follow with the pane open and no size recorded opens nothing', async () => {
+  const { $, rec } = engine({ listed: [PANE] })
+  await syncPane($)
+  expect(isPaneOpen()).toBe(true)
+  await followDraw($)
+  expect(rec.opens).toEqual([])
+})
+
+test('the draw\'s follow with the pane open re-opens it at the recorded size when that differs from the size last asked, and not otherwise', async () => {
+  const { $, rec } = engine()
+  await syncPane($)
+  await togglePane($, pressSize())
+  recordSize(pressSize())
+  await followDraw($)
+  expect(rec.opens).toHaveLength(1)
+  recordSize(WIDER)
+  await followDraw($)
+  expect(rec.opens).toHaveLength(2)
+  expect(rec.opens[1]).toMatchObject({ id: PANE, rows: 4, columns: 60 })
+  await followDraw($)
+  expect(rec.opens).toHaveLength(2)
+})
+
+test('after a sync with the pane open, no follow opens it before a size is recorded, and the first follow after the record opens it once at that size', async () => {
+  const { $, rec } = engine({ listed: [PANE] })
+  recordSize(SIZE)
+  await syncPane($)
+  await followDraw($)
+  await followDraw($)
+  expect(rec.opens).toEqual([])
+  recordSize(WIDER)
+  await followDraw($)
+  await followDraw($)
+  expect(rec.opens).toHaveLength(1)
+  expect(rec.opens[0]).toMatchObject({ id: PANE, rows: 4, columns: 60 })
 })

@@ -316,33 +316,31 @@ const pingSpend = (view: KnownView, money: Money): Spend =>
 // A ping's dollars when they are shown: the unit is dollars and the ping has a price. Null shows the ping in tokens.
 const pingUsd = (view: KnownView, money: Money): number | null => (money.unit === 'dollars' ? pingSpend(view, money).usd : null)
 
-// The next refresh's cost, the one wording every surface uses: the details pane, the status line, and the toggle.
+// The next refresh's cost, the one wording every surface uses: the Keepalive section, the status line, and the toggle.
 const nextPing = (view: KnownView, money: Money): string => {
   const usd = pingUsd(view, money)
   const read = `${kTokens(view.promptTokens)} cached tokens read`
   return usd === null ? `Next refresh: ${read}` : `Next refresh: ${dollars(usd)} (${read})`
 }
 
-// The figure of one refresh at a lead: what it costs, or the context it reads, and how often at that lead. Null with no known cache,
+// The figure of one refresh at a lead: what it costs, or the context it reads. Null with no known cache,
 // or a lead at or above its TTL, which sends no refresh.
 const figureAt = (view: CacheView, leadMs: number, money: Money): HintCost | null => {
   if (view.kind !== 'known' || leadMs >= view.ttlMs) return null
   const usd = pingUsd(view, money)
   return {
     label: usd === null ? `${kTokens(view.promptTokens)} read/refresh` : `${dollars(usd)}/refresh`,
-    explain: `${nextPing(view, money)}.`,
-    figures: `One refresh every ${intervalOf(view.ttlMs - leadMs)}.`,
   }
 }
 
-// The figure keepalive's refreshes show while it runs: what each refresh costs, or the context it reads, and how often. Shown
+// The figure keepalive's refreshes show while it runs: what each refresh costs, or the context it reads. Shown
 // while it runs, a refresh in flight included; null when it is off, stopped, paused, or learned no refreshes for this pause, so
 // the pie warns instead.
 export const costOf = (k: KeepaliveState, view: CacheView, money: Money): HintCost | null =>
   k.config === null || k.stop !== null || k.runCount === 0 ? null : figureAt(view, k.config.leadMs, money)
 
-// The figure a press would show while keepalive is off: the run a press would start, at the lead and count it would use. The details
-// pane and the hover above the time show it. Null where that run sends no refresh.
+// The figure a press would show while keepalive is off: the run a press would start, at the lead and count it would use. The hover
+// above the time shows it. Null where that run sends no refresh.
 export const offerOf = (view: CacheView, money: Money, leadMs: number, runCount: number): HintCost | null =>
   runCount === 0 ? null : figureAt(view, leadMs, money)
 
@@ -355,18 +353,6 @@ export const failureOf = (k: KeepaliveState, view: CacheView): string | null => 
   if (k.config === null) return null
   if (k.stop !== null) return ENDED_BY_DESIGN.includes(k.stop) ? null : `keepalive stopped: ${k.stop}`
   return view.kind === 'known' && k.config.leadMs >= view.ttlMs ? `keepalive paused: lead ${secs(k.config.leadMs)} is not below the ${secs(view.ttlMs)} TTL` : null
-}
-
-// Why keepalive is on and not refreshing, as the pane's sentence after `Keepalive is paused:`; null while it refreshes or is off.
-// A lead at or above the TTL is no prompt's to fix, so its sentence does not say it resumes.
-export const pausedWhy = (k: KeepaliveState, view: CacheView, expired: boolean): string | null => {
-  if (k.config === null) return null
-  if (k.stop !== null) return ENDED_BY_DESIGN.includes(k.stop) ? byDesignSentence(k.stop) : failureSentence(k.stop)
-  if (view.kind !== 'known') return 'there is no cache until the next reply'
-  if (k.config.leadMs >= view.ttlMs) return `the lead ${secs(k.config.leadMs)} is not below the ${secs(view.ttlMs)} TTL`
-  if (expired) return byDesignSentence('cache expired')
-  if (k.runCount === 0) return 'your pauses rarely outlast the cache, so no refresh is sent; it resumes after your next prompt'
-  return null
 }
 
 // The pie's click: keepalive on turns it off, as `/keepalive off` does; off turns it on with the lead and count last used this

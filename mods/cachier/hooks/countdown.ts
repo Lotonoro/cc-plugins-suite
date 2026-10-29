@@ -76,7 +76,7 @@ export const cueOf = (cue: PriceCue | null): CueMark | null => (cue === null ? n
 export const refreshingOf = (on: boolean, reading: Reading | null, refresh: string | null): boolean =>
   on && refresh !== null && reading?.state === 'warm'
 
-// What the pie's colours warn of where no refresh is coming: the bare words, which the details pane and the colour sentence share.
+// What the pie's colours warn of where no refresh is coming, worded in the Keepalive section while the pie is amber or red.
 export const COLOUR_SENTENCE = "The pie turns amber in the cache's last quarter and red in its last tenth: the cache is about to lapse."
 
 // The pie's whole judgement from its inputs: the reading, whether keepalive is on, and the label of the refresh figure (null when none
@@ -94,7 +94,7 @@ export const pieOf = (reading: Reading | null, on: boolean, refresh: string | nu
 // reason only where this holds, so the two cannot disagree.
 export const rebuildDrawnOf = (reading: Reading | null, rebuild: string): boolean => reading !== null && reading.state !== 'warm' && rebuild !== ''
 
-// The details pane's first line: the cache's warmth, its time left in the lifetime `ttl` names, or cold or expired with the figure to rebuild
+// The Cache section's line: the cache's warmth, its time left in the lifetime `ttl` names, or cold or expired with the figure to rebuild
 // it (`rebuild`, empty for none). Empty when there is no reading to count from.
 export const warmthOf = (reading: Reading | null, ttl: '1h' | '5m', rebuild: string): string => {
   if (reading === null) return ''

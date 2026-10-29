@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'claude-code/testing'
 import type { HintState, Reading } from '../types'
-import { adviceRowsOf, footerLine, paneLines, paneOf, paneSize } from './hint'
+import { footerLine, paneOf, paneSizeOf } from './hint'
+import { layoutOf, type Snapshot } from './sections'
 
 // A table that builds the elements as plain data, the way a surface's table hands them out.
 const table = {
@@ -10,20 +11,13 @@ const table = {
 }
 const t = table as any
 const noop = () => {}
-const WARMTH = 'Prompt cache warm, 3:12 left (5-minute cache)'
-const WARN = "The pie turns amber in the cache's last quarter and red in its last tenth: the cache is about to lapse."
-const OFF = `Keepalive is off. ${WARN}`
 const WARM: Reading = { words: '3:12', state: 'warm', quarter: 3, warn: 'calm' }
-const COST = { label: '$0.006/refresh', explain: 'Next refresh: $0.006 (~33k cached tokens read).', figures: 'One refresh every 4:45.' }
-// What one refresh would cost if a press turned keepalive on now, as the state carries it while keepalive is off.
-const OFFER = { label: '$0.006/refresh', explain: 'Next refresh: $0.006 (~33k cached tokens read).', figures: 'One refresh every 3:30.' }
+const COST = { label: '$0.006/refresh' }
+const OFFER = { label: '$0.006/refresh' }
 const state = (extra: Partial<HintState> = {}): HintState => ({
   reading: WARM,
   cost: null,
   offer: null,
-  paused: null,
-  warmth: WARMTH,
-  breakEven: '',
   ...extra,
 })
 // The footer's parts: the pie button, the separator, and the words (a keyed Box of the details button and its hover reveal).
@@ -125,7 +119,7 @@ describe('footerLine: the pie, and its words', () => {
   test('the pie is green in every warm quarter while keepalive refreshes, and warns while it is paused', () => {
     const tenth: Reading = { words: '0:20', state: 'warm', quarter: 1, warn: 'tenth' }
     expect(toneOf(pieOf(footerLine(t, state({ reading: tenth, cost: COST }), true, noop, noop)))).toEqual({ color: 'success' })
-    expect(toneOf(pieOf(footerLine(t, state({ reading: tenth, paused: 'x' }), true, noop, noop)))).toEqual({ color: 'error' })
+    expect(toneOf(pieOf(footerLine(t, state({ reading: tenth }), true, noop, noop)))).toEqual({ color: 'error' })
   })
 
   test('an expired cache is an empty pie and the rebuild figure, red with keepalive on and dim off', () => {
@@ -174,7 +168,7 @@ describe('footerLine: the pie, and its words', () => {
   })
 
   test('the drawn line says nothing of a bar, a refresh figure, the word cache, or a paused mark, outside the hover reveal', () => {
-    const line = footerLine(t, state({ cost: COST, paused: 'x' }), true, noop, noop) as any
+    const line = footerLine(t, state({ cost: COST }), true, noop, noop) as any
     const drawn = JSON.stringify({ ...line, children: [pieOf(line), timeOf(line).children[0]] })
     expect(drawn).not.toMatch(/↻|▰|▱|cache|refresh|paused/)
   })
@@ -198,7 +192,7 @@ describe('footerLine: the pie, and its words', () => {
     const reveal = (line: any) => pieBoxOf(line).children[1]
     expect(reveal(footerLine(t, state({ cost: COST }), true, noop, noop))).toMatchObject({ props: popup, children: [{ type: 'Text', props: { dimColor: true }, children: ['cache keepalive is on'] }] })
     expect(reveal(footerLine(t, state({ reading: null }), true, noop, noop))).toMatchObject({ children: [{ children: ['cache keepalive is on'] }] })
-    expect(reveal(footerLine(t, state({ paused: 'x' }), true, noop, noop))).toMatchObject({ children: [{ children: ['cache keepalive is paused'] }] })
+    expect(reveal(footerLine(t, state(), true, noop, noop))).toMatchObject({ children: [{ children: ['cache keepalive is paused'] }] })
     expect(reveal(footerLine(t, state(), false, noop, noop))).toMatchObject({ children: [{ children: ['cache keepalive is off'] }] })
   })
 
@@ -209,99 +203,38 @@ describe('footerLine: the pie, and its words', () => {
   })
 })
 
-const SESSION = 'This session: 2 refreshes costing ~33k tokens read.'
-const BREAK_EVEN = "Keepalive pays off if you're back between 5:00 and 19:15."
+const SNAPSHOT: Snapshot = {
+  cache: ['Prompt cache warm, 3:12 left (5-minute cache)'],
+  keepalive: { state: 'off', lines: ['The pie turns amber in the cache\'s last quarter and red in its last tenth: the cache is about to lapse.'] },
+  advice: ['A 1-hour cache with keepalive off would have saved $1.20 over 10 recent pauses.'],
+  settings: [{ name: 'unit', value: 'dollars', source: 'cost_unit option', change: '/keepalive unit tokens|dollars' }],
+}
+const ROWS = layoutOf(SNAPSHOT)
 
-describe('paneLines: the lines the details pane holds', () => {
-  test('keepalive off: the warmth, the state with what its colours warn of, and what one refresh would cost, as the state offers it', () => {
-    expect(paneLines(state({ offer: OFFER }), false, '')).toEqual([WARMTH, OFF, OFFER.explain, OFFER.figures])
-  })
-
-  test('keepalive off with no figure to offer: the warmth and the state alone', () => {
-    expect(paneLines(state(), false, '')).toEqual([WARMTH, OFF])
-  })
-
-  test('the offer is stated only while keepalive is off, and the colours\' warning only then', () => {
-    expect(paneLines(state({ offer: OFFER }), true, '')).not.toContain(OFFER.explain)
-    expect(paneLines(state({ cost: COST }), true, '')).not.toContain(OFF)
-  })
-
-  test('refreshing: the state, and the refresh\'s cost and interval, with no sentence about a click', () => {
-    expect(paneLines(state({ cost: COST }), true, '')).toEqual([WARMTH, 'Keepalive is on and refreshing the cache.', COST.explain, COST.figures])
-  })
-
-  test('paused: why, with no refresh cost, and what the colours warn of', () => {
-    expect(paneLines(state({ paused: 'the cache expired; it resumes after your next prompt' }), true, '')).toEqual([
-      WARMTH,
-      `Keepalive is paused: the cache expired; it resumes after your next prompt. ${WARN}`,
-    ])
-  })
-
-  test('the break-even line and the session tally follow the state, each left out when empty', () => {
-    expect(paneLines(state({ offer: OFFER, breakEven: BREAK_EVEN }), false, SESSION)).toEqual([WARMTH, OFF, OFFER.explain, OFFER.figures, BREAK_EVEN, SESSION])
-    expect(paneLines(state({ breakEven: '' }), false, '')).toEqual([WARMTH, OFF])
-  })
-
-  test('with no cache to count the warmth is left out; with no transcript state the pane keeps the keepalive sentence alone', () => {
-    expect(paneLines(state({ reading: null, warmth: '' }), false, '')).toEqual([OFF])
-    expect(paneLines(null, true, '')).toEqual(['Keepalive is on, with no cache to count from yet.'])
-    expect(paneLines(null, false, '')).toEqual([OFF])
-  })
-
-  test('no history sentence is in it, and no sentence says ping, armed, cold or par, or asks for a click, whatever the state', () => {
-    const full = state({ offer: OFFER, breakEven: BREAK_EVEN })
-    const panes = [
-      paneLines(full, false, SESSION),
-      paneLines({ ...full, cost: COST }, true, SESSION),
-      paneLines({ ...full, paused: 'its refreshes for this pause are used up; it resumes after your next prompt' }, true, SESSION),
-      paneLines({ ...full, paused: 'the cache expired; it resumes after your next prompt' }, true, SESSION),
-    ]
-    for (const line of panes.flat()) {
-      expect(line).not.toMatch(/ping|armed|cold|\bpar\b/i)
-      expect(line).not.toMatch(/click|Learned|Earlier pauses|Shown in tokens|Longest|Lapse misses|The pie is/i)
-    }
+describe('paneSizeOf: the rows and columns the pane asks for, the laid-out rows\' count and longest row', () => {
+  test('one row per row, blank rows included, and the columns of the longest row', () => {
+    expect(paneSizeOf([{ text: 'ab', heading: true }, { text: '' }, { text: 'abc' }])).toEqual({ rows: 3, columns: 3 })
+    expect(paneSizeOf(ROWS)).toEqual({ rows: ROWS.length, columns: Math.max(...ROWS.map((row) => row.text.length)) })
   })
 })
 
-describe('paneSize: the rows and columns the pane asks for, its lines\' count and longest line', () => {
-  test('one row per line, and the columns of the longest line', () => {
-    expect(paneSize(['ab', 'abc'])).toEqual({ rows: 2, columns: 3 })
-    expect(paneSize([OFF])).toEqual({ rows: 1, columns: OFF.length })
-  })
-})
-
-describe('paneOf: the sentences as text, one row each, with no switch', () => {
-  test('one row per sentence, cut at the pane\'s width rather than wrapped, and no button in it', () => {
-    const pane = paneOf(t, ['a', 'b']) as any
-    expect(pane.children).toHaveLength(2)
-    expect(pane.children[0]).toMatchObject({ type: 'Text', props: { wrap: 'truncate-end' }, children: ['a'] })
-    expect(pane.children[1]).toMatchObject({ type: 'Text', props: { wrap: 'truncate-end' }, children: ['b'] })
-    expect(JSON.stringify(pane)).not.toMatch(/"type":"Button"|Turn keepalive/)
+describe('paneOf: the answer\'s rows as text, one Text per row, headings bold and nothing coloured', () => {
+  test('one Text per row in the answer\'s order with its text, cut at the pane\'s width rather than wrapped', () => {
+    const pane = paneOf(t, ROWS) as any
+    expect(pane.children).toHaveLength(ROWS.length)
+    expect(pane.children.map((child: any) => child.children)).toEqual(ROWS.map((row) => [row.text]))
+    for (const child of pane.children) expect(child).toMatchObject({ type: 'Text', props: { wrap: 'truncate-end' } })
   })
 
-  test('nothing in it is hovered or positioned absolutely', () => {
-    expect(JSON.stringify(paneOf(t, [WARMTH, OFF]))).not.toMatch(/hover|absolute/)
-  })
-})
-
-describe('adviceRowsOf: the advice sentence as the pane\'s first rows', () => {
-  const SENTENCE = 'A 1-hour cache with keepalive off would have saved $1.20 over 10 recent pauses: set "promptCacheTtl": "1h" in settings.json and, in the new session, click the pie off.'
-
-  test('wrapped at the widest other line, at least 48 columns, with no indent and no word cut', () => {
-    const rows = adviceRowsOf(SENTENCE, ['short'])
-    expect(rows.every((row) => row.length <= 48 && !row.startsWith(' '))).toBe(true)
-    expect(rows.join(' ')).toBe(SENTENCE)
-    expect(rows.length).toBeGreaterThan(2)
+  test('a heading row is bold and no other row is', () => {
+    const pane = paneOf(t, ROWS) as any
+    const bold = pane.children.map((child: any) => child.props.bold === true)
+    expect(bold).toEqual(ROWS.map((row) => row.heading === true))
+    expect(pane.children.filter((child: any) => child.props.bold === true).map((child: any) => child.children[0])).toEqual(['Cache', 'Keepalive  off', 'Advice', 'Settings'])
   })
 
-  test('a wider other line widens the rows to match it', () => {
-    const rows = adviceRowsOf(SENTENCE, ['y'.repeat(70)])
-    expect(rows.every((row) => row.length <= 70)).toBe(true)
-    expect(rows[0]!.length).toBeGreaterThan(48)
-    expect(rows.join(' ')).toBe(SENTENCE)
-  })
-
-  test('no sentence, no rows', () => {
-    expect(adviceRowsOf('', ['short'])).toEqual([])
+  test('no row is coloured, and no button, hover or absolute position is in it', () => {
+    const drawn = JSON.stringify(paneOf(t, ROWS))
+    expect(drawn).not.toMatch(/"color"|"dimColor"|"backgroundColor"|"type":"Button"|hover|absolute/)
   })
 })

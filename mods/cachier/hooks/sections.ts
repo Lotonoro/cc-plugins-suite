@@ -35,8 +35,7 @@ export const sectionsOf = (snap: Snapshot): Section[] =>
     { title: 'Settings' as const, state: null, lines: snap.settings.map(settingLine) },
   ].filter((section) => section.state !== null || section.lines.length > 0)
 
-// A sentence wrapped at the width: the first line indented two, each continuation four, no word broken. The details pane passes its own
-// width and no indent.
+// A sentence wrapped at the width: the first line indented two, each continuation four, no word broken.
 export const wrapLine = (text: string, width = WRAP, first = '  ', rest = '    '): string[] => {
   const lines: string[] = []
   let line = first

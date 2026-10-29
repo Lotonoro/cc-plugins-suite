@@ -35,11 +35,8 @@ const SAMPLE = {
   },
   hint: {
     reading: { words: 'w', state: 'warm', quarter: 1, warn: 'quarter' },
-    cost: { label: 'l', explain: 'e', figures: 'f' },
-    offer: { label: 'l', explain: 'e', figures: 'f' },
-    paused: 'p',
-    warmth: 'w',
-    breakEven: 'b',
+    cost: { label: 'l' },
+    offer: { label: 'l' },
   },
   tally: {
     pause: { pings: 1, spend: { input: 1, read: 1, write5m: 1, write1h: 1, usd: 1, why: 'w' } },
@@ -108,7 +105,7 @@ const fingerprint = () => fnv(shapeOf({ sample: SAMPLE, views: VIEWS, defaults: 
 // and 8 kept the details' first line in the stored hint as its warmth, and dropped the history sentences, the unit notes, the marker and the bar from it,
 // and 9 dropped the keepalive generation from the stored hint, which nothing read, and 10 kept in keepalive's state whether its cost was stated,
 // and 11 gave keepalive a run id that only an enable advances, so a run's cost is stated once for that run, and 12 dropped
-// keepalive's record of a cost shown (its disclosed and stated flags and the run id), with the gate that held a refresh until then, and 13 added the output tokens of the reply the view's prefix comes from, and 14 added the price read's cue.
+// keepalive's record of a cost shown (its disclosed and stated flags and the run id), with the gate that held a refresh until then, and 13 added the output tokens of the reply the view's prefix comes from, and 14 added the price read's cue, and 15 dropped from the stored hint the pane's text (the warmth and break-even lines, the paused reason, and the cost's and offer's explanation and figures), which the pane's draw gathers itself.
 const SHAPES: Record<number, string> = {
   2: 'd13a40b8',
   3: 'ce6161ac',
@@ -123,6 +120,7 @@ const SHAPES: Record<number, string> = {
   12: '684c6cf5',
   13: 'ba479bff',
   14: 'bc521d0f',
+  15: '49fd577c',
 }
 
 describe('the state shape: a change to a state type moves STATE_SHAPE', () => {

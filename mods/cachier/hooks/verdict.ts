@@ -93,7 +93,7 @@ export const rebuildSpendOf = (view: Extract<CacheView, { kind: 'known' }>, mone
   return spendOf(money.list, view.model, view.speed, write, total)
 }
 
-// The rebuild figure in the unit shown, for the footer and the pane's warmth line; empty for a view that isn't known.
+// The rebuild figure in the unit shown, for the footer and the Cache section's warmth line; empty for a view that isn't known.
 export const rebuildOf = (view: CacheView, money: Money): string => (view.kind === 'known' ? uponOf(rebuildSpendOf(view, money), money.unit) : '')
 
 // One refresh's dollars, and what a rewrite costs over a read, for the context a warm cache holds; null with no warm cache or no
