@@ -156,7 +156,9 @@ tenth: the cache is about to lapse) just below the heading or that reason, whate
 with a reading and not refreshing, on a reset or expired cache too. With keepalive off, and where a press would send refreshes,
 the refresh's cost or the context it reads, and how often one is sent, come straight after the warning. A keepalive paused by design
 (its count used, or its cache expired) names what a refresh reads or costs and, where the cache is known and the lead is below the TTL, how often one would
-be sent. The Keepalive section is always shown, as its heading alone when it has nothing else to say. Cache, Advice and Settings
+be sent. With keepalive on and no stop held, the heading reads `paused` while a cache reset is being recorded, and the first line
+beneath it says so; the reason the section would give with no reset pending, when it has one, follows as a second reason row, after
+the colour sentence when that shows. The Keepalive section is always shown, as its heading alone when it has nothing else to say. Cache, Advice and Settings
 are left out when they have nothing to say. The text wraps at 48 columns. A count pins the refreshes per pause for the session;
 without one, each pause sends the learned count, else the break-even count.
 

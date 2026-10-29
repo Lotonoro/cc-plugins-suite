@@ -1598,7 +1598,7 @@ describe('keepalive: the queue and the race', () => {
     expect(rec.forks.length).toBe(1)
   })
 
-  test('a /keepalive answer while a cold mark is being written says the cache reset is being recorded, and shows no cost', async ($, on) => {
+  test('a /keepalive answer while a cold mark is being written says the cache reset is being recorded, and keeps the running figure', async ($, on) => {
     const doc: any = { text: '', exists: false }
     const rec = kaWorld(on, doc)
     let release: () => void = () => {}
@@ -1625,7 +1625,7 @@ describe('keepalive: the queue and the race', () => {
     await clock.settle()
     expect(holding).toBe(true)
     expect(await toggle($, '')).toContain('paused until the cache reset is recorded')
-    expect(await toggle($, '')).not.toContain('Next refresh')
+    expect(await toggle($, '')).toContain('Next refresh: ~19k cached tokens read, every 4 min')
     release()
     await switching
     await clock.advance(1000)
@@ -1635,6 +1635,31 @@ describe('keepalive: the queue and the race', () => {
     await turnEnd($)
     await clock.advance(1000)
     expect(await toggle($, '')).toContain('Next refresh: ~19k cached tokens read')
+  })
+
+  test('a cold mark whose write throws before the mark is set keeps the running figure under the pending reason until the next turn begins', async ($, on) => {
+    const doc: any = cached()
+    const rec = kaWorld(on, doc)
+    let failing = false
+    // A thrown hook is skipped by the engine, so the write would land; a refused write is how a write fails here.
+    on('state.set', (_$: any, e: any, next: any) => (failing && e.key === 'cold' && e.value !== null ? { deny: 'cold write refused' } : next(e)))
+    const clock = mock.clock(on, { now: T0 })
+    await $.classic.SessionStart({ source: 'startup', transcript_path: PATH })
+    await clock.settle()
+    await toggle($, 'on 60 2')
+    await mainStep($)
+    await turnEnd($)
+    failing = true
+    await $.classic.PostModelSwitch({ from_model: 'a', to_model: 'b', requested_model: 'b', source: 'command', prompt_cache_warm: true, cache_ttl: '5m', context_tokens: 1, estimated_cache_write_usd: 0, pricing: 'catalog' } as any)
+    failing = false
+    await clock.advance(1000)
+    const held = await toggle($, '')
+    expect(held).toContain('Keepalive  paused until the cache reset is recorded Next refresh: ~19k cached tokens read, every 4 min')
+    expect(held).not.toContain('next refresh in')
+    expect(lastStatus(rec)).toContain('a state write failed')
+    await mainStep($)
+    await clock.advance(1000)
+    expect(await toggle($, '')).not.toContain('until the cache reset is recorded')
   })
 
   test('a cost not yet shown with figures does not hold the first refresh: it is sent when due, and no tick toasts', async ($, on) => {
@@ -1838,6 +1863,42 @@ describe('keepalive: the queue and the race', () => {
     await switching
     await clock.advance(1000)
     expect(rec.forks.length).toBe(0)
+  })
+
+  test('a cache that expires while the cold mark of a model switch is being written records no stop', async ($, on) => {
+    const doc: any = cached()
+    const rec = kaWorld(on, doc)
+    const stops: string[] = []
+    let watching = false
+    let writeHeld = false
+    let releaseWrite: () => void = () => {}
+    const writeGate = new Promise<void>((resolve) => {
+      releaseWrite = resolve
+    })
+    // The switch's cold-mark write holds before the mark is set, so the tick runs past the cache's expiry while the write is pending.
+    on('state.set', async (_$: any, e: any, next: any) => {
+      if (e.key === 'keepalive' && typeof e.value?.stop === 'string') stops.push(e.value.stop)
+      if (watching && !writeHeld && e.key === 'cold') {
+        writeHeld = true
+        await writeGate
+      }
+      return next(e)
+    })
+    const clock = mock.clock(on, { now: T0 })
+    await $.classic.SessionStart({ source: 'startup', transcript_path: PATH })
+    await toggle($, 'on 60 2')
+    // The turn stays open: the gap stays shut, so no refresh goes out before the expiry, and the tick past it has a stop to write.
+    await mainStep($)
+    watching = true
+    const switching = $.classic.PostModelSwitch({ from_model: 'a', to_model: 'b', requested_model: 'b', source: 'command', prompt_cache_warm: true, cache_ttl: '5m', context_tokens: 1, estimated_cache_write_usd: 0, pricing: 'catalog' } as any)
+    for (let i = 0; i < 200 && !writeHeld; i++) await clock.advance(0)
+    expect(writeHeld).toBe(true)
+    await clock.advance(301000)
+    expect(stops).toEqual([])
+    expect(rec.forks.length).toBe(0)
+    releaseWrite()
+    await switching
+    await clock.advance(1000)
   })
 
   test('a model switch marks the cache cold before the hooks beneath it run: a due ping sends no fork while one of them holds the switch', async ($, on) => {
@@ -5078,7 +5139,7 @@ describe('the bare command answers whole: the text its sections lay out, for fix
     )
   })
 
-  test('a cold mark being written: the whole answer says the cache reset is being recorded, and gives no next-refresh figure', { options: { keepalive_lead_s: 60, keepalive_count: 2 } }, async ($, on) => {
+  test('a cold mark being written: the whole answer says the cache reset is being recorded, and keeps the running figure', { options: { keepalive_lead_s: 60, keepalive_count: 2 } }, async ($, on) => {
     const doc: any = { text: '', exists: false }
     kaWorld(on, doc)
     let release: () => void = () => {}
@@ -5105,32 +5166,26 @@ describe('the bare command answers whole: the text its sections lay out, for fix
     await clock.settle()
     try {
       expect(holding).toBe(true)
-      expect(await commandText($, '')).toBe(
+      // The rows are compared joined: a row's 48-column wrap is not what this pins, only the rows and their order.
+      expect((await commandText($, '')).replace(/\n {4}/g, ' ')).toBe(
         [
           'Cache',
           '  Prompt cache warm, 5:00 left (5-minute cache)',
           '',
           'Keepalive  paused',
           '  until the cache reset is recorded',
-          '  Each pause sends at most 2 refreshes: the',
-          '    count you pinned with /keepalive on.',
+          '  Next refresh: ~19k cached tokens read, every 4 min',
+          '  Each pause sends at most 2 refreshes: the count you pinned with /keepalive on.',
           '',
           'Advice',
-          '  Shown in tokens: no price for an unnamed',
-          '    model.',
+          '  Shown in tokens: no price for an unnamed model.',
           '',
           'Settings',
-          '  TTL 5 min (read from the last response): set',
-          '    "promptCacheTtl": "1h" in settings.json for',
-          '    1 h (new sessions).',
+          '  TTL 5 min (read from the last response): set "promptCacheTtl": "1h" in settings.json for 1 h (new sessions).',
           '  lead 60 s: /keepalive on <lead seconds>.',
-          '  refreshes a pause 2, pinned: /keepalive on',
-          '    <lead seconds> <refreshes>, or',
-          '    keepalive_count.',
-          '  start mode off (keepalive_default option):',
-          '    /keepalive default on|off, for new sessions.',
-          '  unit dollars (cost_unit option): /keepalive',
-          '    unit tokens|dollars.',
+          '  refreshes a pause 2, pinned: /keepalive on <lead seconds> <refreshes>, or keepalive_count.',
+          '  start mode off (keepalive_default option): /keepalive default on|off, for new sessions.',
+          '  unit dollars (cost_unit option): /keepalive unit tokens|dollars.',
         ].join('\n'),
       )
       // The accepted window: the heading reads paused while the reset is being recorded, and the pie is still green with keepalive on.
@@ -5530,6 +5585,41 @@ describe('the Keepalive section: the colour sentence wherever no refresh is comi
       expect(await drawnHint($)).toContain('"color":"success"')
       await clock.advance(1000)
       expect(await hint($)).toBe('reset')
+    } finally {
+      release()
+    }
+    await switching
+  })
+
+  test('a cold mark from a model switch with its mark set and its write unrecorded, in the last quarter: the sentence is followed by the no-live-cache line', { options: { keepalive_lead_s: 20, keepalive_count: 2 } }, async ($, on) => {
+    const doc: any = { text: '', exists: false }
+    kaWorld(on, doc)
+    let release: () => void = () => {}
+    const gate = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    let holding = false
+    on('state.set', (_$: any, e: any, next: any) => {
+      if (e.key === 'stats' && e.value?.coldSince?.length > 0 && !holding) {
+        holding = true
+        return gate.then(() => next(e))
+      }
+      return next(e)
+    })
+    const clock = mock.clock(on, { now: T0 })
+    await $.classic.SessionStart({ source: 'startup', transcript_path: PATH })
+    await clock.settle()
+    await toggle($, 'on 20 2')
+    doc.exists = undefined
+    doc.text = cached().text
+    await mainStep($)
+    await turnEnd($)
+    await clock.advance(250000)
+    const switching = $.classic.PostModelSwitch({ from_model: 'a', to_model: 'b', requested_model: 'b', source: 'command', prompt_cache_warm: true, cache_ttl: '5m', context_tokens: 1, estimated_cache_write_usd: 0, pricing: 'catalog' } as any)
+    await clock.settle()
+    try {
+      expect(holding).toBe(true)
+      expect(await toggle($, '')).toContain(`Keepalive  paused until the cache reset is recorded ${SENTENCE} no live cache to count from, nothing scheduled; there is no cache until the next reply`)
     } finally {
       release()
     }
