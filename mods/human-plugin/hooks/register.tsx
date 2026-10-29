@@ -4,7 +4,7 @@ import type { OwedNotices, Store } from '../types'
 import { TOOL, act, carryNext, clearAll, parseInput, type Outcome } from './items'
 import { STEERING, TOOL_SPEC } from './steering'
 import { oneLine, stateOf } from './done'
-import { ARG_HINT, COMMAND, DESCRIPTION, FAILED, REBUILDING, USAGE, answerLine, answerTo, parseAsk } from './commands'
+import { ARG_HINT, COMMAND, DESCRIPTION, FAILED, PHONE_REBUILDING, REBUILDING, USAGE, answerLine, answerTo, parseAsk, phoneBlock } from './commands'
 import { carried, carryHeld, endTurn, giveBack, handOver, notEntered, offer, pending, reset, setOnChange, startTurn } from './turns'
 import { band, pane, toolLine, type Handlers, type View } from './ui'
 import { correctionText, newlyRestated, restatedIds } from './restatement'
@@ -31,10 +31,14 @@ const finishTurn = ($: EngineInterface, turnId: string, interrupted: boolean, is
   if (submit !== null) inBackground($, enter($, submit.text, () => notEntered(submit.notices)))
 }
 
-// A hook that threw or overran is logged with why, to the transcript; its `.catch` then answers in its place.
-const failed = ($: EngineInterface, hook: string, reason: HookFailure): void => {
+// A hook that threw or overran is logged with why, to the transcript; its `.catch` then answers in its place. A failure a hook caught
+// in its own body is logged here too, as a throw.
+const failed = ($: EngineInterface, hook: string, reason: Pick<HookFailure, 'kind' | 'message'>): void => {
   $.ui.log(`human-plugin: the ${hook} hook ${reason.kind}: ${reason.message ?? 'no message'}`)
 }
+// The stack of an error a hook caught, not only its message: a log line that names no place cannot be traced back to where the failure
+// came from. An error with no stack is logged by its message, and a value that is not an Error as it is.
+const messageOf = (err: unknown): string => (err instanceof Error ? err.stack || err.message : String(err))
 
 // The list as it stands now, for the check a notice gets right before its row is appended. An unreadable list checks nothing:
 // the notice is appended, and the failure is logged.
@@ -269,10 +273,28 @@ export const wireHooks = (on: On, windowMs: number): void => {
   })
 
   // The human's own prompt carries the notices an interrupt held, as context beside it: once, and only when it enters. A
-  // held notice whose item the agent has removed since is dropped, the list being read here as at the turn's end.
+  // held notice whose item the agent has removed since is dropped, the list being read here as at the turn's end. A prompt
+  // from the phone also carries the open items (commands.ts's phoneBlock), as context the person does not see: it waits for a
+  // rebuild in progress, as /asks does, and when the wait runs out it carries the rebuilding line instead. The block is in the
+  // one call that passes the prompt on, ahead of the held notices. The wait comes before the read, so the read sees what a rebuild filled
+  // in. A failed wait has its own try: it is logged, and the prompt goes through with its held notices, filtered as above, and no block.
+  // The read sits outside that try, so an unreadable list still reaches the catch.
   on('prompt.submit', async ($, e, next) => {
+    const phone = e.origin.kind === 'bridge' && e.command === undefined
+    // Null when the wait failed: no block is built then.
+    let rebuilt: boolean | null = true
+    if (phone) {
+      try {
+        rebuilt = await restored($)
+      } catch (err) {
+        rebuilt = null
+        failed($, 'prompt.submit', { kind: 'throw', message: messageOf(err) })
+      }
+    }
     const store = await readList($)
-    return carryHeld(e, next, id => stateOf(store, id) !== 'missing', text => showSent($, text))
+    const block = phone && rebuilt !== null ? (rebuilt ? phoneBlock(store.items) : PHONE_REBUILDING) : null
+    const withBlock = block === null ? e : { ...e, context: [...(e.context ?? []), block] }
+    return carryHeld(withBlock, next, id => stateOf(store, id) !== 'missing', text => showSent($, text))
   }).catch(($, e, next) => {
     failed($, 'prompt.submit', next.error)
     // An unreadable list carries the held notices unchecked rather than holding them back.

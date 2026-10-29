@@ -8,22 +8,52 @@ import { bandOrder } from './layout'
 // `listLine` cuts a list line's title and its answer, and the answer an answer form echoes; `listItems` is how many items the list names before the
 // rest fold into a line of numbers; `foot` is the most the foot of `/asks <n>` prints, which its fixed wording keeps it to. The foot is never cut.
 export const LIMITS = { cap: 4000, floor: 1000, title: 300, label: 200, listLine: 80, listItems: 20, foot: 500 } as const
+// The phone block (phoneBlock) names at most PHONE_ITEMS open items, each title cut to PHONE_TITLE UTF-16 units, its ellipsis counted.
+export const PHONE_ITEMS = 10
+export const PHONE_TITLE = 60
 
 export const COMMAND = 'asks'
-export const DESCRIPTION = 'Print the to-do list, or one item by number; answer an item with /asks <n> done, yes, no, <option number>, or reply <text>.'
+// The answer forms `/asks <n> <form>` takes, as the wording names them: the description, the usage and the phone block name them alike.
+const FORMS = 'done, yes, no, <option number>, or reply <text>'
+export const DESCRIPTION = `Print the to-do list, or one item by number; answer an item with /asks <n> ${FORMS}.`
 // The argument as the command's registration shows it: the number, then the form.
 export const ARG_HINT = '[n [done | yes | no | option | reply text]]'
 
 // Every line the command prints starts with this indent. It also keeps an item's text from reading as a marker to the rebuild: replay.ts reads
 // `#<n> is done:` only at the start of a line.
 const INDENT = '  '
-export const USAGE = `${INDENT}Usage: /asks, or /asks <n> for one item.\n${INDENT}Answer an item: /asks <n> done, yes, no, <option number>, or reply <text>.`
+export const USAGE = `${INDENT}Usage: /asks, or /asks <n> for one item.\n${INDENT}Answer an item: /asks <n> ${FORMS}.`
 export const REBUILDING = `${INDENT}The list is still being rebuilt from the transcript; run /asks again in a moment.`
 export const FAILED = `${INDENT}/asks failed: the error was logged.`
 const NOTHING = `${INDENT}Nothing is on the list.`
 const NO_SUCH = `${INDENT}There is no such item.`
 const CUT = `${INDENT}The rest was cut.`
 const CUT_LINE = `\n${CUT}`
+// The phone block is unseen context a prompt from the phone carries: the person cannot see the list there. Every line of it is indented, as the
+// list's own lines are, so that no line reads back as a marker in the rebuild (replay.ts).
+const ON_PHONE = 'The user is on their phone and cannot see the list.'
+const indented = (lines: readonly string[]): string => lines.map(line => `${INDENT}${line}`).join('\n')
+export const PHONE_REBUILDING = indented([ON_PHONE, `The list is still being rebuilt from the transcript; /${COMMAND} lists it once the rebuild is done.`])
+
+// The open items in the band's order, which `/asks` and the phone block both take.
+const openOf = (items: readonly Item[]): Item[] => items.filter(it => it.state === 'open').sort(bandOrder)
+
+// The block for the agent: the open items on one line, `#<n> <title>` each, in the band's order. The first PHONE_ITEMS are named, each title on
+// that line and cut to PHONE_TITLE, and the count of the rest follows. The agent ends its reply with that line, which names items by their
+// numbers, so the restatement check passes it. Null when no item is open.
+export const phoneBlock = (items: readonly Item[]): string | null => {
+  const open = openOf(items)
+  if (open.length === 0) return null
+  const named = open.slice(0, PHONE_ITEMS).map(it => `#${it.id} ${cutLine(it.title, PHONE_TITLE)}`).join(', ')
+  const more = open.length - PHONE_ITEMS
+  const line = more > 0 ? `${named}, and ${more} more ${more === 1 ? 'is' : 'are'} open` : named
+  return indented([
+    ON_PHONE,
+    `/${COMMAND} lists the items, and /${COMMAND} <n> <form> answers one, the form being ${FORMS}.`,
+    'End this reply with the line below, which lists the open items:',
+    line,
+  ])
+}
 
 // What the argument asks for: the list (blank), one item by its number, an answer to an item by its number and a form, or nothing the command knows
 // (the usage). Blanks are the ASCII spaces and tabs around the argument and between the number and the form. A number is ASCII digits, read as a
@@ -84,7 +114,7 @@ export const answerLine = (outcome: AnswerOutcome): string => {
 // LIMITS.listItems are named; the rest fold into one line of their numbers, in id order.
 const answerList = (items: readonly Item[]): string => {
   if (items.length === 0) return NOTHING
-  const open = items.filter(it => it.state === 'open').sort(bandOrder)
+  const open = openOf(items)
   const answered = items.filter(it => it.state !== 'open').sort(bandOrder)
   const listed = [...open, ...answered]
   const lines = listed.slice(0, LIMITS.listItems).map(listLine)

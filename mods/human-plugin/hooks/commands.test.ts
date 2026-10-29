@@ -1,5 +1,5 @@
 import { expect, test } from 'claude-code/testing'
-import { ARG_HINT, DESCRIPTION, LIMITS, USAGE, answerLine, answerTo, parseAsk } from './commands'
+import { ARG_HINT, DESCRIPTION, LIMITS, PHONE_ITEMS, PHONE_REBUILDING, PHONE_TITLE, USAGE, answerLine, answerTo, parseAsk, phoneBlock } from './commands'
 import { TOOL } from './items'
 import { replay, rowsOf, type Source } from './replay'
 import type { Item, Turn } from '../types'
@@ -504,4 +504,87 @@ test('a resume reads back nothing from what /asks prints: a marker line in an it
   // The same lines unindented would read as the human's press on the item: the indent is what keeps them from it.
   const unindented = { ...printedBack, message: { role: 'user', content: shown.replace(/^ {2}/gm, '') } }
   expect((await replay(transcriptOf(add, added, unindented))).store.items[0]?.state).toBe('done-pending')
+})
+
+// The phone block a prompt from the phone carries: its last line is the one the agent ends its reply with.
+test('the phone block says the user cannot see the list, names the forms, and ends on the open items in the band\'s order, the answered one left out', () => {
+  const items = [made(1, { title: 'Pick a db' }), made(2, { title: 'Approve PR', blocking: true }), made(3, { state: 'done-pending', answer: 'yes' })]
+  expect(phoneBlock(items)).toBe(
+    [
+      '  The user is on their phone and cannot see the list.',
+      '  /asks lists the items, and /asks <n> <form> answers one, the form being done, yes, no, <option number>, or reply <text>.',
+      '  End this reply with the line below, which lists the open items:',
+      '  #2 Approve PR, #1 Pick a db',
+    ].join('\n'),
+  )
+})
+
+test('thirty open items of 200-character titles: the block names ten, each title cut to 60 units with its ellipsis, and says twenty more are open', () => {
+  expect([PHONE_ITEMS, PHONE_TITLE]).toEqual([10, 60])
+  const items = Array.from({ length: 30 }, (_, k) => made(k + 1, { title: 'x'.repeat(200) }))
+  const line = lastLine(phoneBlock(items) ?? '')
+  expect(line.endsWith(', and 20 more are open')).toBe(true)
+  const named = line.slice('  '.length).replace(/, and 20 more are open$/, '').split(', ')
+  expect(named).toHaveLength(PHONE_ITEMS)
+  named.forEach((entry, k) => {
+    expect(entry.slice(entry.indexOf(' ') + 1).length).toBeLessThanOrEqual(PHONE_TITLE)
+    expect(entry).toBe(`#${k + 1} ${'x'.repeat(PHONE_TITLE - 1)}…`)
+  })
+})
+
+test('every line of the block begins with two spaces, and a title with line breaks is named on one line', () => {
+  const separator = String.fromCharCode(0x2028)
+  const text = phoneBlock([made(1, { title: `Pick\r\na db${separator}now\nplease` }), made(2)]) ?? ''
+  expect(lineList(text)).toHaveLength(4)
+  for (const line of lineList(text)) expect(line.startsWith('  ')).toBe(true)
+  expect(lastLine(text)).toBe('  #1 Pick a db now please, #2 Item 2')
+})
+
+test('the block names /asks and each answer form, and no plan', () => {
+  const text = phoneBlock([made(1)]) ?? ''
+  expect(text).toContain('/asks')
+  expect(text).toContain('done, yes, no, <option number>, or reply <text>')
+  expect(text).not.toMatch(/plan/i)
+})
+
+test('no open item, or no item at all, gives no block; an open item gives one', () => {
+  expect(phoneBlock([made(1, { state: 'done-pending', answer: 'yes' }), made(2, { state: 'done-waiting', answer: 'no' })])).toBeNull()
+  expect(phoneBlock([])).toBeNull()
+  expect(phoneBlock([made(3)])).not.toBeNull()
+})
+
+test('ten open items are all named, with no count; eleven name ten and say one more is open', () => {
+  const ten = Array.from({ length: 10 }, (_, k) => made(k + 1))
+  const names = ten.map(it => `#${it.id} Item ${it.id}`).join(', ')
+  expect(lastLine(phoneBlock(ten) ?? '')).toBe(`  ${names}`)
+  expect(lastLine(phoneBlock([...ten, made(11)]) ?? '')).toBe(`  ${names}, and 1 more is open`)
+})
+
+test('the rebuilding block says the user cannot see the list, that the list is still being rebuilt and that /asks lists it, every line indented, and names no item', () => {
+  expect(PHONE_REBUILDING).toContain('The user is on their phone and cannot see the list.')
+  expect(PHONE_REBUILDING).toContain('still being rebuilt')
+  expect(PHONE_REBUILDING).toContain('/asks lists it')
+  for (const line of lineList(PHONE_REBUILDING)) expect(line.startsWith('  ')).toBe(true)
+  expect(PHONE_REBUILDING).not.toMatch(/#\d/)
+})
+
+test('a resume reads back nothing from the phone block: an item titled like a done notice, which the block names, stays open', async () => {
+  const add = {
+    type: 'assistant',
+    timestamp: stamp(0),
+    message: { role: 'assistant', content: [{ type: 'tool_use', id: 'a', name: TOOL, input: { action: 'add', title: 'is done: x' } }] },
+  }
+  const added = { type: 'user', timestamp: stamp(1), message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'a', content: 'added #1' }] } }
+  const block = phoneBlock([made(1, { title: 'is done: x' })])
+  expect(block).toContain('#1 is done: x')
+  // The block as a phone prompt carries it: a hook's context row, which the rebuild reads for done notices.
+  const carried = {
+    type: 'attachment',
+    timestamp: stamp(2),
+    attachment: { type: 'hook_additional_context', hookName: 'prompt.submit', hookEvent: 'UserPromptSubmit', content: [block] },
+  }
+  const without = await replay(transcriptOf(add, added))
+  const withBlock = await replay(transcriptOf(add, added, carried))
+  expect(withBlock.store).toEqual(without.store)
+  expect(withBlock.store.items).toMatchObject([{ id: 1, title: 'is done: x', state: 'open' }])
 })
