@@ -18,6 +18,18 @@ export const touchOf = (view: CacheView, liveMs: number | null): number | null =
   return liveMs === null ? view.touchMs : Math.max(view.touchMs, liveMs)
 }
 
+// When the live cache expires: the touch plus the TTL, or null for a view with no touch. The one owner of the cache's expiry, asked at any lead.
+export const expiryOf = (view: CacheView, liveMs: number | null): number | null => {
+  const touch = touchOf(view, liveMs)
+  return view.kind === 'known' && touch !== null ? touch + view.ttlMs : null
+}
+
+// Whether the live cache has expired at `nowMs`: at exactly the expiry moment it has. A view with no touch never has.
+export const expiredAt = (view: CacheView, liveMs: number | null, nowMs: number): boolean => {
+  const expiry = expiryOf(view, liveMs)
+  return expiry !== null && nowMs >= expiry
+}
+
 // A reply's stamp read at `nowMs` that runs ahead of the clock counts as now, so the countdown and keepalive read one touch. The
 // view is read through this once, where its stamp is read.
 export const touchedAt = (view: CacheView, nowMs: number): CacheView =>
@@ -34,8 +46,8 @@ export const readingOf = (view: CacheView, liveMs: number | null, cold: ColdMark
   if (cold !== null) return { words: '', state: 'cold', quarter: 0, warn: 'calm' }
   if (view.kind !== 'known') return null
   // Never more than the TTL, as a live touch read after `nowMs` would put it: the pie and its time stop at full.
-  const left = Math.min(view.ttlMs, view.ttlMs - (nowMs - (touchOf(view, liveMs) ?? view.touchMs)))
-  if (left <= 0) return { words: `${rebuild} to rebuild`, state: 'expired', quarter: 0, warn: 'calm' }
+  if (expiredAt(view, liveMs, nowMs)) return { words: `${rebuild} to rebuild`, state: 'expired', quarter: 0, warn: 'calm' }
+  const left = Math.min(view.ttlMs, (expiryOf(view, liveMs) ?? 0) - nowMs)
   const seconds = Math.ceil(left / 1000)
   const warn = left * 10 <= view.ttlMs ? 'tenth' : left * 4 <= view.ttlMs ? 'quarter' : 'calm'
   return { words: `${Math.floor(seconds / 60)}:${pad(seconds % 60)}`, state: 'warm', quarter: quarterOf(left, view.ttlMs), warn }

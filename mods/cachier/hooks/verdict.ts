@@ -6,7 +6,7 @@
 // a warm cache would have taken. The other reality's pings are counted as keepalive would have sent them: ping k at
 // k×(ttl−lead) after the touch, up to the count.
 import type { CacheView, Judged, KeepaliveState, Spend, Unit, Verdict } from '../types'
-import { clockOf, touchOf } from './countdown'
+import { clockOf, expiredAt } from './countdown'
 import type { Defaults } from './keepalive'
 import { dollars, NO_KINDS, spendOf, uponOf, type Money } from './prices'
 
@@ -206,6 +206,6 @@ export const pauseOf = (
     pingUsd: rates.pingUsd,
     lapseUsd: rates.lapseUsd,
     spentUsd: pauseSpend.usd,
-    alive: nowMs < (touchOf(view, live) ?? view.touchMs) + view.ttlMs,
+    alive: !expiredAt(view, live, nowMs),
   }
 }

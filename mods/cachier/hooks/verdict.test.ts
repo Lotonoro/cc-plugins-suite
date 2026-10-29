@@ -150,6 +150,13 @@ describe("pauseOf: the pause from the session's state", () => {
     expect(pauseOf(gap, view, null, NO_SPEND, money, defaults, T + 300 * S)!.alive).toBe(false)
   })
 
+  test('the pause figures follow the cache\'s one expiry owner: alive until the exact expiry, and past a later live start', () => {
+    const at = (live: number | null, now: number) => pauseOf(gap, view, live, NO_SPEND, money, defaults, now)!.alive
+    expect(at(null, T + 300 * S - 1)).toBe(true)
+    expect(at(null, T + 300 * S)).toBe(false)
+    expect(at(T + 5 * S, T + 300 * S)).toBe(true)
+  })
+
   test('the break-even window starts at the TTL and ends at the ping that tips past the rewrite, or where the count runs out', () => {
     // A rewrite is worth 24 pings: the 24th brings them even with it, at 24 × 280 s with a 20 s lead, so the window ends there.
     expect(breakEvenLine(gap, view, money, { leadMs: 20 * S, count: null, cap: 30 })).toBe("Keepalive pays off if you're back between 5:00 and 1:52:00")

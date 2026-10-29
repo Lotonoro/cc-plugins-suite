@@ -7,6 +7,7 @@ import {
   defaultsOf,
   failureOf,
   enable,
+  enabledStop,
   enableText as enableTextWith,
   gapOpen,
   INITIAL,
@@ -40,6 +41,7 @@ import {
   modeOf,
   recount,
 } from './keepalive'
+import { expiredAt } from './countdown'
 import { sessionLineOf } from './stats'
 import { PRICES, TOKENS, type Money } from './prices'
 
@@ -321,6 +323,18 @@ describe('step', () => {
         }
       }
     })
+  })
+})
+
+describe('enabledStop follows the cache\'s one expiry owner', () => {
+  test('at a lead below the TTL it stops at exactly the expiry, and not one millisecond before, nor with a live start later than the reply\'s', () => {
+    expect(enabledStop(known, 15000, null, T + 300000)).toBe('cache expired')
+    expect(enabledStop(known, 15000, null, T + 299999)).toBeNull()
+    expect(enabledStop(known, 15000, T + 5000, T + 300000)).toBeNull()
+  })
+  test('at a lead at or above the TTL it never stops, while the owner answers expired', () => {
+    expect(expiredAt(known, null, T + 400000)).toBe(true)
+    expect(enabledStop(known, 300000, null, T + 400000)).toBeNull()
   })
 })
 

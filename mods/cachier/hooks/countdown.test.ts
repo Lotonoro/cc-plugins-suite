@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'claude-code/testing'
-import { COLOUR_SENTENCE, cueOf, footerOf, pieOf, readingOf, refreshingOf, settleCold, warmthOf, type Tone } from './countdown'
+import { COLOUR_SENTENCE, cueOf, expiredAt, expiryOf, footerOf, pieOf, readingOf, refreshingOf, settleCold, warmthOf, type Tone } from './countdown'
 
 const T = 1_000_000
 const known = { kind: 'known' as const, touchMs: T, ttlMs: 300000, ttlLabel: '5m' as const, promptTokens: 1, outputTokens: 0, model: null, speed: null }
@@ -247,5 +247,25 @@ describe('cueOf: the glyph and tone after the footer words', () => {
     expect(cueOf('landed')).toEqual({ glyph: '✓', tone: 'plain' })
     expect(cueOf('failed')).toEqual({ glyph: '!', tone: 'warning' })
     expect(cueOf(null)).toBeNull()
+  })
+})
+
+describe('expiryOf and expiredAt: the one owner of the live cache\'s expiry', () => {
+  test('each view with no touch has no expiry moment and is never expired', () => {
+    for (const view of [{ kind: 'ttl-unknown' as const }, { kind: 'no-cache' as const }, { kind: 'unread' as const }]) {
+      expect(expiryOf(view, null)).toBeNull()
+      expect(expiryOf(view, T)).toBeNull()
+      expect(expiredAt(view, null, T + 10_000_000)).toBe(false)
+    }
+  })
+  test('the cache is expired at exactly the touch plus the TTL, and not one millisecond before', () => {
+    expect(expiryOf(known, null)).toBe(T + 300000)
+    expect(expiredAt(known, null, T + 300000)).toBe(true)
+    expect(expiredAt(known, null, T + 299999)).toBe(false)
+  })
+  test('a live request start later than the reply\'s moves the moment; an earlier one changes nothing', () => {
+    expect(expiredAt(known, T + 5000, T + 300000)).toBe(false)
+    expect(expiryOf(known, T + 5000)).toBe(T + 305000)
+    expect(expiryOf(known, T - 5000)).toBe(expiryOf(known, null))
   })
 })

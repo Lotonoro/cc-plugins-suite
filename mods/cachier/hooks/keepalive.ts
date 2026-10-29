@@ -3,7 +3,7 @@
 // judged, and the debug line of a ping. register.ts holds the state, writes it, and makes the fork; nothing here reads the engine.
 import type { ModelForkResult, ModelUsage, PluginOptions } from 'claude-code'
 import type { CacheView, HintCost, KeepaliveState, Spend, Tally, TallyState, Unit } from '../types'
-import { touchOf } from './countdown'
+import { expiredAt, expiryOf } from './countdown'
 import { addSpend, dollars, figureOf, kTokens, NO_KINDS, NO_SPEND, spendOf, type Money } from './prices'
 
 // Everything off: no config, no pings, nothing shown, no turn bookkeeping. A session's start and end reset to this.
@@ -191,10 +191,9 @@ type Readiness =
   | { kind: 'ready'; dueMs: number; expired: boolean }
 
 const readiness = (view: CacheView, leadMs: number, liveMs: number | null, nowMs: number): Readiness => {
-  const touch = view.kind === 'known' ? touchOf(view, liveMs) : null
-  if (view.kind !== 'known' || touch === null || leadMs >= view.ttlMs) return { kind: 'not-ready' }
-  const expiryMs = touch + view.ttlMs
-  return { kind: 'ready', dueMs: expiryMs - leadMs, expired: nowMs >= expiryMs }
+  const expiryMs = expiryOf(view, liveMs)
+  if (view.kind !== 'known' || expiryMs === null || leadMs >= view.ttlMs) return { kind: 'not-ready' }
+  return { kind: 'ready', dueMs: expiryMs - leadMs, expired: expiredAt(view, liveMs, nowMs) }
 }
 
 // The stop a run enabled now starts with: the cache has already lapsed, so the run stays paused until a prompt. Null otherwise.
