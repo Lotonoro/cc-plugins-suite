@@ -29,6 +29,7 @@ const kit = (on: On) => {
   const clock = mock.clock(on)
   mock.store(on)
   on('ui.panes', () => ({ value: [] }))
+  on('session.end', (_$, e) => ({ sessionId: e.sessionId }))
   chimes(on)
   return clock
 }
@@ -388,4 +389,87 @@ test('a push answered user_present after its 10 seconds have passed schedules no
   answerLate()
   await clock.advance(120000)
   expect(messages).toEqual(['Blocking: #1 Pick a db'])
+})
+
+test('a clear ends the retries of the items filed before it: none is tried again', async ($, on) => {
+  const clock = kit(on)
+  const messages = pushes(on, userPresent)
+  await $.tool.call({ tool: TOOL, action: 'add', blocking: true, title: 'Pick a db' })
+  await clock.settle()
+  await $.session.end({ reason: 'clear', sessionId: 's1', resume: { id: 's1' } })
+  await clock.advance(3600000)
+  expect(messages).toEqual(['Blocking: #1 Pick a db'])
+})
+
+test('a resume ends the retries of the items filed before it, and the list it rebuilds pushes nothing', async ($, on) => {
+  const clock = kit(on)
+  const messages = pushes(on, userPresent)
+  hostTranscript(on, transcript('Pick a db'))
+  await $.tool.call({ tool: TOOL, action: 'add', blocking: true, title: 'Pick a db' })
+  await clock.settle()
+  await $.session.end({ reason: 'resume', sessionId: 's1', resume: { id: 's1' } })
+  await $.classic.SessionStart({ source: 'resume', transcript_path: MAIN })
+  await clock.settle()
+  await clock.advance(600000)
+  expect(messages).toEqual(['Blocking: #1 Pick a db'])
+})
+
+test('a retry from before a resume pushes nothing after it, and an item filed after the resume is pushed by its own chain alone', async ($, on) => {
+  const clock = kit(on)
+  const messages = pushes(on, userPresent)
+  await $.tool.call({ tool: TOOL, action: 'add', blocking: true, title: 'Old' })
+  await clock.settle()
+  await clock.advance(30000)
+  await $.session.end({ reason: 'resume', sessionId: 's1', resume: { id: 's1' } })
+  await $.tool.call({ tool: TOOL, action: 'add', blocking: true, title: 'New' })
+  await clock.settle()
+  expect(messages).toEqual(['Blocking: #1 Old', 'Blocking: #2 New'])
+  await clock.advance(30000)
+  expect(messages).toEqual(['Blocking: #1 Old', 'Blocking: #2 New'])
+  await clock.advance(30000)
+  expect(messages).toEqual(['Blocking: #1 Old', 'Blocking: #2 New', 'Blocking: #2 New'])
+})
+
+test('a session end whose later steps throw still ends every pending retry', async ($, on) => {
+  const clock = mock.clock(on)
+  on('ui.panes', () => ({ value: [] }))
+  on('session.end', (_$, e) => ({ sessionId: e.sessionId }))
+  chimes(on)
+  on('store.get', () => {
+    throw new Error('store unreadable')
+  })
+  on('store.set', () => ({ value: undefined }))
+  const messages = pushes(on, userPresent)
+  await $.tool.call({ tool: TOOL, action: 'add', blocking: true, title: 'Pick a db' })
+  await clock.settle()
+  await $.session.end({ reason: 'clear', sessionId: 's1', resume: { id: 's1' } }).catch(() => undefined)
+  await clock.advance(600000)
+  expect(messages).toEqual(['Blocking: #1 Pick a db'])
+})
+
+test('a push in flight at a session end that is answered user_present afterwards pushes nothing and schedules no retry', async ($, on) => {
+  const clock = kit(on)
+  let answerLate: () => void = () => undefined
+  const messages = pushes(on, (_n, message) => new Promise(resolve => {
+    answerLate = () => resolve({ result: { message, pushSent: false, disabledReason: 'user_present' } })
+  }))
+  await $.tool.call({ tool: TOOL, action: 'add', blocking: true, title: 'Pick a db' })
+  await clock.settle()
+  await $.session.end({ reason: 'prompt_input_exit', sessionId: 's1', resume: { id: 's1' } })
+  answerLate()
+  await clock.advance(600000)
+  expect(messages).toEqual(['Blocking: #1 Pick a db'])
+})
+
+test('a new session\'s first push call logs its whole answer at debug, as the first of that session', async ($, on) => {
+  const clock = kit(on)
+  const lines = logs(on)
+  const messages = pushes(on, (_n, message) => ({ result: { message, pushSent: true } }))
+  await $.tool.call({ tool: TOOL, action: 'add', blocking: true, title: 'Pick a db' })
+  await clock.settle()
+  await $.session.end({ reason: 'prompt_input_exit', sessionId: 's1', resume: { id: 's1' } })
+  await $.tool.call({ tool: TOOL, action: 'add', blocking: true, title: 'Next' })
+  await clock.settle()
+  expect(messages).toEqual(['Blocking: #1 Pick a db', 'Blocking: #2 Next'])
+  expect(lines.filter(line => line.text.includes('first push call')).length).toBe(2)
 })

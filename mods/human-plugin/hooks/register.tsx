@@ -10,7 +10,7 @@ import { band, pane, toolLine, type Handlers, type View } from './ui'
 import { correctionText, newlyRestated, restatedIds } from './restatement'
 import { enter } from './deliver'
 import { PANE, endPane, followShown, markRead, personClosed, pickItem, setDrawn, shownSelection, showItem, syncPane } from './pane'
-import { pushAnswer } from './push'
+import { endPushes, pushAnswer } from './push'
 import { pressAnswer, pressDone, pressReply, rearmWindows, stopTicker } from './windows'
 import { restored, resetRebuild, setForkedTranscript, startForkRestore, startRestore } from './rebuild'
 import { emptyList, inBackground, readList, updateList } from './shared'
@@ -320,6 +320,7 @@ export const wireHooks = (on: On, windowMs: number): void => {
   // its transcript. /clear also empties the list; a resume starts with a fresh one (the state is held per session), which its rebuild fills.
   // The id counter goes to the plugin store for the new session to carry (see carry).
   on('session.end', async ($, e, next) => {
+    endPushes()
     reset()
     stopTicker()
     resetRebuild()
