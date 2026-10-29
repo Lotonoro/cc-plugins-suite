@@ -418,7 +418,7 @@ test('an item in its undo window or sent takes no form: whatever the form, it ch
   }
 })
 
-test('a form the item\'s kind does not take changes nothing and is takes: a done on a decision, a yes or a no or an option on a to-do, a done on a yes/no', () => {
+test('a form the item\'s kind does not take changes nothing and is answered with the forms it takes: a done on a decision, a yes or a no or an option on a to-do, a done on a yes/no', () => {
   const decision: Store = { items: [{ ...item, options: DECISION }], next: 4, term: null }
   const question: Store = { items: [{ ...item, yesno: true }], next: 4, term: null }
   expect(answerOf(decision, '3', { kind: 'done' }, TOKEN)).toEqual({ store: decision, outcome: { kind: 'takes', item: decision.items[0] } })
@@ -428,7 +428,7 @@ test('a form the item\'s kind does not take changes nothing and is takes: a done
   expect(answerOf(question, '3', { kind: 'done' }, TOKEN)).toEqual({ store: question, outcome: { kind: 'takes', item: question.items[0] } })
 })
 
-test('an option number out of the decision\'s range is takes: zero, one past the last, and a number beyond every safe integer', () => {
+test('an option number out of the decision\'s range is answered with the forms it takes: zero, one past the last, and a number beyond every safe integer', () => {
   const decision: Store = { items: [{ ...item, options: DECISION }], next: 4, term: null }
   for (const n of [0, 3, Number('9'.repeat(400))]) {
     expect(answerOf(decision, '3', { kind: 'option', n }, TOKEN)).toEqual({ store: decision, outcome: { kind: 'takes', item: decision.items[0] } })
