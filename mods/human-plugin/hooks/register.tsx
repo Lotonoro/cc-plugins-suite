@@ -36,8 +36,9 @@ const finishTurn = ($: EngineInterface, turnId: string, interrupted: boolean, is
 const failed = ($: EngineInterface, hook: string, reason: Pick<HookFailure, 'kind' | 'message'>): void => {
   $.ui.log(`human-plugin: the ${hook} hook ${reason.kind}: ${reason.message ?? 'no message'}`)
 }
-// The message of an error a hook caught, as HookFailure gives it for a throw.
-const messageOf = (err: unknown): string => (err instanceof Error ? err.message : String(err))
+// The stack of an error a hook caught, not only its message: a log line that names no place cannot be traced back to where the failure
+// came from. An error with no stack is logged by its message, and a value that is not an Error as it is.
+const messageOf = (err: unknown): string => (err instanceof Error ? err.stack || err.message : String(err))
 
 // The list as it stands now, for the check a notice gets right before its row is appended. An unreadable list checks nothing:
 // the notice is appended, and the failure is logged.

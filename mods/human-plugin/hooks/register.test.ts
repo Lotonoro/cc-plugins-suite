@@ -301,10 +301,11 @@ test('a phone prompt whose block cannot be built goes through with its live held
   const { env } = memEnv([made(2, { title: 'Live ask', detail: '' })], [], null, [], [])
   const { host, finish } = rebuilding(env)
   // The wait for a rebuild arms a timer, and this host cannot arm one, so the block cannot be built.
+  const failure = new Error('no timer')
   const failing = {
     ...host,
     ui: { ...env.ui, log: (text: string) => void logs.push(text) },
-    clock: { ...env.clock, after: () => { throw new Error('no timer') } },
+    clock: { ...env.clock, after: () => { throw failure } },
   }
   startRestore(failing as never, '/sessions/s.jsonl')
   try {
@@ -320,7 +321,7 @@ test('a phone prompt whose block cannot be built goes through with its live held
     )
     expect(outcome).toBe('entered')
     expect(seen).toEqual([{ origin: { kind: 'bridge' }, text: 'hi', context: ['#2 is done: Live ask'] }])
-    expect(logs).toEqual(['human-plugin: the prompt.submit hook throw: no timer', 'sent to Claude: #2 is done: Live ask'])
+    expect(logs).toEqual([`human-plugin: the prompt.submit hook throw: ${String(failure.stack)}`, 'sent to Claude: #2 is done: Live ask'])
   } finally {
     finish()
     resetRebuild()
