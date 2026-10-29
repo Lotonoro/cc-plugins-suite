@@ -1,6 +1,6 @@
 import type { ButtonProps, BoxProps, ElementConstructor, InputProps, MarkdownProps, RenderElement, TextProps, UiCopyArgs } from 'claude-code'
 import type { Item, Store, Turn } from '../types'
-import { labelOf, oneLine, orderedOptions, turnsOf } from './done'
+import { labelOf, oneLine, orderedOptions, replyText, turnsOf } from './done'
 import { briefParts } from './fences'
 import { outcomeOf, parseInput, selectedItem, type ToolInput } from './items'
 import { bandRows } from './layout'
@@ -261,8 +261,8 @@ const replyField = (t: Table, h: Handlers, item: Item): RenderElement | null =>
         placeholder: 'Reply…',
         submitLabel: 'send',
         onSubmit: value => {
-          const text = value.trim()
-          if (text !== '') h.reply(item.id, text)
+          const text = replyText(value)
+          if (text !== null) h.reply(item.id, text)
         },
       })
 

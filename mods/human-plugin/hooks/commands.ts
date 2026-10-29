@@ -1,20 +1,23 @@
 import type { Item, Turn } from '../types'
-import { cutLine, cutText, humanTurn, labelOf, orderedOptions, turnsOf } from './done'
+import { cutLine, cutText, formsOf, humanTurn, isNumbered, labelOf, orderedOptions, replyText, turnsOf, type AnswerOutcome, type Form } from './done'
 import { LINE_BREAK } from './items'
 import { bandOrder } from './layout'
 
 // The bounds the answers keep, in UTF-16 units. `cap` is the most `/asks <n>` prints, the cut line included; `floor` is the least its cut newest
 // turn keeps, as printed, one unit less when a surrogate pair straddles the cut; `title` and `label` cut those fields in `/asks <n>`;
-// `listLine` cuts a list line's title and its answer; `listItems` is how many items the list names before the rest fold into a line of numbers.
-export const LIMITS = { cap: 4000, floor: 1000, title: 300, label: 200, listLine: 80, listItems: 20 } as const
+// `listLine` cuts a list line's title and its answer, and the answer an answer form echoes; `listItems` is how many items the list names before the
+// rest fold into a line of numbers; `foot` is the most the foot of `/asks <n>` prints, which its fixed wording keeps it to. The foot is never cut.
+export const LIMITS = { cap: 4000, floor: 1000, title: 300, label: 200, listLine: 80, listItems: 20, foot: 500 } as const
 
 export const COMMAND = 'asks'
-export const DESCRIPTION = 'Print the to-do list as text, or one item whole by number: /asks <n>.'
+export const DESCRIPTION = 'Print the to-do list, or one item by number; answer an item with /asks <n> done, yes, no, <option number>, or reply <text>.'
+// The argument as the command's registration shows it: the number, then the form.
+export const ARG_HINT = '[n [done | yes | no | option | reply text]]'
 
 // Every line the command prints starts with this indent. It also keeps an item's text from reading as a marker to the rebuild: replay.ts reads
 // `#<n> is done:` only at the start of a line.
 const INDENT = '  '
-export const USAGE = `${INDENT}Usage: /asks, or /asks <n> for one item.`
+export const USAGE = `${INDENT}Usage: /asks, or /asks <n> for one item.\n${INDENT}Answer an item: /asks <n> done, yes, no, <option number>, or reply <text>.`
 export const REBUILDING = `${INDENT}The list is still being rebuilt from the transcript; run /asks again in a moment.`
 export const FAILED = `${INDENT}/asks failed: the error was logged.`
 const NOTHING = `${INDENT}Nothing is on the list.`
@@ -22,23 +25,59 @@ const NO_SUCH = `${INDENT}There is no such item.`
 const CUT = `${INDENT}The rest was cut.`
 const CUT_LINE = `\n${CUT}`
 
-// What the argument asks for: the list (blank), one item by its number, or nothing the command knows (the usage). Blanks are the ASCII spaces and
-// tabs around it. A number is ASCII digits, read as a decimal: its leading zeros do not count, and it is kept as digits, which an id is compared
-// with as text, so a number of any length is no problem.
-export type Ask = { kind: 'usage' } | { kind: 'list' } | { kind: 'item'; digits: string }
+// What the argument asks for: the list (blank), one item by its number, an answer to an item by its number and a form, or nothing the command knows
+// (the usage). Blanks are the ASCII spaces and tabs around the argument and between the number and the form. A number is ASCII digits, read as a
+// decimal: its leading zeros do not count, and it is kept as digits, which an id is compared with as text, so a number of any length is no problem.
+export type ListAsk = { kind: 'list' } | { kind: 'item'; digits: string }
+export type Ask = { kind: 'usage' } | ListAsk | { kind: 'answer'; digits: string; form: Form }
 
 export const parseAsk = (args: string): Ask => {
   const text = args.replace(/^[ \t]+|[ \t]+$/g, '')
   if (text === '') return { kind: 'list' }
-  if (!/^[0-9]+$/.test(text)) return { kind: 'usage' }
-  return { kind: 'item', digits: text.replace(/^0+(?=[0-9])/, '') }
+  const blank = text.search(/[ \t]/)
+  const number = blank === -1 ? text : text.slice(0, blank)
+  if (!/^[0-9]+$/.test(number)) return { kind: 'usage' }
+  const digits = number.replace(/^0+(?=[0-9])/, '')
+  if (blank === -1) return { kind: 'item', digits }
+  const form = parseForm(text.slice(blank).replace(/^[ \t]+/, ''))
+  return form === null ? { kind: 'usage' } : { kind: 'answer', digits, form }
+}
+
+// The form the rest of an argument names, or null when it names none the command takes: done, yes or no alone, an option's number alone, or reply
+// and the text after its blanks. The words match in any case; the text is trimmed as the pane trims its field, and blank text is no form.
+const parseForm = (rest: string): Form | null => {
+  const lower = rest.toLowerCase()
+  if (lower === 'done') return { kind: 'done' }
+  if (lower === 'yes') return { kind: 'yes' }
+  if (lower === 'no') return { kind: 'no' }
+  if (/^[0-9]+$/.test(rest)) return { kind: 'option', n: Number(rest) }
+  const reply = /^reply[ \t]+/i.exec(rest)
+  const text = reply === null ? null : replyText(rest.slice(reply[0].length))
+  return text === null ? null : { kind: 'reply', text }
 }
 
 // The answer to an ask on the list, and the item it shows (null when it shows none): the command clears that item's unread mark.
-export const answerTo = (items: readonly Item[], ask: Exclude<Ask, { kind: 'usage' }>): { text: string; shown: number | null } => {
+export const answerTo = (items: readonly Item[], ask: ListAsk): { text: string; shown: number | null } => {
   if (ask.kind === 'list') return { text: answerList(items), shown: null }
-  const item = items.find(it => String(it.id) === ask.digits)
+  const item = items.find(it => isNumbered(it, ask.digits))
   return item === undefined ? { text: NO_SUCH, shown: null } : { text: answerItem(item), shown: item.id }
+}
+
+// The line an answer form prints: the confirmation of an applied one, with the answer it gave cut to one line as a list line's answer is; else
+// what refused it. A refused form names the forms the item takes, its foot.
+export const answerLine = (outcome: AnswerOutcome): string => {
+  switch (outcome.kind) {
+    case 'applied':
+      return `${INDENT}answered #${outcome.item.id} with ${cutLine(outcome.answer, LIMITS.listLine)}`
+    case 'missing':
+      return NO_SUCH
+    case 'sent':
+      return `${INDENT}#${outcome.item.id} is already sent.`
+    case 'undoing':
+      return `${INDENT}#${outcome.item.id} is not open: its undo window is running.`
+    case 'takes':
+      return [`${INDENT}#${outcome.item.id} takes these answers:`, ...footOf(outcome.item)].join('\n')
+  }
 }
 
 // The list: the open items, then the answered ones (state done-waiting or done-pending), each group in the band's order. The first
@@ -76,8 +115,8 @@ const rangesOf = (ids: readonly number[]): string => {
   return runs.map(([from, to]) => (from === to ? `${from}` : `${from}-${to}`)).join(', ')
 }
 
-// `/asks <n>`: the item's title, its note, its brief, its thread (every turn, oldest first, a sent answer as the newest), then a decision's
-// options numbered in the pane's order. Each part is printed whole unless the cap forces a cut (fit).
+// `/asks <n>`: the item's title, its note, its brief, its thread (every turn, oldest first, a sent answer as the newest), a decision's options
+// numbered in the pane's order, then the foot. Each part is printed whole unless the cap forces a cut (fit).
 const answerItem = (item: Item): string =>
   fit({
     title: `${INDENT}#${item.id} ${blockingWord(item)}: ${cutLine(item.title, LIMITS.title)}`,
@@ -87,7 +126,16 @@ const answerItem = (item: Item): string =>
     options: orderedOptions(item).map(
       (option, k) => `${INDENT}${k + 1}. ${cutLine(option.label, LIMITS.label)}${option.recommended ? ' (recommended)' : ''}`,
     ),
+    foot: footOf(item),
   })
+
+// The foot: the forms an open item takes, each named as a `/asks <n> <form>` line. A decision's options are one line, their number range. An item in
+// its undo window, or sent, takes no answer, so it prints no foot.
+const footOf = (item: Item): string[] =>
+  item.state !== 'open' ? [] : formsOf(item).map(kind => `${INDENT}/asks ${item.id} ${kind === 'option' ? numbersOf(item) : kind}`)
+
+// A decision's option numbers as one range, `1-<k>`, or `1` alone for one option.
+const numbersOf = (item: Item): string => (item.options.length === 1 ? '1' : `1-${item.options.length}`)
 
 const blockingWord = (item: Item): string => (item.blocking ? 'blocking' : 'non-blocking')
 
@@ -113,8 +161,8 @@ const wholeOf = ({ heading, body }: Section): Section => {
 // A section's lines as they print: its heading, and its body when it has one.
 const linesOf = ({ heading, body }: Section): string[] => (body === '' ? [heading] : [heading, body])
 
-// The parts of a whole answer. The title and the options are never cut; the rest gives way to the cap in fit's order.
-type Parts = { title: string; note: Section | null; brief: Section | null; turns: Section[]; options: string[] }
+// The parts of a whole answer. The title, the options and the foot are never cut; the rest gives way to the cap in fit's order.
+type Parts = { title: string; note: Section | null; brief: Section | null; turns: Section[]; options: string[]; foot: string[] }
 
 // The parts as one text, each section as it prints whole.
 const assemble = (p: Parts): string =>
@@ -124,6 +172,7 @@ const assemble = (p: Parts): string =>
     ...(p.brief === null ? [] : linesOf(wholeOf(p.brief))),
     ...(p.turns.length === 0 ? [] : [`${INDENT}thread:`, ...p.turns.flatMap(turn => linesOf(wholeOf(turn)))]),
     ...(p.options.length === 0 ? [] : [`${INDENT}options:`, ...p.options]),
+    ...p.foot,
   ].join('\n')
 
 // The answer as printed, within LIMITS.cap, with the cut line after it when it must be cut. The cut falls first on the brief's tail, then on the

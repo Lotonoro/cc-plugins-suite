@@ -4,13 +4,13 @@ import type { OwedNotices, Store } from '../types'
 import { TOOL, act, carryNext, clearAll, parseInput, type Outcome } from './items'
 import { STEERING, TOOL_SPEC } from './steering'
 import { oneLine, stateOf } from './done'
-import { COMMAND, DESCRIPTION, FAILED, REBUILDING, USAGE, answerTo, parseAsk } from './commands'
+import { ARG_HINT, COMMAND, DESCRIPTION, FAILED, REBUILDING, USAGE, answerLine, answerTo, parseAsk } from './commands'
 import { carried, carryHeld, endTurn, giveBack, handOver, notEntered, offer, pending, reset, setOnChange, startTurn } from './turns'
 import { band, pane, toolLine, type Handlers, type View } from './ui'
 import { correctionText, newlyRestated, restatedIds } from './restatement'
 import { enter } from './deliver'
 import { PANE, endPane, followShown, markRead, personClosed, pickItem, setDrawn, shownSelection, showItem, syncPane } from './pane'
-import { pressDone, pressReply, rearmWindows, stopTicker } from './windows'
+import { pressAnswer, pressDone, pressReply, rearmWindows, stopTicker } from './windows'
 import { restored, resetRebuild, setForkedTranscript, startForkRestore, startRestore } from './rebuild'
 import { emptyList, inBackground, readList, updateList } from './shared'
 
@@ -161,13 +161,15 @@ const answer = async ($: EngineInterface, e: unknown) => {
   return { result: out.reply }
 }
 
-// The `/asks` command's answer: the list, or one item whole. It waits for a rebuild in progress as the tool does, and clears the unread mark of
-// the one item it shows, if that item is still the one it printed (markRead); the wording and the parse are commands.ts's. A mark that cannot
-// be cleared is logged, and the text is still returned: the item is what the person asked for.
-const asks = async ($: EngineInterface, args: string): Promise<string> => {
+// The `/asks` command's answer: the list, one item whole, or the confirmation of an answer form. It waits for a rebuild in progress as the tool
+// does, and clears the unread mark of the one item it shows, if that item is still the one it printed (markRead); an answer form clears its
+// item's mark in its own write (pressAnswer). The wording and the parse are commands.ts's. A mark that cannot be cleared is logged, and the text
+// is still returned: the item is what the person asked for.
+const asks = async ($: EngineInterface, args: string, windowMs: number): Promise<string> => {
   const ask = parseAsk(args)
   if (ask.kind === 'usage') return USAGE
   if (!(await restored($))) return REBUILDING
+  if (ask.kind === 'answer') return answerLine(await pressAnswer($, ask.digits, ask.form, windowMs))
   const { items } = await readList($)
   const { text, shown } = answerTo(items, ask)
   const printed = items.find(it => it.id === shown)
@@ -214,7 +216,7 @@ export const wireHooks = (on: On, windowMs: number): void => {
     await $.tool.register(TOOL_SPEC)
     // A failed registration is logged, and the rest of the start still runs: the rebuild, the undo windows and the owed notices.
     try {
-      await $.command.register({ name: COMMAND, description: DESCRIPTION, argumentHint: '[n]', immediate: true })
+      await $.command.register({ name: COMMAND, description: DESCRIPTION, argumentHint: ARG_HINT, immediate: true })
     } catch (err) {
       $.ui.log(`human-plugin: the /${COMMAND} command was not registered: ${String(err)}`)
     }
@@ -239,7 +241,7 @@ export const wireHooks = (on: On, windowMs: number): void => {
   )
 
   // The matcher spells the name out, as the tool's do. A throw is logged and answers one error line; the list is left as it was.
-  on('command.run', { command: 'asks' }, ($, e) => asks($, e.args).then(text => ({ text }))).catch(($, _e, next) => {
+  on('command.run', { command: 'asks' }, ($, e) => asks($, e.args, windowMs).then(text => ({ text }))).catch(($, _e, next) => {
     failed($, 'command.run', next.error)
     return { text: FAILED }
   })

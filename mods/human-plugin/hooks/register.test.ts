@@ -4,7 +4,7 @@ import { offer, reset, setOnChange, startTurn, takeHeld, endTurn } from './turns
 import { EMPTY, TOOL, act, normalizeStore } from './items'
 import { paneRows } from './ui'
 import { correctionText } from './restatement'
-import { DESCRIPTION, FAILED, REBUILDING } from './commands'
+import { ARG_HINT, DESCRIPTION, FAILED, REBUILDING, USAGE } from './commands'
 import { resetRebuild, setForkedTranscript } from './rebuild'
 import { pressAnswer, stopTicker } from './windows'
 import type { Item } from '../types'
@@ -2019,7 +2019,7 @@ test('/asks is registered at session start with the flag that runs it mid-turn, 
   const { env } = memEnv([], [], null)
   const registered: Record<string, unknown>[] = []
   await started(wired, { ...env, command: { register: async (spec: Record<string, unknown>) => void registered.push(spec) } })
-  expect(registered).toEqual([{ name: 'asks', description: DESCRIPTION, argumentHint: '[n]', immediate: true }])
+  expect(registered).toEqual([{ name: 'asks', description: DESCRIPTION, argumentHint: ARG_HINT, immediate: true }])
   expect(typeof asksOf(wired.hooks)).toBe('function')
 })
 
@@ -2070,10 +2070,14 @@ test('/asks prints the list through its command, /asks <n> prints that item whol
   const { env } = memEnv([made(1, { title: 'Pick a db', blocking: true, detail: 'postgres or sqlite' }), made(2, { detail: '' })], [], null)
   const ask = asksOf(hooks)
   expect(await ask(env as never, { args: '' } as never, next(false) as never)).toEqual({ text: '  #1 blocking: Pick a db\n  #2 non-blocking: Item 2' })
-  expect(await ask(env as never, { args: '1' } as never, next(false) as never)).toEqual({ text: '  #1 blocking: Pick a db\n  brief:\n  postgres or sqlite' })
-  expect(await ask(env as never, { args: ' 001 ' } as never, next(false) as never)).toEqual({ text: '  #1 blocking: Pick a db\n  brief:\n  postgres or sqlite' })
+  expect(await ask(env as never, { args: '1' } as never, next(false) as never)).toEqual({
+    text: '  #1 blocking: Pick a db\n  brief:\n  postgres or sqlite\n  /asks 1 done\n  /asks 1 reply',
+  })
+  expect(await ask(env as never, { args: ' 001 ' } as never, next(false) as never)).toEqual({
+    text: '  #1 blocking: Pick a db\n  brief:\n  postgres or sqlite\n  /asks 1 done\n  /asks 1 reply',
+  })
   expect(await ask(env as never, { args: '3' } as never, next(false) as never)).toEqual({ text: '  There is no such item.' })
-  expect(await ask(env as never, { args: '3.5' } as never, next(false) as never)).toEqual({ text: '  Usage: /asks, or /asks <n> for one item.' })
+  expect(await ask(env as never, { args: '3.5' } as never, next(false) as never)).toEqual({ text: USAGE })
 })
 
 test('/asks <n> clears the unread mark of the one item it shows, and /asks alone clears none', async () => {
@@ -2116,11 +2120,8 @@ test('/asks <n> keeps the unread mark an agent turn raised after it read the ite
   expect(JSON.stringify(await band(hooks, env))).toContain('• #1 ')
 })
 
-test('/asks answers that the list is being rebuilt while the rebuild runs past its wait, and lists the rebuilt items once it has finished', async () => {
-  freshModule()
-  const wired = wire()
-  const timers: Timer[] = []
-  const { env, clock } = memEnv([], [], null, [], timers)
+// A host whose list rebuild waits for `finish`: the transcript the rebuild reads holds one item, 'Rebuilt ask'.
+const rebuilding = (env: object) => {
   let finish = (): void => {}
   const gate = new Promise<void>(resolve => {
     finish = resolve
@@ -2139,7 +2140,15 @@ test('/asks answers that the list is being rebuilt while the rebuild runs past i
     },
     result: gate.then(() => ({ code: 0 })),
   }
-  const host = { ...env, fs: { exists: async () => true, list: async () => [] }, process: { spawn: () => child } }
+  return { host: { ...env, fs: { exists: async () => true, list: async () => [] }, process: { spawn: () => child } }, finish }
+}
+
+test('/asks answers that the list is being rebuilt while the rebuild runs past its wait, and lists the rebuilt items once it has finished', async () => {
+  freshModule()
+  const wired = wire()
+  const timers: Timer[] = []
+  const { env, clock } = memEnv([], [], null, [], timers)
+  const { host, finish } = rebuilding(env)
   const ask = asksOf(wired.hooks)
   setForkedTranscript('/sessions/s.jsonl')
   try {
@@ -2190,7 +2199,9 @@ test('/asks <n> still returns the item when its unread mark cannot be cleared: t
       },
     },
   }
-  expect(await asksOf(hooks)(refusing as never, { args: '1' } as never, next(false) as never)).toEqual({ text: '  #1 non-blocking: Item 1\n  brief:\n  Brief 1.' })
+  expect(await asksOf(hooks)(refusing as never, { args: '1' } as never, next(false) as never)).toEqual({
+    text: '  #1 non-blocking: Item 1\n  brief:\n  Brief 1.\n  /asks 1 done\n  /asks 1 reply',
+  })
   expect(logs).toEqual(['human-plugin: the unread mark of #1 was not cleared: Error: list write refused'])
   expect(values.list).toMatchObject({ items: [{ id: 1, unread: true }] })
 })
@@ -2262,4 +2273,317 @@ test('a failure before an answer form\'s write rejects, and the list is not writ
   }
   expect(String(thrown)).toContain('list unreadable')
   expect(values.list).toMatchObject({ items: [{ id: 1, state: 'open' }] })
+})
+
+// The answer forms through `/asks`: the command's write, the ticker's notice, and the pane's controls, which send the same answers.
+type Control = (hooks: Record<string, Handler>, env: unknown) => Promise<void>
+
+// The text `/asks` answers with, as its hook returns it.
+const askText = async (hooks: Record<string, Handler>, env: object, args: string): Promise<string> =>
+  ((await asksOf(hooks)(env as never, { args } as never, next(false) as never)) as { text: string }).text
+
+// An item answered by `/asks <n> <form>` at clock 1000: the text it answers, the item once the first tick at 1000 has run, and the notices sent.
+const answeredByCommand = async (item: object, args: string) => {
+  const { hooks } = wire()
+  const submitted: unknown[] = []
+  const timers: Timer[] = []
+  const { env, values, clock } = replyEnv([{ ...item }], [], 1, submitted, timers)
+  await (hooks['session.end'] as Handler)(env as never, { reason: 'exit' } as never, next(false) as never)
+  clock.now = 1000
+  const text = await askText(hooks, env, args)
+  await tickAt(timers, clock, 1000)
+  return { text, item: (values.list as { items: Item[] }).items[0] as Item, submitted }
+}
+
+// The same answer made by the pane's control that sends it, at clock 1000: the item once the window that press opened has ended, by the tick at 4000.
+const answeredByControl = async (item: object, control: Control) => {
+  const { hooks } = wire()
+  const submitted: unknown[] = []
+  const timers: Timer[] = []
+  const { env, values, clock } = replyEnv([{ ...item }], [], 1, submitted, timers)
+  await (hooks['session.end'] as Handler)(env as never, { reason: 'exit' } as never, next(false) as never)
+  clock.now = 1000
+  await control(hooks, env)
+  await settle()
+  await tickAt(timers, clock, 4000)
+  return { item: (values.list as { items: Item[] }).items[0] as Item, submitted }
+}
+
+test('each answer form ends as the pane control that sends the same answer does: the same item once its window has ended and the same notice, and only the unread mark differs', async () => {
+  const options = [
+    { label: 'Use sqlite', description: '', recommended: false },
+    { label: 'Use postgres', description: '', recommended: false },
+    { label: 'Use mysql', description: '', recommended: true },
+  ]
+  const cases: [object, string, string, Control][] = [
+    [made(1, { detail: '', unread: true, doneLabel: 'Ship it' }), '1 done', '  answered #1 with Ship it', async (hooks, env) => {
+      findButton(await band(hooks, env), 'done-1')?.onPress()
+    }],
+    [made(1, { detail: '', unread: true }), '1 DONE', '  answered #1 with done', async (hooks, env) => {
+      findButton(await band(hooks, env), 'done-1')?.onPress()
+    }],
+    [made(1, { detail: '', unread: true, yesno: true }), '1 yes', '  answered #1 with yes', async (hooks, env) => {
+      findButton(await band(hooks, env), 'yes-1')?.onPress()
+    }],
+    [made(1, { detail: '', unread: true, yesno: true }), '1 No', '  answered #1 with no', async (hooks, env) => {
+      findButton(await band(hooks, env), 'no-1')?.onPress()
+    }],
+    [made(1, { detail: '', unread: true, options }), '1 2', '  answered #1 with Use sqlite', async (hooks, env) => {
+      findButton(await paneTree(hooks, env), 'answer-1-1')?.onPress()
+    }],
+    [made(1, { detail: '', unread: true }), '1 reply Use  sqlite', '  answered #1 with Use  sqlite', async (hooks, env) => {
+      findInput(await paneTree(hooks, env), 'reply-1')?.onSubmit('Use  sqlite', {})
+    }],
+  ]
+  for (const [item, args, confirmation, control] of cases) {
+    const byCommand = await answeredByCommand(item, args)
+    const byControl = await answeredByControl(item, control)
+    expect(byCommand.text).toBe(confirmation)
+    expect(byCommand.submitted.length).toBe(1)
+    expect(byCommand.submitted).toEqual(byControl.submitted)
+    const { unread: unreadByCommand, ...commandItem } = byCommand.item
+    const { unread: unreadByControl, ...controlItem } = byControl.item
+    expect(commandItem).toEqual(controlItem)
+    expect([unreadByCommand, unreadByControl]).toEqual([false, true])
+  }
+})
+
+test('an answer form writes its undo window in the command, and submits nothing there: the first tick after the write submits the notice', async () => {
+  reset()
+  stopTicker()
+  const { hooks } = wire()
+  const submitted: unknown[] = []
+  const timers: Timer[] = []
+  const { env, values, clock } = memEnv([made(1, { detail: '' })], [], null, submitted, timers)
+  clock.now = 1000
+  expect(await askText(hooks, env, '1 done')).toBe('  answered #1 with done')
+  // The window counts from one window back, so the write leaves it due: the list shows it waiting, and the ticker runs for it.
+  expect(values.list).toMatchObject({ items: [{ id: 1, state: 'done-waiting', pressedAt: -2000 }] })
+  expect(submitted).toEqual([])
+  await tickAt(timers, clock, 999)
+  expect(submitted).toEqual([])
+  await tickAt(timers, clock, 1000)
+  expect(submitted.length).toBe(1)
+  expect((submitted[0] as { text: string }).text.startsWith('#1 is done: Item 1\nThe human marked it done.')).toBe(true)
+})
+
+test('a zero undo window does not end an answer form inside its write: the first tick ends it', async () => {
+  reset()
+  stopTicker()
+  const { hooks } = wire((on: never) => wireHooks(on, 0))
+  const submitted: unknown[] = []
+  const timers: Timer[] = []
+  const { env, values, clock } = memEnv([made(1, { detail: '' })], [], null, submitted, timers)
+  clock.now = 1000
+  expect(await askText(hooks, env, '1 done')).toBe('  answered #1 with done')
+  expect(values.list).toMatchObject({ items: [{ id: 1, state: 'done-waiting' }] })
+  expect(submitted).toEqual([])
+  await tickAt(timers, clock, 1000)
+  expect(submitted.length).toBe(1)
+})
+
+test('a reload after an answer form\'s write, before its first tick, delivers the notice at the first tick after the reload', async () => {
+  reset()
+  stopTicker()
+  const submitted: unknown[] = []
+  const timers: Timer[] = []
+  const { env, clock } = memEnv([made(1, { detail: '' })], [], null, submitted, timers)
+  clock.now = 1000
+  expect(await askText(wire().hooks, env, '1 done')).toBe('  answered #1 with done')
+  // The reload ends the old module's ticker, and the new session's start re-arms the window that is still waiting.
+  stopTicker()
+  freshModule()
+  await started(wire(), env)
+  await tickAt(timers, clock, 999)
+  expect(submitted).toEqual([])
+  await tickAt(timers, clock, 1000)
+  expect(submitted.length).toBe(1)
+})
+
+test('with a turn running, an answer form\'s notice is queued for the turn\'s end, and submitted there once', async () => {
+  reset()
+  stopTicker()
+  startTurn()
+  const { hooks } = wire()
+  const submitted: unknown[] = []
+  const timers: Timer[] = []
+  const { env, clock } = memEnv([made(1, { detail: '' })], [], null, submitted, timers)
+  clock.now = 1000
+  expect(await askText(hooks, env, '1 done')).toBe('  answered #1 with done')
+  await tickAt(timers, clock, 1000)
+  expect(submitted).toEqual([])
+  await (hooks['turn.complete'] as Handler)(env as never, { agentId: undefined, isAborted: false, turnId: 't1' } as never, next(false) as never)
+  await settle()
+  expect(submitted.length).toBe(1)
+  expect((submitted[0] as { text: string }).text.startsWith('#1 is done: Item 1\nThe human marked it done.')).toBe(true)
+})
+
+test('a terminal undo press on an item the command has just answered cancels the answer: nothing is sent, and the item is open', async () => {
+  reset()
+  stopTicker()
+  const { hooks } = wire()
+  const submitted: unknown[] = []
+  const timers: Timer[] = []
+  const { env, values, clock } = replyEnv([made(1, { detail: '' })], [], 1, submitted, timers)
+  clock.now = 1000
+  expect(await askText(hooks, env, '1 done')).toBe('  answered #1 with done')
+  // The undo button the band draws for the window the command opened: a press on it is the terminal's undo.
+  findButton(await band(hooks, env), 'done-1')?.onPress()
+  await settle()
+  await tickAt(timers, clock, 1000)
+  expect(submitted).toEqual([])
+  expect(values.list).toMatchObject({ items: [{ id: 1, state: 'open', pressedAt: null, answer: null }] })
+})
+
+test('an item in its terminal undo window stays in it: /asks <n> done answers that it is not open, and the window still sends the press once', async () => {
+  reset()
+  stopTicker()
+  const { hooks } = wire()
+  const submitted: unknown[] = []
+  const timers: Timer[] = []
+  const { env, values, clock } = replyEnv([made(1, { detail: '' })], [], 1, submitted, timers)
+  clock.now = 1000
+  findButton(await band(hooks, env), 'done-1')?.onPress()
+  await settle()
+  expect(await askText(hooks, env, '1 done')).toBe('  #1 is not open: its undo window is running.')
+  expect(values.list).toMatchObject({ items: [{ id: 1, state: 'done-waiting', pressedAt: 1000 }] })
+  await tickAt(timers, clock, 4000)
+  expect(submitted.length).toBe(1)
+  expect((submitted[0] as { text: string }).text.startsWith('#1 is done: Item 1\nThe human marked it done.')).toBe(true)
+})
+
+test('a form on a sent item answers that it is sent and changes nothing, unread or not', async () => {
+  reset()
+  stopTicker()
+  const { hooks } = wire()
+  const { env, values } = memEnv([made(1, { detail: '', state: 'done-pending', answer: 'yes', yesno: true, unread: true })], [], null)
+  for (const args of ['1 done', '1 yes', '1 reply hello', '1 1']) expect(await askText(hooks, env, args)).toBe('  #1 is already sent.')
+  expect(values.list).toMatchObject({ items: [{ id: 1, state: 'done-pending', answer: 'yes', unread: true }] })
+})
+
+test('a form the item\'s kind does not take answers the forms it takes, and changes nothing; so does an option number out of range, and a number no item has', async () => {
+  reset()
+  stopTicker()
+  const { hooks } = wire()
+  const options = [
+    { label: 'Use sqlite', description: '', recommended: false },
+    { label: 'Use postgres', description: '', recommended: false },
+  ]
+  const { env, values } = memEnv([made(1, { detail: '', options }), made(2, { detail: '' })], [], null)
+  const takes = '  #1 takes these answers:\n  /asks 1 1-2\n  /asks 1 reply'
+  expect(await askText(hooks, env, '1 done')).toBe(takes)
+  for (const args of ['1 0', '1 3', '1 99999999999999999999']) expect(await askText(hooks, env, args)).toBe(takes)
+  expect(await askText(hooks, env, '2 yes')).toBe('  #2 takes these answers:\n  /asks 2 done\n  /asks 2 reply')
+  expect(await askText(hooks, env, '9 done')).toBe('  There is no such item.')
+  expect(await askText(hooks, env, '99999999999999999999 done')).toBe('  There is no such item.')
+  expect(values.list).toMatchObject({ items: [{ id: 1, state: 'open', answer: null }, { id: 2, state: 'open', answer: null }] })
+})
+
+test('an answer form while the list is being rebuilt answers the rebuilding line and changes nothing; a malformed one answers the usage at once', async () => {
+  freshModule()
+  const wired = wire()
+  const timers: Timer[] = []
+  const { env, clock } = memEnv([], [], null, [], timers)
+  const { host, finish } = rebuilding(env)
+  setForkedTranscript('/sessions/s.jsonl')
+  try {
+    await started(wired, host)
+    const waiting = askText(wired.hooks, host, '1 done')
+    await tickAt(timers, clock, 5000)
+    expect(await waiting).toBe(REBUILDING)
+    expect(await askText(wired.hooks, host, '1 x')).toBe(USAGE)
+    finish()
+    expect(await askText(wired.hooks, host, '1')).toBe('  #1 non-blocking: Rebuilt ask\n  /asks 1 done\n  /asks 1 reply')
+  } finally {
+    resetRebuild()
+  }
+})
+
+test('a malformed answer answers the usage at once, whether or not its item exists, and reads no list', async () => {
+  reset()
+  stopTicker()
+  const { hooks } = wire()
+  const logs: string[] = []
+  const writes: unknown[] = []
+  const nbsp = String.fromCharCode(0xa0)
+  for (const args of ['1 reply', `1 reply ${nbsp}`, '1 done x', '1 x', '1 -1', '9 reply']) {
+    expect(await askText(hooks, broken(logs, [], {}, writes), args)).toBe(USAGE)
+  }
+  expect(writes).toEqual([])
+  expect(logs).toEqual([])
+})
+
+test('an answer form whose list read throws answers one error line, logs the failure, and writes no list', async () => {
+  reset()
+  stopTicker()
+  const { hooks, catches } = wire()
+  const logs: string[] = []
+  const { env, values } = memEnv([made(1, { detail: '' })], [], null)
+  const unreadable = { ...env, state: { ...env.state, get: async () => { throw new Error('list unreadable') } }, ui: { ...env.ui, log: (text: string) => void logs.push(text) } }
+  let thrown: unknown = null
+  try {
+    await asksOf(hooks)(unreadable as never, { args: '1 done' } as never, next(false) as never)
+  } catch (err) {
+    thrown = err
+  }
+  expect(String(thrown)).toContain('list unreadable')
+  expect(await (catches['command.run'] as Handler)(unreadable as never, { args: '1 done' } as never, next(false) as never)).toEqual({ text: FAILED })
+  expect(logs).toEqual(['human-plugin: the command.run hook throw: list unreadable'])
+  expect(values.list).toMatchObject({ items: [{ id: 1, state: 'open' }] })
+})
+
+test('a failure after an answer form\'s write leaves the item answered, and the command answers its confirmation', async () => {
+  reset()
+  stopTicker()
+  const { hooks } = wire()
+  const logs: string[] = []
+  const { env, values } = memEnv([made(1, { detail: '' })], [], null)
+  const failing = { ...env, clock: { ...env.clock, every: () => { throw new Error('no clock') } }, ui: { ...env.ui, log: (text: string) => void logs.push(text) } }
+  expect(await askText(hooks, failing, '1 done')).toBe('  answered #1 with done')
+  expect(values.list).toMatchObject({ items: [{ id: 1, state: 'done-waiting' }] })
+  expect(logs.filter(line => line.includes('no clock')).length).toBe(1)
+})
+
+test('with the pane open on the item, a phone reply leaves the pane on it once its window has ended, as a reply from the pane does', async () => {
+  reset()
+  stopTicker()
+  const { hooks } = wire()
+  const open: string[] = []
+  const timers: Timer[] = []
+  const { env, values, clock } = replyEnv([made(1, { detail: '' }), made(2)], open, null, [], timers)
+  await (hooks['session.end'] as Handler)(env as never, { reason: 'exit' } as never, next(false) as never)
+  findButton(await band(hooks, env), 'title-1')?.onPress()
+  await settle()
+  clock.now = 1000
+  expect(await askText(hooks, env, '1 reply Use sqlite')).toBe('  answered #1 with Use sqlite')
+  await tickAt(timers, clock, 1000)
+  expect(open).toEqual(['human-items'])
+  expect(values.selection).toBe(1)
+  const shown = JSON.stringify(await paneTree(hooks, env))
+  expect(shown).toContain('#1 non-blocking, done-pending: Item 1')
+  expect(shown).not.toContain('Item 2')
+})
+
+test('every form an open item\'s foot names is accepted by the command: a range names each of its numbers, and a reply is given the text its foot line leaves out', async () => {
+  const options = [
+    { label: 'Use sqlite', description: '', recommended: false },
+    { label: 'Use postgres', description: '', recommended: false },
+  ]
+  // The arguments that answer a foot's word: a range is each of its numbers, and a reply is given text.
+  const argsOf = (word: string): string[] =>
+    word.startsWith('1-') ? Array.from({ length: Number(word.slice(2)) }, (_, k) => `1 ${k + 1}`) : [word === 'reply' ? '1 reply text' : `1 ${word}`]
+  for (const item of [made(1, { detail: '' }), made(1, { detail: '', yesno: true }), made(1, { detail: '', options })]) {
+    reset()
+    stopTicker()
+    const { hooks } = wire()
+    const { env } = memEnv([{ ...item }], [], null)
+    const words = (await askText(hooks, env, '1')).split('\n').filter(line => line.startsWith('  /asks 1 ')).map(line => line.slice('  /asks 1 '.length))
+    expect(words.length).toBeGreaterThan(1)
+    for (const word of words) {
+      for (const args of argsOf(word)) {
+        const { env: fresh } = memEnv([{ ...item }], [], null)
+        expect(await askText(hooks, fresh, args)).toMatch(/^  answered #1 with /)
+      }
+    }
+  }
 })
