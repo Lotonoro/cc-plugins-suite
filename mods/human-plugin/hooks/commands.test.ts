@@ -186,17 +186,17 @@ test('a list of a thousand items, the folded numbers none in sequence, stays und
 
 test('an item prints its title line, then its brief under a heading, every line indented two spaces', () => {
   expect(answerTo([made(3, { title: 'Pick a db', blocking: true, detail: 'postgres or sqlite' })], { kind: 'item', digits: '3' })).toEqual({
-    text: '  #3 blocking: Pick a db\n  brief:\n  postgres or sqlite\n  /asks 3 done\n  /asks 3 reply',
+    text: '  #3 blocking: Pick a db\n  brief:\n  postgres or sqlite\n  /asks 3 done\n  /asks 3 reply <text>',
     shown: 3,
   })
 })
 
 test('a note prints under its own heading, before the brief; an empty or blank brief prints no section', () => {
   expect(whole([made(3, { detail: 'postgres or sqlite', note: 'Check the backup first.' })], '3')).toBe(
-    '  #3 non-blocking: Item 3\n  note:\n  Check the backup first.\n  brief:\n  postgres or sqlite\n  /asks 3 done\n  /asks 3 reply',
+    '  #3 non-blocking: Item 3\n  note:\n  Check the backup first.\n  brief:\n  postgres or sqlite\n  /asks 3 done\n  /asks 3 reply <text>',
   )
-  expect(whole([made(4, { note: 'Only a note.' })], '4')).toBe('  #4 non-blocking: Item 4\n  note:\n  Only a note.\n  /asks 4 done\n  /asks 4 reply')
-  expect(whole([made(5, { detail: '   ' })], '5')).toBe('  #5 non-blocking: Item 5\n  /asks 5 done\n  /asks 5 reply')
+  expect(whole([made(4, { note: 'Only a note.' })], '4')).toBe('  #4 non-blocking: Item 4\n  note:\n  Only a note.\n  /asks 4 done\n  /asks 4 reply <text>')
+  expect(whole([made(5, { detail: '   ' })], '5')).toBe('  #5 non-blocking: Item 5\n  /asks 5 done\n  /asks 5 reply <text>')
 })
 
 test('a thread prints every turn whole, oldest first, labelled as the pane labels them, the sent answer as the newest', () => {
@@ -239,20 +239,20 @@ test('a decision prints its options numbered, the recommended one first with its
   ]
   const text = whole([made(3, { detail: 'postgres or sqlite', options })], '3')
   expect(text).toBe(
-    '  #3 non-blocking: Item 3\n  brief:\n  postgres or sqlite\n  options:\n  1. Use postgres (recommended)\n  2. Use sqlite\n  /asks 3 1-2\n  /asks 3 reply',
+    '  #3 non-blocking: Item 3\n  brief:\n  postgres or sqlite\n  options:\n  1. Use postgres (recommended)\n  2. Use sqlite\n  /asks 3 1-2\n  /asks 3 reply <text>',
   )
   expect(text).not.toContain('A server')
 })
 
 test('an open item\'s foot names its forms: done and reply for a to-do, with or without a done label; yes, no and reply for a yes/no; the options as one range', () => {
   const option = (label: string) => ({ label, description: '', recommended: false })
-  expect(whole([made(3)], '3')).toBe('  #3 non-blocking: Item 3\n  /asks 3 done\n  /asks 3 reply')
-  expect(whole([made(3, { doneLabel: 'Ship it' })], '3')).toBe('  #3 non-blocking: Item 3\n  /asks 3 done\n  /asks 3 reply')
-  expect(whole([made(4, { yesno: true })], '4')).toBe('  #4 non-blocking: Item 4\n  /asks 4 yes\n  /asks 4 no\n  /asks 4 reply')
+  expect(whole([made(3)], '3')).toBe('  #3 non-blocking: Item 3\n  /asks 3 done\n  /asks 3 reply <text>')
+  expect(whole([made(3, { doneLabel: 'Ship it' })], '3')).toBe('  #3 non-blocking: Item 3\n  /asks 3 done\n  /asks 3 reply <text>')
+  expect(whole([made(4, { yesno: true })], '4')).toBe('  #4 non-blocking: Item 4\n  /asks 4 yes\n  /asks 4 no\n  /asks 4 reply <text>')
   expect(whole([made(5, { options: [option('A'), option('B'), option('C')] })], '5')).toBe(
-    '  #5 non-blocking: Item 5\n  options:\n  1. A\n  2. B\n  3. C\n  /asks 5 1-3\n  /asks 5 reply',
+    '  #5 non-blocking: Item 5\n  options:\n  1. A\n  2. B\n  3. C\n  /asks 5 1-3\n  /asks 5 reply <text>',
   )
-  expect(whole([made(6, { options: [option('A')] })], '6')).toBe('  #6 non-blocking: Item 6\n  options:\n  1. A\n  /asks 6 1\n  /asks 6 reply')
+  expect(whole([made(6, { options: [option('A')] })], '6')).toBe('  #6 non-blocking: Item 6\n  options:\n  1. A\n  /asks 6 1\n  /asks 6 reply <text>')
 })
 
 test('an item in its undo window or sent prints no foot', () => {
@@ -271,22 +271,22 @@ test('the foot of an item numbered with 16 digits names those digits, and is at 
 })
 
 test('an answer with its foot that fits the cap prints uncut, and an answer over it keeps the foot whole before the cut notice', () => {
-  // Beside the brief's text, the title, the brief's heading and the foot come to 68 units.
+  // Beside the brief's text, the title, the brief's heading and the foot come to 75 units.
   const fits = whole([made(3, { detail: 'x'.repeat(3900) })], '3')
   expect(fits).not.toContain('The rest was cut.')
-  expect(fits.endsWith('\n  /asks 3 done\n  /asks 3 reply')).toBe(true)
-  // At 3,933 the answer is 4,001 units with its foot: the brief gives way by 21, and the foot stays.
+  expect(fits.endsWith('\n  /asks 3 done\n  /asks 3 reply <text>')).toBe(true)
+  // At 3,933 the answer is 4,008 units with its foot: the brief gives way by 28, and the foot stays.
   const over = whole([made(3, { detail: 'x'.repeat(3933) })], '3')
   expect(over.length).toBeLessThanOrEqual(LIMITS.cap)
-  expect(over.endsWith('\n  /asks 3 done\n  /asks 3 reply\n  The rest was cut.')).toBe(true)
+  expect(over.endsWith('\n  /asks 3 done\n  /asks 3 reply <text>\n  The rest was cut.')).toBe(true)
 })
 
 test('the answer to a form the item does not take lists the forms its foot lists, each line indented', () => {
   const option = (label: string) => ({ label, description: '', recommended: false })
   const decision = made(5, { options: [option('A'), option('B'), option('C')] })
-  expect(answerLine({ kind: 'takes', item: decision })).toBe('  #5 takes these answers:\n  /asks 5 1-3\n  /asks 5 reply')
-  expect(answerLine({ kind: 'takes', item: made(6, { yesno: true }) })).toBe('  #6 takes these answers:\n  /asks 6 yes\n  /asks 6 no\n  /asks 6 reply')
-  expect(answerLine({ kind: 'takes', item: made(7) })).toBe('  #7 takes these answers:\n  /asks 7 done\n  /asks 7 reply')
+  expect(answerLine({ kind: 'takes', item: decision })).toBe('  #5 takes these answers:\n  /asks 5 1-3\n  /asks 5 reply <text>')
+  expect(answerLine({ kind: 'takes', item: made(6, { yesno: true }) })).toBe('  #6 takes these answers:\n  /asks 6 yes\n  /asks 6 no\n  /asks 6 reply <text>')
+  expect(answerLine({ kind: 'takes', item: made(7) })).toBe('  #7 takes these answers:\n  /asks 7 done\n  /asks 7 reply <text>')
   expect(answerLine({ kind: 'takes', item: decision }).split('\n').slice(1).join('\n')).toBe(footText(whole([decision], '5')))
   for (const line of lineList(answerLine({ kind: 'takes', item: decision }))) expect(line.startsWith('  ')).toBe(true)
 })
@@ -341,12 +341,12 @@ test('every line an answer prints begins with two spaces, and a blank line insid
 
 test('an answer never ends on a line break: a last turn or a brief ending in one ends on its words', () => {
   expect(whole([made(3, { state: 'done-pending', answer: 'Use sqlite\n\n' })], '3')).toBe('  #3 non-blocking: Item 3\n  thread:\n  you:\n  Use sqlite')
-  expect(whole([made(4, { detail: 'postgres\n' })], '4')).toBe('  #4 non-blocking: Item 4\n  brief:\n  postgres\n  /asks 4 done\n  /asks 4 reply')
+  expect(whole([made(4, { detail: 'postgres\n' })], '4')).toBe('  #4 non-blocking: Item 4\n  brief:\n  postgres\n  /asks 4 done\n  /asks 4 reply <text>')
 })
 
 test('a section whose words end in a line break is followed by the next section with no blank line between them', () => {
   expect(whole([made(3, { note: 'Check it.\n', detail: 'postgres' })], '3')).toBe(
-    '  #3 non-blocking: Item 3\n  note:\n  Check it.\n  brief:\n  postgres\n  /asks 3 done\n  /asks 3 reply',
+    '  #3 non-blocking: Item 3\n  note:\n  Check it.\n  brief:\n  postgres\n  /asks 3 done\n  /asks 3 reply <text>',
   )
   const thread = [{ speaker: 'agent' as const, words: 'Done.\n\n' }]
   expect(whole([made(4, { state: 'done-pending', answer: 'Use sqlite\n', thread })], '4')).toBe(
@@ -354,7 +354,7 @@ test('a section whose words end in a line break is followed by the next section 
   )
   const options = [{ label: 'Use postgres', description: '', recommended: false }]
   expect(whole([made(5, { detail: 'postgres\n', options })], '5')).toBe(
-    '  #5 non-blocking: Item 5\n  brief:\n  postgres\n  options:\n  1. Use postgres\n  /asks 5 1\n  /asks 5 reply',
+    '  #5 non-blocking: Item 5\n  brief:\n  postgres\n  options:\n  1. Use postgres\n  /asks 5 1\n  /asks 5 reply <text>',
   )
 })
 
@@ -389,8 +389,8 @@ test('a brief cut to six units keeps every line indented: its ellipsis ends the 
   // The answer with its foot is 4,001 units, 21 over the cap, so the brief (27 units: "  a", "  bcdef" and the x's) is cut by 21, to six. Every cut to six
   // that lands on the second line comes to seven units, so the brief keeps its first line alone.
   const brief = `a\nbcdef\n${'x'.repeat(13)}`
-  const text = whole([made(3, { blocking: true, title: 'T', note: 'n'.repeat(3906), detail: brief })], '3')
-  expect(text).toBe(`  #3 blocking: T\n  note:\n  ${'n'.repeat(3906)}\n  brief:\n  a…\n  /asks 3 done\n  /asks 3 reply\n  The rest was cut.`)
+  const text = whole([made(3, { blocking: true, title: 'T', note: 'n'.repeat(3899), detail: brief })], '3')
+  expect(text).toBe(`  #3 blocking: T\n  note:\n  ${'n'.repeat(3899)}\n  brief:\n  a…\n  /asks 3 done\n  /asks 3 reply <text>\n  The rest was cut.`)
   for (const line of lineList(text)) expect(line.startsWith('  ')).toBe(true)
 })
 
@@ -435,7 +435,7 @@ test('the worst case of an open decision, with its foot, keeps the foot whole be
     '3',
   )
   expect(text.length).toBeLessThanOrEqual(LIMITS.cap)
-  expect(text.endsWith('\n  /asks 3 1-4\n  /asks 3 reply\n  The rest was cut.')).toBe(true)
+  expect(text.endsWith('\n  /asks 3 1-4\n  /asks 3 reply <text>\n  The rest was cut.')).toBe(true)
   expect(footText(text).length).toBeLessThanOrEqual(LIMITS.foot)
   expect(bodyOf(text, '  note:\n').length).toBeGreaterThanOrEqual(1190)
   for (const line of lineList(text)) expect(line.startsWith('  ')).toBe(true)

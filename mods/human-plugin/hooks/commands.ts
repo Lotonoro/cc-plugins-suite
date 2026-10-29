@@ -129,10 +129,12 @@ const answerItem = (item: Item): string =>
     foot: footOf(item),
   })
 
-// The foot: the forms an open item takes, each named as a `/asks <n> <form>` line. A decision's options are one line, their number range. An item in
-// its undo window, or sent, takes no answer, so it prints no foot.
+// The foot: the forms an open item takes, each named as a `/asks <n> <form>` line. A decision's options are one line, their number range. A reply
+// names its text as `<text>`: a bare `reply` is the usage. An item in its undo window, or sent, takes no answer, so it prints no foot.
 const footOf = (item: Item): string[] =>
-  item.state !== 'open' ? [] : formsOf(item).map(kind => `${INDENT}/asks ${item.id} ${kind === 'option' ? numbersOf(item) : kind}`)
+  item.state !== 'open'
+    ? []
+    : formsOf(item).map(kind => `${INDENT}/asks ${item.id} ${kind === 'option' ? numbersOf(item) : kind === 'reply' ? 'reply <text>' : kind}`)
 
 // A decision's option numbers as one range, `1-<k>`, or `1` alone for one option.
 const numbersOf = (item: Item): string => (item.options.length === 1 ? '1' : `1-${item.options.length}`)

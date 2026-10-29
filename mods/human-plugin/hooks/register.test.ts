@@ -2071,10 +2071,10 @@ test('/asks prints the list through its command, /asks <n> prints that item whol
   const ask = asksOf(hooks)
   expect(await ask(env as never, { args: '' } as never, next(false) as never)).toEqual({ text: '  #1 blocking: Pick a db\n  #2 non-blocking: Item 2' })
   expect(await ask(env as never, { args: '1' } as never, next(false) as never)).toEqual({
-    text: '  #1 blocking: Pick a db\n  brief:\n  postgres or sqlite\n  /asks 1 done\n  /asks 1 reply',
+    text: '  #1 blocking: Pick a db\n  brief:\n  postgres or sqlite\n  /asks 1 done\n  /asks 1 reply <text>',
   })
   expect(await ask(env as never, { args: ' 001 ' } as never, next(false) as never)).toEqual({
-    text: '  #1 blocking: Pick a db\n  brief:\n  postgres or sqlite\n  /asks 1 done\n  /asks 1 reply',
+    text: '  #1 blocking: Pick a db\n  brief:\n  postgres or sqlite\n  /asks 1 done\n  /asks 1 reply <text>',
   })
   expect(await ask(env as never, { args: '3' } as never, next(false) as never)).toEqual({ text: '  There is no such item.' })
   expect(await ask(env as never, { args: '3.5' } as never, next(false) as never)).toEqual({ text: USAGE })
@@ -2200,7 +2200,7 @@ test('/asks <n> still returns the item when its unread mark cannot be cleared: t
     },
   }
   expect(await asksOf(hooks)(refusing as never, { args: '1' } as never, next(false) as never)).toEqual({
-    text: '  #1 non-blocking: Item 1\n  brief:\n  Brief 1.\n  /asks 1 done\n  /asks 1 reply',
+    text: '  #1 non-blocking: Item 1\n  brief:\n  Brief 1.\n  /asks 1 done\n  /asks 1 reply <text>',
   })
   expect(logs).toEqual(['human-plugin: the unread mark of #1 was not cleared: Error: list write refused'])
   expect(values.list).toMatchObject({ items: [{ id: 1, unread: true }] })
@@ -2470,10 +2470,10 @@ test('a form the item\'s kind does not take answers the forms it takes, and chan
     { label: 'Use postgres', description: '', recommended: false },
   ]
   const { env, values } = memEnv([made(1, { detail: '', options }), made(2, { detail: '' })], [], null)
-  const takes = '  #1 takes these answers:\n  /asks 1 1-2\n  /asks 1 reply'
+  const takes = '  #1 takes these answers:\n  /asks 1 1-2\n  /asks 1 reply <text>'
   expect(await askText(hooks, env, '1 done')).toBe(takes)
   for (const args of ['1 0', '1 3', '1 99999999999999999999']) expect(await askText(hooks, env, args)).toBe(takes)
-  expect(await askText(hooks, env, '2 yes')).toBe('  #2 takes these answers:\n  /asks 2 done\n  /asks 2 reply')
+  expect(await askText(hooks, env, '2 yes')).toBe('  #2 takes these answers:\n  /asks 2 done\n  /asks 2 reply <text>')
   expect(await askText(hooks, env, '9 done')).toBe('  There is no such item.')
   expect(await askText(hooks, env, '99999999999999999999 done')).toBe('  There is no such item.')
   expect(values.list).toMatchObject({ items: [{ id: 1, state: 'open', answer: null }, { id: 2, state: 'open', answer: null }] })
@@ -2493,7 +2493,7 @@ test('an answer form while the list is being rebuilt answers the rebuilding line
     expect(await waiting).toBe(REBUILDING)
     expect(await askText(wired.hooks, host, '1 x')).toBe(USAGE)
     finish()
-    expect(await askText(wired.hooks, host, '1')).toBe('  #1 non-blocking: Rebuilt ask\n  /asks 1 done\n  /asks 1 reply')
+    expect(await askText(wired.hooks, host, '1')).toBe('  #1 non-blocking: Rebuilt ask\n  /asks 1 done\n  /asks 1 reply <text>')
   } finally {
     resetRebuild()
   }
@@ -2584,14 +2584,14 @@ test('a reply sent by /asks leaves a human turn with its words on the item once 
   })
 })
 
-test('every form an open item\'s foot names is accepted by the command: a range names each of its numbers, and a reply is given the text its foot line leaves out', async () => {
+test('every form an open item\'s foot names is accepted by the command: a range names each of its numbers, and a reply\'s placeholder is given sample text', async () => {
   const options = [
     { label: 'Use sqlite', description: '', recommended: false },
     { label: 'Use postgres', description: '', recommended: false },
   ]
-  // The arguments that answer a foot's word: a range is each of its numbers, and a reply is given text.
+  // The arguments that answer a foot's word: a range is each of its numbers, and a reply's placeholder is given sample text.
   const argsOf = (word: string): string[] =>
-    word.startsWith('1-') ? Array.from({ length: Number(word.slice(2)) }, (_, k) => `1 ${k + 1}`) : [word === 'reply' ? '1 reply text' : `1 ${word}`]
+    word.startsWith('1-') ? Array.from({ length: Number(word.slice(2)) }, (_, k) => `1 ${k + 1}`) : [`1 ${word.replace('<text>', 'text')}`]
   for (const item of [made(1, { detail: '' }), made(1, { detail: '', yesno: true }), made(1, { detail: '', options })]) {
     reset()
     stopTicker()
