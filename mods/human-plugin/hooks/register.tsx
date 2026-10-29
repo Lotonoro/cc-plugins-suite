@@ -10,6 +10,7 @@ import { band, pane, toolLine, type Handlers, type View } from './ui'
 import { correctionText, newlyRestated, restatedIds } from './restatement'
 import { enter } from './deliver'
 import { PANE, endPane, followShown, markRead, personClosed, pickItem, setDrawn, shownSelection, showItem, syncPane } from './pane'
+import { pushAnswer } from './push'
 import { pressAnswer, pressDone, pressReply, rearmWindows, stopTicker } from './windows'
 import { restored, resetRebuild, setForkedTranscript, startForkRestore, startRestore } from './rebuild'
 import { emptyList, inBackground, readList, updateList } from './shared'
@@ -157,6 +158,7 @@ const answer = async ($: EngineInterface, e: unknown) => {
   const out = holder.out
   if (out === null) throw new Error('human_items: the list was not read')
   if ('deny' in out) return { deny: out.deny }
+  pushAnswer($, out)
   if (out.added !== null) await saveCounter($, out.store.next)
   await followShown($, out)
   if (out.added?.blocking || out.changed?.promoted) {
