@@ -7,16 +7,30 @@ const RAN = { value: { exitCode: 0, stdout: '', stderr: '', isStdoutTruncated: f
 const BAND_PROPS = { hasSurvey: false, isWorking: false, maxRows: 20, bodyColumns: 80, scroll: { offset: 0, bodyRows: 20 }, view: {} }
 const PUSH = { tool: 'PushNotification' } as const
 
-// The push calls the mod makes, in order, each answered by `answer(n, message)` (the n-th call from 1): by default the push is sent. The
-// messages are what the calls pushed. The permission check is allowed, as the mod's own check is.
-const pushes = (on: On, answer: (n: number, message: string) => Promise<Record<string, unknown>> | Record<string, unknown> = () => ({ pushSent: true })) => {
+// A push call's answer as the tool gives it: the result's fields, with the message the call pushed.
+const answering = (fields: Record<string, unknown>) => (_n: number, message: string) => ({ result: { message, ...fields } })
+const sent = answering({ pushSent: true })
+const userPresent = answering({ pushSent: false, disabledReason: 'user_present' })
+
+// The push calls the mod makes, in order, each answered by `answer(n, message)` (the n-th call from 1) with the whole answer the call gets:
+// by default the push is sent. The messages are what the calls pushed. The permission check is allowed, as the mod's own check is.
+const pushes = (on: On, answer: (n: number, message: string) => unknown = sent) => {
   const messages: string[] = []
   on('tool.check', PUSH, () => ({ decision: 'allow' }))
   on('tool.call', PUSH, async (_$, e) => {
     messages.push(e.message)
-    return { result: { message: e.message, ...(await answer(messages.length, e.message)) } }
+    return answer(messages.length, e.message) as never
   })
   return messages
+}
+
+// The clock, the store, the pane and the chime a filing plays, for a test that files a blocking item.
+const kit = (on: On) => {
+  const clock = mock.clock(on)
+  mock.store(on)
+  on('ui.panes', () => ({ value: [] }))
+  chimes(on)
+  return clock
 }
 
 // The sounds the mod plays: each afplay's argv.
@@ -213,4 +227,165 @@ test('a title that fits the 180 characters with its prefix is pushed whole', asy
   await $.tool.call({ tool: TOOL, action: 'add', blocking: true, title: 'b'.repeat(167) })
   await clock.settle()
   expect(messages).toEqual([`Blocking: #1 ${'b'.repeat(167)}`])
+})
+
+test('a push refused as user_present is tried again a minute after its answer, with the title the item has now, until one is sent', async ($, on) => {
+  const clock = kit(on)
+  const messages = pushes(on, (n, message) => (n === 1 ? userPresent(n, message) : sent(n, message)))
+  await $.tool.call({ tool: TOOL, action: 'add', blocking: true, title: 'Pick a db' })
+  await clock.settle()
+  await $.tool.call({ tool: TOOL, action: 'update', id: 1, title: 'Pick a database' })
+  await clock.advance(59000)
+  expect(messages).toEqual(['Blocking: #1 Pick a db'])
+  await clock.advance(1000)
+  expect(messages).toEqual(['Blocking: #1 Pick a db', 'Blocking: #1 Pick a database'])
+  await clock.advance(600000)
+  expect(messages.length).toBe(2)
+})
+
+test('a retry stops once the human has answered the item and its undo window has passed', async ($, on) => {
+  const clock = kit(on)
+  on('prompt.submit', (_$, e) => ({ text: e.text }))
+  const messages = pushes(on, userPresent)
+  await $.tool.call({ tool: TOOL, action: 'add', blocking: true, title: 'Pick a db' })
+  const ui = await $.ui.mount({ plugin: 'human-plugin', surface: 'terminal', component: 'AbovePrompt', props: BAND_PROPS })
+  await ui.press({ key: 'done-1' })
+  await clock.advance(3000)
+  await clock.advance(60000)
+  expect(messages.length).toBe(1)
+})
+
+test('a retry stops once the item is removed', async ($, on) => {
+  const clock = kit(on)
+  const messages = pushes(on, userPresent)
+  await $.tool.call({ tool: TOOL, action: 'add', blocking: true, title: 'Pick a db' })
+  await clock.settle()
+  await $.tool.call({ tool: TOOL, action: 'remove', id: 1 })
+  await clock.advance(60000)
+  expect(messages.length).toBe(1)
+})
+
+test('a retry stops once the item is no longer blocking', async ($, on) => {
+  const clock = kit(on)
+  const messages = pushes(on, userPresent)
+  await $.tool.call({ tool: TOOL, action: 'add', blocking: true, title: 'Pick a db' })
+  await clock.settle()
+  await $.tool.call({ tool: TOOL, action: 'update', id: 1, blocking: false })
+  await clock.advance(60000)
+  expect(messages.length).toBe(1)
+})
+
+test('a refused push is tried again each minute until an hour after the first try, and then no more', async ($, on) => {
+  const clock = kit(on)
+  const messages = pushes(on, userPresent)
+  await $.tool.call({ tool: TOOL, action: 'add', blocking: true, title: 'Pick a db' })
+  await clock.advance(3540000)
+  expect(messages.length).toBe(60)
+  await clock.advance(600000)
+  expect(messages.length).toBe(60)
+})
+
+test('a push refused as config_off is not tried again, and is logged once, at debug only', async ($, on) => {
+  const clock = kit(on)
+  const lines = logs(on)
+  const messages = pushes(on, answering({ pushSent: false, disabledReason: 'config_off' }))
+  await $.tool.call({ tool: TOOL, action: 'add', blocking: true, title: 'Pick a db' })
+  await clock.advance(120000)
+  expect(messages).toEqual(['Blocking: #1 Pick a db'])
+  const pushLog = lines.filter(line => line.text.includes('the push for #1'))
+  expect(pushLog).toEqual([{ text: 'human-plugin: the push for #1 was not sent: config_off', to: 'debug' }])
+})
+
+test('a push refused as no_transport is not tried again, and is logged once, at debug only', async ($, on) => {
+  const clock = kit(on)
+  const lines = logs(on)
+  const messages = pushes(on, answering({ pushSent: false, disabledReason: 'no_transport' }))
+  await $.tool.call({ tool: TOOL, action: 'add', blocking: true, title: 'Pick a db' })
+  await clock.advance(120000)
+  expect(messages).toEqual(['Blocking: #1 Pick a db'])
+  const pushLog = lines.filter(line => line.text.includes('the push for #1'))
+  expect(pushLog).toEqual([{ text: 'human-plugin: the push for #1 was not sent: no_transport', to: 'debug' }])
+})
+
+// A push that ends its item's tries at once: each kind of answer, what the transcript says of it, and the item left as it was.
+const ENDED: [string, (n: number, message: string) => unknown, string][] = [
+  ['denied', () => ({ deny: 'refused by the test' }), 'was denied: refused by the test'],
+  ['failed', (_n, message) => ({ result: { message }, isError: true, text: 'no network' }), 'failed: no network'],
+  ['threw', () => { throw new Error('the channel broke') }, 'threw'],
+  ['gave no outcome', answering({}), 'gave no outcome'],
+]
+for (const [kind, answer, said] of ENDED) {
+  test(`a push that ${kind} is not tried again, is logged once in the transcript, and leaves the item blocking`, async ($, on) => {
+    const clock = kit(on)
+    const lines = logs(on)
+    const messages = pushes(on, answer)
+    await $.tool.call({ tool: TOOL, action: 'add', blocking: true, title: 'Pick a db' })
+    await clock.advance(180000)
+    expect(messages).toEqual(['Blocking: #1 Pick a db'])
+    const pushLog = lines.filter(line => line.text.includes('the push for #1'))
+    expect(pushLog.length).toBe(1)
+    expect(pushLog[0]?.text).toContain(`the push for #1 ${said}`)
+    expect(pushLog[0]?.to).toBe('transcript')
+    expect(String((await $.tool.call({ tool: TOOL, action: 'list' })).result)).toContain('#1 blocking, open: Pick a db')
+  })
+}
+
+test('a push unanswered after 10 seconds ends its item\'s tries: it is logged once in the transcript and not tried again', async ($, on) => {
+  const clock = kit(on)
+  const lines = logs(on)
+  const messages = pushes(on, () => new Promise(() => {}))
+  await $.tool.call({ tool: TOOL, action: 'add', blocking: true, title: 'Pick a db' })
+  await clock.settle()
+  await clock.advance(9999)
+  expect(lines.filter(line => line.text.includes('the push for #1'))).toEqual([])
+  await clock.advance(1)
+  await clock.advance(120000)
+  expect(messages).toEqual(['Blocking: #1 Pick a db'])
+  expect(lines.filter(line => line.text.includes('the push for #1'))).toEqual([{ text: 'human-plugin: the push for #1 was not answered in 10 seconds', to: 'transcript' }])
+})
+
+test('a reopen makes its own push when the item\'s earlier push went unanswered', async ($, on) => {
+  const clock = kit(on)
+  on('prompt.submit', (_$, e) => ({ text: e.text }))
+  const messages = pushes(on, (n, message) => (n === 1 ? new Promise(() => {}) : sent(n, message)))
+  await $.tool.call({ tool: TOOL, action: 'add', blocking: true, title: 'Pick a db' })
+  await clock.settle()
+  await clock.advance(10000)
+  const ui = await $.ui.mount({ plugin: 'human-plugin', surface: 'terminal', component: 'AbovePrompt', props: BAND_PROPS })
+  await ui.press({ key: 'done-1' })
+  await clock.advance(3000)
+  await $.tool.call({ tool: TOOL, action: 'append', id: 1, text: 'The sqlite file is in data/.' })
+  await clock.settle()
+  expect(messages).toEqual(['Blocking: #1 Pick a db', 'Blocking: #1 Pick a db'])
+})
+
+test('the first push call of a session logs its whole answer at debug, and no later call does', async ($, on) => {
+  const clock = kit(on)
+  const lines = logs(on)
+  const messages = pushes(on, (_n, message) => ({ result: { message, pushSent: true, sentAt: '2026-10-25T10:00:00.000Z' }, text: 'pushed' }))
+  await $.tool.call({ tool: TOOL, action: 'add', blocking: true, title: 'Pick a db' })
+  await clock.settle()
+  await $.tool.call({ tool: TOOL, action: 'add', blocking: true, title: 'Second' })
+  await clock.settle()
+  expect(messages).toEqual(['Blocking: #1 Pick a db', 'Blocking: #2 Second'])
+  const whole = lines.filter(line => line.text.includes('first push call'))
+  expect(whole.length).toBe(1)
+  expect(whole[0]?.to).toBe('debug')
+  expect(whole[0]?.text).toContain('"sentAt":"2026-10-25T10:00:00.000Z"')
+  expect(whole[0]?.text).toContain('"text":"pushed"')
+  expect(lines.filter(line => line.text.includes('"pushSent":true')).length).toBe(1)
+})
+
+test('a push answered user_present after its 10 seconds have passed schedules no retry', async ($, on) => {
+  const clock = kit(on)
+  let answerLate: () => void = () => undefined
+  const messages = pushes(on, (_n, message) => new Promise(resolve => {
+    answerLate = () => resolve({ result: { message, pushSent: false, disabledReason: 'user_present' } })
+  }))
+  await $.tool.call({ tool: TOOL, action: 'add', blocking: true, title: 'Pick a db' })
+  await clock.settle()
+  await clock.advance(10000)
+  answerLate()
+  await clock.advance(120000)
+  expect(messages).toEqual(['Blocking: #1 Pick a db'])
 })

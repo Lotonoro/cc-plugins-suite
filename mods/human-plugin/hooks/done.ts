@@ -28,6 +28,10 @@ export const cutText = (text: string, max: number): string => {
 // A title or a label cut to one line: its line breaks become spaces (oneLine), then cutText.
 export const cutLine = (text: string, max: number): string => cutText(oneLine(text), max)
 
+// The stack of an error, not only its message: a log line that names no place cannot be traced back to where the failure came from. An error
+// with no stack is logged by its message, and a value that is not an Error as it is.
+export const messageOf = (err: unknown): string => (err instanceof Error ? err.stack || err.message : String(err))
+
 export const doneNotice = (item: Item): string => {
   const answer = item.answer === null ? null : oneLine(item.answer)
   const outcome =

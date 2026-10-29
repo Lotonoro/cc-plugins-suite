@@ -3,7 +3,7 @@ import type { HookFailure, On, Register, UiCopyArgs } from 'claude-code'
 import type { OwedNotices, Store } from '../types'
 import { TOOL, act, carryNext, clearAll, parseInput, type Outcome } from './items'
 import { STEERING, TOOL_SPEC } from './steering'
-import { oneLine, stateOf } from './done'
+import { messageOf, oneLine, stateOf } from './done'
 import { ARG_HINT, COMMAND, DESCRIPTION, FAILED, PHONE_REBUILDING, REBUILDING, USAGE, answerLine, answerTo, parseAsk, phoneBlock } from './commands'
 import { carried, carryHeld, endTurn, giveBack, handOver, notEntered, offer, pending, reset, setOnChange, startTurn } from './turns'
 import { band, pane, toolLine, type Handlers, type View } from './ui'
@@ -37,9 +37,6 @@ const finishTurn = ($: EngineInterface, turnId: string, interrupted: boolean, is
 const failed = ($: EngineInterface, hook: string, reason: Pick<HookFailure, 'kind' | 'message'>): void => {
   $.ui.log(`human-plugin: the ${hook} hook ${reason.kind}: ${reason.message ?? 'no message'}`)
 }
-// The stack of an error a hook caught, not only its message: a log line that names no place cannot be traced back to where the failure
-// came from. An error with no stack is logged by its message, and a value that is not an Error as it is.
-const messageOf = (err: unknown): string => (err instanceof Error ? err.stack || err.message : String(err))
 
 // The list as it stands now, for the check a notice gets right before its row is appended. An unreadable list checks nothing:
 // the notice is appended, and the failure is logged.
