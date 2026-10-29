@@ -7059,3 +7059,272 @@ describe('a model switch counts as a reset only on a cache cachier read as warm'
     expect(rec.forks).toEqual([])
   })
 })
+
+// The old pane's lines as it drew them at `8996571`, held as literals since the builders that gave them are retired: the cache's warmth, the advice
+// sentence, the status line (its status words are not compared), the cost's explanation and figures, the break-even line and the session line.
+// The sentence the old pane ended its off and paused status lines with.
+const COLOUR = "The pie turns amber in the cache's last quarter and red in its last tenth: the cache is about to lapse."
+type OldPane = { advice?: string; warmth?: string; status: string; explain?: string; figures?: string; breakEven?: string; session?: string }
+// How a state compares: `literal` finds the old explanation and figures as they were; `running` finds both in the one running-figure line; `interval` finds the figures
+// as the interval row and the explanation by meaning as `explainBy`. `reasonBy` are the fragments a paused reason shares in meaning with the section's, when the
+// wording differs. `heading` is the Keepalive heading's state, where the check pins it.
+type Scenario = {
+  name: string
+  old: OldPane
+  figure?: 'literal' | 'running' | 'interval'
+  explainBy?: string
+  reasonBy?: string[]
+  heading?: string
+  options?: Record<string, number>
+  run: ($: any, on: any) => Promise<string[]>
+}
+const LONG_PAUSES = { 'pauses/old': Array.from({ length: 10 }, (_, i) => ({ startMs: 1000 + i, pausedMs: 3 * 3600000, hour: 10, weekday: 2, ratio: 24, ttlMs: 300000 })) }
+const MODEL_SWITCH = { from_model: 'a', to_model: 'b', requested_model: 'b', source: 'command', prompt_cache_warm: true, cache_ttl: '5m', context_tokens: 1, estimated_cache_write_usd: 0, pricing: 'catalog' } as any
+// A world started at T0 with its transcript, one second in.
+const startedWorld = async ($: any, on: any, doc: any = opusCached()) => {
+  kaWorld(on, doc)
+  const clock = mock.clock(on, { now: T0 })
+  await $.classic.SessionStart({ source: 'startup', transcript_path: PATH })
+  await clock.advance(1000)
+  return clock
+}
+// A state write that waits on a gate once, or is refused, while `matches` holds for it.
+const gatedWrite = (on: any, matches: (e: any) => boolean) => {
+  let release: () => void = () => {}
+  const gate = new Promise<void>((resolve) => {
+    release = resolve
+  })
+  const held = { holding: false, failing: false }
+  on('state.set', (_$: any, e: any, next: any) => {
+    if (!matches(e)) return next(e)
+    if (held.failing) return e.key === 'stats' ? { value: { isSet: false } } : { deny: 'write refused' }
+    if (held.holding) return next(e)
+    held.holding = true
+    return gate.then(() => next(e))
+  })
+  return { held, release }
+}
+const isColdWrite = (e: any) => e.key === 'cold' && e.value !== null
+const isMarkedStats = (e: any) => e.key === 'stats' && e.value?.coldSince?.length > 0
+const isStop = (stop: string) => (e: any) => e.key === 'keepalive' && e.value?.stop === stop
+// Keepalive on over a transcript, its turn ended and its first refresh not yet due, then `mark` makes the cold mark; the pane is read while its write is held, or after it was refused.
+const coldWrite = (matches: (e: any) => boolean, mark: ($: any) => Promise<unknown>, fail: boolean): Scenario['run'] => async ($, on) => {
+  kaWorld(on, opusCached())
+  const { held, release } = gatedWrite(on, matches)
+  const clock = mock.clock(on, { now: T0 })
+  await $.classic.SessionStart({ source: 'startup', transcript_path: PATH })
+  await clock.settle()
+  await toggle($, 'on 60 2')
+  await mainStep($)
+  await turnEnd($)
+  await clock.advance(100000)
+  if (fail) {
+    held.failing = true
+    await mark($)
+    held.failing = false
+    await clock.advance(1000)
+    return paneRows($)
+  }
+  const marking = mark($)
+  await clock.settle()
+  try {
+    expect(held.holding).toBe(true)
+    await clock.advance(1000)
+    return await paneRows($)
+  } finally {
+    release()
+    await marking
+  }
+}
+const SWITCH = ($: any) => $.classic.PostModelSwitch(MODEL_SWITCH)
+const COMPACT = ($: any) => $.classic.PostCompact({ trigger: 'manual', compact_summary: 's' } as any)
+// A /clear while keepalive is on over a transcript: the session start's cold mark is held in its write, and the next tick has run.
+const clearWrite = (matches: (e: any) => boolean, fail: boolean): Scenario['run'] => async ($, on) => {
+  kaWorld(on, opusCached())
+  const { held, release } = gatedWrite(on, matches)
+  const clock = mock.clock(on, { now: T0 })
+  await $.classic.SessionStart({ source: 'startup', transcript_path: PATH })
+  await clock.settle()
+  held.failing = fail
+  const clearing = $.classic.SessionStart({ source: 'clear', transcript_path: PATH } as any)
+  await clock.settle()
+  try {
+    await toggle($, 'on 60 2')
+    await clock.advance(1000)
+    if (!fail) expect(held.holding).toBe(true)
+    return await paneRows($)
+  } finally {
+    held.failing = false
+    release()
+    await clearing
+  }
+}
+const SCENARIOS: Scenario[] = [
+  { name: 'keepalive off with an offer', old: { warmth: 'Prompt cache warm, 4:59 left (5-minute cache)', status: `Keepalive is off. ${COLOUR}`, explain: 'Next refresh: $0.004 (~19k cached tokens read).', figures: 'One refresh every 4:45.', breakEven: "Keepalive pays off if you're back between 5:00 and 1:54:00" }, figure: 'literal', run: async ($, on) => (await startedWorld($, on), paneRows($)) },
+  { name: 'keepalive off with the best setup advised over ten recent pauses', old: { advice: 'A 5-minute cache with keepalive on would have saved $4.40 over 10 recent pauses: click the pie on.', warmth: 'Prompt cache warm, 4:59 left (5-minute cache)', status: `Keepalive is off. ${COLOUR}`, explain: 'Next refresh: $0.004 (~19k cached tokens read).', figures: 'One refresh every 4:45.', breakEven: "Keepalive pays off if you're back between 5:00 and 1:54:00" }, figure: 'literal', run: async ($, on) => {
+    const pauses = Array.from({ length: 10 }, (_, i) => ({ startMs: 1000 + i, pausedMs: 10 * MIN, hour: 10, weekday: 2, ratio: 24, ttlMs: 300000, contextTokens: 100000, grownTokens: 1000000 }))
+    await startedWorld($, on, { ...opusCached(), store: { 'pauses/old': pauses } })
+    return paneRows($)
+  } },
+  { name: 'keepalive off with no cache to count from', old: { status: `Keepalive is off. ${COLOUR}` }, run: async ($, on) => (await startedWorld($, on, { text: '', exists: false }), paneRows($)) },
+  { name: 'keepalive off with a lead at the TTL, which offers no refresh', old: { warmth: 'Prompt cache warm, 4:59 left (5-minute cache)', status: `Keepalive is off. ${COLOUR}`, breakEven: "Keepalive doesn't pay off on this context" }, options: { keepalive_lead_s: 300 }, run: async ($, on) => (await startedWorld($, on), paneRows($)) },
+  { name: 'keepalive on and refreshing', old: { warmth: 'Prompt cache warm, 4:58 left (5-minute cache)', status: 'Keepalive is on and refreshing the cache.', explain: 'Next refresh: $0.004 (~19k cached tokens read).', figures: 'One refresh every 4:45.', breakEven: "Keepalive pays off if you're back between 5:00 and 1:54:00" }, figure: 'running', heading: 'on, refreshing', run: async ($, on) => {
+    const clock = await startedWorld($, on)
+    await toggle($, 'on 15')
+    await clock.advance(1000)
+    return paneRows($)
+  } },
+  { name: 'keepalive on with no cache to count from yet', old: { status: 'Keepalive is on, with no cache to count from yet.' }, run: async ($, on) => {
+    const clock = await startedWorld($, on, { text: '', exists: false })
+    await toggle($, 'on 15')
+    await clock.advance(1000)
+    return paneRows($)
+  } },
+  { name: 'keepalive on with a lead at the TTL', old: { warmth: 'Prompt cache warm, 4:58 left (5-minute cache)', status: `Keepalive is paused: the lead 300 s is not below the 300 s TTL. ${COLOUR}`, breakEven: "Keepalive doesn't pay off on this context" }, reasonBy: ['lead 300 s is not below the 300 s TTL'], run: async ($, on) => {
+    const clock = await startedWorld($, on)
+    await toggle($, 'on 300')
+    await clock.advance(1000)
+    return paneRows($)
+  } },
+  { name: 'keepalive on with a lead above the TTL', old: { warmth: 'Prompt cache warm, 4:58 left (5-minute cache)', status: `Keepalive is paused: the lead 400 s is not below the 300 s TTL. ${COLOUR}`, breakEven: "Keepalive doesn't pay off on this context" }, reasonBy: ['lead 400 s is not below the 300 s TTL'], run: async ($, on) => {
+    const clock = await startedWorld($, on)
+    await toggle($, 'on 400')
+    await clock.advance(1000)
+    return paneRows($)
+  } },
+  { name: 'keepalive stopped with its count used, the stop recorded', old: { warmth: 'Prompt cache warm, 0:59 left (5-minute cache)', status: `Keepalive is paused: its refreshes for this pause are used up; it resumes after your next prompt. ${COLOUR}`, breakEven: "Keepalive pays off if you're back between 5:00 and 9:00", session: 'This session: 1 refresh costing $0.004.' }, run: async ($, on) => {
+    const clock = await startedWorld($, on)
+    await toggle($, 'on 60 1')
+    await mainStep($)
+    await turnEnd($)
+    await clock.advance(240500)
+    await clock.advance(1000)
+    await clock.advance(240000)
+    return paneRows($)
+  } },
+  { name: 'keepalive stopped with its cache expired, the stop recorded', old: { warmth: 'Prompt cache expired, ~$0.09 to rebuild.', status: `Keepalive is paused: the cache expired; it resumes after your next prompt. ${COLOUR}`, breakEven: "Keepalive pays off if you're back between 5:00 and 13:00" }, run: async ($, on) => {
+    const clock = await startedWorld($, on)
+    await toggle($, 'on 60 2')
+    await mainStep($)
+    await clock.advance(310000)
+    await turnEnd($)
+    await clock.advance(1000)
+    return paneRows($)
+  } },
+  { name: 'keepalive on with a learned run count of 0', old: { warmth: 'Prompt cache warm, 4:59 left (5-minute cache)', status: `Keepalive is paused: your pauses rarely outlast the cache, so no refresh is sent; it resumes after your next prompt. ${COLOUR}` }, reasonBy: ['your pauses rarely outlast the cache', 'it resumes after your next prompt'], run: async ($, on) => {
+    const clock = await startedWorld($, on, { ...opusCached(), store: LONG_PAUSES })
+    await toggle($, 'on 60')
+    await mainStep($)
+    await turnEnd($)
+    await clock.advance(1000)
+    return paneRows($)
+  } },
+  { name: 'the count-used stop not yet recorded', old: { warmth: 'Prompt cache warm, 4:58 left (5-minute cache)', status: 'Keepalive is on and refreshing the cache.', explain: 'Next refresh: $0.004 (~19k cached tokens read).', figures: 'One refresh every 4 min.', breakEven: "Keepalive pays off if you're back between 5:00 and 9:00", session: 'This session: 1 refresh costing $0.004.' }, figure: 'interval', explainBy: 'each refresh costs $0.004 (reads ~19k cached tokens)', run: async ($, on) => {
+    kaWorld(on, opusCached())
+    const { held, release } = gatedWrite(on, isStop('count used'))
+    const clock = mock.clock(on, { now: T0 })
+    await $.classic.SessionStart({ source: 'startup', transcript_path: PATH })
+    await clock.settle()
+    await toggle($, 'on 60 1')
+    await mainStep($)
+    await turnEnd($)
+    await clock.advance(240500)
+    const advancing = clock.advance(241000)
+    await clock.settle()
+    try {
+      expect(held.holding).toBe(true)
+      await clock.advance(1000)
+      return await paneRows($)
+    } finally {
+      release()
+      await advancing
+    }
+  } },
+  { name: 'a cold mark from a model switch whose write is begun and the mark not yet set', old: { warmth: 'Prompt cache warm, 3:19 left (5-minute cache)', status: 'Keepalive is on and refreshing the cache.', explain: 'Next refresh: $0.004 (~19k cached tokens read).', figures: 'One refresh every 4 min.', breakEven: "Keepalive pays off if you're back between 5:00 and 13:00" }, figure: 'running', heading: 'paused', run: coldWrite(isColdWrite, SWITCH, false) },
+  { name: 'a cold mark from a model switch whose write failed before the mark was set', old: { warmth: 'Prompt cache warm, 3:19 left (5-minute cache)', status: 'Keepalive is on and refreshing the cache.', explain: 'Next refresh: $0.004 (~19k cached tokens read).', figures: 'One refresh every 4 min.', breakEven: "Keepalive pays off if you're back between 5:00 and 13:00" }, figure: 'running', heading: 'paused', run: coldWrite(isColdWrite, SWITCH, true) },
+  { name: 'a cold mark from a model switch set and its write not yet recorded', old: { warmth: 'Prompt cache reset, ~$0.09 to rebuild.', status: `Keepalive is paused: there is no cache until the next reply. ${COLOUR}` }, run: coldWrite(isMarkedStats, SWITCH, false) },
+  { name: 'a cold mark from a model switch set and its write failed', old: { warmth: 'Prompt cache reset, ~$0.09 to rebuild.', status: `Keepalive is paused: there is no cache until the next reply. ${COLOUR}` }, run: coldWrite(isMarkedStats, SWITCH, true) },
+  { name: 'a cold mark from a compaction set and its write not yet recorded', old: { warmth: 'Prompt cache reset, ~$0.09 to rebuild.', status: `Keepalive is paused: there is no cache until the next reply. ${COLOUR}` }, run: coldWrite(isMarkedStats, COMPACT, false) },
+  { name: 'a cold mark from a compaction set and its write failed', old: { warmth: 'Prompt cache reset, ~$0.09 to rebuild.', status: `Keepalive is paused: there is no cache until the next reply. ${COLOUR}` }, run: coldWrite(isMarkedStats, COMPACT, true) },
+  { name: 'a /clear cold mark begun and the mark not yet set', old: { warmth: 'Prompt cache warm, 4:59 left (5-minute cache)', status: 'Keepalive is on and refreshing the cache.', explain: 'Next refresh: $0.004 (~19k cached tokens read).', figures: 'One refresh every 4 min.', breakEven: "Keepalive pays off if you're back between 5:00 and 13:00" }, figure: 'running', heading: 'paused', run: clearWrite(isColdWrite, false) },
+  { name: 'a /clear cold mark set and its write not yet recorded', old: { status: 'Keepalive is on, with no cache to count from yet.' }, run: clearWrite(isMarkedStats, false) },
+  { name: 'a /clear cold mark set and its write failed', old: { status: 'Keepalive is on, with no cache to count from yet.' }, run: clearWrite(isMarkedStats, true) },
+]
+
+// The pane's rows as sections: each heading's row, then the rows under it up to the blank row, indentation stripped and joined with one space.
+const sectionsOf = (rows: string[]): Map<string, { heading: string; text: string }> => {
+  const found = new Map<string, { heading: string; text: string }>()
+  let at = 0
+  while (at < rows.length) {
+    const heading = rows[at]!
+    if (heading === '' || heading.startsWith(' ')) {
+      at++
+      continue
+    }
+    const body: string[] = []
+    for (at++; at < rows.length && rows[at] !== ''; at++) body.push(rows[at]!.trim())
+    found.set(heading.split(' ')[0]!, { heading, text: body.join(' ') })
+  }
+  return found
+}
+const occurrences = (text: string, part: string) => text.split(part).length - 1
+
+describe('the pane\'s sections hold every line the old pane drew, in each state it drew them', () => {
+  for (const s of SCENARIOS) {
+    test(s.name, { options: s.options }, async ($, on) => {
+      const sections = sectionsOf(await s.run($, on))
+      const cache = sections.get('Cache')?.text
+      const advice = sections.get('Advice')?.text
+      const keepalive = sections.get('Keepalive')
+      expect(keepalive).toBeDefined()
+      const found = (where: string | undefined, part: string | undefined) => {
+        expect(part).toBeDefined()
+        expect(where).toBeDefined()
+        expect(occurrences(where!, part!)).toBe(1)
+      }
+      const old = s.old
+      if (old.advice !== undefined) found(advice, old.advice)
+      if (old.warmth !== undefined) found(cache, old.warmth)
+      // The status words move to the heading, and are not compared. What follows them is: the colour sentence, and the paused reason.
+      const paused = 'Keepalive is paused: '
+      if (old.status.startsWith(paused)) {
+        const tail = `. ${COLOUR}`
+        expect(old.status.endsWith(tail)).toBe(true)
+        const reason = old.status.slice(paused.length, old.status.length - tail.length)
+        if (s.reasonBy === undefined) found(keepalive?.text, reason)
+        else
+          for (const part of s.reasonBy) {
+            expect(old.status).toContain(part)
+            found(keepalive?.text, part)
+          }
+        found(keepalive?.text, COLOUR)
+      } else if (old.status.startsWith('Keepalive is off. ')) {
+        expect(old.status).toBe(`Keepalive is off. ${COLOUR}`)
+        found(keepalive?.text, COLOUR)
+      } else {
+        expect(['Keepalive is on and refreshing the cache.', 'Keepalive is on, with no cache to count from yet.']).toContain(old.status)
+      }
+      if (old.explain !== undefined) {
+        expect(old.figures).toBeDefined()
+        const every = old.figures!.slice('One refresh every '.length, -1)
+        if (s.figure === 'literal') {
+          found(keepalive?.text, old.explain)
+          found(keepalive?.text, old.figures)
+        } else if (s.figure === 'running') {
+          // One line in place of the old pane's two, which names both facts.
+          found(keepalive?.text, `${old.explain.slice(0, -1)}, every ${every}`)
+          expect(keepalive?.text).not.toContain('One refresh every')
+        } else {
+          expect(s.figure).toBe('interval')
+          found(keepalive?.text, s.explainBy)
+          found(keepalive?.text, old.figures)
+        }
+      } else {
+        expect(s.figure).toBeUndefined()
+      }
+      if (old.breakEven !== undefined) found(keepalive?.text, old.breakEven)
+      if (old.session !== undefined) found(keepalive?.text, old.session)
+      if (s.heading !== undefined) expect(keepalive?.heading).toBe(`Keepalive  ${s.heading}`)
+    })
+  }
+})
