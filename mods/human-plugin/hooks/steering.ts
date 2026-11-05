@@ -84,7 +84,7 @@ export const TOOL_SPEC = {
 export const TODO_SPEC = {
   name: TODO_NAME,
   description:
-    'Your own running list, shown to the human as the Claude TODO list: your own steps, the step you are on (in_flight) and the ' +
+    "The session's running list of your own steps, which the human can read: the step you are on (in_flight) and the " +
     'steps queued after it (queued). A call gives the whole list in entries, in the order you want it kept, and replaces the last ' +
     'one; an entry marked done is dropped at once. An empty entries array empties the list. Call with no entries to read the list back, ' +
     'for example after a compaction. Write it when a step starts or finishes, or when the plan of steps changes, not on a turn where ' +

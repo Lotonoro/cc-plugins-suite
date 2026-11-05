@@ -163,3 +163,8 @@ test('the Claude TODO tool description carries the steering\'s rules in short', 
 test('the steering section stays static: it names no count and no entry of the list', () => {
   expect(STEERING.text).not.toMatch(/\d+ in flight/)
 })
+
+test('the Claude TODO tool description says what the list is, and does not claim where the human sees it', () => {
+  expect(TODO_SPEC.description).toContain("The session's running list of your own steps, which the human can read")
+  expect(TODO_SPEC.description).not.toContain('shown to the human')
+})

@@ -187,16 +187,28 @@ const asks = async ($: EngineInterface, args: string, windowMs: number): Promise
   return text
 }
 
+// The Claude list tool's calls, in the order they arrived. The engine does not promise to finish parallel calls in the order it started them,
+// and a resume replays the transcript's order, so each call waits for the one before it: the list left live is the list a resume rebuilds.
+let todoTurn: Promise<void> = Promise.resolve()
+
 // The Claude list tool's answer: a write replaces the list whole, a call with no list reads it. Only the main agent keeps the list, so a
 // subagent's call is refused. Like the human tool's, a call waits for a rebuild in progress, so it never reads or replaces a list the rebuild
-// has not filled in.
+// has not filled in. A refused call changes nothing and takes no turn.
 const todoAnswer = async ($: EngineInterface, e: unknown) => {
   const parsed = parseTodo(e)
   if (!parsed.ok) return { deny: `${TODO_NAME}: ${parsed.reason}` }
   if (typeof (e as { agentId?: unknown }).agentId === 'string') return { deny: `${TODO_NAME}: ${SUBAGENT_REFUSAL}` }
-  if (!(await restored($))) return { deny: `${TODO_NAME}: the list is still being rebuilt from the transcript; call again in a moment` }
-  if (parsed.value !== null) await writeTodo($, parsed.value)
-  return { result: todoReply(parsed.value ?? (await readTodo($)), parsed.value === null) }
+  const before = todoTurn
+  const turn: { done: () => void } = { done: () => undefined }
+  todoTurn = new Promise<void>(resolve => (turn.done = resolve))
+  try {
+    await before
+    if (!(await restored($))) return { deny: `${TODO_NAME}: the list is still being rebuilt from the transcript; call again in a moment` }
+    if (parsed.value !== null) await writeTodo($, parsed.value)
+    return { result: todoReply(parsed.value ?? (await readTodo($)), parsed.value === null) }
+  } finally {
+    turn.done()
+  }
 }
 
 // The id counter outlives a /clear in the plugin store: the old session saves it (never lower than what is stored) and the

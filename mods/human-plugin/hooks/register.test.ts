@@ -2911,3 +2911,32 @@ test('a /clear whose session.end hook fails part-way still empties the Claude li
   await (catches['session.end'] as Handler)(broken([], [], { next: 3 }, writes) as never, { reason: 'clear' } as never, next(false) as never)
   expect(writes).toContainEqual([])
 })
+
+test('two writes whose first one is slower apply in the order the calls arrived: the later call\'s list is the one left, and a read after them sees it', async () => {
+  reset()
+  const { hooks } = wire()
+  const { env, values } = memEnv([], [], null)
+  // The first write to land waits for the test; the second call is made while it waits.
+  const gate: { release: () => void } = { release: () => undefined }
+  const held = new Promise<void>(resolve => (gate.release = resolve))
+  let writes = 0
+  const slow = {
+    ...env,
+    state: {
+      ...env.state,
+      set: async (ref: { key: string }, value: unknown) => {
+        if (++writes === 1) await held
+        return env.state.set(ref, value)
+      },
+    },
+  }
+  const first = runTodo(hooks, slow, { entries: [entry('First', 'queued')] })
+  const second = runTodo(hooks, slow, { entries: [entry('Second', 'in_flight')] })
+  const read = runTodo(hooks, slow, {})
+  await settle()
+  gate.release()
+  expect(await first).toEqual({ result: 'Claude TODO: 0 in flight, 1 queued' })
+  expect(await second).toEqual({ result: 'Claude TODO: 1 in flight, 0 queued' })
+  expect(await read).toEqual({ result: 'Claude TODO: 1 in flight, 0 queued\n- in_flight: Second' })
+  expect(values.todo).toEqual([entry('Second', 'in_flight')])
+})
