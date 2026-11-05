@@ -7,24 +7,30 @@ export type ReviewUsage = {
   model: string
 }
 
-// A reviewer's turn end: when it arrived, and the engine's answer (the report), reason, duration and usage for that turn.
+// A reviewer's turn end: when it arrived, and the engine's answer (the reviewer's one-line status, never delivered), reason, duration and usage for that turn.
 export type TurnEnd = { at: number; answer: string; reason: string; durationMs: number; usage: ReviewUsage | null }
 
-// The open review, from the dispatch that briefed the reviewer until its turn ends. Its number is that dispatch's number.
+// The open review, from the dispatch that briefed the reviewer until a reviewer turn end settles it: a review whose reviewer wrote its note as its answer stays open across that turn end, for its one follow-up. Its number is that dispatch's number.
 export type OpenReview = {
   number: number
   // The worker's record as it stood at the dispatch: one block per entry.
   record: string[]
   dispatchedAt: number
-  // Whether the brief said nothing will wake the worker. Only a stall note from such a review is delivered.
+  // Whether the brief said nothing will wake the worker. Only such a review's reviewer may send a stall note; the gate refuses one from any other.
   nothingWakes: boolean
+  // The note slot: the body of the one note the gate let through for this review, held from its admission and kept once its send is delivered or the note is held for the user's next prompt (`pendingNotes`). Absent means no note, as in a state stored before the slot existed.
+  note?: string
+  // Set once the note in the slot is reported delivered while the review is open: a review that closes without it, a held note's included, logs its note as not delivered. Absent means the note's send has not reported delivered while the review was open, as in a state stored before this field existed.
+  delivered?: boolean
+  // Set when the review has had its one follow-up, asking a reviewer that wrote its note as its answer to send it. Absent means it has had none, as in a state stored before the mark existed.
+  followedUp?: boolean
 }
+
+// A note held for the worker's next prompt: the engine refused its send in its stopped-session state, by the refusal's wording or because the interrupt mark was set. It rides beside the user's next own prompt (a slash command never carries it), framed as its review line then its body, and carries no stall mark: the stall guard is armed when the note is held. A stored state may still give a note a `stall` mark; nothing reads it.
+export type PendingNote = { number: number; text: string }
 
 // The worker's record since the reviewer's last dispatch: one numbered block per entry, in order.
 export type TurnRecord = { blocks: string[] }
-
-// A note held for the worker. It is submitted as soon as its review settles while the worker is idle, else it goes out at the worker's next tool batch or turn end; an interrupt or a dropped submit holds it for the user's next prompt instead (Conversation's `interrupted` and `dropped`). A stall note also arms the once-per-stall guard.
-export type PendingNote = { number: number; text: string; stall: boolean }
 
 // A stall fact: what is in flight at the worker's Stop that will wake it. Each is spelled `type "description"`: a working agent or a teammate the worker messaged, from the agent list, then Stop's other tasks; the reviewer's own agents are left out.
 export type Wake = { tasks: string[]; crons: number }
@@ -32,19 +38,17 @@ export type Wake = { tasks: string[]; crons: number }
 // What started a worker turn: the user's own prompt (typed, from a Remote Control client, or a headless run's), a reviewer's task notification, or anything else.
 export type TurnStart = 'user' | 'notice' | 'other'
 
-// One conversation, from a /clear or resume to the next. A /clear forgets its reviewer and open review.
+// One conversation, from a /clear or resume to the next. A /clear forgets its current reviewer, its open review and that review's note slot; it keeps the reviewer markers (`reviewerIds`, `reviewerNames`), which mark traffic, not a review.
 export type Conversation = {
-  // Dispatches this session has made. Numbers carry across /clear, since a session's logs share one directory.
+  // Dispatches this session has made. Numbers carry across /clear, since a session's logs share one directory, and never repeat: a send naming an older number is a former reviewer's.
   dispatches: number
   // Whether the worker is mid-turn: a prompt entered its main loop and that loop's turn has not ended.
   midTurn: boolean
-  // Notes held for the worker, oldest first; PendingNote says when they go out.
+  // Notes held for the user's next own prompt, oldest first (`PendingNote`). Switching off empties the list, and a /clear starts it empty.
   pendingNotes: PendingNote[]
-  // Whether the user interrupted the worker's latest turn: the notes wait for the user's next prompt that is not a slash command, which carries them and clears it, so no flush or tool batch takes them meanwhile.
+  // The interrupt mark: set when the worker's turn ends aborted, and cleared at the user's next own prompt (the prompt that takes the held notes), at switch-on and at /clear. A slash command, a plugin's prompt or a peer prompt leaves it set. While it is set, a note whose send the engine refuses is held rather than released.
   interrupted: boolean
-  // Whether a submit another hook dropped holds the notes from submits: they wait for the user's next prompt that is not a slash command, which carries them and clears it. A tool batch still appends them.
-  dropped: boolean
-  // Whether the toggle has the reviewer off: no review is open or dispatched, no note is held, and the record stops collecting. A note whose submit or append was already under way at the switch still reaches the worker.
+  // Whether the toggle has the reviewer off: no review is open or dispatched, every reviewer send is refused, and the record stops collecting. A note whose send was let through before the switch may still reach the worker after it.
   off: boolean
   // The count of resets (each switch of the toggle, and each session end): a write carrying content taken under an older epoch is dropped, even when a switch was undone since.
   epoch: number
@@ -54,13 +58,13 @@ export type Conversation = {
   transcript: string | null
   // The reviewer, once its spawn result names it.
   reviewer?: { id: string; model: string }
-  // Every reviewer id this conversation's spawns have returned, oldest first: a respawned reviewer's finished row is hidden too.
+  // Every reviewer id this session's spawns have returned, oldest first, kept across /clear: a retired or forgotten reviewer's task row is hidden too, its calls stay out of the record, and its compaction keeps what a reviewer keeps.
   reviewerIds: string[]
-  // The team name each of this conversation's reviewer spawns runs under, as the agent list names it (the engine renames a taken name): a verified delivery from one of these is reviewer traffic.
+  // The team name each of this session's reviewer spawns runs under, as the agent list names it (the engine renames a taken name), kept across /clear: a verified end-of-run notice from one of these is consumed.
   reviewerNames: string[]
-  // The current reviewer's context at its last request (input, cache-read and cache-write tokens): past ROTATE_AT it is retired at its review's end and the next dispatch spawns a fresh one.
+  // The current reviewer's context at its last request (input, cache-read and cache-write tokens): past ROTATE_AT it is retired when its review is taken, never at a turn end that gives the review its follow-up, and the next dispatch spawns a fresh one.
   reviewerContext: number
-  // The last notes delivered to the worker this conversation, framed, oldest first: a fresh reviewer's first brief carries them.
+  // The last notes this conversation's gate let through and saw delivered, each its review line then its body, oldest first: a fresh reviewer's first brief carries them.
   deliveredNotes: string[]
   // The reviewer's open review, if it has one.
   review?: OpenReview
@@ -76,7 +80,7 @@ export type Conversation = {
   lastAsked: boolean
   // The addresses the worker's main-loop SendMessage calls named in this turn: a message wakes its recipient whatever its status. Reset at each worker turn end.
   messaged: string[]
-  // Whether a stall note from a review dispatched after the user's latest own prompt has been delivered since that prompt, /clear or toggle: one nudge per stall.
+  // Whether a stall note from a review dispatched after the user's latest own prompt has been let through and delivered since that prompt, /clear or toggle: one nudge per stall.
   nudged: boolean
   // The dispatch count when the user's latest own prompt arrived, or the last /clear or toggle press: a review numbered above it was dispatched after that point.
   dispatchesAtPrompt: number
@@ -84,7 +88,7 @@ export type Conversation = {
   record: TurnRecord
   // What each of the worker's own subagents is labelled as, by agent id.
   subagents: Record<string, { type: string; name: string }>
-  // Briefs this plugin is delivering, whose SendMessage or Agent call has not yet reached the recorder: that call is the plugin's, not the worker's.
+  // Briefs and follow-ups this plugin is delivering to a reviewer, whose SendMessage or Agent call has not yet reached the recorder: that call is the plugin's, not the worker's.
   briefsInFlight: string[]
 }
 

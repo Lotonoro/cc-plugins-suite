@@ -2,9 +2,9 @@
 
 A second Claude reviews your session as you work. When the agent finishes a turn, a reviewer subagent on Haiku 5.5
 at high effort reads what the agent did and checks it against the rules the agent is bound by: your instructions, the
-plan, skills and CLAUDE.md, and the correctness of the code it touched. When it finds a deviation, it hands the agent
-one note: an idle agent takes it at once, as the prompt of a turn of its own, and a busy agent reads it at its next
-tool call. When it finds nothing, it stays silent.
+plan, skills and CLAUDE.md, and the correctness of the code it touched. When it finds a deviation, it sends the agent
+one note as a message: an idle agent takes it at once, in a turn of its own, and a busy agent reads it once its turn
+ends. When it finds nothing, it stays silent.
 
 The reviewer corrects; it does not steer. A note must cite what the agent did (a tool call, a claim, a file on disk)
 and the rule it breaks or the action the agent said it would take, and it leaves the fix to the agent. It speaks only
@@ -19,28 +19,29 @@ earlier one, confirm a fix, or correct the wording of a message when nothing wou
 
 - **The toggle** sits on the footer's mode row, after Claude Code's mode labels and a dim ` · ` separator. It reads
   `auditor is on` while the reviewer runs, and `auditor is failing` while its reviews fail. Click it to switch:
-  `auditor is off` stops the reviewer for this session at once: a review already running is stopped, any note still
-  held is dropped, no new review starts and nothing is recorded. It stays off across `/clear`. Clicking it again,
+  `auditor is off` stops the reviewer for this session at once: a review already running is stopped, the reviewer
+  sends nothing more, no new review starts and nothing is recorded; a note it sent just before may still arrive, and a note held for your next prompt after an Esc is dropped. It stays off across `/clear`. Clicking it again,
   `auditor is on`, resumes the reviewer, and the next review covers only what happens from then on. `/auditor off` and
   `/auditor on` do the same from anywhere, mid-turn too, and bare `/auditor` says which it is: the Claude mobile app
   draws no footer, but runs the command and shows its answer. Every new session starts on. To stop it for good,
   disable the plugin with `/plugin`.
-- **Notes** reach the agent headed `auditor, review N:`, never as your words. An idle agent takes its note at once,
-  and the note's prompt starts a turn of its own, which the reviewer then reviews too, so the agent and the reviewer
-  may go back and forth for several turns without you. A busy agent reads its notes at its next tool call, or when
-  that turn ends if it makes no more calls. Two holds keep notes back until you prompt: after you interrupt a turn, and
-  after a submit another hook dropped (a busy agent still reads those at its next tool call). Your next prompt (typed
-  or sent from your phone, but not a slash command) carries them beside it and ends both holds; a slash command
-  releases nothing. A note submitted as its own prompt shows in your transcript as that prompt
-  row, marked as the auditor plugin's; a note appended at a tool call or carried beside your prompt shows as a
-  dim line, `auditor note N to Claude: …`, which the agent never reads. An escalation
-  needs you: the agent answers it in the transcript, where you read it.
-- **Nothing else.** Beyond those lines, a review that finds nothing leaves no trace on screen, and neither do the reviewer's own messages
-  or task rows. Two things reach you: an escalation of an unresolved disagreement, as a toast and as a push
+- **Notes** reach the agent as a message from the reviewer, headed `auditor, review N:`, never as your words. Each
+  shows in your transcript as Claude Code's grey collapsed `› Message from @auditor-reviewer` row. An idle agent
+  takes its note at once, in a turn of its own, which the reviewer then reviews too, so the agent and the reviewer
+  may go back and forth for several turns without you. A busy agent reads its note once its turn ends. After you
+  switch the reviewer off or `/clear`, it sends nothing more, though a note it sent just before may still arrive. A
+  reviewer whose final answer opens with its review line and a note, instead of sending it, gets one follow-up asking
+  it to send the note. An escalation needs you: the agent answers it in the transcript, where you read it.
+- **A note after an Esc.** Once you interrupt a turn, Claude Code refuses a message to the agent until you type
+  again. A note the reviewer sends in that state is held, and reaches the agent with your next message, with no row of
+  its own; a slash command does not carry it. An escalation still shows its toast and push when the reviewer gives it.
+  Switching the reviewer off or `/clear` drops a held note.
+- **Nothing else.** Beyond those rows, a review that finds nothing leaves no trace on screen, and neither do the
+  reviewer's end-of-run notices or task rows. Two things reach you: an escalation of an unresolved disagreement, as a toast and as a push
   notification on your phone when you are away from the terminal (Claude Code holds it back while you are at it), and
-  the toggle reading `auditor is failing` while reviews fail, until one succeeds; the debug log has the cause. In a headless
-  `claude -p` run, which has no agent team, the reviewer's hand-back is dropped at the prompt instead, and the run's
-  output says `Prompt dropped by a hook: reviewer bookkeeping`.
+  the toggle reading `auditor is failing` while reviews fail, until one succeeds; the debug log has the cause. In an
+  interactive session without agent teams (measured on Claude Code 2.1.312), the reviewer's hand-back arrives as a
+  prompt and is dropped there, and Claude Code shows `Prompt dropped by a hook: reviewer bookkeeping`.
 
 ## Install
 
@@ -77,8 +78,8 @@ Then start a new session. The reviewer is on as soon as the plugin is loaded.
 
 Sometimes the agent ends a turn with work it said it would do still undone, or waiting on a shell or subagent that has
 already finished. Nothing then wakes it, and it sits idle until you type something. When nothing is in flight to wake
-the agent, the reviewer is told so, and it may answer with a note opening `Stalled:`, which reaches the agent as any
-note does and resumes it.
+the agent, the reviewer is told so, and it may send a note opening `Stalled:`, which wakes the idle agent like any
+other note.
 
 - **What counts as in flight.** A subagent or teammate that is working or waiting on its own work, or one the agent messaged in the turn
   whatever its status; a shell, a monitor or another background task; or a scheduled wake-up. An idle, finished,
@@ -87,7 +88,7 @@ note does and resumes it.
 - **No nudge** when the agent's own last tool call asked you something (`AskUserQuestion`, or filing a human-plugin
   item), when the turn ended aborted, or when a stall note on a review dispatched since your last prompt already reached the
   agent. So one stall gets one nudge; your next prompt, `/clear` or the toggle re-arms it. A stall note from a review whose
-  brief did not say nothing will wake the agent is dropped.
+  brief did not say nothing will wake the agent is refused, and never reaches it.
 - **The limit.** The reviewer judges the wording of the last turn, so it can miss a stall, and it can flag one that is
   not. Only the guards above are mechanical.
 

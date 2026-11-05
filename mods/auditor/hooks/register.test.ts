@@ -1,5 +1,6 @@
 import { describe, expect, test } from 'claude-code/testing'
 import { LOOKUP_TIMEOUT_MS, lineCommand, searchCommand } from './transcript'
+import { followUpText } from './notes'
 import { REVIEWER_PROMPT } from './prompt'
 import * as register from './register'
 
@@ -37,25 +38,27 @@ type Opts = {
   run?: { stdout?: string; exitCode?: number; isStdoutTruncated?: boolean }
   sendFails?: string
   sendThrows?: string
+  // A note's send to main, below the plugin's gate: the sends numbered in `noteFailsAt` (1-based) are refused, every one throws with `noteThrows`, and the first is held until `until` once `reached` is called.
+  noteFailsAt?: number[]
+  noteThrows?: boolean
+  noteHold?: { until: Promise<void>; reached?: () => void }
+  // The reason the engine gives for every refused send, a note's or a message to the reviewer: 'main is gone' for a note, 'refused' for a message when not given.
+  refusal?: string
+  // The first prompt that carries context is dropped, or throws.
+  contextPrompt?: 'drop' | 'throw'
+  // Every conversation write whose value satisfies this is refused.
+  writeRefusedWhen?: (c: any) => boolean
   writeFails?: string
   clockFails?: boolean
   // The clock read with this number (1 for the first) rejects, and the rest answer.
   clockFailsAt?: number
   stateFails?: string
-  dropText?: string
   // The conversation a state written before this build holds, until the plugin first writes one.
   stateSeed?: unknown
-  submitFails?: boolean
-  // Makes each $.session.append refuse with this reason.
-  appendDenies?: string
-  // Each $.session.append calls reached, then waits for `until` before the engine answers it.
-  appendHold?: { until: Promise<void>; reached?: () => void }
-  // With `submitFailsOnce`, only the first note prompt throws.
-  submitFailsOnce?: boolean
+  // The first conversation read made while `when` holds for the conversation last written calls reached, then waits for `until` before it reads.
+  getHold?: { when: (c: any) => boolean; until: Promise<void>; reached?: () => void }
   // Each write whose path contains `path` calls reached, then waits for `until` before it lands.
   hold?: { path: string; until: Promise<void>; reached?: () => void }
-  // Each note prompt calls reached, then waits for `until` before the engine answers it.
-  submitHold?: { until: Promise<void>; reached?: () => void }
   // Each $.session.send calls reached, then waits for `until` before the engine answers it.
   sendHold?: { until: Promise<void>; reached?: () => void }
   // Each $.tool.call of this tool rejects.
@@ -71,12 +74,8 @@ type Opts = {
   writesFailFromSpawn?: number
   // With `listFailsAt`, the agent list call with that number (1 for the first) rejects and the rest answer.
   listFailsAt?: number
-  // With `sessionIdFailsOnce`, the first session id read rejects.
-  sessionIdFailsOnce?: boolean
   // Each session id read calls reached, then waits for `until` before the engine answers it; a hold covers the reads numbered `from` (1-based, 1 by default) through `to` when given.
   sessionIdHold?: { until: Promise<void>; reached?: () => void; from?: number; to?: number }
-  // With `stateSetFailsOnce`, the first conversation write rejects.
-  stateSetFailsOnce?: boolean
   // Each $.tool.call of `tool`, in the order the calls arrive, waits for its gate in `untils` before the engine answers it.
   toolHolds?: { tool: string; untils: Promise<void>[] }
 }
@@ -88,6 +87,9 @@ const heldAt = (hold: Opts['spawnHold'], n: number): SpawnHold | undefined => {
   return hold
 }
 
+// The running test's engine record, so a helper given only `$` reads the conversation as the plugin last wrote it. Module-level, as STEP is: the tests of a file run one at a time.
+const current: { seen?: { conversation: any }; seed?: any } = {}
+
 // The engine's answers. The reviewer spawns as agent ag1; any other subagent spawns as sub1.
 // The files map backs $.fs.read and $.fs.write, so a log can be read back as the worker's plugin would see it.
 const engine = (on: any, opts: Opts = {}) => {
@@ -95,7 +97,7 @@ const engine = (on: any, opts: Opts = {}) => {
   const tools = opts.tools ?? {}
   const files: Record<string, string> = {}
   const seen = {
-    spawns: [] as any[], sends: [] as any[], prompts: [] as string[], contexts: [] as any[], toasts: [] as string[],
+    spawns: [] as any[], sends: [] as any[], notes: [] as any[], prompts: [] as string[], contexts: [] as any[], toasts: [] as string[],
     conversation: undefined as any,
     registered: [] as any[], commands: [] as any[], registeredTools: [] as any[], runs: [] as any[], logs: [] as any[], reads: [] as string[], writes: [] as { path: string; text: string }[], appends: [] as any[], received: [] as any[], toolCalls: [] as any[], compactions: [] as any[],
     files, clock: 1000,
@@ -110,6 +112,8 @@ const engine = (on: any, opts: Opts = {}) => {
     stateWriteAttempts: 0,
     stateWritesFailAt: undefined as number | undefined,
   }
+  current.seen = seen
+  current.seed = opts.stateSeed
   // The reviewer's spawns take the ids in reviewerIds in order, then ag1.
   let reviewerSpawns = 0
   const reviewerId = (): string => opts.reviewerIds?.[reviewerSpawns++] ?? 'ag1'
@@ -129,14 +133,9 @@ const engine = (on: any, opts: Opts = {}) => {
     if (seen.clockHold !== undefined) await seen.clockHold.until
     return { value: seen.clock++ }
   })
-  let sessionIdFailsLeft = opts.sessionIdFailsOnce === true ? 1 : 0
   let sessionIdCalls = 0
   on('session.id', async () => {
     sessionIdCalls++
-    if (sessionIdFailsLeft > 0) {
-      sessionIdFailsLeft--
-      return { deny: 'session id unavailable' }
-    }
     const hold = opts.sessionIdHold
     if (hold !== undefined && sessionIdCalls >= (hold.from ?? 1) && sessionIdCalls <= (hold.to ?? Infinity)) {
       hold.reached?.()
@@ -164,14 +163,9 @@ const engine = (on: any, opts: Opts = {}) => {
     files[e.path] = e.text
     return { value: undefined }
   })
-  // Every attempt is recorded as it was sent, refused or not; an accepted row goes on to the conversation.
+  // Every append is recorded, so a test can show the plugin appends no row.
   on('session.append', async (_$: any, e: any, next: any) => {
     seen.appends.push(structuredClone(e.message))
-    if (opts.appendHold !== undefined) {
-      opts.appendHold.reached?.()
-      await opts.appendHold.until
-    }
-    if (opts.appendDenies !== undefined) return { deny: opts.appendDenies }
     return next(e)
   })
   // The bottom of the delivery chain: a delivery that reaches it is queued as it arrived, and recorded.
@@ -191,17 +185,21 @@ const engine = (on: any, opts: Opts = {}) => {
     const answer = tools[e.tool] ?? { text: `ran ${e.tool}` }
     return { ref: 1, result: null, text: answer.text, isError: answer.isError }
   })
-  on('state.get', (_$: any, e: any, next: any) => (opts.stateFails !== undefined && e.key === opts.stateFails ? { deny: 'state unavailable' } : opts.stateSeed !== undefined && e.key === 'conversation' && seen.conversation === undefined ? { value: { value: opts.stateSeed } } : next(e)))
-  let conversationWritesFailLeft = opts.stateSetFailsOnce === true ? 1 : 0
+  let getHeld = false
+  on('state.get', async (_$: any, e: any, next: any) => {
+    if (e.key === 'conversation' && opts.getHold !== undefined && !getHeld && opts.getHold.when(seen.conversation)) {
+      getHeld = true
+      opts.getHold.reached?.()
+      await opts.getHold.until
+    }
+    return opts.stateFails !== undefined && e.key === opts.stateFails ? { deny: 'state unavailable' } : opts.stateSeed !== undefined && e.key === 'conversation' && seen.conversation === undefined ? { value: { value: opts.stateSeed } } : next(e)
+  })
   // The conversation as the plugin last wrote it; stripBriefs writes it as a state from before briefsInFlight existed.
   on('state.set', (_$: any, e: any, next: any) => {
     if (e.key === 'conversation') seen.stateWriteAttempts++
     if (e.key === 'conversation' && opts.writesFailFromSpawn !== undefined && seen.spawns.filter(sp => typeOf(sp) === 'auditor:reviewer').length >= opts.writesFailFromSpawn) return { deny: 'state write unavailable' }
     if (e.key === 'conversation' && seen.stateWriteAttempts === seen.stateWritesFailAt) return { deny: 'state write unavailable' }
-    if (e.key === 'conversation' && conversationWritesFailLeft > 0) {
-      conversationWritesFailLeft--
-      return { deny: 'state write unavailable' }
-    }
+    if (e.key === 'conversation' && opts.writeRefusedWhen?.(e.value) === true) return { deny: 'state write unavailable' }
     if (e.key === 'conversation') {
       seen.conversation = e.value
       seen.conversations.push(e.value)
@@ -231,29 +229,36 @@ const engine = (on: any, opts: Opts = {}) => {
     }
     return { model: 'm', agentId: 'sub1' }
   })
+  // A send to the main conversation is a reviewer's note, kept apart from the briefs in `notes`; the note options shape its answer.
   on('session.send', async (_$: any, e: any) => {
+    if (e.to === 'main') {
+      seen.notes.push(e)
+      const n = seen.notes.length
+      if (opts.noteHold !== undefined && n === 1) {
+        opts.noteHold.reached?.()
+        await opts.noteHold.until
+      }
+      if (opts.noteThrows === true) throw new Error('note send threw')
+      return opts.noteFailsAt?.includes(n) === true ? { isDelivered: false, reason: opts.refusal ?? 'main is gone' } : { isDelivered: true }
+    }
     seen.sends.push(e)
     seen.flights.push([...(seen.conversation?.briefsInFlight ?? [])])
     if (opts.sendHold !== undefined) {
       opts.sendHold.reached?.()
       await opts.sendHold.until
     }
-    return e.to === opts.sendThrows ? Promise.reject(new Error('send threw')) : e.to === opts.sendFails ? { isDelivered: false, reason: 'refused' } : { isDelivered: true }
+    return e.to === opts.sendThrows ? Promise.reject(new Error('send threw')) : e.to === opts.sendFails ? { isDelivered: false, reason: opts.refusal ?? 'refused' } : { isDelivered: true }
   })
-  let submitFailsLeft = opts.submitFailsOnce === true ? 1 : 0
+  let contextRefused = false
   on('prompt.submit', async (_$: any, e: any) => {
+    // The first prompt that carries context is dropped, or throws, as another plugin's hook below the auditor's might.
+    if (e.context !== undefined && opts.contextPrompt !== undefined && !contextRefused) {
+      contextRefused = true
+      if (opts.contextPrompt === 'throw') throw new Error('prompt hook failed')
+      return { drop: 'another hook dropped it' }
+    }
     seen.prompts.push(e.text)
     seen.contexts.push(e.context)
-    if (opts.submitHold !== undefined && e.text.startsWith('auditor, review')) {
-      opts.submitHold.reached?.()
-      await opts.submitHold.until
-    }
-    if (opts.submitFails === true && e.text.startsWith('auditor, review')) throw new Error('queue gone')
-    if (submitFailsLeft > 0 && e.text.startsWith('auditor, review')) {
-      submitFailsLeft--
-      throw new Error('queue gone')
-    }
-    if (e.text === opts.dropText) return { drop: 'test' }
     return { text: e.text, context: e.context }
   })
   on('turn.step', async function* (_$: any, e: any) {
@@ -305,9 +310,9 @@ const debugLines = (seen: { logs: { text: string }[] }, text: string): string[] 
 // The lines logged to the transcript so far, as text.
 const transcriptLines = (seen: { logs: { text: string; to: string }[] }): string[] => seen.logs.filter(line => line.to === 'transcript').map(line => line.text)
 
-// The reviewer's final SubagentHandback message, as it arrives at prompt.submit.
+// A reviewer's final report as it arrives at prompt.submit in a session without agent teams: the hand-back marker opening the first line, which names the reviewer.
 const HANDBACK = (body: string) => ({
-  text: `Another Claude session sent a message: [Subagent hand-back] auditor-reviewer done\n${body}`,
+  text: `[Subagent hand-back] auditor-reviewer done\n${body}`,
   wait: false,
   origin: { kind: 'peer' as const },
 })
@@ -315,19 +320,46 @@ const HANDBACK = (body: string) => ({
 // The reviewer's turn ending, with its answer.
 const TURN_END = (agentId: string, answer = '', usage?: unknown) => ({ answer, durationMs: 1, isAborted: false, turnId: 't', reason: 'answer', agentId, usage }) as any
 
-// The report a hand-back carries: the lines after its envelope, including the reviewer's own hand-back line. The turn end's answer is this report, verbatim.
+// The report a hand-back carries: the lines after its marker's line.
 const REPORT = (hand: { text: string }): string => {
   const lines = hand.text.split('\n')
   return lines.slice(lines.findIndex(line => line.includes('[Subagent hand-back]')) + 1).join('\n')
 }
 
-// The prompt a delivered note reaches the worker as: its first line names its review.
+// A note as the reviewer sends it: its first line names its review.
 const FRAMED = (number: number, text: string): string => `auditor, review ${number}:\n${text}`
 
-// The user row a tool batch appends the notes as, as the engine keeps it: a notice the user did not type.
-const ROW = (text: string) => ({ type: 'user', role: 'user', isMeta: true, content: [{ type: 'text', text }] })
+// The engine's stamp on a send from the model inside an agent this plugin spawned.
+const REVIEWER_ORIGIN = { kind: 'plugin' as const, name: 'auditor' }
+
+// A reviewer's SendMessage, as its session.send arrives: to main, its text the review line for `number`, then the body.
+const SEND = (number: number, body: string, agentId = 'ag1', to = 'main') => ({ to, text: FRAMED(number, body), origin: REVIEWER_ORIGIN, agentId }) as any
+
+// The texts that reached the bottom of the send chain for the main conversation: the notes the gate let through.
+const toMain = (seen: { notes: { text: string }[] }): string[] => seen.notes.map(s => s.text)
+
+// A delivered note arriving at the worker, as Task 1 measured it: a peer prompt carrying the reviewer's agent message.
+const ARRIVED = (number: number, body: string, from = 'auditor-reviewer') => ({ text: `<agent-message from="${from}">\n${FRAMED(number, body)}\n</agent-message>`, wait: false, origin: { kind: 'peer' as const }, isMeta: true }) as any
+
+// The review number a reviewer sends its note under: its open review's while it is the stored reviewer, else 0, a number no review has, as a former reviewer's older number is refused.
+const sendNumber = (agentId: string): number => {
+  const c = current.seen?.conversation ?? current.seed
+  return c?.reviewer?.id === agentId ? (c?.review?.number ?? 0) : 0
+}
+
+// A reviewer sends `body` as its note to main with SendMessage, under `number` when given; resolves to the send's result.
+const noteSent = async ($: any, body: string, agentId = 'ag1', number?: number) => $.session.send(SEND(number ?? sendNumber(agentId), body, agentId))
+
+// Whether an answer is a note: neither empty nor the quiet status.
+const isNote = (answer: string): boolean => answer.trim() !== '' && answer.trim() !== 'Nothing to note.'
 
 const ESCALATED_TOAST = 'auditor: the reviewer escalated a disagreement; see its note to the worker'
+
+// A named agent's end-of-run status notice as the team mailbox carries it to session.receive, in the shape measured live.
+const END_NOTICE = (from: string, result = 'Nothing to note.') => JSON.stringify({ type: 'idle_notification', from, timestamp: '2026-10-28T07:55:44.204Z', idleReason: 'available', result })
+
+// What the receive hook answers for a known reviewer's end-of-run notice.
+const CONSUMED = { consumed: 'auditor reviewer end-of-run notice' }
 
 // The worker's turn ending on the main loop (no agentId), with its answer.
 const mainTurnEnd = ($: any) => $.turn.complete({ answer: 'Done.', durationMs: 1, isAborted: false, turnId: 't1', reason: 'answer' })
@@ -390,15 +422,23 @@ const busyWorker = async ($: any) => {
   await $.classic.Stop(stop)
 }
 
-// A reviewer hands back, and its turn ends with the report as its answer: the review settles at that turn end.
+// A reviewer ends its review in a session without agent teams: a report that is a note is sent first with SendMessage, then the hand-back arrives and is dropped, and the turn ends with the quiet status: the review settles at that turn end.
 const reviewed = async ($: any, hand: any, agentId: string) => {
+  const report = REPORT(hand)
+  if (isNote(report)) await noteSent($, report, agentId)
   await $.prompt.submit(hand)
-  await $.turn.complete(TURN_END(agentId, REPORT(hand), USAGE))
+  await $.turn.complete(TURN_END(agentId, 'Nothing to note.', USAGE))
 }
 
-// A reviewer's turn ends with the given answer, and no hand-back is involved.
+// A reviewer ends its review: an answer that is a note is sent first with SendMessage, as the prompt tells it, then its turn ends with the given answer.
 const turnEnded = async ($: any, agentId: string, answer = '') => {
+  if (isNote(answer)) await noteSent($, answer, agentId)
   await $.turn.complete(TURN_END(agentId, answer))
+}
+
+// A reviewer's turn ends on an error rather than an answer, having sent nothing: its review fails.
+const turnFailed = async ($: any, agentId: string) => {
+  await $.turn.complete({ ...TURN_END(agentId, ''), reason: 'error' })
 }
 
 // The footer's SessionMode, beside Claude Code's own mode label.
@@ -467,11 +507,11 @@ describe('auditor', () => {
     expect(seen.sends.length).toBe(0)
   })
 
-  test('a settle whose flush is under way briefs nothing when a user prompt enters before it finishes', ON, async ($, on) => {
+  test('a settle briefs nothing when a user prompt enters while it settles', ON, async ($, on) => {
     const release = gate()
     const reached = gate()
-    // The third session id read is the settle's flush: the dispatch made the first, the settle's own log the second.
-    const seen = engine(on, { sessionIdHold: { from: 3, to: 3, until: release.until, reached: reached.open } })
+    // The second session id read is the settle's own, for its log: the dispatch made the first.
+    const seen = engine(on, { sessionIdHold: { from: 2, to: 2, until: release.until, reached: reached.open } })
     await workerTurn($)
     const settling = reviewed($, HANDBACK('Nothing to note.'), 'ag1')
     await reached.until
@@ -520,44 +560,43 @@ describe('auditor', () => {
     expect(seen.spawns.length).toBe(0)
   })
 
-  test('a hand-back is dropped at the prompt, and its note is submitted, framed, at the worker\'s turn end', ON, async ($, on) => {
+  test('a note the reviewer sends goes on to main unchanged, and the plugin submits, appends and prints nothing for it, busy or idle', ON, async ($, on) => {
     const seen = engine(on)
     await busyWorker($)
-    const hand = HANDBACK('a.ts:4 swallows it.')
-    await $.prompt.submit(hand)
-    expect(seen.prompts).toEqual(['fix the parser'])
-    await $.turn.complete(TURN_END('ag1', REPORT(hand), USAGE))
-    expect(seen.prompts).toEqual(['fix the parser'])
-    await mainTurnEnd($)
-    expect(seen.prompts).toEqual(['fix the parser', FRAMED(1, 'a.ts:4 swallows it.')])
-  })
-
-  test('a note is submitted once, at the worker\'s turn end, and no later reviewer turn submits it again', ON, async ($, on) => {
-    const seen = engine(on)
-    await busyWorker($)
-    await reviewed($, NOTE(), 'ag1')
-    expect(seen.prompts).toEqual(['fix the parser'])
-    await mainTurnEnd($)
-    await $.turn.complete(TURN_END('ag1'))
-    expect(seen.prompts).toEqual(['fix the parser', FRAMED(1, 'a.ts:4 swallows it.')])
-  })
-
-  test('the turn-end flush submits its note as the prompt row and logs no transcript line for it', ON, async ($, on) => {
-    const seen = engine(on)
-    await busyWorker($)
-    await reviewed($, NOTE(), 'ag1')
-    await mainTurnEnd($)
-    expect(seen.prompts).toEqual(['fix the parser', FRAMED(1, 'a.ts:4 swallows it.')])
-    expect(transcriptLines(seen)).toEqual([])
-  })
-
-  test('a note of several paragraphs appended at a tool batch logs its transcript line as one line', ON, async ($, on) => {
-    const seen = engine(on)
-    await busyWorker($)
-    await turnEnded($, 'ag1', 'a.ts:4 swallows it.\n\nb.ts:2 also.')
+    expect(await noteSent($, 'a.ts:4 swallows it.')).toEqual({ isDelivered: true })
+    expect(seen.notes).toEqual([SEND(1, 'a.ts:4 swallows it.')])
+    await $.turn.complete(TURN_END('ag1', 'Sent.', USAGE))
     await $.classic.PostToolBatch({ tool_calls: [] })
-    expect(seen.appends).toEqual([ROW(FRAMED(1, 'a.ts:4 swallows it.\n\nb.ts:2 also.'))])
-    expect(transcriptLines(seen)).toEqual(['auditor note 1 to Claude: a.ts:4 swallows it. b.ts:2 also.'])
+    await mainTurnEnd($)
+    await workerTurn($)
+    await turnEnded($, 'ag1', 'b.ts:2 also.')
+    expect(toMain(seen)).toEqual([FRAMED(1, 'a.ts:4 swallows it.'), FRAMED(2, 'b.ts:2 also.')])
+    expect(seen.prompts).toEqual(['fix the parser'])
+    expect(seen.appends).toEqual([])
+    expect(transcriptLines(seen)).toEqual([])
+    expect(seen.logs.map((line: { text: string }) => line.text).filter(text => text.includes('auditor note'))).toEqual([])
+  })
+
+  test('a note arriving as a peer prompt passes on unchanged and enters the record once, as any peer prompt does', ON, async ($, on) => {
+    const seen = engine(on)
+    await workerTurn($)
+    await turnEnded($, 'ag1', 'a.ts:4 swallows it.')
+    const arrived = ARRIVED(1, 'a.ts:4 swallows it.')
+    expect(await $.prompt.submit(arrived)).toMatchObject({ text: arrived.text })
+    expect(seen.prompts).toEqual([arrived.text])
+    await workerTurn($)
+    expect(await entriesOf($, { which: 'record' })).toBe(RECORD_OF(2, `PROMPT (peer): ${arrived.text}`, 'ASSISTANT: working'))
+  })
+
+  test('a note whose body quotes "Subagent hand-back" reaches the worker unchanged', ON, async ($, on) => {
+    const seen = engine(on)
+    await workerTurn($)
+    const body = 'The [Subagent hand-back] marker at a.ts:4 is matched anywhere in the text.'
+    await turnEnded($, 'ag1', body)
+    expect(toMain(seen)).toEqual([FRAMED(1, body)])
+    const arrived = ARRIVED(1, `[Subagent hand-back] ${body}`)
+    await $.prompt.submit(arrived)
+    expect(seen.prompts).toEqual([arrived.text])
   })
 
   test('a reviewer turn end with no review open dispatches nothing, though entries wait for the next review', ON, async ($, on) => {
@@ -571,89 +610,17 @@ describe('auditor', () => {
     expect(JSON.stringify(seen.logs)).toContain('ended a turn with no review in progress')
   })
 
-  test('a bundle another hook drops is logged, and its review logs not delivered', ON, async ($, on) => {
-    const seen = engine(on, { dropText: FRAMED(1, 'a.ts:4 swallows it.') })
-    await busyWorker($)
-    await reviewed($, NOTE(), 'ag1')
-    await mainTurnEnd($)
-    expect(seen.toasts).toEqual([])
-    expect(JSON.stringify(seen.logs)).toContain('the held notes were dropped at the prompt')
-    expect(logOf(seen, LOG_1)).toMatchObject({ note_delivered: false })
-  })
-
-  test('an interrupted turn holds its notes until the user\'s next prompt, which carries them as context', ON, async ($, on) => {
-    const seen = engine(on)
-    await workerTurn($)
-    await $.prompt.submit(COMPOSER('carry on'))
-    await turnEnded($, 'ag1', 'a.ts:4 held.')
-    await $.turn.complete({ answer: '', durationMs: 1, isAborted: true, turnId: 't1', reason: 'aborted' } as any)
-    expect(seen.prompts).toEqual(['carry on'])
-    expect(logOf(seen, LOG_1)).toMatchObject({ note_delivered: false })
-    await $.prompt.submit(COMPOSER('more'))
-    expect(seen.contexts.at(-1)).toEqual([FRAMED(1, 'a.ts:4 held.')])
-    await $.classic.PostToolBatch({ tool_calls: [] })
-    expect(seen.appends).toEqual([])
-    expect(logOf(seen, LOG_1)).toMatchObject({ note_delivered: true })
-  })
-
-  test('a review that settles after an interrupt holds its note until the user\'s next prompt, which carries it as context', ON, async ($, on) => {
+  test('after the user interrupts the worker, a note is let through at once and nothing holds it for the user\'s next prompt', ON, async ($, on) => {
     const seen = engine(on)
     await workerTurn($)
     await $.prompt.submit(COMPOSER('carry on'))
     await $.turn.complete({ answer: '', durationMs: 1, isAborted: true, turnId: 't1', reason: 'aborted' } as any)
-    await reviewed($, NOTE(), 'ag1')
-    expect(seen.prompts).toEqual(['carry on'])
-    expect(logOf(seen, LOG_1)).toMatchObject({ note_delivered: false })
+    await turnEnded($, 'ag1', 'a.ts:4 after the Esc.')
+    expect(toMain(seen)).toEqual([FRAMED(1, 'a.ts:4 after the Esc.')])
+    expect(logOf(seen, LOG_1)).toMatchObject({ status: 'complete', note: 'a.ts:4 after the Esc.', note_delivered: true })
     await $.prompt.submit(COMPOSER('more'))
-    expect(seen.contexts.at(-1)).toEqual([FRAMED(1, 'a.ts:4 swallows it.')])
-    await $.classic.PostToolBatch({ tool_calls: [] })
-    expect(seen.appends).toEqual([])
-    expect(logOf(seen, LOG_1)).toMatchObject({ note_delivered: true })
-  })
-
-  test('a user prompt that carries held notes as context logs one transcript line per note', ON, async ($, on) => {
-    const seen = engine(on)
-    await $.prompt.submit(COMPOSER('fix the parser'))
-    await $.classic.Stop(stop)
-    await turnEnded($, 'ag1', 'a.ts:4 first.')
-    await $.tool.call({ tool: 'Read', file_path: 'a.ts' } as any)
-    await $.classic.Stop(stop)
-    await turnEnded($, 'ag1', 'b.ts:1 second.')
-    await $.turn.complete({ answer: '', durationMs: 1, isAborted: true, turnId: 't1', reason: 'aborted' } as any)
-    await $.prompt.submit(COMPOSER('carry on'))
-    expect(seen.contexts.at(-1)).toEqual([`${FRAMED(1, 'a.ts:4 first.')}\n\n${FRAMED(2, 'b.ts:1 second.')}`])
-    expect(transcriptLines(seen)).toEqual(['auditor note 1 to Claude: a.ts:4 first.', 'auditor note 2 to Claude: b.ts:1 second.'])
-  })
-
-  test('a user prompt another hook drops logs no transcript line, and its held notes ride the next prompt', ON, async ($, on) => {
-    const seen = engine(on, { dropText: 'carry on' })
-    await $.prompt.submit(COMPOSER('fix the parser'))
-    await $.classic.Stop(stop)
-    await turnEnded($, 'ag1', 'a.ts:4 held.')
-    await $.turn.complete({ answer: '', durationMs: 1, isAborted: true, turnId: 't1', reason: 'aborted' } as any)
-    await $.prompt.submit(COMPOSER('carry on'))
-    expect(seen.prompts).toEqual(['fix the parser', 'carry on'])
-    expect(transcriptLines(seen)).toEqual([])
-    await $.prompt.submit(COMPOSER('more'))
-    expect(seen.contexts.at(-1)).toEqual([FRAMED(1, 'a.ts:4 held.')])
-    expect(transcriptLines(seen)).toEqual(['auditor note 1 to Claude: a.ts:4 held.'])
-  })
-
-  test('a note submitted across a session change logs its delivery under the session it was held in', ON, async ($, on) => {
-    const release = gate()
-    const reached = gate()
-    const seen = engine(on, { submitHold: { until: release.until, reached: reached.open } })
-    await workerTurn($)
-    await $.prompt.submit(COMPOSER('carry on'))
-    await turnEnded($, 'ag1', 'a.ts:4 held.')
-    const ending = mainTurnEnd($)
-    await reached.until
-    seen.session = 's2'
-    release.open()
-    await ending
-    expect(logOf(seen, LOG_1)).toMatchObject({ note_delivered: true })
-    expect(Object.keys(seen.files).filter(path => path.includes('/s2/'))).toEqual([])
-    expect(seen.toasts).toEqual([])
+    expect(seen.contexts.at(-1)).toBeUndefined()
+    expect(seen.prompts).toEqual(['carry on', 'more'])
   })
 
   test('an aborted turn with no Stop briefs its reviewer with that turn\'s last message', ON, async ($, on) => {
@@ -673,116 +640,15 @@ describe('auditor', () => {
     expect(await entriesOf($, { which: 'record' })).toBe(RECORD_OF(1, 'USER: first', 'ASSISTANT: working', 'INTERRUPTED: the user stopped this turn before it finished.'))
   })
 
-  test('a note pending at a main-agent tool batch is appended as one framed user row, and its log says delivered', ON, async ($, on) => {
-    const seen = engine(on)
-    await $.prompt.submit(COMPOSER('carry on'))
-    await $.classic.Stop(stop)
-    await turnEnded($, 'ag1', 'a.ts:4 held.')
-    await $.classic.PostToolBatch({ tool_calls: [] })
-    expect(seen.appends).toEqual([ROW(FRAMED(1, 'a.ts:4 held.'))])
-    expect(seen.prompts).toEqual(['carry on'])
-    expect(logOf(seen, LOG_1)).toMatchObject({ note_delivered: true })
-  })
-
-  test('two notes pending at a tool batch go in one user row, oldest first', ON, async ($, on) => {
+  test('an escalation toasts once, inside the reviewer\'s turn as its note is delivered, whether or not the worker has read it', ON, async ($, on) => {
     const seen = engine(on)
     await busyWorker($)
-    await turnEnded($, 'ag1', 'a.ts:4 first.')
-    await step($, 'working')
-    await $.classic.Stop(stop)
-    await turnEnded($, 'ag1', 'b.ts:1 second.')
-    await $.classic.PostToolBatch({ tool_calls: [] })
-    expect(seen.appends).toEqual([ROW(`${FRAMED(1, 'a.ts:4 first.')}\n\n${FRAMED(2, 'b.ts:1 second.')}`)])
-  })
-
-  test('each note appended at a tool batch logs one transcript line of its own', ON, async ($, on) => {
-    const seen = engine(on)
-    await busyWorker($)
-    await turnEnded($, 'ag1', 'a.ts:4 first.')
-    await step($, 'working')
-    await $.classic.Stop(stop)
-    await turnEnded($, 'ag1', 'b.ts:1 second.')
-    await $.classic.PostToolBatch({ tool_calls: [] })
-    expect(seen.appends).toEqual([ROW(`${FRAMED(1, 'a.ts:4 first.')}\n\n${FRAMED(2, 'b.ts:1 second.')}`)])
-    expect(transcriptLines(seen)).toEqual(['auditor note 1 to Claude: a.ts:4 first.', 'auditor note 2 to Claude: b.ts:1 second.'])
-  })
-
-  test('a subagent\'s tool batch appends nothing, and the note waits for the worker\'s turn end', ON, async ($, on) => {
-    const seen = engine(on)
-    await $.prompt.submit(COMPOSER('carry on'))
-    await $.classic.Stop(stop)
-    await turnEnded($, 'ag1', 'a.ts:4 held.')
-    await $.classic.PostToolBatch({ tool_calls: [], agent_id: 'sub1' })
-    expect(seen.appends).toEqual([])
-    await mainTurnEnd($)
-    expect(seen.prompts).toEqual(['carry on', FRAMED(1, 'a.ts:4 held.')])
-  })
-
-  test('a refused append leaves the note for the turn-end flush, which submits it', ON, async ($, on) => {
-    const seen = engine(on, { appendDenies: 'refused' })
-    await $.prompt.submit(COMPOSER('carry on'))
-    await $.classic.Stop(stop)
-    await turnEnded($, 'ag1', 'a.ts:4 held.')
-    await $.classic.PostToolBatch({ tool_calls: [] })
-    expect(seen.appends.length).toBe(1)
-    expect(JSON.stringify(seen.logs)).toContain('the held notes were refused at the tool batch')
-    expect(seen.prompts).toEqual(['carry on'])
-    await mainTurnEnd($)
-    expect(seen.prompts).toEqual(['carry on', FRAMED(1, 'a.ts:4 held.')])
-    expect(logOf(seen, LOG_1)).toMatchObject({ note_delivered: true })
-  })
-
-  test('a refused append logs no transcript line, and the turn-end flush that submits its note logs none either', ON, async ($, on) => {
-    const seen = engine(on, { appendDenies: 'refused' })
-    await $.prompt.submit(COMPOSER('carry on'))
-    await $.classic.Stop(stop)
-    await turnEnded($, 'ag1', 'a.ts:4 held.')
-    await $.classic.PostToolBatch({ tool_calls: [] })
-    expect(seen.appends.length).toBe(1)
-    expect(transcriptLines(seen)).toEqual([])
-    await mainTurnEnd($)
-    expect(seen.prompts).toEqual(['carry on', FRAMED(1, 'a.ts:4 held.')])
-    expect(transcriptLines(seen)).toEqual([])
-  })
-
-  test('a note appended at a tool batch is the reviewer\'s own in its record, labelled as the flush labels it', ON, async ($, on) => {
-    engine(on)
-    await $.prompt.submit(COMPOSER('carry on'))
-    await $.classic.Stop(stop)
-    await turnEnded($, 'ag1', 'a.ts:4 held.')
-    await $.classic.PostToolBatch({ tool_calls: [] })
-    await $.classic.Stop(stop)
-    expect(await entriesOf($, { which: 'record' })).toBe(RECORD_OF(2, `PROMPT (plugin): ${FRAMED(1, 'a.ts:4 held.')}`))
-  })
-
-  test('a note appended at a tool batch adds nothing to the new record when a session end lands while the append is in flight', ON, async ($, on) => {
-    const release = gate()
-    const reached = gate()
-    const seen = engine(on, { appendHold: { until: release.until, reached: reached.open } })
-    await $.prompt.submit(COMPOSER('carry on'))
-    await $.classic.Stop(stop)
-    await turnEnded($, 'ag1', 'a.ts:4 held.')
-    const delivering = $.classic.PostToolBatch({ tool_calls: [] })
-    await reached.until
-    await $.session.end({ reason: 'clear', sessionId: 's1' } as any)
-    release.open()
-    await delivering
-    expect(seen.appends).toEqual([ROW(FRAMED(1, 'a.ts:4 held.'))])
-    expect({ epoch: seen.conversation.epoch, blocks: seen.conversation.record.blocks }).toEqual({ epoch: 1, blocks: [] })
-  })
-
-  test('an escalation toasts once when its review settles, and its delivery at a tool batch toasts nothing more', ON, async ($, on) => {
-    const seen = engine(on)
-    await $.prompt.submit(COMPOSER('carry on'))
-    await $.classic.Stop(stop)
-    await turnEnded($, 'ag1', 'Escalation: Disagreement on auth. Escalating.')
+    await noteSent($, 'Escalation: Disagreement on auth. Escalating.')
     expect(seen.toasts).toEqual([ESCALATED_TOAST])
-    await $.classic.PostToolBatch({ tool_calls: [] })
-    expect(seen.appends).toEqual([ROW(FRAMED(1, 'Escalation: Disagreement on auth. Escalating.'))])
-    expect(seen.toasts).toEqual([ESCALATED_TOAST])
-    await $.classic.PostToolBatch({ tool_calls: [] })
+    await $.turn.complete(TURN_END('ag1', 'Sent.', USAGE))
     await mainTurnEnd($)
     expect(seen.toasts).toEqual([ESCALATED_TOAST])
+    expect(logOf(seen, LOG_1)).toMatchObject({ status: 'complete', note_delivered: true, escalation: true, stall: false })
   })
 
   test('an aborted worker turn while the review is open puts the INTERRUPTED entry in that review\'s live entries, after the turn\'s entries', ON, async ($, on) => {
@@ -831,50 +697,26 @@ describe('auditor', () => {
     expect(seen.sends[0].text).toContain('Worker last message:\nSecond done.')
   })
 
-  test('a note pending when the conversation ends is not submitted, and its log says not delivered', ON, async ($, on) => {
-    const seen = engine(on)
-    await workerTurn($)
-    await $.prompt.submit(COMPOSER('carry on'))
-    await turnEnded($, 'ag1', 'a.ts:4 pending.')
-    await $.session.end({ reason: 'clear', sessionId: 's' } as any)
-    await mainTurnEnd($)
-    expect(seen.prompts).toEqual(['carry on'])
-    expect(logOf(seen, LOG_1)).toMatchObject({ status: 'complete', note: 'a.ts:4 pending.', note_delivered: false })
-  })
-
-  test('a pending escalation toasts once, when its review settles, and not again at the flush', ON, async ($, on) => {
-    const seen = engine(on)
-    await workerTurn($)
-    await $.prompt.submit(COMPOSER('carry on'))
-    await turnEnded($, 'ag1', 'Escalation: Disagreement on auth. Escalating.')
-    expect(seen.toasts).toEqual([ESCALATED_TOAST])
-    await mainTurnEnd($)
-    expect(seen.toasts).toEqual([ESCALATED_TOAST])
-    await mainTurnEnd($)
-    expect(seen.toasts.length).toBe(1)
-  })
-
-  test('a reviewer whose hand-back never reaches the plugin still has its note delivered at the worker\'s turn end', ON, async ($, on) => {
+  test('a reviewer that writes its note as its final answer and sends nothing settles quiet: the answer reaches no one and goes to the debug log', ON, async ($, on) => {
     const seen = engine(on)
     await busyWorker($)
-    await $.turn.complete(TURN_END('ag1', 'a.ts:9 unseen.', USAGE))
-    expect(seen.prompts).toEqual(['fix the parser'])
+    await $.turn.complete(TURN_END('ag1', 'a.ts:9 unsent.', USAGE))
     await mainTurnEnd($)
-    expect(seen.prompts).toEqual(['fix the parser', FRAMED(1, 'a.ts:9 unseen.')])
-    expect(logOf(seen, LOG_1)).toMatchObject({ status: 'complete', note_delivered: true })
+    expect(toMain(seen)).toEqual([])
+    expect(seen.prompts).toEqual(['fix the parser'])
+    expect(logOf(seen, LOG_1)).toMatchObject({ status: 'complete', note: null, note_delivered: false })
+    expect(debugLines(seen, 'review 1 sent no note, and its final answer was: a.ts:9 unsent.').length).toBe(1)
+    expect(seen.conversation.failing).toBe(false)
   })
 
   test('a turn of another agent does not settle a review', ON, async ($, on) => {
     const seen = engine(on)
     await busyWorker($)
-    const note = NOTE()
-    await $.prompt.submit(note)
-    await turnEnded($, 'other', REPORT(note))
+    await $.turn.complete(TURN_END('other', 'Nothing to note.'))
     expect(seen.conversation.review).toMatchObject({ number: 1 })
-    await turnEnded($, 'ag1', REPORT(note))
+    await turnEnded($, 'ag1', 'a.ts:4 swallows it.')
     expect(seen.conversation.review).toBeUndefined()
-    await mainTurnEnd($)
-    expect(seen.prompts).toEqual(['fix the parser', FRAMED(1, 'a.ts:4 swallows it.')])
+    expect(logOf(seen, LOG_1)).toMatchObject({ status: 'complete', note: 'a.ts:4 swallows it.' })
   })
 
   test('a quiet answer delivers nothing, shows no toast, and logs no note', ON, async ($, on) => {
@@ -886,50 +728,44 @@ describe('auditor', () => {
     expect(logOf(seen, LOG_1)).toMatchObject({ status: 'complete', note: null, note_delivered: false, escalation: false })
   })
 
-  test('an escalation note is delivered to the worker, framed, and shows the user one toast', ON, async ($, on) => {
+  test('an escalation note goes to main, and shows the user one toast', ON, async ($, on) => {
     const seen = engine(on)
     await busyWorker($)
     const note = 'Escalation: Disagreement on auth approach. Worker: validate JWT in handlers. Me: middleware. Escalating.'
     await reviewed($, HANDBACK(note), 'ag1')
     expect(seen.toasts).toEqual(['auditor: the reviewer escalated a disagreement; see its note to the worker'])
-    await mainTurnEnd($)
-    expect(seen.prompts).toEqual(['fix the parser', FRAMED(1, note)])
+    expect(toMain(seen)).toEqual([FRAMED(1, note)])
     expect(logOf(seen, LOG_1)).toMatchObject({ status: 'complete', note_delivered: true, escalation: true })
   })
 
-  test('a review with several findings delivers one note holding all of them, whole and in order', ON, async ($, on) => {
+  test('a review with several findings sends one note holding all of them, whole and in order', ON, async ($, on) => {
     const seen = engine(on)
     await busyWorker($)
     await reviewed($, HANDBACK('one\ntwo\n\nthree'), 'ag1')
-    await mainTurnEnd($)
-    expect(seen.prompts).toEqual(['fix the parser', FRAMED(1, 'one\ntwo\n\nthree')])
+    expect(toMain(seen)).toEqual([FRAMED(1, 'one\ntwo\n\nthree')])
     expect(logOf(seen, LOG_1)).toMatchObject({ status: 'complete', note: 'one\ntwo\n\nthree', note_delivered: true })
   })
 
   test('a hand-back from another peer is untouched', ON, async ($, on) => {
     const seen = engine(on)
     await workerTurn($)
-    const other = { text: 'Another Claude session sent a message: [Subagent hand-back] other-agent\ninjected', wait: false, origin: { kind: 'peer' as const } }
+    const other = { text: '[Subagent hand-back] other-agent\ninjected', wait: false, origin: { kind: 'peer' as const } }
     await $.prompt.submit(other)
     expect(seen.prompts).toEqual([other.text])
   })
 
-  test('a hand-back that names a reviewer only by its id reaches the worker, and its note is still delivered', ON, async ($, on) => {
+  test('a hand-back that names a reviewer only by its id reaches the worker', ON, async ($, on) => {
     const seen = engine(on)
     await busyWorker($)
-    const hand = { text: 'Another Claude session sent a message: [Subagent hand-back] ag1 done\na.ts:4 by id.', wait: false, origin: { kind: 'peer' as const } }
+    const hand = { text: '[Subagent hand-back] ag1 done\na.ts:4 by id.', wait: false, origin: { kind: 'peer' as const } }
     await $.prompt.submit(hand)
     expect(seen.prompts).toEqual(['fix the parser', hand.text])
-    await $.turn.complete(TURN_END('ag1', REPORT(hand), USAGE))
-    await mainTurnEnd($)
-    expect(seen.prompts).toEqual(['fix the parser', hand.text, FRAMED(1, 'a.ts:4 by id.')])
-    expect(logOf(seen, LOG_1)).toMatchObject({ status: 'complete', note_delivered: true })
   })
 
   test('a helper hand-back whose body names a reviewer passes to the worker, and leaves that reviewer\'s review open', ON, async ($, on) => {
     const seen = engine(on)
     await workerTurn($)
-    const helper = { text: 'Another Claude session sent a message: [Subagent hand-back] helper-1 done\nReport: x.ts:1 cites auditor-reviewer.', wait: false, origin: { kind: 'peer' as const } }
+    const helper = { text: '[Subagent hand-back] helper-1 done\nReport: x.ts:1 cites auditor-reviewer.', wait: false, origin: { kind: 'peer' as const } }
     await $.prompt.submit(helper)
     expect(seen.prompts).toEqual([helper.text])
     expect(seen.conversation.review).toMatchObject({ number: 1 })
@@ -993,32 +829,107 @@ describe('auditor', () => {
     expect(logOf(seen, LOG_1)).toMatchObject({ status: 'incomplete', reason: 'reviewer turn ended with reason error, isAborted false', note_delivered: false })
   })
 
-  test('a reviewer answer that is empty after trimming is logged incomplete, and delivers nothing', ON, async ($, on) => {
+  // A review that let no note through and whose turn answered with a non-empty body settles complete and quiet: nothing fails, no entry goes back, and only an answer that is not the quiet status reaches the debug log.
+  for (const [answer, logged] of [['Nothing to note.', false], ['auditor, review 1:\nNothing to note.', false], ['a.ts:4 unsent.', true], ['auditor, review 2:\na.ts:4 unsent.', true]] as const) {
+    test(`a review that let no note through and answered ${JSON.stringify(answer)} settles complete and quiet, puts no entry back, and ${logged ? 'logs' : 'does not log'} its answer`, ON, async ($, on) => {
+      const seen = engine(on)
+      await workerTurn($)
+      await $.turn.complete(TURN_END('ag1', answer))
+      expect(logOf(seen, LOG_1)).toMatchObject({ status: 'complete', note: null, note_delivered: false, escalation: false, stall: false })
+      expect(seen.conversation.failing).toBe(false)
+      expect(seen.conversation.record.blocks).toEqual([])
+      expect(debugLines(seen, 'sent no note, and its final answer was').length).toBe(logged ? 1 : 0)
+      expect(toMain(seen)).toEqual([])
+    })
+  }
+
+  // An answer that is only whitespace, or only copies of the review line, is empty: it fails its review the same way.
+  for (const answer of ['', ' \n\t', 'auditor, review 1:\n'] as const) {
+    test(`a reviewer turn that ends with the answer ${JSON.stringify(answer)} and sends no note fails its review: the footer reads failing, the entries go back, and the debug log gives the empty answer as the reason`, ON, async ($, on) => {
+      const seen = engine(on)
+      otherMods(on)
+      await $.prompt.submit(COMPOSER('first'))
+      await $.classic.Stop(stop)
+      await turnEnded($, 'ag1', answer)
+      expect(logOf(seen, LOG_1)).toMatchObject({ status: 'incomplete' })
+      expect(debugLines(seen, 'auditor: review failed: reviewer ended its turn with an empty answer').length).toBe(1)
+      await buttonReads(await mountMode($), 'failing')
+      await $.prompt.submit(COMPOSER('second'))
+      await $.classic.Stop(stop)
+      expect(await entriesOf($, { which: 'record' })).toBe(RECORD_OF(2, 'USER: first', 'USER: second'))
+    })
+  }
+
+  test('a review whose note was let through settles complete with it, and a later abnormal end of the reviewer\'s turn does not fail it or put its entries back', ON, async ($, on) => {
     const seen = engine(on)
     await workerTurn($)
-    await turnEnded($, 'ag1', ' \n\t')
-    expect(seen.prompts.length).toBe(0)
-    expect(logOf(seen, LOG_1)).toMatchObject({ status: 'incomplete', reason: 'reviewer ended its turn with an empty answer' })
+    await noteSent($, 'a.ts:4 sent.')
+    await $.turn.complete({ ...TURN_END('ag1', ''), isAborted: true, reason: 'aborted' })
+    expect(logOf(seen, LOG_1)).toMatchObject({ status: 'complete', note: 'a.ts:4 sent.', note_delivered: true })
+    expect(seen.conversation.failing).toBe(false)
+    expect(seen.conversation.record.blocks).toEqual([])
   })
 
-  test('a reviewer answer that is only the copied header is logged incomplete, and delivers nothing', ON, async ($, on) => {
+  test('a review whose note was let through and delivered, then dropped by /auditor off before its reviewer\'s turn ends, is logged incomplete with that note as delivered', ON, async ($, on) => {
     const seen = engine(on)
     await workerTurn($)
-    await turnEnded($, 'ag1', 'auditor, review 1:\n\n')
-    expect(seen.prompts.length).toBe(0)
-    expect(logOf(seen, LOG_1)).toMatchObject({ status: 'incomplete', reason: 'reviewer ended its turn with an empty answer' })
+    expect(await noteSent($, 'a.ts:4 delivered.')).toEqual({ isDelivered: true })
+    await $.command.run({ command: 'auditor', args: 'off' } as any)
+    expect(logOf(seen, LOG_1)).toMatchObject({ status: 'incomplete', note: 'a.ts:4 delivered.', note_delivered: true })
   })
 
-  // The worker is busy when the reviewer's turn ends, so its note waits for the worker's turn end; the late hand-back arrives before that and is dropped.
-  test('a review whose note waits for the worker\'s turn end keeps its late hand-back from the worker', ON, async ($, on) => {
+  test('a note whose send is still held when its review is dropped by /auditor off is logged with its body, not as delivered', ON, async ($, on) => {
+    const release = gate()
+    const reached = gate()
+    const seen = engine(on, { noteHold: { until: release.until, reached: reached.open } })
+    await workerTurn($)
+    const sending = noteSent($, 'a.ts:4 held.')
+    await reached.until
+    await $.command.run({ command: 'auditor', args: 'off' } as any)
+    expect(logOf(seen, LOG_1)).toMatchObject({ status: 'incomplete', note: 'a.ts:4 held.', note_delivered: false })
+    const logged = seen.files[LOG_1]
+    expect(debugLines(seen, 'delivered after its review closed')).toEqual([])
+    release.open()
+    expect(await sending).toEqual({ isDelivered: true })
+    expect(debugLines(seen, 'review 1\'s note was delivered after its review closed')).toHaveLength(1)
+    expect(seen.files[LOG_1]).toBe(logged)
+    expect(seen.writes.filter(w => w.path === LOG_1)).toHaveLength(1)
+  })
+
+  test('a review that settles complete while its note\'s send is still held logs the note with note_delivered false', ON, async ($, on) => {
+    const release = gate()
+    const reached = gate()
+    const seen = engine(on, { noteHold: { until: release.until, reached: reached.open } })
+    await workerTurn($)
+    const sending = noteSent($, 'a.ts:4 held.')
+    await reached.until
+    await $.turn.complete(TURN_END('ag1', 'Sent.', USAGE))
+    expect(logOf(seen, LOG_1)).toMatchObject({ status: 'complete', note: 'a.ts:4 held.', note_delivered: false })
+    const logged = seen.files[LOG_1]
+    release.open()
+    expect(await sending).toEqual({ isDelivered: true })
+    expect(debugLines(seen, 'review 1\'s note was delivered after its review closed')).toHaveLength(1)
+    expect(seen.files[LOG_1]).toBe(logged)
+    expect(seen.writes.filter(w => w.path === LOG_1)).toHaveLength(1)
+  })
+
+  test('a note delivered while its review is open writes no after-close debug line', ON, async ($, on) => {
+    const seen = engine(on)
+    await workerTurn($)
+    await noteSent($, 'a.ts:4 sent.')
+    expect(debugLines(seen, 'delivered after its review closed')).toEqual([])
+  })
+
+  // In a session without agent teams the reviewer is a plain subagent, and its hand-back reaches prompt submission after its note: the drop keeps it from the worker.
+  test('a reviewer\'s hand-back after its note is dropped, and the note still reached main', ON, async ($, on) => {
     const seen = engine(on)
     await busyWorker($)
-    const answer = 'a.ts:4 late.'
-    await $.turn.complete(TURN_END('ag1', answer, USAGE))
-    await $.prompt.submit(HANDBACK(answer))
+    await noteSent($, 'a.ts:4 late.')
+    await $.turn.complete(TURN_END('ag1', 'Sent.', USAGE))
+    expect(await $.prompt.submit(HANDBACK('Sent.'))).toEqual({ drop: 'reviewer bookkeeping' })
     await mainTurnEnd($)
-    expect(seen.prompts).toEqual(['fix the parser', FRAMED(1, 'a.ts:4 late.')])
-    expect(logOf(seen, LOG_1)).toMatchObject({ status: 'complete', note_delivered: true })
+    expect(seen.prompts).toEqual(['fix the parser'])
+    expect(toMain(seen)).toEqual([FRAMED(1, 'a.ts:4 late.')])
   })
 
   // A review dispatched after the first one's turn end is open when the first one's hand-back arrives: that hand-back is dropped, and the second review stays open.
@@ -1144,20 +1055,33 @@ describe('auditor', () => {
     expect(seen.spawns.length).toBe(0)
   })
 
-  test('the reviewer hand-back is dropped before it reaches the worker', ON, async ($, on) => {
+  test('the reviewer hand-back is dropped before it reaches the worker, its marker opening the first line or the line after a reviewer\'s envelope', ON, async ($, on) => {
     const seen = engine(on)
-    await $.prompt.submit({ text: 'Another Claude session sent a message: [Subagent hand-back] auditor-reviewer done', wait: false, origin: { kind: 'peer' } })
+    expect(await $.prompt.submit({ text: '[Subagent hand-back] auditor-reviewer done', wait: false, origin: { kind: 'peer' } })).toEqual({ drop: 'reviewer bookkeeping' })
+    expect(await $.prompt.submit({ text: '<agent-message from="auditor-reviewer-2">\n[Subagent hand-back] auditor-reviewer-2 done\nNothing to note.', wait: false, origin: { kind: 'peer' } })).toEqual({ drop: 'reviewer bookkeeping' })
     expect(seen.prompts.length).toBe(0)
+  })
+
+  test('the hand-back wording anywhere else in a reviewer\'s text is not a hand-back: a note quoting it, or the marker past the first line, passes', ON, async ($, on) => {
+    const seen = engine(on)
+    const passing = [
+      'Another Claude session sent a message: [Subagent hand-back] auditor-reviewer done',
+      '<agent-message from="auditor-reviewer">\nauditor, review 3:\n[Subagent hand-back] is quoted here.',
+      '<agent-message from="auditor-reviewer">\nauditor, review 3:\nSubagent hand-back is quoted here.\n</agent-message>',
+      'auditor-reviewer says: see the [Subagent hand-back] frame',
+    ]
+    for (const text of passing) await $.prompt.submit({ text, wait: false, origin: { kind: 'peer' } })
+    expect(seen.prompts).toEqual(passing)
   })
 
   test('a hand-back from a helper whose name only begins with the reviewer\'s name reaches the worker', async ($, on) => {
     const seen = engine(on)
-    const helper = { text: 'Another Claude session sent a message: [Subagent hand-back] auditor-reviewer-x done\nx.', wait: false, origin: { kind: 'peer' as const } }
+    const helper = { text: '[Subagent hand-back] auditor-reviewer-x done\nx.', wait: false, origin: { kind: 'peer' as const } }
     await $.prompt.submit(helper)
     expect(seen.prompts).toEqual([helper.text])
   })
 
-  test('a peer message that names a reviewer without the hand-back wording passes to the worker, and every review still runs and delivers', ON, async ($, on) => {
+  test('a peer message that names a reviewer without the hand-back wording passes to the worker, and every review still runs and sends its note', ON, async ($, on) => {
     const seen = engine(on)
     await workerTurn($)
     const reworded = { text: 'Another Claude session sent a message: auditor-reviewer finished\na.ts:4 swallows it.', wait: false, origin: { kind: 'peer' as const } }
@@ -1168,7 +1092,7 @@ describe('auditor', () => {
       await workerTurn($)
     }
     expect(seen.prompts.filter(p => p === reworded.text).length).toBe(3)
-    expect(seen.prompts.filter(p => p.startsWith('auditor, review')).length).toBe(3)
+    expect(toMain(seen).length).toBe(3)
     expect(seen.sends.length).toBe(3)
   })
 
@@ -1362,18 +1286,37 @@ describe('auditor', () => {
     expect(await entriesOf($, { which: 'live' }, 'ag2')).toContain('entries 1-1 of 1')
   })
 
-  test('a stall note settling while the worker is idle is submitted at once, and the turn it starts briefs the next review at that turn\'s end, not at the settle', ON, async ($, on) => {
+  test('a note that wakes an idle worker whose review settles before that turn ends: the next review is briefed at that turn\'s end, not at the settle', ON, async ($, on) => {
     const seen = engine(on)
     await $.prompt.submit(COMPOSER('first'))
     await $.classic.Stop(QUIET_STOP)
     await mainTurnEnd($)
-    await turnEnded($, 'ag1', STALL_NOTE)
-    expect({ prompts: seen.prompts, sends: seen.sends.length, mid: seen.conversation.midTurn }).toEqual({ prompts: ['first', FRAMED(1, STALL_NOTE)], sends: 0, mid: true })
+    await noteSent($, STALL_NOTE)
+    // The note wakes the worker: its peer prompt starts a turn of its own.
+    await $.prompt.submit(ARRIVED(1, STALL_NOTE))
+    await $.turn.complete(TURN_END('ag1', 'Sent.', USAGE))
+    expect({ notes: toMain(seen), sends: seen.sends.length, mid: seen.conversation.midTurn }).toEqual({ notes: [FRAMED(1, STALL_NOTE)], sends: 0, mid: true })
     await $.classic.Stop(stop)
     expect(seen.sends.length).toBe(1)
-    expect(seen.sends[0].text).toContain('Review 2. Its record holds entries 1-')
+    expect(seen.sends[0].text).toContain('Review 2. Its record holds entries 1-1,')
     await mainTurnEnd($)
     expect(seen.sends.length).toBe(1)
+  })
+
+  test('a note that wakes an idle worker whose turn ends before the review settles: the next review is briefed at the settle', ON, async ($, on) => {
+    const seen = engine(on)
+    await $.prompt.submit(COMPOSER('first'))
+    await $.classic.Stop(stop)
+    await mainTurnEnd($)
+    await noteSent($, 'a.ts:4 swallows it.')
+    await $.prompt.submit(ARRIVED(1, 'a.ts:4 swallows it.'))
+    await workerTurn($, 'Fixed a.ts:4.')
+    await mainTurnEnd($)
+    // The review is still open, so the woken turn's end briefed nothing.
+    expect(seen.sends.length).toBe(0)
+    await $.turn.complete(TURN_END('ag1', 'Sent.', USAGE))
+    expect(seen.sends.length).toBe(1)
+    expect(seen.sends[0].text).toContain('Review 2. Its record holds entries 1-2,')
   })
 
   test('a settle whose brief send is refused spawns a new reviewer in the same dispatch, and toasts nothing', ON, async ($, on) => {
@@ -1414,25 +1357,13 @@ describe('auditor', () => {
     expect(seen.conversation.briefsInFlight).toEqual([])
   })
 
-  test('a turn end whose note bundle another hook drops still briefs the reviewer', ON, async ($, on) => {
-    const seen = engine(on, { dropText: FRAMED(1, 'a.ts:4 swallows it.') })
+  test('a busy worker\'s turn end after a note was let through briefs the reviewer', ON, async ($, on) => {
+    const seen = engine(on)
     await busyWorker($)
     await step($, 'working')
     await reviewed($, NOTE(), 'ag1')
     await mainTurnEnd($)
-    expect(seen.prompts).toEqual(['fix the parser', FRAMED(1, 'a.ts:4 swallows it.')])
-    expect(seen.sends.map(s => s.to)).toEqual(['ag1'])
-    expect(seen.sends[0].text).toContain('Review 2. Its record holds entries 1-1,')
-  })
-
-  test('a turn end whose note submit throws still briefs the reviewer, and logs the failure', ON, async ($, on) => {
-    const seen = engine(on, { submitFails: true })
-    await busyWorker($)
-    await step($, 'working')
-    await reviewed($, NOTE(), 'ag1')
-    await mainTurnEnd($)
-    expect(seen.toasts).toEqual([])
-    expect(JSON.stringify(seen.logs)).toContain('note delivery failed')
+    expect(toMain(seen)).toEqual([FRAMED(1, 'a.ts:4 swallows it.')])
     expect(seen.sends.map(s => s.to)).toEqual(['ag1'])
     expect(seen.sends[0].text).toContain('Review 2. Its record holds entries 1-1,')
   })
@@ -1771,15 +1702,14 @@ describe('auditor', () => {
     expect(Object.keys(seen.files).filter(p => p.startsWith(DIR))).toEqual([])
   })
 
-  test('a peer message that names a reviewer without the hand-back wording reaches the worker, and the plugin also delivers its framed note', ON, async ($, on) => {
+  test('a peer message that names a reviewer without the hand-back wording reaches the worker, and the reviewer\'s note goes to main beside it', ON, async ($, on) => {
     const seen = engine(on)
     await workerTurn($)
     const passed = { text: 'Another Claude session sent a message: auditor-reviewer finished\na.ts:4 raw.', wait: false, origin: { kind: 'peer' as const } }
     await $.prompt.submit(passed)
     await turnEnded($, 'ag1', 'a.ts:4 raw.')
     expect(seen.prompts).toEqual([passed.text])
-    await mainTurnEnd($)
-    expect(seen.prompts).toEqual([passed.text, FRAMED(1, 'a.ts:4 raw.')])
+    expect(toMain(seen)).toEqual([FRAMED(1, 'a.ts:4 raw.')])
     expect(logOf(seen, LOG_1)).toMatchObject({ status: 'complete', note: 'a.ts:4 raw.', note_delivered: true })
   })
 
@@ -1828,17 +1758,16 @@ describe('auditor', () => {
     expect(seen.sends.map(s => s.to)).toEqual(['ag1', 'ag2'])
   })
 
-  test('two escalations toast once each, as their reviews settle, and one bundle delivers both', ON, async ($, on) => {
-    const seen = engine(on, { submitFailsOnce: true })
+  test('two escalations toast once each, as each note is delivered', ON, async ($, on) => {
+    const seen = engine(on)
     await busyWorker($)
     await turnEnded($, 'ag1', 'Escalation: one. Escalating.')
+    expect(seen.toasts).toEqual([ESCALATED_TOAST])
     await step($, 'working')
     await $.classic.Stop(stop)
     await turnEnded($, 'ag1', 'Escalation: two. Escalating.')
-    // The bundle's first submit throws once and restores both notes; the next turn end submits them together.
     await mainTurnEnd($)
-    await mainTurnEnd($)
-    expect(seen.prompts.at(-1)).toBe(`${FRAMED(1, 'Escalation: one. Escalating.')}\n\n${FRAMED(2, 'Escalation: two. Escalating.')}`)
+    expect(toMain(seen)).toEqual([FRAMED(1, 'Escalation: one. Escalating.'), FRAMED(2, 'Escalation: two. Escalating.')])
     expect(seen.toasts).toEqual([ESCALATED_TOAST, ESCALATED_TOAST])
   })
 
@@ -1847,10 +1776,9 @@ describe('auditor', () => {
     await busyWorker($)
     await reviewed($, HANDBACK('a.ts:1 x.'), 'ag1')
     await mainTurnEnd($)
-    expect(seen.prompts).toEqual(['fix the parser', FRAMED(1, 'a.ts:1 x.')])
-    // Two failures: the log's write, then its patch, which reads the file the write never made.
+    expect(toMain(seen)).toEqual([FRAMED(1, 'a.ts:1 x.')])
     expect(seen.toasts).toEqual([])
-    expect(debugLines(seen, 'auditor: review log failed').length).toBe(2)
+    expect(debugLines(seen, 'auditor: review log failed').length).toBe(1)
     await workerTurn($, 'Second.')
     await reviewed($, HANDBACK('Nothing to note.'), 'ag1')
     expect(logOf(seen, LOG_2)).toMatchObject({ status: 'complete', claude_code_version: '2.1.293' })
@@ -1864,15 +1792,13 @@ describe('auditor', () => {
     expect(JSON.stringify(seen.logs)).toContain('subagent bookkeeping failed')
   })
 
-  test('a live-shaped reviewer hand-back is dropped at the prompt, and its note is submitted at the worker\'s turn end', ON, async ($, on) => {
+  // The shape measured live in a session without agent teams: the reviewer's envelope, then the hand-back marker on the next line.
+  test('a live-shaped reviewer hand-back is dropped at the prompt, and starts no worker turn', ON, async ($, on) => {
     const seen = engine(on)
-    await busyWorker($)
-    const hand = LIVE_HANDBACK('a.ts:4 live.')
-    await $.prompt.submit(hand)
-    expect(seen.prompts).toEqual(['fix the parser'])
-    await $.turn.complete(TURN_END('ag1', REPORT(hand), USAGE))
-    await mainTurnEnd($)
-    expect(seen.prompts).toEqual(['fix the parser', FRAMED(1, 'a.ts:4 live.')])
+    await workerTurn($)
+    expect(await $.prompt.submit(LIVE_HANDBACK('Nothing to note.'))).toEqual({ drop: 'reviewer bookkeeping' })
+    expect(seen.prompts).toEqual([])
+    expect(seen.conversation.midTurn).toBe(false)
   })
 
   test('a reviewer turn end that cannot be settled is logged, and the worker\'s turn goes on', ON, async ($, on) => {
@@ -1880,15 +1806,6 @@ describe('auditor', () => {
     await $.turn.complete(TURN_END('ag1', 'Nothing to note.', USAGE))
     expect(seen.toasts).toEqual([])
     expect(JSON.stringify(seen.logs)).toContain('review settlement failed')
-  })
-
-  test('a note settling after a worker turn end, with the worker idle, is submitted at once', ON, async ($, on) => {
-    const seen = engine(on)
-    await workerTurn($)
-    await $.prompt.submit(COMPOSER('carry on'))
-    await mainTurnEnd($)
-    await turnEnded($, 'ag1', 'a.ts:4 idle.')
-    expect(seen.prompts).toEqual(['carry on', FRAMED(1, 'a.ts:4 idle.')])
   })
 
   test('a review settling between the worker\'s Stop and its turn end is briefed at that turn end, once', ON, async ($, on) => {
@@ -1918,144 +1835,35 @@ describe('auditor', () => {
     expect({ spawns: seen.spawns.length, sends: seen.sends.length }).toEqual({ spawns: 1, sends: 0 })
   })
 
-  test('a worker turn end whose flush submits a held note briefs nothing then', ON, async ($, on) => {
-    const seen = engine(on)
-    await workerTurn($)
-    await $.prompt.submit(COMPOSER('carry on'))
-    await turnEnded($, 'ag1', 'a.ts:4 held.')
-    await mainTurnEnd($)
-    expect(seen.prompts).toEqual(['carry on', FRAMED(1, 'a.ts:4 held.')])
-    expect({ spawns: seen.spawns.length, sends: seen.sends.length }).toEqual({ spawns: 1, sends: 0 })
-  })
-
-  test('the turn a flush starts is mid-turn too, so a note settling during it waits for the next turn end', ON, async ($, on) => {
-    const seen = engine(on)
-    await workerTurn($)
-    await $.prompt.submit(COMPOSER('carry on'))
-    await turnEnded($, 'ag1', 'a.ts:1 first.')
-    await mainTurnEnd($)
-    await $.classic.Stop(stop)
-    await turnEnded($, 'ag1', 'b.ts:1 second.')
-    expect(seen.prompts).toEqual(['carry on', FRAMED(1, 'a.ts:1 first.')])
-    await mainTurnEnd($)
-    expect(seen.prompts.at(-1)).toBe(FRAMED(2, 'b.ts:1 second.'))
-  })
-
-  test('a bundle another hook drops is held again, the user\'s next prompt carries it as context, and no later turn end submits it', ON, async ($, on) => {
-    const seen = engine(on, { dropText: FRAMED(1, 'a.ts:4 first.') })
-    await busyWorker($)
-    await turnEnded($, 'ag1', 'a.ts:4 first.')
-    await mainTurnEnd($)
-    await $.prompt.submit(COMPOSER('second'))
-    expect(seen.contexts.at(-1)).toEqual([FRAMED(1, 'a.ts:4 first.')])
-    expect(logOf(seen, LOG_1)).toMatchObject({ note_delivered: true })
-    await $.classic.Stop(stop)
-    await turnEnded($, 'ag1', 'a.ts:5 second.')
-    await mainTurnEnd($)
-    expect(seen.prompts).toEqual(['fix the parser', FRAMED(1, 'a.ts:4 first.'), 'second', FRAMED(2, 'a.ts:5 second.')])
-  })
-
-  test('a stall note whose turn-end flush is dropped waits for the user\'s next prompt, and arms the stall guard', ON, async ($, on) => {
-    const seen = engine(on, { dropText: FRAMED(1, STALL_NOTE) })
-    await $.prompt.submit(COMPOSER('fix the parser'))
-    await $.classic.Stop(QUIET_STOP)
-    expect(seen.spawns[0].prompt).toContain('Nothing will wake the worker')
-    await turnEnded($, 'ag1', STALL_NOTE)
-    await mainTurnEnd($)
-    expect(seen.prompts).toEqual(['fix the parser', FRAMED(1, STALL_NOTE)])
-    expect(seen.conversation).toMatchObject({ nudged: true, pendingNotes: [{ number: 1, text: STALL_NOTE, stall: true }] })
-    expect(transcriptLines(seen)).toEqual([])
-    await step($, 'working')
-    await $.classic.Stop(QUIET_STOP)
-    expect(seen.sends.map(s => s.to)).toEqual(['ag1'])
-    expect(seen.sends[0].text).not.toContain('wake the worker:')
-    await $.prompt.submit(COMPOSER('more'))
-    expect(seen.contexts.at(-1)).toEqual([FRAMED(1, STALL_NOTE)])
-  })
-
-  test('an escalation whose turn-end flush is dropped is held for the user\'s next prompt, and no later turn end submits it', ON, async ($, on) => {
-    const seen = engine(on, { dropText: FRAMED(1, 'Escalation: disagree. Escalating.') })
-    await busyWorker($)
-    await turnEnded($, 'ag1', 'Escalation: disagree. Escalating.')
-    await mainTurnEnd($)
-    await mainTurnEnd($)
-    expect(seen.prompts).toEqual(['fix the parser', FRAMED(1, 'Escalation: disagree. Escalating.')])
-    expect(seen.conversation.pendingNotes).toEqual([{ number: 1, text: 'Escalation: disagree. Escalating.', stall: false }])
-    await $.prompt.submit(COMPOSER('second'))
-    expect(seen.contexts.at(-1)).toEqual([FRAMED(1, 'Escalation: disagree. Escalating.')])
-  })
-
-  test('a worker subagent turn end does not flush the notes held for the worker', ON, async ($, on) => {
-    const seen = engine(on)
-    await workerTurn($)
-    await $.prompt.submit(COMPOSER('carry on'))
-    await turnEnded($, 'ag1', 'a.ts:4 held.')
-    await $.turn.complete({ answer: 'x', durationMs: 1, isAborted: false, turnId: 't9', reason: 'answer', agentId: 'sub1' } as any)
-    expect(seen.prompts).toEqual(['carry on'])
-  })
-
-  test('a failed submit is logged, its escalation toasts once when its review settles, and its review logs not delivered', ON, async ($, on) => {
-    const seen = engine(on, { submitFails: true })
-    await busyWorker($)
-    await turnEnded($, 'ag1', 'Escalation: disagree. Escalating.')
-    expect(seen.toasts).toEqual([ESCALATED_TOAST])
-    await mainTurnEnd($)
-    expect(seen.toasts).toEqual([ESCALATED_TOAST])
-    expect(JSON.stringify(seen.logs)).toContain('note delivery failed')
-    expect(logOf(seen, LOG_1)).toMatchObject({ escalation: true, note_delivered: false })
-  })
-
-  test('a note whose submit throws is submitted again by the next flush, once', ON, async ($, on) => {
-    const seen = engine(on, { submitFailsOnce: true })
-    await workerTurn($)
-    await $.prompt.submit(COMPOSER('carry on'))
-    await turnEnded($, 'ag1', 'a.ts:4 held.')
-    await mainTurnEnd($)
-    expect(seen.toasts).toEqual([])
-    expect(JSON.stringify(seen.logs)).toContain('note delivery failed')
-    expect(logOf(seen, LOG_1)).toMatchObject({ note_delivered: false })
-    await mainTurnEnd($)
-    expect(seen.prompts).toEqual(['carry on', FRAMED(1, 'a.ts:4 held.'), FRAMED(1, 'a.ts:4 held.')])
-    expect(logOf(seen, LOG_1)).toMatchObject({ note_delivered: true })
-    await mainTurnEnd($)
-    expect(seen.prompts.length).toBe(3)
-  })
-
-  // The restored note stays ahead of a note that settles after the failed flush, so the next flush submits them oldest first.
-  test('a failed submit puts its notes in front of those that settled after it', ON, async ($, on) => {
-    const seen = engine(on, { submitFailsOnce: true })
-    await busyWorker($)
-    await turnEnded($, 'ag1', 'a.ts:4 held.')
-    await mainTurnEnd($)
-    await $.prompt.submit(HELPER)
-    await $.classic.Stop(stop)
-    await turnEnded($, 'ag1', 'b.ts:1 later.')
-    await mainTurnEnd($)
-    expect(seen.prompts).toEqual([
-      'fix the parser',
-      FRAMED(1, 'a.ts:4 held.'),
-      HELPER.text,
-      `${FRAMED(1, 'a.ts:4 held.')}\n\n${FRAMED(2, 'b.ts:1 later.')}`,
-    ])
-    expect(logOf(seen, LOG_2)).toMatchObject({ note_delivered: true })
-  })
-
-  test('a dropped bundle is also in the debug log', ON, async ($, on) => {
-    const seen = engine(on, { dropText: FRAMED(1, 'a.ts:4 first.') })
-    await busyWorker($)
-    await turnEnded($, 'ag1', 'a.ts:4 first.')
-    await mainTurnEnd($)
-    expect(JSON.stringify(seen.logs)).toContain('dropped at the prompt')
-  })
-
-  test('the registered prompt names the quiet answer, the escalation opening and the header', ON, async ($, on) => {
+  test('the registered prompt sends a note to main with SendMessage, opening with its review line, and sends nothing for a quiet review', ON, async ($, on) => {
     const seen = engine(on)
     await $.session.start({ cwd: '/', surface: null, isInteractive: true })
     const prompt: string = seen.registered[0].prompt
-    expect(prompt).toContain('answer exactly `Nothing to note.`')
+    expect(prompt).toContain('sends its note with SendMessage, `to: "main"`, as one message whose first line is the review\'s own line from the brief, `auditor, review N:`')
+    expect(prompt).toContain('When nothing deviates, send nothing.')
+    expect(prompt).toContain('exactly `Nothing to note.` for a review that sent nothing')
     expect(prompt).toContain('opens with `Escalation:`')
-    // The header is named twice, as the notes' heading and in echo recognition; both must match the plugin's.
-    expect(prompt.split('`auditor, review N:`').length - 1).toBe(2)
+    // The line is named in the Output protocol, as the notes' heading and in echo recognition; each must match the plugin's.
+    expect(prompt.split('`auditor, review N:`').length - 1).toBe(3)
+  })
+
+  test('the registered prompt describes no delivery by submitted prompt, appended row or held note, and no final answer as the note', ON, async ($, on) => {
+    const seen = engine(on)
+    await $.session.start({ cwd: '/', surface: null, isInteractive: true })
+    const prompt: string = seen.registered[0].prompt
+    for (const gone of ['Your final answer is your note', 'send corrections in your final answer', 'Your answer reaches the worker whole', 'as the prompt of a turn of its own', 'at its next tool call', 'beside the user\'s next prompt', 'the note waits for the user', 'since your note was submitted', 'as a row added', 'as prompts headed']) expect(prompt).not.toContain(gone)
+    expect(prompt).toContain('A note written in your final answer instead of sent reaches no one.')
+    expect(prompt).toContain('appear in the worker\'s record as peer prompts carrying your agent message')
+  })
+
+  test('the registered prompt recognises both shapes of an earlier note: a peer prompt with its envelope, and a held note as the plugin\'s own prompt without one', ON, async ($, on) => {
+    const seen = engine(on)
+    await $.session.start({ cwd: '/', surface: null, isInteractive: true })
+    const prompt: string = seen.registered[0].prompt
+    expect(prompt).toContain('a note held after the user interrupted appears as the plugin\'s own prompt, with no agent-message envelope')
+    expect(prompt).toContain('Either opens with `auditor, review N:`, after any envelope.')
+    expect(prompt).not.toContain('its first line `auditor, review N:`')
+    expect(prompt).toContain('Your notes reach the worker opening with that line, inside the agent message that carries them from you or, for a note held after the user interrupted, with no envelope.')
   })
 
   test('the registered prompt names the entries tool it registers, and keeps the live-entries rule for a missing write', ON, async ($, on) => {
@@ -2120,38 +1928,6 @@ describe('auditor', () => {
     expect(seen.registered[0].tools).toContain(TRANSCRIPT)
   })
 
-  test('a note that arrives while the worker is busy, whose turn ends before the note is held, is submitted at once, and delivered once', ON, async ($, on) => {
-    const g = gate()
-    const reached = gate()
-    const seen = engine(on, { hold: { path: '/0001.json', until: g.until, reached: reached.open } })
-    await workerTurn($)
-    await $.prompt.submit(COMPOSER('carry on'))
-    const settling = turnEnded($, 'ag1', 'a.ts:4 held.')
-    await reached.until
-    await mainTurnEnd($)
-    g.open()
-    await settling
-    expect(seen.prompts).toEqual(['carry on', FRAMED(1, 'a.ts:4 held.')])
-    expect(seen.toasts).toEqual([])
-    await $.prompt.submit(COMPOSER('next'))
-    expect(seen.contexts.filter(c => c !== undefined)).toEqual([])
-    expect(logOf(seen, LOG_1)).toMatchObject({ note_delivered: true })
-  })
-
-  test('a note whose review settles while the worker is idle, but whose user prompt enters before the note is held, is not submitted: the busy worker reads it at its tool call', ON, async ($, on) => {
-    const g = gate()
-    const reached = gate()
-    const seen = engine(on, { hold: { path: '/0001.json', until: g.until, reached: reached.open } })
-    await workerTurn($)
-    const settling = turnEnded($, 'ag1', 'a.ts:4 held.')
-    await reached.until
-    await $.prompt.submit(COMPOSER('carry on'))
-    g.open()
-    await settling
-    expect(seen.prompts).toEqual(['carry on'])
-    await $.classic.PostToolBatch({ tool_calls: [] } as any)
-    expect(seen.appends).toEqual([ROW(FRAMED(1, 'a.ts:4 held.'))])
-  })
 })
 
 describe('the stall nudge', () => {
@@ -2363,25 +2139,26 @@ describe('the stall nudge', () => {
     expect(seen.sends[0].text).not.toContain('wake the worker:')
   })
 
-  test('a delivered stall note sets the once-per-stall guard: the next stop, with no prompt from the user, states no stall fact', ON, async ($, on) => {
+  test('a delivered stall note sets the once-per-stall guard at its send: the next stop, with no prompt from the user, states no stall fact', ON, async ($, on) => {
     const seen = engine(on)
     await $.prompt.submit(COMPOSER('fix the parser'))
     await $.classic.Stop(QUIET_STOP)
     await mainTurnEnd($)
-    await turnEnded($, 'ag1', STALL_NOTE)
-    expect(seen.prompts).toEqual(['fix the parser', FRAMED(1, STALL_NOTE)])
+    await noteSent($, STALL_NOTE)
+    expect(seen.conversation.nudged).toBe(true)
+    await $.turn.complete(TURN_END('ag1', 'Sent.'))
+    expect(toMain(seen)).toEqual([FRAMED(1, STALL_NOTE)])
     await step($, 'working')
     await $.classic.Stop(QUIET_STOP)
     expect(seen.sends.map(s => s.to)).toEqual(['ag1'])
     expect(seen.sends[0].text).not.toContain('wake the worker:')
   })
 
-  test('a stall note appended at a tool batch sets the once-per-stall guard too', ON, async ($, on) => {
+  test('a busy worker\'s stall note sets the once-per-stall guard too', ON, async ($, on) => {
     const seen = engine(on)
     await $.prompt.submit(COMPOSER('carry on'))
     await $.classic.Stop(QUIET_STOP)
     await turnEnded($, 'ag1', STALL_NOTE)
-    await $.classic.PostToolBatch({ tool_calls: [] })
     await step($, 'working')
     await $.classic.Stop(QUIET_STOP)
     expect(seen.sends.length).toBe(1)
@@ -2396,7 +2173,8 @@ describe('the stall nudge', () => {
     await $.prompt.submit(COMPOSER('the config too'))
     await turnEnded($, 'ag1', STALL_NOTE)
     await mainTurnEnd($)
-    expect(seen.prompts).toEqual(['fix the parser', 'the config too', FRAMED(1, STALL_NOTE)])
+    expect(toMain(seen)).toEqual([FRAMED(1, STALL_NOTE)])
+    expect(seen.conversation.nudged).toBe(false)
     await step($, 'working')
     await $.classic.Stop(QUIET_STOP)
     expect(seen.sends.map(s => s.to)).toEqual(['ag1'])
@@ -2420,18 +2198,20 @@ describe('the stall nudge', () => {
     expect(seen.sends[1].text).not.toContain('wake the worker')
   })
 
-  test('a stall note from a review whose brief stated no stall fact is dropped: nothing is delivered, and the guard is not set', ON, async ($, on) => {
+  test('a stall note from a review whose brief stated no stall fact is refused: it reaches no one, and the guard is not set', ON, async ($, on) => {
     const seen = engine(on)
     await $.prompt.submit(COMPOSER('fix the parser'))
     await $.classic.Stop(stop)
     await mainTurnEnd($)
-    await turnEnded($, 'ag1', STALL_NOTE)
-    expect(seen.prompts).toEqual(['fix the parser'])
+    const sent = await noteSent($, STALL_NOTE)
+    expect(sent.isDelivered).toBe(false)
+    expect(sent.reason).toContain('did not say nothing will wake the worker')
+    expect(toMain(seen)).toEqual([])
     expect(seen.conversation.nudged).toBe(false)
-    expect(JSON.stringify(seen.logs)).toContain('review 1 gave a stall note, but its brief did not say nothing will wake the worker')
+    expect(debugLines(seen, 'a reviewer send (review 1) was refused: this review\'s brief did not say nothing will wake the worker').length).toBe(1)
   })
 
-  test('a reviewer that always answers with a stall note is held to one: the second idle stop, with no prompt from the user, delivers no second note', ON, async ($, on) => {
+  test('a reviewer that always sends a stall note is held to one: the second idle stop, with no prompt from the user, says nothing of waking, so its stall note is refused', ON, async ($, on) => {
     const seen = engine(on)
     await $.prompt.submit(COMPOSER('fix the parser'))
     await $.classic.Stop(QUIET_STOP)
@@ -2442,7 +2222,7 @@ describe('the stall nudge', () => {
     expect(seen.sends[0].text).not.toContain('wake the worker')
     await turnEnded($, 'ag1', STALL_NOTE)
     await mainTurnEnd($)
-    expect(seen.prompts).toEqual(['fix the parser', FRAMED(1, STALL_NOTE)])
+    expect(toMain(seen)).toEqual([FRAMED(1, STALL_NOTE)])
   })
 
   test('a note that is not a stall leaves the next stop\'s stall fact in place', ON, async ($, on) => {
@@ -2494,7 +2274,7 @@ describe('the stall nudge', () => {
     const seen = engine(on)
     await $.session.start({ cwd: '/', surface: null, isInteractive: true })
     const prompt: string = seen.registered[0].prompt
-    const STALL_EXCEPTION = `**The stall exception.** When the brief says nothing will wake the worker, two cases are findings even though no rule broke: the worker's last turn ended on an open commitment with no tool call after it ("next I'll update the config", then nothing), or it says it is waiting on work the brief shows is not in flight. Nothing else will resume the worker, so your note is what does. Open it with \`Stalled:\` and say plainly what is left undone: \`Stalled: you said you would update the config and ended the turn; nothing will wake you.\` or \`Stalled: you are waiting on the test run, but nothing is in flight.\` These are not stalls: a turn that ends by asking the user something or handing them a decision, a turn whose last message reports the work done and announces nothing more (a report that ends on a next step not taken, such as \`Next: …\`, is still a stall), and a turn whose closing line the user asked for word for word. If the brief has no line about waking, there is no stall exception.`
+    const STALL_EXCEPTION = `**The stall exception.** When the brief says nothing will wake the worker, two cases are findings even though no rule broke: the worker's last turn ended on an open commitment with no tool call after it ("next I'll update the config", then nothing), or it says it is waiting on work the brief shows is not in flight. Nothing else will resume the worker, so your note is what does. Open its text after the review line with \`Stalled:\` and say plainly what is left undone: \`Stalled: you said you would update the config and ended the turn; nothing will wake you.\` or \`Stalled: you are waiting on the test run, but nothing is in flight.\` These are not stalls: a turn that ends by asking the user something or handing them a decision, a turn whose last message reports the work done and announces nothing more (a report that ends on a next step not taken, such as \`Next: …\`, is still a stall), and a turn whose closing line the user asked for word for word. If the brief has no line about waking, there is no stall exception.`
     expect(prompt).toContain(STALL_EXCEPTION)
     expect(prompt).toContain('An open commitment is not a finding.')
   })
@@ -2520,11 +2300,11 @@ describe('the entries tool', () => {
     return pages
   }
 
-  test('the entries tool is registered deferred, and the reviewer is given it and the transcript tool beside Read, Glob and Grep', ON, async ($, on) => {
+  test('the entries tool is registered deferred, and the reviewer is given it and the transcript tool beside Read, Glob, Grep and SendMessage', ON, async ($, on) => {
     const seen = engine(on)
     await $.session.start({ cwd: '/', surface: null, isInteractive: true })
     expect(seen.registeredTools).toMatchObject([{ name: 'entries', isDeferred: true, inputSchema: { required: ['which'] } }, { name: 'transcript', isDeferred: true }])
-    expect(seen.registered[0].tools).toEqual(['Read', 'Glob', 'Grep', ENTRIES, TRANSCRIPT])
+    expect(seen.registered[0].tools).toEqual(['Read', 'Glob', 'Grep', 'SendMessage', ENTRIES, TRANSCRIPT])
   })
 
   test('the registered input schema pins which to record or live, and from to a whole number from 1', ON, async ($, on) => {
@@ -2762,7 +2542,7 @@ describe('the entries tool', () => {
 })
 
 describe('the transcript tool', () => {
-  const EMPTY_FAILURE = 'auditor: review failed: reviewer ended its turn with an empty answer'
+  const TURN_FAILURE = 'auditor: review failed: reviewer turn ended with reason error, isAborted false'
   const TRANSCRIPT_PATH = '/home/test/.claude/projects/p/s1.jsonl'
   const NEW_PATH = '/home/test/.claude/projects/p/s2.jsonl'
   const SESSION = { ...stop, transcript_path: TRANSCRIPT_PATH }
@@ -2903,15 +2683,24 @@ describe('the transcript tool', () => {
     expect(shown).not.toContain(TRANSCRIPT_PATH)
   })
 
+  // The reviewer after the /clear is a new one: the old one's id stays a reviewer marker, and is not adopted again.
   test('a session end forgets the transcript path, and a session start that reports one again sets it', ON, async ($, on) => {
-    const seen = engine(on, { agents: [{ id: 'ag1', name: 'auditor-reviewer', type: 'auditor:reviewer', spawnedBy: 'auditor' }], run: { stdout: 'total\t0\n' } })
+    const seen = engine(on, { agents: [{ id: 'ag1', name: 'auditor-reviewer', type: 'auditor:reviewer', spawnedBy: 'auditor' }, { id: 'ag2', name: 'auditor-reviewer-2', type: 'auditor:reviewer', spawnedBy: 'auditor' }], run: { stdout: 'total\t0\n' } })
     await $.classic.SessionStart({ transcript_path: TRANSCRIPT_PATH } as any)
     expect(await answer($, { search: 'pure' })).toBe('No line of the session transcript matches "pure".')
     await $.session.end({ reason: 'clear', sessionId: 's1' } as any)
-    expect(await answer($, { search: 'pure' })).toBe(NO_TRANSCRIPT)
+    expect((await ask($, { search: 'pure' }, 'ag2')).result).toBe(NO_TRANSCRIPT)
     await $.classic.SessionStart({ transcript_path: NEW_PATH } as any)
-    await answer($, { search: 'pure' })
+    await ask($, { search: 'pure' }, 'ag2')
     expect(last(seen).argv).toEqual(searchCommand(NEW_PATH, 'pure'))
+  })
+
+  test('after a /clear the reviewer before it is refused the transcript tool: its id still marks a reviewer, so it is not adopted again', ON, async ($, on) => {
+    engine(on, { agents: [{ id: 'ag1', name: 'auditor-reviewer', type: 'auditor:reviewer', spawnedBy: 'auditor' }] })
+    await $.classic.SessionStart({ transcript_path: TRANSCRIPT_PATH } as any)
+    expect(await answer($, { search: 'pure' })).toBeDefined()
+    await $.session.end({ reason: 'clear', sessionId: 's1' } as any)
+    expect(await ask($, { search: 'pure' }, 'ag1')).toMatchObject({ deny: REFUSED })
   })
 
   // A failed review's notice starts a worker turn, and that turn's end dispatches the next review: here neither dispatches.
@@ -2920,9 +2709,9 @@ describe('the transcript tool', () => {
     otherMods(on)
     await workerTurn($)
     await mainTurnEnd($)
-    await turnEnded($, 'ag1', '')
+    await turnFailed($, 'ag1')
     expect(seen.toasts).toEqual([])
-    expect(debugLines(seen, EMPTY_FAILURE).length).toBe(1)
+    expect(debugLines(seen, TURN_FAILURE).length).toBe(1)
     await buttonReads(await mountMode($), 'failing')
     for (let i = 0; i < 3; i++) {
       await $.prompt.submit(NOTICE('Agent "auditor review" failed: 429'))
@@ -2959,15 +2748,15 @@ describe('the transcript tool', () => {
     otherMods(on)
     await $.prompt.submit(COMPOSER('first'))
     await $.classic.Stop(stop)
-    await turnEnded($, 'ag1', '')
+    await turnFailed($, 'ag1')
     await $.prompt.submit(COMPOSER('retry'))
     await workerTurn($)
     expect(seen.sends.length).toBe(1)
     // The record tool serves only an open review, so it is read while review 2 is open, before its failure.
     expect(await entriesOf($, { which: 'record' }, 'ag1')).toBe(RECORD_OF(2, 'USER: first', 'USER: retry', 'ASSISTANT: working'))
-    await turnEnded($, 'ag1', '')
+    await turnFailed($, 'ag1')
     expect(seen.toasts).toEqual([])
-    expect(debugLines(seen, EMPTY_FAILURE).length).toBe(2)
+    expect(debugLines(seen, TURN_FAILURE).length).toBe(2)
     await buttonReads(await mountMode($), 'failing')
   })
 
@@ -2976,10 +2765,10 @@ describe('the transcript tool', () => {
     otherMods(on)
     await $.prompt.submit(COMPOSER('first'))
     await $.classic.Stop(stop)
-    await turnEnded($, 'ag1', '')
+    await turnFailed($, 'ag1')
     await $.prompt.submit(COMPOSER('retry'))
     await workerTurn($)
-    await turnEnded($, 'ag1', '')
+    await turnFailed($, 'ag1')
     await $.prompt.submit(COMPOSER('again'))
     await workerTurn($)
     await turnEnded($, 'ag1', 'Nothing to note.')
@@ -2987,10 +2776,10 @@ describe('the transcript tool', () => {
     await buttonReads(ui, 'on')
     await $.prompt.submit(COMPOSER('next'))
     await workerTurn($)
-    await turnEnded($, 'ag1', '')
+    await turnFailed($, 'ag1')
     await buttonReads(ui, 'failing')
     expect(seen.toasts).toEqual([])
-    expect(debugLines(seen, EMPTY_FAILURE).length).toBe(3)
+    expect(debugLines(seen, TURN_FAILURE).length).toBe(3)
   })
 
   test('a batch of the reviewer\'s notice and a background command\'s is a normal turn: it is recorded, and its turn end dispatches', ON, async ($, on) => {
@@ -3013,7 +2802,7 @@ describe('the transcript tool', () => {
     const seen = engine(on)
     await $.prompt.submit(COMPOSER('first'))
     await $.classic.Stop(stop)
-    await turnEnded($, 'ag1', '')
+    await turnFailed($, 'ag1')
     await $.prompt.submit(HELPER)
     await workerTurn($)
     expect(seen.sends.map(s => s.to)).toEqual(['ag1'])
@@ -3046,19 +2835,19 @@ describe('the transcript tool', () => {
     otherMods(on)
     await $.prompt.submit(HELPER)
     await workerTurn($)
-    await turnEnded($, 'ag1', '')
+    await turnFailed($, 'ag1')
     await mainTurnEnd($)
     expect(seen.toasts).toEqual([])
-    expect(debugLines(seen, EMPTY_FAILURE).length).toBe(1)
+    expect(debugLines(seen, TURN_FAILURE).length).toBe(1)
     const ui = await mountMode($)
     await buttonReads(ui, 'failing')
     await $.session.end({ reason: 'clear', sessionId: 's1' } as any)
     await buttonReads(ui, 'on')
     await workerTurn($)
     expect(seen.spawns.length).toBe(2)
-    await turnEnded($, 'ag1', '')
+    await turnFailed($, 'ag1')
     expect(seen.toasts).toEqual([])
-    expect(debugLines(seen, EMPTY_FAILURE).length).toBe(2)
+    expect(debugLines(seen, TURN_FAILURE).length).toBe(2)
     await buttonReads(ui, 'failing')
   })
 })
@@ -3082,7 +2871,7 @@ describe('the reviewer\'s task rows', () => {
     expect(seen.spawns.length).toBe(1)
   })
 
-  test('the prompt row of a note the auditor submits is drawn, expanded or not; another plugin\'s prompt row draws too', ON, async ($, on) => {
+  test('a prompt row of the auditor\'s own origin is drawn, expanded or not; another plugin\'s prompt row draws too', ON, async ($, on) => {
     engine(on)
     otherMods(on, DRAWN)
     const mount = (props: ReturnType<typeof TASK_ROW>) => $.ui.mount({ plugin: 'auditor', surface: 'terminal', component: 'UserMessage', props })
@@ -3210,7 +2999,7 @@ describe('the session mode button', () => {
     otherMods(on)
     await $.prompt.submit(HELPER)
     await workerTurn($)
-    await turnEnded($, 'ag1', '')
+    await turnFailed($, 'ag1')
     await mainTurnEnd($)
     expect({ sends: seen.sends.length, toasts: seen.toasts }).toEqual({ sends: 0, toasts: [] })
     const ui = await mountMode($)
@@ -3290,11 +3079,13 @@ describe('the session mode button', () => {
     await ui.press({ key: 'auditor-toggle' })
     expect(seen.stops.map(s => s.task_id)).toEqual(['ag1'])
     expect(logOf(seen, LOG_1)).toMatchObject({ status: 'incomplete', reason: 'the auditor was switched off' })
-    await turnEnded($, 'ag1', 'Escalation: a.ts:4 cut off.')
+    // Its review was dropped, so the note it sends under its own number is refused.
+    expect(await noteSent($, 'Escalation: a.ts:4 cut off.', 'ag1', 1)).toMatchObject({ isDelivered: false })
+    await $.turn.complete(TURN_END('ag1', 'Sent.'))
     await $.tool.call(WORKER_CALL('Bash', { command: 'ls' }))
     await mainTurnEnd($)
+    expect(toMain(seen)).toEqual([])
     expect(seen.prompts).toEqual(['fix the parser'])
-    expect(seen.appends.length).toBe(0)
     expect(seen.toasts).toEqual([])
     expect(seen.spawns.length).toBe(1)
   })
@@ -3304,25 +3095,44 @@ describe('the session mode button', () => {
     await busyWorker($)
     await $.command.run({ command: 'auditor', args: 'off' } as any)
     expect(seen.stops.map(s => s.task_id)).toEqual(['ag1'])
-    await turnEnded($, 'ag1', 'a.ts:4 cut off.')
+    expect(await noteSent($, 'a.ts:4 cut off.', 'ag1', 1)).toMatchObject({ isDelivered: false })
     await mainTurnEnd($)
-    expect(seen.prompts).toEqual(['fix the parser'])
+    expect(toMain(seen)).toEqual([])
   })
 
-  test('a note held when the reviewer is turned off is dropped: no tool batch, turn end or prompt delivers it', ON, async ($, on) => {
-    const seen = engine(on)
-    otherMods(on)
-    await busyWorker($)
-    await turnEnded($, 'ag1', 'a.ts:4 cut off.')
-    expect(seen.conversation.pendingNotes.length).toBe(1)
-    const ui = await mountMode($)
-    await ui.press({ key: 'auditor-toggle' })
-    await $.tool.call(WORKER_CALL('Bash', { command: 'ls' }))
+  test('a note let through before the reviewer is turned off that arrives after it reaches the worker, and the new epoch carries nothing of it', ON, async ($, on) => {
+    const release = gate()
+    const reached = gate()
+    const seen = engine(on, { noteHold: { until: release.until, reached: reached.open } })
+    await $.prompt.submit(COMPOSER('fix the parser'))
+    await $.classic.Stop(QUIET_STOP)
     await mainTurnEnd($)
-    await $.prompt.submit(COMPOSER('next'))
-    expect(seen.prompts).toEqual(['fix the parser', 'next'])
-    expect(seen.appends.length).toBe(0)
-    expect(transcriptLines(seen).filter(l => l.startsWith('auditor note'))).toEqual([])
+    const sending = noteSent($, `Escalation: ${STALL_NOTE}`)
+    await reached.until
+    await $.command.run({ command: 'auditor', args: 'off' } as any)
+    release.open()
+    expect(await sending).toEqual({ isDelivered: true })
+    const arrived = ARRIVED(1, `Escalation: ${STALL_NOTE}`)
+    await $.prompt.submit(arrived)
+    expect(seen.prompts).toEqual(['fix the parser', arrived.text])
+    expect(seen.conversation).toMatchObject({ deliveredNotes: [], nudged: false })
+    expect(seen.toasts).toEqual([ESCALATED_TOAST])
+    expect(logOf(seen, LOG_1)).toMatchObject({ status: 'incomplete', note: `Escalation: ${STALL_NOTE}`, note_delivered: false })
+  })
+
+  test('a note let through before a /clear that arrives after it reaches the worker, and the new conversation carries nothing of it', ON, async ($, on) => {
+    const release = gate()
+    const reached = gate()
+    const seen = engine(on, { noteHold: { until: release.until, reached: reached.open } })
+    await workerTurn($)
+    const sending = noteSent($, 'a.ts:4 before the clear.')
+    await reached.until
+    await $.session.end({ reason: 'clear', sessionId: 's1' } as any)
+    release.open()
+    expect(await sending).toEqual({ isDelivered: true })
+    await $.prompt.submit(ARRIVED(1, 'a.ts:4 before the clear.'))
+    expect(seen.conversation.deliveredNotes).toEqual([])
+    expect(logOf(seen, LOG_1)).toMatchObject({ status: 'incomplete', note: 'a.ts:4 before the clear.', note_delivered: false })
   })
 
   test('turning the reviewer off with no review open stops the idle reviewer and logs nothing', ON, async ($, on) => {
@@ -3334,39 +3144,6 @@ describe('the session mode button', () => {
     await ui.press({ key: 'auditor-toggle' })
     expect(seen.stops.map(s => s.task_id)).toEqual(['ag1'])
     expect(logOf(seen, LOG_1)).toMatchObject({ status: 'complete' })
-  })
-
-  test('a note whose submit fails after the reviewer is turned off stays dropped: turning it on again delivers nothing', ON, async ($, on) => {
-    const release = gate()
-    const reached = gate()
-    const seen = engine(on, { submitFails: true, submitHold: { until: release.until, reached: reached.open } })
-    await workerTurn($)
-    const settling = turnEnded($, 'ag1', 'a.ts:4 cut off.')
-    await reached.until
-    await $.command.run({ command: 'auditor', args: 'off' } as any)
-    release.open()
-    await settling
-    expect(seen.conversation.pendingNotes).toEqual([])
-    await $.command.run({ command: 'auditor', args: 'on' } as any)
-    await $.prompt.submit(COMPOSER('next'))
-    expect(seen.contexts.at(-1)).toBeUndefined()
-    expect(transcriptLines(seen).filter(l => l.startsWith('auditor note'))).toEqual([])
-  })
-
-  test('a submit dropped after the reviewer is turned off leaves no hold: after it is turned on again, a new note on an idle worker is submitted at once', ON, async ($, on) => {
-    const release = gate()
-    const reached = gate()
-    const seen = engine(on, { dropText: FRAMED(1, 'a.ts:4 cut off.'), submitHold: { until: release.until, reached: reached.open } })
-    await workerTurn($)
-    const settling = turnEnded($, 'ag1', 'a.ts:4 cut off.')
-    await reached.until
-    await $.command.run({ command: 'auditor', args: 'off' } as any)
-    release.open()
-    await settling
-    await $.command.run({ command: 'auditor', args: 'on' } as any)
-    await workerTurn($)
-    await turnEnded($, 'ag1', 'b.ts:1 second.')
-    expect(seen.prompts).toEqual([FRAMED(1, 'a.ts:4 cut off.'), FRAMED(2, 'b.ts:1 second.')])
   })
 
   test('a reviewer whose spawn lands after the reviewer is turned off is not adopted by its tool call, and is stopped', ON, async ($, on) => {
@@ -3678,20 +3455,22 @@ describe('the session mode button', () => {
     expect(seen.conversation.reviewer).toMatchObject({ id: 'agB' })
   })
 
-  test('a /clear mid-submit whose submit then fails: the notes stay dropped, and none is kept as delivered', ON, async ($, on) => {
+  test('a note whose send fails below the gate after its review has closed leaves the next review\'s note slot as it was', ON, async ($, on) => {
     const release = gate()
     const reached = gate()
-    const seen = engine(on, { submitFails: true, submitHold: { until: release.until, reached: reached.open } })
+    const seen = engine(on, { noteHold: { until: release.until, reached: reached.open }, noteFailsAt: [1] })
     await workerTurn($)
-    const settling = turnEnded($, 'ag1', 'a.ts:4 cut off.')
+    await step($, 'working')
+    const sending = noteSent($, 'a.ts:4 first.')
     await reached.until
-    await $.session.end({ reason: 'clear', sessionId: 's1' } as any)
+    // The slot is filled, so the turn end completes review 1 with it and the idle worker's next review goes out.
+    await $.turn.complete(TURN_END('ag1', 'Sent.'))
+    expect(seen.sends.map(s => s.to)).toEqual(['ag1'])
+    expect(await noteSent($, 'b.ts:1 second.')).toEqual({ isDelivered: true })
     release.open()
-    await settling
-    expect(seen.conversation.pendingNotes).toEqual([])
-    expect(seen.conversation.deliveredNotes).toEqual([])
-    await $.prompt.submit(COMPOSER('next'))
-    expect(seen.contexts.at(-1)).toBeUndefined()
+    expect(await sending).toMatchObject({ isDelivered: false })
+    expect(seen.conversation.review).toMatchObject({ number: 2, note: 'b.ts:1 second.' })
+    expect(seen.conversation.deliveredNotes).toEqual([FRAMED(2, 'b.ts:1 second.')])
   })
 
   test('a spawn that never settles, then the reviewer turned off and on: the next turn end dispatches again', ON, async ($, on) => {
@@ -3744,18 +3523,20 @@ describe('the session mode button', () => {
     expect(seen.stops.map(s => s.task_id)).toEqual(['ag1'])
   })
 
-  test('a note whose submit fails while the reviewer is turned off and on again stays dropped', ON, async ($, on) => {
+  test('a note delivered while the reviewer is turned off and on again books nothing in the new epoch', ON, async ($, on) => {
     const release = gate()
     const reached = gate()
-    const seen = engine(on, { submitFails: true, submitHold: { until: release.until, reached: reached.open } })
-    await workerTurn($)
-    const settling = turnEnded($, 'ag1', 'a.ts:4 cut off.')
+    const seen = engine(on, { noteHold: { until: release.until, reached: reached.open } })
+    await $.prompt.submit(COMPOSER('fix the parser'))
+    await $.classic.Stop(QUIET_STOP)
+    await mainTurnEnd($)
+    const sending = noteSent($, STALL_NOTE)
     await reached.until
     await $.command.run({ command: 'auditor', args: 'off' } as any)
     await $.command.run({ command: 'auditor', args: 'on' } as any)
     release.open()
-    await settling
-    expect(seen.conversation.pendingNotes).toEqual([])
+    expect(await sending).toEqual({ isDelivered: true })
+    expect(seen.conversation).toMatchObject({ deliveredNotes: [], nudged: false })
   })
 
   test('a brief whose send is refused after the reviewer is turned off spawns no reviewer', ON, async ($, on) => {
@@ -3851,29 +3632,26 @@ describe('the session mode button', () => {
     expect(seen.stops.length).toBe(1)
   })
 
-  test('turning the reviewer off ends a dropped submit\'s hold: after off and on, a new note on an idle worker is submitted at once', ON, async ($, on) => {
-    const seen = engine(on, { dropText: FRAMED(1, 'a.ts:4 first.') })
+  test('after the reviewer is turned off and on, the reviewer it let go is refused, and the fresh reviewer\'s note goes through', ON, async ($, on) => {
+    const seen = engine(on, { reviewerIds: ['ag1', 'ag2'] })
     otherMods(on)
     await busyWorker($)
-    await turnEnded($, 'ag1', 'a.ts:4 first.')
-    await mainTurnEnd($)
-    expect(seen.prompts).toEqual(['fix the parser', FRAMED(1, 'a.ts:4 first.')])
     const ui = await mountMode($)
     await ui.press({ key: 'auditor-toggle' })
     await ui.press({ key: 'auditor-toggle' })
     await $.tool.call(WORKER_CALL('Bash', { command: 'ls' }))
     await $.classic.Stop(stop)
-    await turnEnded($, 'ag1', 'b.ts:1 second.')
-    expect(seen.prompts).toEqual(['fix the parser', FRAMED(1, 'a.ts:4 first.'), FRAMED(2, 'b.ts:1 second.')])
+    expect(await noteSent($, 'a.ts:4 stale.', 'ag1', 1)).toMatchObject({ isDelivered: false })
+    await turnEnded($, 'ag2', 'b.ts:1 second.')
+    expect(toMain(seen)).toEqual([FRAMED(2, 'b.ts:1 second.')])
   })
 })
 
 describe('reviewer traffic', () => {
-  const CONSUMED = { consumed: 'auditor reviewer traffic' }
   // The agent list's entry for the reviewer: its deliveries carry this name as their teammate.
   const LISTED = [{ id: 'ag1', name: 'auditor-reviewer' }]
-  // A delivery the team's mailbox carries from `teammate`; `isVerified` says whether the harness wrote the entry.
-  const MAILED =(teammate: string, isVerified: boolean, text = 'a.ts:4 swallows it.') => ({ text, origin: { kind: 'peer' as const, teammate, isVerified } })
+  // A delivery the team's mailbox carries from `teammate`, by default its end-of-run notice as measured live; `isVerified` says whether the harness wrote the entry.
+  const MAILED = (teammate: string, isVerified: boolean, text = END_NOTICE(teammate)) => ({ text, origin: { kind: 'peer' as const, teammate, isVerified } })
 
   test('a delivery from the reviewer is consumed once its spawn is listed: the engine never sees it and no prompt is submitted', ON, async ($, on) => {
     const seen = engine(on, { agents: LISTED })
@@ -3941,24 +3719,41 @@ describe('reviewer traffic', () => {
     expect(seen.received.map(e => e.text)).toEqual([toAgent.text])
   })
 
-  test('a consumed delivery after its review settled is consumed, and the review log records nothing for it', ON, async ($, on) => {
+  test('an end-of-run notice after its review settled is consumed and logged, and the review log records nothing for it', ON, async ($, on) => {
     const seen = engine(on, { agents: LISTED })
     await workerTurn($)
     await turnEnded($, 'ag1', 'Nothing to note.')
     const written = seen.writes.length
-    expect(await $.session.receive(MAILED('auditor-reviewer', true, '[Subagent hand-back] auditor-reviewer done\na.ts:4 late.'))).toEqual(CONSUMED)
+    expect(await $.session.receive(MAILED('auditor-reviewer', true))).toEqual(CONSUMED)
     expect(seen.writes.length).toBe(written)
+    expect(debugLines(seen, 'consumed the end-of-run notice of reviewer auditor-reviewer').length).toBe(1)
+    expect(seen.prompts).toEqual([])
   })
 
-  test('a consumed delivery while its review is open is consumed, and the review log records nothing for it', ON, async ($, on) => {
+  test('a known reviewer\'s verified delivery that is not its end-of-run notice is passed on and logged to the debug log', ON, async ($, on) => {
     const seen = engine(on, { agents: LISTED })
     await workerTurn($)
-    const written = seen.writes.length
-    expect(await $.session.receive(MAILED('auditor-reviewer', true, '[Subagent hand-back] auditor-reviewer done\na.ts:4 x.'))).toEqual(CONSUMED)
-    expect(await $.session.receive(MAILED('auditor-reviewer', true, '[Subagent hand-back] auditor-reviewer second\na.ts:5 y.'))).toEqual(CONSUMED)
-    expect(seen.writes.length).toBe(written)
+    for (const text of ['[Subagent hand-back] auditor-reviewer done\na.ts:4 x.', 'a.ts:4 swallows it.', '{"type":"shutdown_request"}', '{not json']) {
+      expect(await $.session.receive(MAILED('auditor-reviewer', true, text))).toEqual({ text })
+    }
+    expect(seen.received.length).toBe(4)
+    expect(debugLines(seen, 'a delivery from reviewer auditor-reviewer that is not its end-of-run notice was passed on').length).toBe(4)
     await turnEnded($, 'ag1', 'Nothing to note.')
     expect(logOf(seen, LOG_1)).toMatchObject({ status: 'complete' })
+  })
+
+  test('no end-of-run notice of any reviewer the plugin spawned reaches the worker: a retired one\'s, a stopped one\'s, and one arriving after a /clear', ON, async ($, on) => {
+    const seen = engine(on, { reviewerIds: ['ag1', 'ag2', 'ag3'], agents: [{ id: 'ag1', name: 'auditor-reviewer' }, { id: 'ag2', name: 'auditor-reviewer-2' }, { id: 'ag3', name: 'auditor-reviewer-3' }] })
+    await workerTurn($)
+    // The first reviewer is let go by a switch off and on, so the next review goes to a second one.
+    await $.command.run({ command: 'auditor', args: 'off' } as any)
+    await $.command.run({ command: 'auditor', args: 'on' } as any)
+    await workerTurn($)
+    await $.session.end({ reason: 'clear', sessionId: 's1' } as any)
+    await workerTurn($)
+    for (const name of ['auditor-reviewer', 'auditor-reviewer-2', 'auditor-reviewer-3']) expect(await $.session.receive(MAILED(name, true))).toEqual(CONSUMED)
+    expect(seen.received).toEqual([])
+    expect(seen.prompts).toEqual([])
   })
 
   test('a verified delivery from an unknown name shaped like a reviewer\'s is consumed while the agent list rejects', ON, async ($, on) => {
@@ -3979,216 +3774,233 @@ describe('reviewer traffic', () => {
   })
 })
 
-describe('note timing', () => {
-  const SLASH = (text: string, name: string) => ({ text, wait: false, origin: { kind: 'composer' as const }, command: { name, args: '' } })
-  const BRIDGE = (text: string) => ({ text, wait: false, origin: { kind: 'bridge' as const } })
+describe('the note gate', () => {
+  // A body no log line may carry.
+  const SECRET = 'a.ts:4 SECRET-BODY.'
+  // What a refused send shows the user: nothing, and no line.
+  const showsNothing = (seen: any) => {
+    expect(toMain(seen)).toEqual([])
+    expect(seen.toasts).toEqual([])
+    expect(seen.prompts).toEqual([])
+    expect(seen.appends).toEqual([])
+    expect(transcriptLines(seen)).toEqual([])
+    expect(seen.logs.filter((line: { text: string }) => line.text.includes('SECRET-BODY'))).toEqual([])
+  }
 
-  test('a note settling while the worker is idle starts a worker turn that carries it as the plugin\'s own prompt, and the user\'s next prompt carries nothing of it', ON, async ($, on) => {
+  test('each send the gate refuses comes back with its reason, logs the reason and its review number but never its body, and shows the user nothing', ON, async ($, on) => {
+    const cases: [string, any, string, string][] = [
+      ['the quiet status', SEND(1, 'Nothing to note.'), 'a quiet review sends nothing', '(review 1)'],
+      ['an empty body', SEND(1, ' \n\t'), 'nothing after its review line', '(review 1)'],
+      ['a whitespace-only body after the line on its first line', { ...SEND(1, ''), text: 'auditor, review 1:   ' }, 'nothing after its review line', '(review 1)'],
+      ['no review line', { ...SEND(1, ''), text: SECRET }, 'auditor, review N:', 'a reviewer send was refused'],
+      ['another review\'s number', SEND(2, SECRET), 'review 2 is not the open review', '(review 2)'],
+      ['an address other than main', SEND(1, SECRET, 'ag1', 'team-lead'), '"main" only', '(review 1)'],
+      ['a stall note from a review whose brief did not say nothing wakes the worker', SEND(1, `Stalled: ${SECRET}`), 'sends no "Stalled:" note', '(review 1)'],
+    ]
     const seen = engine(on)
     await workerTurn($)
-    await turnEnded($, 'ag1', 'a.ts:4 idle.')
-    expect(seen.prompts).toEqual([FRAMED(1, 'a.ts:4 idle.')])
-    expect(logOf(seen, LOG_1)).toMatchObject({ status: 'complete', note_delivered: true })
-    await $.prompt.submit(COMPOSER('fix the parser'))
-    expect(seen.contexts.at(-1)).toBeUndefined()
+    seen.logs.length = 0
+    for (const [what, send, reason, logged] of cases) {
+      const sent = await $.session.send(send)
+      expect({ what, isDelivered: sent.isDelivered }).toEqual({ what, isDelivered: false })
+      expect(sent.reason).toContain(reason)
+      expect(debugLines(seen, logged).length).toBe(1)
+      seen.logs.length = 0
+    }
+    showsNothing(seen)
+    expect(seen.conversation.review.note).toBeUndefined()
+    expect(seen.spawns.length + seen.sends.length).toBe(1)
   })
 
-  test('a note on a review of a turn the auditor\'s own submit started is submitted at once, and starts a turn too', ON, async ($, on) => {
+  test('with no review open, a send is refused', ON, async ($, on) => {
     const seen = engine(on)
     await workerTurn($)
-    await turnEnded($, 'ag1', 'a.ts:4 first.')
-    await $.classic.Stop(stop)
-    await mainTurnEnd($)
-    await turnEnded($, 'ag1', 'b.ts:1 second.')
-    expect(seen.prompts).toEqual([FRAMED(1, 'a.ts:4 first.'), FRAMED(2, 'b.ts:1 second.')])
-    expect(logOf(seen, LOG_2)).toMatchObject({ note_delivered: true })
-  })
-
-  test('a note whose submit throws at an idle settle is submitted again by the next settle or turn end, once', ON, async ($, on) => {
-    const seen = engine(on, { submitFailsOnce: true })
-    await workerTurn($)
-    await turnEnded($, 'ag1', 'a.ts:4 idle.')
-    expect(JSON.stringify(seen.logs)).toContain('note delivery failed')
-    expect(logOf(seen, LOG_1)).toMatchObject({ note_delivered: false })
-    await mainTurnEnd($)
-    expect(seen.prompts).toEqual([FRAMED(1, 'a.ts:4 idle.'), FRAMED(1, 'a.ts:4 idle.')])
-    expect(logOf(seen, LOG_1)).toMatchObject({ note_delivered: true })
-    await mainTurnEnd($)
-    expect(seen.prompts.length).toBe(2)
-  })
-
-  test('an interrupt is released by the user\'s next prompt even when no note waits: a note settling in the turn it starts goes out at that turn\'s end', ON, async ($, on) => {
-    const seen = engine(on)
-    await workerTurn($)
-    await $.turn.complete({ answer: '', durationMs: 1, isAborted: true, turnId: 't1', reason: 'aborted' } as any)
-    await $.prompt.submit(COMPOSER('carry on'))
-    await turnEnded($, 'ag1', 'a.ts:4 busy.')
-    await mainTurnEnd($)
-    expect(seen.prompts).toEqual(['carry on', FRAMED(1, 'a.ts:4 busy.')])
-    expect(logOf(seen, LOG_1)).toMatchObject({ note_delivered: true })
-  })
-
-  test('a dropped submit is released by the user\'s next prompt even when a tool batch already took its notes', ON, async ($, on) => {
-    const seen = engine(on, { dropText: FRAMED(1, 'a.ts:4 first.') })
-    await busyWorker($)
-    await turnEnded($, 'ag1', 'a.ts:4 first.')
-    await mainTurnEnd($)
-    await $.classic.PostToolBatch({ tool_calls: [] })
-    expect(seen.appends).toEqual([ROW(FRAMED(1, 'a.ts:4 first.'))])
-    await $.prompt.submit(COMPOSER('next'))
-    expect(seen.contexts.at(-1)).toBeUndefined()
-    await $.classic.Stop(stop)
-    await mainTurnEnd($)
-    await turnEnded($, 'ag1', 'b.ts:1 second.')
-    expect(seen.prompts.at(-1)).toBe(FRAMED(2, 'b.ts:1 second.'))
-  })
-
-  test('a user prompt another hook drops while the worker is busy puts its notes back for that turn\'s end', ON, async ($, on) => {
-    const seen = engine(on, { dropText: 'also this' })
-    await busyWorker($)
-    await turnEnded($, 'ag1', 'a.ts:4 busy.')
-    await $.prompt.submit(COMPOSER('also this'))
-    expect(seen.contexts.at(-1)).toEqual([FRAMED(1, 'a.ts:4 busy.')])
-    await mainTurnEnd($)
-    expect(seen.prompts.at(-1)).toBe(FRAMED(1, 'a.ts:4 busy.'))
-    expect(logOf(seen, LOG_1)).toMatchObject({ note_delivered: true })
-  })
-
-  test('a dropped submit holds the waiting notes from every submit: a settle after it submits nothing, and a tool batch appends them all', ON, async ($, on) => {
-    const seen = engine(on, { dropText: FRAMED(1, 'a.ts:4 first.') })
-    await busyWorker($)
-    await turnEnded($, 'ag1', 'a.ts:4 first.')
-    await mainTurnEnd($)
-    expect(seen.prompts).toEqual(['fix the parser', FRAMED(1, 'a.ts:4 first.')])
-    // A worker entry after the dropped dispatch gives the next review a record to brief.
-    await $.tool.call({ tool: 'Read', file_path: 'a.ts' } as any)
-    await $.classic.Stop(stop)
-    await turnEnded($, 'ag1', 'a.ts:5 second.')
-    expect(seen.prompts.length).toBe(2)
-    await $.classic.PostToolBatch({ tool_calls: [] })
-    expect(seen.appends).toEqual([ROW(`${FRAMED(1, 'a.ts:4 first.')}\n\n${FRAMED(2, 'a.ts:5 second.')}`)])
-  })
-
-  test('a bridge prompt, sent from a Remote Control client, carries the held note as the user\'s own', ON, async ($, on) => {
-    const seen = engine(on)
-    await $.prompt.submit(COMPOSER('fix the parser'))
-    await $.classic.Stop(stop)
-    await turnEnded($, 'ag1', 'a.ts:4 held.')
-    await $.turn.complete({ answer: '', durationMs: 1, isAborted: true, turnId: 't1', reason: 'aborted' } as any)
-    await $.prompt.submit(BRIDGE('from the phone'))
-    expect(seen.prompts).toEqual(['fix the parser', 'from the phone'])
-    expect(seen.contexts.at(-1)).toEqual([FRAMED(1, 'a.ts:4 held.')])
-    expect(logOf(seen, LOG_1)).toMatchObject({ note_delivered: true })
-    await $.classic.Stop(stop)
-    expect(await entriesOf($, { which: 'live' })).toBe(LIVE_OF(2, 'USER: from the phone', `PROMPT (plugin): ${FRAMED(1, 'a.ts:4 held.')}`))
-  })
-
-  test('a note settling mid-turn goes out at that turn\'s end, and not before', ON, async ($, on) => {
-    const seen = engine(on)
-    await busyWorker($)
-    await turnEnded($, 'ag1', 'a.ts:4 busy.')
-    expect(seen.prompts).toEqual(['fix the parser'])
-    await mainTurnEnd($)
-    expect(seen.prompts).toEqual(['fix the parser', FRAMED(1, 'a.ts:4 busy.')])
-    expect(logOf(seen, LOG_1)).toMatchObject({ note_delivered: true })
-  })
-
-  test('two notes settling mid-turn go out together at that turn\'s end, and not before', ON, async ($, on) => {
-    const seen = engine(on)
-    await workerTurn($)
-    await $.prompt.submit(HELPER)
-    await turnEnded($, 'ag1', 'a.ts:4 busy.')
-    await $.classic.Stop(stop)
-    await turnEnded($, 'ag1', 'b.ts:1 busy.')
-    expect(seen.prompts).toEqual([HELPER.text])
-    await mainTurnEnd($)
-    expect(seen.prompts).toEqual([HELPER.text, `${FRAMED(1, 'a.ts:4 busy.')}\n\n${FRAMED(2, 'b.ts:1 busy.')}`])
-  })
-
-  test('a note settling during a turn some other prompt started goes out at the next tool batch', ON, async ($, on) => {
-    const seen = engine(on)
-    await workerTurn($)
-    await $.prompt.submit(HELPER)
-    await turnEnded($, 'ag1', 'a.ts:4 busy.')
-    expect(seen.contexts.at(-1)).toBeUndefined()
-    await $.classic.PostToolBatch({ tool_calls: [] })
-    expect(seen.appends).toEqual([ROW(FRAMED(1, 'a.ts:4 busy.'))])
-    expect(logOf(seen, LOG_1)).toMatchObject({ note_delivered: true })
-  })
-
-  test('a stall note settling while the worker is idle is submitted at once', ON, async ($, on) => {
-    const seen = engine(on)
-    await $.prompt.submit(COMPOSER('first'))
-    await $.classic.Stop(stop)
-    await mainTurnEnd($)
     await turnEnded($, 'ag1', 'Nothing to note.')
-    await step($, 'working')
-    // Review 2's brief says nothing will wake the worker, so its stall note is kept.
-    await $.classic.Stop(QUIET_STOP)
-    await turnEnded($, 'ag1', STALL_NOTE)
-    expect(seen.prompts).toEqual(['first', FRAMED(2, STALL_NOTE)])
-    expect(logOf(seen, LOG_2)).toMatchObject({ note_delivered: true })
+    const sent = await $.session.send(SEND(1, SECRET))
+    expect(sent).toMatchObject({ isDelivered: false })
+    expect(sent.reason).toContain('no review open')
+    expect(debugLines(seen, 'a reviewer send (review 1) was refused: auditor has no review open').length).toBe(1)
+    showsNothing(seen)
   })
 
-  test('a slash command releases no interrupt-held note: a settle after it submits nothing, and the next plain prompt carries the notes', ON, async ($, on) => {
+  test('a send from a reviewer switched off, forgotten on /clear, or whose review was given up is refused: its number is not the open review\'s, or none is open', ON, async ($, on) => {
+    const seen = engine(on, { reviewerIds: ['ag1', 'ag2', 'ag3'] })
+    await workerTurn($)
+    await $.command.run({ command: 'auditor', args: 'off' } as any)
+    expect((await $.session.send(SEND(1, SECRET, 'ag1'))).reason).toContain('no review open')
+    await $.command.run({ command: 'auditor', args: 'on' } as any)
+    await workerTurn($)
+    await $.session.end({ reason: 'clear', sessionId: 's1' } as any)
+    await workerTurn($)
+    expect(seen.conversation.review).toMatchObject({ number: 3 })
+    for (const [number, agentId] of [[1, 'ag1'], [2, 'ag2']] as const) expect((await $.session.send(SEND(number, SECRET, agentId))).reason).toContain(`review ${number} is not the open review`)
+    expect(seen.conversation.review.note).toBeUndefined()
+    expect(toMain(seen)).toEqual([])
+    expect(seen.toasts).toEqual([])
+  })
+
+  test('a second note in one review is refused, while the first is still out and after it was delivered', ON, async ($, on) => {
+    const release = gate()
+    const reached = gate()
+    const seen = engine(on, { noteHold: { until: release.until, reached: reached.open } })
+    await workerTurn($)
+    const first = noteSent($, 'a.ts:4 first.')
+    await reached.until
+    const whileOut = await noteSent($, SECRET)
+    expect(whileOut).toMatchObject({ isDelivered: false })
+    expect(whileOut.reason).toContain('one note already')
+    release.open()
+    expect(await first).toEqual({ isDelivered: true })
+    const after = await noteSent($, SECRET)
+    expect(after.reason).toContain('one note already')
+    expect(toMain(seen)).toEqual([FRAMED(1, 'a.ts:4 first.')])
+    expect(debugLines(seen, 'a reviewer send (review 1) was refused: this review has sent its one note already').length).toBe(2)
+    expect(seen.logs.filter((line: { text: string }) => line.text.includes('SECRET-BODY'))).toEqual([])
+  })
+
+  test('two notes sent at once in one review: exactly one reaches main, the other gets a refusal, and the user sees nothing of it', ON, async ($, on) => {
     const seen = engine(on)
+    await workerTurn($)
+    const results = await Promise.all([noteSent($, 'a.ts:4 one.'), noteSent($, 'b.ts:1 two.')])
+    expect(results.filter(r => r.isDelivered).length).toBe(1)
+    expect(results.find(r => !r.isDelivered)?.reason).toContain('one note already')
+    expect(toMain(seen).length).toBe(1)
+    expect(seen.toasts).toEqual([])
+    expect(seen.prompts).toEqual([])
+  })
+
+  test('a reviewer send whose state read throws is refused, nothing reaches main, and the debug log says why', ON, async ($, on) => {
+    const opts: Opts = {}
+    const seen = engine(on, opts)
+    await workerTurn($)
+    opts.stateFails = 'conversation'
+    const sent = await noteSent($, SECRET, 'ag1', 1)
+    expect(sent).toEqual({ isDelivered: false, reason: 'auditor could not check this message, so it was not sent' })
+    expect(debugLines(seen, 'a reviewer send (review 1) was refused, since its check could not read the conversation').length).toBe(1)
+    showsNothing(seen)
+  })
+
+  test('a send from the main conversation, one carrying the plugin\'s own brief, and one from a worker\'s own agent pass unchanged, and no agent list is read for any', ON, async ($, on) => {
+    const seen = engine(on)
+    await workerTurn($)
+    const lists = seen.listCalls
+    const sends = [
+      { to: 'helper', text: 'main conversation message', origin: { kind: 'model' as const } },
+      { to: 'ag1', text: 'a brief', origin: REVIEWER_ORIGIN },
+      { to: 'main', text: 'a worker subagent\'s message, with no review line', origin: { kind: 'model' as const }, agentId: 'sub1' },
+      { to: 'main', text: 'another plugin\'s agent', origin: { kind: 'plugin' as const, name: 'other' }, agentId: 'ag9' },
+    ]
+    for (const send of sends) expect(await $.session.send(send as any)).toEqual({ isDelivered: true })
+    expect(seen.listCalls).toBe(lists)
+    expect([...seen.sends, ...seen.notes].slice(-sends.length).map(s => s.text)).toEqual(sends.map(s => s.text))
+    expect(seen.conversation.review.note).toBeUndefined()
+  })
+
+  // A review whose brief said nothing will wake the worker, so a stall note is admitted, with an escalation sent on it that the chain below the gate then refuses or throws on.
+  const unsent = async ($: any, seen: any) => {
     await $.prompt.submit(COMPOSER('fix the parser'))
-    await $.classic.Stop(stop)
-    await turnEnded($, 'ag1', 'a.ts:4 held.')
-    await $.turn.complete({ answer: '', durationMs: 1, isAborted: true, turnId: 't1', reason: 'aborted' } as any)
-    await $.prompt.submit(SLASH('/help', 'help'))
-    expect(seen.contexts.at(-1)).toBeUndefined()
-    // The slash command's own turn is busy, so its note is due at that turn's end, were the interrupt not holding it.
-    await turnEnded($, 'ag1', 'b.ts:1 busy.')
+    await $.classic.Stop(QUIET_STOP)
     await mainTurnEnd($)
-    expect(seen.prompts).toEqual(['fix the parser', '/help'])
-    expect(logOf(seen, LOG_1)).toMatchObject({ note_delivered: false })
-    await $.prompt.submit(COMPOSER('fix the parser again'))
-    expect(seen.contexts.at(-1)).toEqual([`${FRAMED(1, 'a.ts:4 held.')}\n\n${FRAMED(2, 'b.ts:1 busy.')}`])
-    expect(logOf(seen, LOG_1)).toMatchObject({ note_delivered: true })
+    const sent = await noteSent($, 'Escalation: a.ts:4 unsent.')
+    expect(sent.isDelivered).toBe(false)
+    expect(seen.toasts).toEqual([])
+    expect(seen.toolCalls.filter((c: { tool: string }) => c.tool === 'PushNotification')).toEqual([])
+    expect(seen.conversation).toMatchObject({ nudged: false, deliveredNotes: [] })
+    expect(seen.conversation.review.note).toBeUndefined()
+  }
+
+  test('a note the rest of the chain refuses raises no toast or push, arms no guard, is carried nowhere, and a resend is admitted and booked', ON, async ($, on) => {
+    const seen = engine(on, { noteFailsAt: [1] })
+    await unsent($, seen)
+    expect(debugLines(seen, 'review 1\'s note was not delivered: main is gone').length).toBe(1)
+    expect(await noteSent($, STALL_NOTE)).toEqual({ isDelivered: true })
+    expect(seen.conversation).toMatchObject({ nudged: true, deliveredNotes: [FRAMED(1, STALL_NOTE)] })
+    await $.turn.complete(TURN_END('ag1', 'Sent.'))
+    expect(logOf(seen, LOG_1)).toMatchObject({ note: STALL_NOTE, note_delivered: true, stall: true, escalation: false })
   })
 
-  test('a user prompt a later hook drops returns its held note, and the next user prompt carries it', ON, async ($, on) => {
-    const seen = engine(on, { dropText: 'carry on' })
-    await $.prompt.submit(COMPOSER('fix the parser'))
-    await $.classic.Stop(stop)
-    await turnEnded($, 'ag1', 'a.ts:4 held.')
-    await $.turn.complete({ answer: '', durationMs: 1, isAborted: true, turnId: 't1', reason: 'aborted' } as any)
+  test('a note whose send throws below the gate raises no toast or push, arms no guard, is carried nowhere, and is logged undelivered at the turn end', ON, async ($, on) => {
+    const seen = engine(on, { noteThrows: true })
+    await unsent($, seen)
+    expect(debugLines(seen, 'review 1\'s note send failed').length).toBe(1)
+    await $.turn.complete(TURN_END('ag1', 'Sent.'))
+    expect(logOf(seen, LOG_1)).toMatchObject({ status: 'complete', note: null, note_delivered: false })
+  })
+
+  test('a failure writing a delivered note\'s effects is logged with its stack, and a resend in that review is refused', ON, async ($, on) => {
+    const seen = engine(on)
+    await workerTurn($)
+    // The admission is the next conversation write, and the booking the one after it.
+    seen.stateWritesFailAt = seen.stateWriteAttempts + 2
+    expect(await noteSent($, 'a.ts:4 delivered.')).toEqual({ isDelivered: true })
+    const failed = debugLines(seen, 'review 1\'s note booking failed')
+    expect(failed.length).toBe(1)
+    expect(failed[0]).toMatch(/\n\s+at /)
+    expect(seen.conversation.deliveredNotes).toEqual([])
+    expect((await noteSent($, 'a.ts:4 again.')).reason).toContain('one note already')
+    expect(toMain(seen)).toEqual([FRAMED(1, 'a.ts:4 delivered.')])
+  })
+
+  test('a delivered escalation whose booking write throws still raises the toast once and the push once, and its failure is logged', ON, async ($, on) => {
+    const seen = engine(on)
+    await workerTurn($)
+    // The admission is the next conversation write, and the booking the one after it.
+    seen.stateWritesFailAt = seen.stateWriteAttempts + 2
+    expect(await noteSent($, 'Escalation: auth belongs in middleware.\nWorker: handlers.')).toEqual({ isDelivered: true })
+    await drained()
+    const failed = debugLines(seen, 'review 1\'s note booking failed')
+    expect(failed.length).toBe(1)
+    expect(failed[0]).toMatch(/\n\s+at /)
+    expect(seen.toasts).toEqual([ESCALATED_TOAST])
+    expect(seen.toolCalls.filter((c: { tool: string }) => c.tool === 'PushNotification').map((c: { message: string }) => c.message)).toEqual(['auditor escalated: Escalation: auth belongs in middleware.'])
+  })
+
+  test('a delivered escalation raises the toast once and the push once, carrying the body\'s first line', ON, async ($, on) => {
+    const seen = engine(on)
+    await workerTurn($)
+    await noteSent($, 'Escalation: auth belongs in middleware.\nWorker: handlers.')
+    await drained()
+    expect(seen.toasts).toEqual([ESCALATED_TOAST])
+    expect(seen.toolCalls.filter((c: { tool: string }) => c.tool === 'PushNotification').map((c: { message: string }) => c.message)).toEqual(['auditor escalated: Escalation: auth belongs in middleware.'])
+  })
+
+  test('an escalation admitted, then switched off before its booking, still raises the toast once and the push once, and books no carried note or stall guard', ON, async ($, on) => {
+    const release = gate()
+    const reached = gate()
+    const seen = engine(on, { noteHold: { until: release.until, reached: reached.open } })
+    await workerTurn($)
+    const sending = noteSent($, 'Escalation: auth belongs in middleware.\nWorker: handlers.')
+    await reached.until
+    await $.command.run({ command: 'auditor', args: 'off' } as any)
+    release.open()
+    expect(await sending).toEqual({ isDelivered: true })
+    await drained()
+    expect(toMain(seen)).toEqual([FRAMED(1, 'Escalation: auth belongs in middleware.\nWorker: handlers.')])
+    expect(seen.toasts).toEqual([ESCALATED_TOAST])
+    expect(seen.toolCalls.filter((c: { tool: string }) => c.tool === 'PushNotification').map((c: { message: string }) => c.message)).toEqual(['auditor escalated: Escalation: auth belongs in middleware.'])
+    expect(seen.conversation).toMatchObject({ deliveredNotes: [], nudged: false })
+  })
+
+  test('a state stored in the older shape reads its open review with an empty slot, not delivered; its held notes ride beside the user\'s next own prompt with no toast, push or carried note, and its interrupt mark holds a refused note until that prompt', ON, async ($, on) => {
+    const seed = { dispatches: 1, reviewer: { id: 'ag1', model: 'm' }, reviewerIds: ['ag1'], review: { number: 1, record: ['USER: x'], dispatchedAt: 1, nothingWakes: false }, pendingNotes: [{ number: 0, text: 'Escalation: an old held note.', stall: true }], interrupted: true }
+    const seen = engine(on, { stateSeed: seed, noteFailsAt: [1] })
+    // The stored mark holds a note refused for another reason, until the user's prompt.
+    expect((await noteSent($, 'a.ts:4 fresh.', 'ag1', 1)).isDelivered).toBe(false)
+    expect(seen.conversation.pendingNotes).toEqual([{ number: 0, text: 'Escalation: an old held note.', stall: true }, { number: 1, text: 'a.ts:4 fresh.' }])
+    expect(seen.conversation.review).not.toHaveProperty('delivered')
     await $.prompt.submit(COMPOSER('carry on'))
-    expect(seen.contexts.at(-1)).toEqual([FRAMED(1, 'a.ts:4 held.')])
-    expect(logOf(seen, LOG_1)).toMatchObject({ note_delivered: false })
-    await $.prompt.submit(COMPOSER('again'))
-    expect(seen.contexts.at(-1)).toEqual([FRAMED(1, 'a.ts:4 held.')])
-    expect(logOf(seen, LOG_1)).toMatchObject({ note_delivered: true })
+    expect(seen.contexts).toEqual([[`${FRAMED(0, 'Escalation: an old held note.')}\n\n${FRAMED(1, 'a.ts:4 fresh.')}`]])
+    expect(seen.conversation).toMatchObject({ pendingNotes: [], interrupted: false, nudged: false })
+    // The old note raised nothing and joined no carried notes: only the fresh note's hold booked.
+    expect(seen.toasts).toEqual([])
+    expect(seen.conversation.deliveredNotes).toEqual([FRAMED(1, 'a.ts:4 fresh.')])
   })
 
-  // A note held for the user's next prompt, seeded as the conversation's state so that the prompt is the first call of the failing read or write.
-  const HELD = { number: 1, text: 'a.ts:4 idle.', stall: false }
-
-  test('a failed session id read lets the prompt through with no context, and the held note stays for the next prompt', ON, async ($, on) => {
-    const seen = engine(on, { sessionIdFailsOnce: true, stateSeed: { pendingNotes: [HELD] } })
-    seen.files[LOG_1] = JSON.stringify({ status: 'complete', note_delivered: false })
-    await $.prompt.submit(COMPOSER('fix the parser'))
-    expect(seen.prompts).toEqual(['fix the parser'])
-    expect(seen.contexts).toEqual([undefined])
-    expect(seen.conversation.pendingNotes).toEqual([HELD])
-    expect(debugLines(seen, 'held notes failed').length).toBe(1)
-    await $.prompt.submit(COMPOSER('again'))
-    expect(seen.contexts.at(-1)).toEqual([FRAMED(1, 'a.ts:4 idle.')])
-    expect(logOf(seen, LOG_1)).toMatchObject({ note_delivered: true })
-  })
-
-  test('a failed write while the held notes are taken lets the prompt through with no context, and the held note stays for the next prompt', ON, async ($, on) => {
-    const seen = engine(on, { stateSetFailsOnce: true, stateSeed: { pendingNotes: [HELD] } })
-    seen.files[LOG_1] = JSON.stringify({ status: 'complete', note_delivered: false })
-    await $.prompt.submit(COMPOSER('fix the parser'))
-    expect(seen.prompts).toEqual(['fix the parser'])
-    expect(seen.contexts).toEqual([undefined])
-    expect(seen.conversation.pendingNotes).toEqual([HELD])
-    expect(debugLines(seen, 'held notes failed').length).toBe(1)
-    await $.prompt.submit(COMPOSER('again'))
-    expect(seen.contexts.at(-1)).toEqual([FRAMED(1, 'a.ts:4 idle.')])
-    expect(logOf(seen, LOG_1)).toMatchObject({ note_delivered: true })
+  test('a state stored in the older shape reads its open review as having had no follow-up yet', ON, async ($, on) => {
+    const seed = { dispatches: 1, reviewer: { id: 'ag1', model: 'm' }, reviewerIds: ['ag1'], review: { number: 1, record: ['USER: x'], dispatchedAt: 1, nothingWakes: false } }
+    const seen = engine(on, { stateSeed: seed })
+    await $.turn.complete(TURN_END('ag1', FRAMED(1, 'a.ts:4 swallows it.')))
+    expect(seen.sends.map(s => ({ to: s.to, text: s.text }))).toEqual([{ to: 'ag1', text: followUpText(1) }])
   })
 })
 
@@ -4296,6 +4108,22 @@ describe('reviewer rotation', () => {
     expect(seen.spawns[1].prompt.slice(0, lead.length)).toBe(lead)
   })
 
+  test('a fresh reviewer\'s brief carries a delivered note as its review line once, then its body, though the reviewer repeated the line', ON, async ($, on) => {
+    const seen = engine(on, { reviewerIds: ['ag1', 'ag2'] })
+    await $.prompt.submit(COMPOSER('first'))
+    await $.classic.Stop(stop)
+    await mainTurnEnd($)
+    await requestWith($, contextOf(80_001))
+    expect(await $.session.send({ ...SEND(1, ''), text: `${FRAMED(1, '')}\n${FRAMED(1, 'a.ts:1 idle.')}` })).toEqual({ isDelivered: true })
+    await $.turn.complete(TURN_END('ag1', 'Sent.'))
+    await $.prompt.submit(COMPOSER('second'))
+    await $.classic.Stop(stop)
+    const lead = CARRIED(FRAMED(1, 'a.ts:1 idle.'))
+    expect(seen.spawns.length).toBe(2)
+    expect(seen.spawns[1].prompt.slice(0, lead.length)).toBe(lead)
+    expect(logOf(seen, LOG_1)).toMatchObject({ note: 'a.ts:1 idle.', note_delivered: true })
+  })
+
   test('a fresh reviewer carries at most the last five delivered notes', ON, async ($, on) => {
     const seen = engine(on, { reviewerIds: ['ag1', 'ag2'] })
     for (let n = 1; n <= 6; n++) await reviewCycle($, `turn ${n}`, `a.ts:${n} idle.`, n === 6 ? contextOf(80_001) : undefined)
@@ -4365,14 +4193,14 @@ describe('reviewer rotation', () => {
     expect(seen.conversation.reviewerIds).toEqual(['ag1'])
   })
 
-  test('a retired reviewer\'s verified delivery is still consumed', ON, async ($, on) => {
+  test('a retired reviewer\'s verified end-of-run notice is still consumed', ON, async ($, on) => {
     const seen = engine(on, { reviewerIds: ['ag1', 'ag2'] })
     await workerTurn($)
     await requestWith($, contextOf(80_001))
     await reviewed($, HANDBACK('Nothing to note.'), 'ag1')
     await workerTurn($, 'Second.')
-    const late = { text: 'a.ts:4 late.', origin: { kind: 'peer' as const, teammate: 'auditor-reviewer', isVerified: true } }
-    expect(await $.session.receive(late)).toEqual({ consumed: 'auditor reviewer traffic' })
+    const late = { text: END_NOTICE('auditor-reviewer'), origin: { kind: 'peer' as const, teammate: 'auditor-reviewer', isVerified: true } }
+    expect(await $.session.receive(late)).toEqual(CONSUMED)
     expect(seen.received).toEqual([])
   })
 
@@ -4396,7 +4224,7 @@ describe('reviewer rotation', () => {
     const seen = engine(on, { reviewerIds: ['ag1', 'ag2'] })
     await workerTurn($)
     await requestWith($, contextOf(80_001))
-    await turnEnded($, 'ag1', '')
+    await turnFailed($, 'ag1')
     expect(seen.stops.map(s => s.task_id)).toEqual(['ag1'])
   })
 
@@ -4747,7 +4575,7 @@ describe('the /auditor command', () => {
   test('after a failed review, bare reads auditor is failing, and a switch off and then on clears the failure', ON, async ($, on) => {
     engine(on)
     await workerTurn($)
-    await turnEnded($, 'ag1', '')
+    await turnFailed($, 'ag1')
     expect(await run($)).toBe('auditor is failing')
     expect(await run($, 'off')).toBe('auditor is off')
     expect(await run($, 'on')).toBe('auditor is on')
@@ -4770,19 +4598,16 @@ describe('the escalation push', () => {
     expect(seen.spawns.length).toBe(1)
   })
 
-  test('an escalation settling while the worker is idle is submitted at once', ON, async ($, on) => {
+  test('an escalation and a plain note each go to main as sent, the plugin submits nothing for either, and each log says delivered', ON, async ($, on) => {
     const seen = engine(on)
     await workerTurn($)
     await turnEnded($, 'ag1', ESCALATION)
-    expect(seen.prompts).toEqual([FRAMED(1, ESCALATION)])
-  })
-
-  test('a plain note settling while the worker is idle is submitted at once, and its log says delivered', ON, async ($, on) => {
-    const seen = engine(on)
-    await workerTurn($)
+    await workerTurn($, 'Second.')
     await turnEnded($, 'ag1', 'a.ts:4 idle.')
-    expect(seen.prompts).toEqual([FRAMED(1, 'a.ts:4 idle.')])
-    expect(logOf(seen, LOG_1)).toMatchObject({ note_delivered: true })
+    expect(toMain(seen)).toEqual([FRAMED(1, ESCALATION), FRAMED(2, 'a.ts:4 idle.')])
+    expect(seen.prompts).toEqual([])
+    expect(logOf(seen, LOG_1)).toMatchObject({ note_delivered: true, escalation: true })
+    expect(logOf(seen, LOG_2)).toMatchObject({ note_delivered: true, escalation: false })
   })
 
   test('a push is cut at 180 characters, with the cut counted after them', ON, async ($, on) => {
@@ -4817,8 +4642,7 @@ describe('the escalation push', () => {
     expect(debugLines(seen, 'escalation push failed').length).toBe(1)
     expect(seen.toasts).toEqual([ESCALATED_TOAST])
     expect(logOf(seen, LOG_1)).toMatchObject({ status: 'complete', escalation: true })
-    // An escalation settling on an idle worker is submitted at once, so the user reads it as the worker answers it.
-    expect(seen.prompts).toContain(FRAMED(1, ESCALATION))
+    expect(toMain(seen)).toEqual([FRAMED(1, ESCALATION)])
   })
 
   test('two identical escalations in flight at once: each push leaves the flight count when its own call settles, so neither is a worker entry', ON, async ($, on) => {
@@ -4838,7 +4662,7 @@ describe('the escalation push', () => {
     await drained()
     await mainTurnEnd($)
     await workerTurn($, 'Third.')
-    expect(await entriesOf($, { which: 'record' })).toBe(RECORD_OF(3, `PROMPT (plugin): ${FRAMED(2, ESCALATION)}`, 'ASSISTANT: working'))
+    expect(await entriesOf($, { which: 'record' })).toBe(RECORD_OF(3, 'ASSISTANT: working'))
   })
 })
 
@@ -4884,7 +4708,7 @@ describe('rc regression tests', () => {
 
 
 describe('rc session end ids', () => {
-  test('a /clear keeps the ids of reviewer spawns still in flight, so their traffic stays the reviewer\'s', ON, async ($, on) => {
+  test('a /clear keeps the reviewer markers, so a pre-/clear reviewer\'s end-of-run notice is still consumed', ON, async ($, on) => {
     const seen = engine(on, {
       agents: [{ id: 'ag1', name: 'auditor-reviewer', type: 'auditor:reviewer', spawnedBy: 'auditor' }],
       stateSeed: {
@@ -4898,6 +4722,494 @@ describe('rc session end ids', () => {
     })
     await $.session.end({ reason: 'clear', sessionId: 's1' } as any)
     expect(seen.conversation.reviewerIds).toEqual(['ag1'])
-    expect(await $.session.receive({ text: 'a.ts:4 swallows it.', origin: { kind: 'peer' as const, teammate: 'auditor-reviewer', isVerified: true } } as any)).toEqual({ consumed: 'auditor reviewer traffic' })
+    expect(seen.conversation.reviewerNames).toEqual(['auditor-reviewer'])
+    expect(await $.session.receive({ text: END_NOTICE('auditor-reviewer'), origin: { kind: 'peer' as const, teammate: 'auditor-reviewer', isVerified: true } } as any)).toEqual(CONSUMED)
+  })
+})
+
+describe('the follow-up to a note written as the answer', () => {
+  // Review 1's reviewer writes its note as its final answer, opening with the review's own line.
+  const WRITTEN = FRAMED(1, 'a.ts:4 swallows it.')
+  const ATTEMPT = 'review 1 wrote its note as its final answer'
+  const UNSENT = 'review 1\'s follow-up could not be sent'
+  const QUIET_LOGGED = 'sent no note, and its final answer was'
+  // The sends that reached the bottom of the chain to a reviewer, as their address and text.
+  const sentTo = (seen: { sends: { to: string; text: string }[] }) => seen.sends.map(s => ({ to: s.to, text: s.text }))
+  const ONE_FOLLOW_UP = [{ to: 'ag1', text: followUpText(1) }]
+  const pastRotation = { ...USAGE, input_tokens: 80_001 }
+  const requestPast = async ($: any): Promise<void> => {
+    STEP_USAGE = pastRotation
+    try {
+      await step($, '', 'ag1')
+    } finally {
+      STEP_USAGE = null
+    }
+  }
+
+  test('a turn end with no note booked, in an answer opening with the open review\'s line and a body, sends the reviewer one follow-up naming that review, unchanged by the gate, and logs the first answer once', ON, async ($, on) => {
+    const seen = engine(on)
+    await workerTurn($)
+    await $.turn.complete(TURN_END('ag1', WRITTEN))
+    expect(sentTo(seen)).toEqual(ONE_FOLLOW_UP)
+    expect(seen.sends[0].agentId).toBeUndefined()
+    expect(debugLines(seen, ATTEMPT)).toEqual([`auditor: ${ATTEMPT}, so its reviewer is asked once to send it; the answer was: ${WRITTEN}`])
+    expect(seen.conversation.review).toMatchObject({ number: 1, followedUp: true })
+    expect(logOf(seen, LOG_1)).toBeUndefined()
+    expect(toMain(seen)).toEqual([])
+    expect(seen.toasts).toEqual([])
+  })
+
+  test('a padded quiet status after the review line gets the follow-up too', ON, async ($, on) => {
+    const seen = engine(on)
+    await workerTurn($)
+    await $.turn.complete(TURN_END('ag1', FRAMED(1, 'Nothing to note. The worker left a.ts:4 as it was.')))
+    expect(sentTo(seen)).toEqual(ONE_FOLLOW_UP)
+  })
+
+  // Each answer lacks the trigger: no review line, another review's number, an empty body, or a body that is exactly the quiet status.
+  for (const answer of ['a.ts:4 swallows it.', FRAMED(2, 'a.ts:4 swallows it.'), FRAMED(1, ''), FRAMED(1, 'Nothing to note.')]) {
+    test(`a turn end answering ${JSON.stringify(answer)} sends no follow-up and settles the review`, ON, async ($, on) => {
+      const seen = engine(on)
+      await workerTurn($)
+      await $.turn.complete(TURN_END('ag1', answer))
+      expect(seen.sends).toEqual([])
+      expect(seen.conversation.review).toBeUndefined()
+      expect(debugLines(seen, ATTEMPT)).toEqual([])
+    })
+  }
+
+  test('a booked note, or a turn that ends without an answer, sends no follow-up', ON, async ($, on) => {
+    const seen = engine(on)
+    await workerTurn($)
+    await noteSent($, 'a.ts:4 swallows it.')
+    await $.turn.complete(TURN_END('ag1', WRITTEN))
+    expect(logOf(seen, LOG_1)).toMatchObject({ status: 'complete', note: 'a.ts:4 swallows it.' })
+    await workerTurn($, 'Second.')
+    await $.turn.complete({ ...TURN_END('ag1', FRAMED(2, 'b.ts:1 cut off.')), isAborted: true, reason: 'aborted' })
+    expect(logOf(seen, LOG_2)).toMatchObject({ status: 'incomplete' })
+    expect(seen.sends.map(s => s.text)).not.toContain(followUpText(1))
+    expect(seen.sends.map(s => s.text)).not.toContain(followUpText(2))
+  })
+
+  test('the follow-up is in flight until its call reaches the recorder, which leaves it out of the worker\'s record', ON, async ($, on) => {
+    const seen = engine(on)
+    await workerTurn($)
+    await $.turn.complete(TURN_END('ag1', WRITTEN))
+    expect(seen.conversation.briefsInFlight).toContain(followUpText(1))
+    await $.tool.call(WORKER_CALL('SendMessage', { to: 'ag1', message: followUpText(1) }))
+    expect(seen.conversation.briefsInFlight).not.toContain(followUpText(1))
+    expect(await entriesOf($, { which: 'live' })).toBe(NONE_SINCE(1))
+  })
+
+  test('while its follow-up is out the review stays open: no review is dispatched, its entries stay out of the record, and a reviewer past rotation is not retired', ON, async ($, on) => {
+    const seen = engine(on, { reviewerIds: ['ag1', 'ag2'] })
+    await workerTurn($)
+    await requestPast($)
+    await $.turn.complete(TURN_END('ag1', WRITTEN))
+    await workerTurn($, 'Second.')
+    await drained()
+    expect(sentTo(seen)).toEqual(ONE_FOLLOW_UP)
+    expect(seen.spawns.length).toBe(1)
+    expect(seen.conversation.review).toMatchObject({ number: 1, followedUp: true })
+    expect(seen.conversation.reviewer).toMatchObject({ id: 'ag1' })
+    expect(seen.conversation.record.blocks.length).toBe(1)
+    expect(seen.stops).toEqual([])
+    expect(await entriesOf($, { which: 'record' })).toBe(RECORD_OF(1, 'ASSISTANT: working'))
+  })
+
+  test('a note sent after the follow-up is admitted and booked, and settles the review complete with it', ON, async ($, on) => {
+    const seen = engine(on)
+    await workerTurn($)
+    await $.turn.complete(TURN_END('ag1', WRITTEN))
+    expect(await noteSent($, 'a.ts:4 swallows it.')).toEqual({ isDelivered: true })
+    expect(toMain(seen)).toEqual([WRITTEN])
+    await $.turn.complete(TURN_END('ag1', 'Sent.'))
+    expect(logOf(seen, LOG_1)).toMatchObject({ status: 'complete', note: 'a.ts:4 swallows it.', note_delivered: true })
+    expect(sentTo(seen)).toEqual(ONE_FOLLOW_UP)
+  })
+
+  for (const [second, logged] of [[WRITTEN, true], ['Nothing to note.', false]] as const) {
+    test(`a second turn end answering ${JSON.stringify(second)} gets no second follow-up and settles the review complete and quiet, ${logged ? 'with' : 'without'} its answer in the debug log`, ON, async ($, on) => {
+      const seen = engine(on)
+      await workerTurn($)
+      await $.turn.complete(TURN_END('ag1', WRITTEN))
+      await $.turn.complete(TURN_END('ag1', second))
+      expect(sentTo(seen)).toEqual(ONE_FOLLOW_UP)
+      expect(logOf(seen, LOG_1)).toMatchObject({ status: 'complete', note: null, note_delivered: false })
+      expect(seen.conversation.review).toBeUndefined()
+      expect(seen.conversation.failing).toBe(false)
+      expect(debugLines(seen, QUIET_LOGGED).length).toBe(logged ? 1 : 0)
+      expect(debugLines(seen, ATTEMPT).length).toBe(1)
+    })
+  }
+
+  for (const [how, opts] of [['is refused', { sendFails: 'ag1' }], ['throws', { sendThrows: 'ag1' }]] as const) {
+    test(`a follow-up whose send ${how} leaves flight and settles the review complete and quiet, with one line saying so, the first answer logged once, no resend, the failure cleared and the next review dispatched on an idle worker`, ON, async ($, on) => {
+      const seen = engine(on, { ...opts, stateSeed: { failing: true } })
+      await $.prompt.submit(COMPOSER('first'))
+      await $.classic.Stop(stop)
+      await mainTurnEnd($)
+      await step($, 'more')
+      await $.turn.complete(TURN_END('ag1', WRITTEN))
+      expect(logOf(seen, LOG_1)).toMatchObject({ status: 'complete', note: null, note_delivered: false, turn_end: { answer: WRITTEN } })
+      expect(debugLines(seen, UNSENT).length).toBe(1)
+      expect(debugLines(seen, ATTEMPT).length).toBe(1)
+      expect(debugLines(seen, QUIET_LOGGED)).toEqual([])
+      // The settle cleared the failure before it dispatched; a brief that throws the same way fails review 2 afterwards.
+      expect(seen.conversations.some(c => c.failing === false)).toBe(true)
+      expect(seen.conversation.briefsInFlight).not.toContain(followUpText(1))
+      // The follow-up once, then review 2's brief to the same reviewer, at once on the idle worker.
+      expect(seen.sends.map(s => s.text).filter(t => t === followUpText(1)).length).toBe(1)
+      expect(seen.sends.filter(s => s.text.includes('Review 2.')).length).toBe(1)
+    })
+
+    test(`a follow-up whose send ${how} stops a reviewer past rotation, as any settle does`, ON, async ($, on) => {
+      const seen = engine(on, { ...opts, reviewerIds: ['ag1', 'ag2'] })
+      await workerTurn($)
+      await requestPast($)
+      await $.turn.complete(TURN_END('ag1', WRITTEN))
+      await drained()
+      expect(seen.stops.map(s => s.task_id)).toEqual(['ag1'])
+      expect(seen.conversation.reviewer).toBeUndefined()
+    })
+  }
+
+  test('a reset while a delivered follow-up is in flight stops the reviewer again', ON, async ($, on) => {
+    const release = gate()
+    const reached = gate()
+    const seen = engine(on, { sendHold: { until: release.until, reached: reached.open } })
+    await workerTurn($)
+    const ending = $.turn.complete(TURN_END('ag1', WRITTEN))
+    await reached.until
+    await $.command.run({ command: 'auditor', args: 'off' } as any)
+    release.open()
+    await ending
+    await drained()
+    expect(seen.stops.map(s => s.task_id)).toEqual(['ag1', 'ag1'])
+  })
+
+  test('a reset while a failed follow-up\'s send is out leaves its settle closing nothing, with a debug line', ON, async ($, on) => {
+    const release = gate()
+    const reached = gate()
+    const seen = engine(on, { sendFails: 'ag1', sendHold: { until: release.until, reached: reached.open } })
+    await workerTurn($)
+    const ending = $.turn.complete(TURN_END('ag1', WRITTEN))
+    await reached.until
+    await $.command.run({ command: 'auditor', args: 'off' } as any)
+    release.open()
+    await ending
+    expect(debugLines(seen, UNSENT).length).toBe(1)
+    expect(debugLines(seen, 'ended a turn with no review in progress').length).toBe(1)
+    expect(logOf(seen, LOG_1)).toMatchObject({ status: 'incomplete', reason: 'the auditor was switched off' })
+  })
+
+  for (const [reset, run] of [['switched off', ($: any) => $.command.run({ command: 'auditor', args: 'off' } as any)], ['cleared', ($: any) => $.session.end({ reason: 'clear', sessionId: 's1' } as any)]] as const) {
+    test(`a review ${reset} before its follow-up goes out gets none, and its reviewer's later turn end closes nothing`, ON, async ($, on) => {
+      const release = gate()
+      const reached = gate()
+      const seen = engine(on, { getHold: { when: c => c?.review?.followedUp === true, until: release.until, reached: reached.open } })
+      await workerTurn($)
+      const ending = $.turn.complete(TURN_END('ag1', WRITTEN))
+      await reached.until
+      await run($)
+      release.open()
+      await ending
+      expect(seen.sends).toEqual([])
+      expect(seen.conversation.briefsInFlight).not.toContain(followUpText(1))
+      const logged = seen.files[LOG_1]
+      await $.turn.complete(TURN_END('ag1', 'Nothing to note.'))
+      expect(seen.files[LOG_1]).toBe(logged)
+      expect(logOf(seen, LOG_1)).toMatchObject({ status: 'incomplete' })
+      expect(seen.conversation.review).toBeUndefined()
+    })
+  }
+})
+
+describe('a note held after an interrupt', () => {
+  // The engine's refusal of a send while the session is stopped, in the two measured wordings.
+  const STOPPED_MAIN = 'The main conversation was not messaged: the session was stopped and nobody has sent input since.'
+  const STOPPED_TEAMMATE = 'Teammate "auditor-reviewer" was not messaged: the session was stopped and nobody has sent input since.'
+  const BODY = 'a.ts:4 after the Esc.'
+  const SLASH = (text: string, name: string) => ({ text, wait: false, origin: { kind: 'composer' as const }, command: { name, args: '' } })
+  const PLUGIN_PROMPT = { text: 'another plugin speaking', wait: false, origin: { kind: 'plugin' as const, name: 'other' } } as any
+  const WRITTEN = FRAMED(1, BODY)
+  const HELD = 'so it is held for the user\'s next prompt'
+  const pushes = (seen: any) => seen.toolCalls.filter((c: { tool: string }) => c.tool === 'PushNotification').map((c: { message: string }) => c.message)
+  // The worker's turn ends aborted: the user pressed Esc.
+  const abort = ($: any) => $.turn.complete({ answer: '', durationMs: 1, isAborted: true, turnId: 't1', reason: 'aborted' } as any)
+  // Review 1 is dispatched at the worker's Stop; the user then prompts and presses Esc.
+  const interrupted = async ($: any) => {
+    await workerTurn($)
+    await $.prompt.submit(COMPOSER('carry on'))
+    await abort($)
+  }
+  const switchOff = ($: any) => $.command.run({ command: 'auditor', args: 'off' } as any)
+  const switchOn = ($: any) => $.command.run({ command: 'auditor', args: 'on' } as any)
+
+  for (const [who, wording] of [['main', STOPPED_MAIN], ['a teammate', STOPPED_TEAMMATE]] as const) {
+    test(`a note refused with the stopped-session wording naming ${who} is held while the interrupt mark is unset: the reviewer reads the engine's refusal, a resend is refused as a second note, and the review settles complete with it, not delivered`, ON, async ($, on) => {
+      const seen = engine(on, { noteFailsAt: [1], refusal: wording })
+      await workerTurn($)
+      expect(seen.conversation.interrupted).toBe(false)
+      expect(await noteSent($, BODY)).toEqual({ isDelivered: false, reason: wording })
+      expect(seen.conversation.pendingNotes).toEqual([{ number: 1, text: BODY }])
+      expect(seen.conversation.review).toMatchObject({ number: 1, note: BODY })
+      expect(seen.conversation.review).not.toHaveProperty('delivered')
+      expect(debugLines(seen, HELD).length).toBe(1)
+      expect((await noteSent($, 'a.ts:4 again.')).reason).toContain('one note already')
+      await $.turn.complete(TURN_END('ag1', 'Sent.'))
+      expect(logOf(seen, LOG_1)).toMatchObject({ status: 'complete', note: BODY, note_delivered: false })
+      expect(seen.toasts).toEqual([])
+      expect(seen.appends).toEqual([])
+    })
+  }
+
+  test('a note refused for another reason while the interrupt mark is set is held', ON, async ($, on) => {
+    const seen = engine(on, { noteFailsAt: [1] })
+    await interrupted($)
+    expect(seen.conversation.interrupted).toBe(true)
+    expect(await noteSent($, BODY)).toEqual({ isDelivered: false, reason: 'main is gone' })
+    expect(seen.conversation.pendingNotes).toEqual([{ number: 1, text: BODY }])
+    expect(seen.conversation.review).toMatchObject({ note: BODY })
+  })
+
+  test('a note refused for another reason while the interrupt mark is unset releases the slot, holds nothing, and a resend is admitted', ON, async ($, on) => {
+    const seen = engine(on, { noteFailsAt: [1] })
+    await workerTurn($)
+    expect((await noteSent($, BODY)).isDelivered).toBe(false)
+    expect(seen.conversation.pendingNotes).toEqual([])
+    expect(seen.conversation.review.note).toBeUndefined()
+    expect(await noteSent($, BODY)).toEqual({ isDelivered: true })
+    expect(debugLines(seen, HELD)).toEqual([])
+  })
+
+  test('a note whose send throws, with the interrupt mark set, is released, not held: a throw is no refusal', ON, async ($, on) => {
+    const seen = engine(on, { noteThrows: true })
+    await interrupted($)
+    expect((await noteSent($, BODY)).isDelivered).toBe(false)
+    expect(seen.conversation.pendingNotes).toEqual([])
+    expect(seen.conversation.review.note).toBeUndefined()
+  })
+
+  test('the interrupt mark is set by the worker\'s aborted turn end, and cleared only by the user\'s next own prompt: a slash command, a plugin\'s prompt and a peer prompt leave it set and carry nothing', ON, async ($, on) => {
+    const seen = engine(on, { noteFailsAt: [1], refusal: STOPPED_MAIN })
+    await workerTurn($)
+    await noteSent($, BODY)
+    await abort($)
+    expect(seen.conversation.interrupted).toBe(true)
+    await $.prompt.submit(SLASH('/status', 'status'))
+    await $.prompt.submit(PLUGIN_PROMPT)
+    await $.prompt.submit(HELPER)
+    expect(seen.conversation.interrupted).toBe(true)
+    expect(seen.contexts).toEqual([undefined, undefined, undefined])
+    expect(seen.conversation.pendingNotes).toEqual([{ number: 1, text: BODY }])
+    await $.prompt.submit(COMPOSER('now'))
+    expect(seen.conversation.interrupted).toBe(false)
+    expect(seen.contexts.at(-1)).toEqual([WRITTEN])
+  })
+
+  test('switching on clears the interrupt mark, so a note refused for another reason after an Esc in an off period is released', ON, async ($, on) => {
+    const seen = engine(on, { noteFailsAt: [1] })
+    await switchOff($)
+    await $.prompt.submit(COMPOSER('first'))
+    await abort($)
+    expect(seen.conversation.interrupted).toBe(true)
+    await switchOn($)
+    expect(seen.conversation.interrupted).toBe(false)
+    await workerTurn($)
+    expect((await noteSent($, BODY)).isDelivered).toBe(false)
+    expect(seen.conversation.pendingNotes).toEqual([])
+    expect(seen.conversation.review.note).toBeUndefined()
+  })
+
+  test('a /clear clears the interrupt mark', ON, async ($, on) => {
+    const seen = engine(on)
+    await interrupted($)
+    expect(seen.conversation.interrupted).toBe(true)
+    await $.session.end({ reason: 'clear', sessionId: 's1' } as any)
+    expect(seen.conversation.interrupted).toBe(false)
+  })
+
+  test('a follow-up refused with the teammate wording holds the note the reviewer wrote as its answer, its body after the review line, and the review settles complete with it, not delivered', ON, async ($, on) => {
+    const seen = engine(on, { sendFails: 'ag1', refusal: STOPPED_TEAMMATE })
+    await workerTurn($)
+    expect(seen.conversation.interrupted).toBe(false)
+    await $.turn.complete(TURN_END('ag1', WRITTEN))
+    expect(seen.conversation.pendingNotes).toEqual([{ number: 1, text: BODY }])
+    expect(logOf(seen, LOG_1)).toMatchObject({ status: 'complete', note: BODY, note_delivered: false })
+    expect(debugLines(seen, 'review 1\'s follow-up could not be sent').length).toBe(1)
+    expect(debugLines(seen, 'sent no note, and its final answer was')).toEqual([])
+    expect(seen.toasts).toEqual([])
+  })
+
+  test('a follow-up refused for another reason while the interrupt mark is set holds the note too', ON, async ($, on) => {
+    const seen = engine(on, { sendFails: 'ag1' })
+    await interrupted($)
+    await $.turn.complete(TURN_END('ag1', WRITTEN))
+    expect(seen.conversation.pendingNotes).toEqual([{ number: 1, text: BODY }])
+    expect(logOf(seen, LOG_1)).toMatchObject({ status: 'complete', note: BODY, note_delivered: false })
+  })
+
+  test('a follow-up refused with neither signal holds nothing, leaves the slot empty and settles the review quiet', ON, async ($, on) => {
+    const seen = engine(on, { sendFails: 'ag1' })
+    await workerTurn($)
+    await $.turn.complete(TURN_END('ag1', WRITTEN))
+    expect(seen.conversation.pendingNotes).toEqual([])
+    expect(logOf(seen, LOG_1)).toMatchObject({ status: 'complete', note: null, note_delivered: false })
+  })
+
+  test('in a review whose brief did not say nothing will wake the worker, a stall-marked answer whose follow-up is refused after an Esc is not held: the review settles quiet, and the debug log gives the reason', ON, async ($, on) => {
+    const seen = engine(on, { sendFails: 'ag1', refusal: STOPPED_TEAMMATE })
+    await interrupted($)
+    await $.turn.complete(TURN_END('ag1', FRAMED(1, STALL_NOTE)))
+    expect(seen.conversation.pendingNotes).toEqual([])
+    expect(seen.conversation.nudged).toBe(false)
+    expect(logOf(seen, LOG_1)).toMatchObject({ status: 'complete', note: null, note_delivered: false })
+    expect(debugLines(seen, 'its note was not held').length).toBe(1)
+    expect(debugLines(seen, 'did not say nothing will wake the worker').length).toBe(1)
+  })
+
+  test('a refused brief after an Esc holds nothing: the review fails, as it does without an Esc', ON, async ($, on) => {
+    const seen = engine(on, { sendFails: 'ag1', refusal: STOPPED_TEAMMATE, spawnDeniesFrom: 2 })
+    await workerTurn($)
+    await $.turn.complete(TURN_END('ag1', 'Nothing to note.'))
+    await $.prompt.submit(COMPOSER('more'))
+    await step($, 'working')
+    await abort($)
+    expect(seen.sends.map(s => s.to)).toEqual(['ag1'])
+    expect(seen.conversation.failing).toBe(true)
+    expect(seen.conversation.pendingNotes).toEqual([])
+    expect(logOf(seen, LOG_2)).toMatchObject({ status: 'incomplete' })
+  })
+
+  test('at the hold, an escalation raises its toast and push once, and a fresh reviewer\'s brief carries the note', ON, async ($, on) => {
+    const escalation = 'Escalation: auth belongs in middleware.\nWorker: handlers.'
+    const seen = engine(on, { noteFailsAt: [1], refusal: STOPPED_MAIN, sendFails: 'ag1', reviewerIds: ['ag1', 'ag2'] })
+    await workerTurn($)
+    await noteSent($, escalation)
+    await drained()
+    expect(seen.toasts).toEqual([ESCALATED_TOAST])
+    expect(pushes(seen)).toEqual(['auditor escalated: Escalation: auth belongs in middleware.'])
+    expect(seen.conversation.deliveredNotes).toEqual([FRAMED(1, escalation)])
+    await $.turn.complete(TURN_END('ag1', 'Sent.'))
+    await $.prompt.submit(COMPOSER('more'))
+    await $.classic.Stop(stop)
+    expect(seen.spawns.length).toBe(2)
+    expect(seen.spawns[1].prompt).toContain(FRAMED(1, escalation))
+    expect(seen.toasts).toEqual([ESCALATED_TOAST])
+  })
+
+  test('at the hold, a stall note arms the stall guard', ON, async ($, on) => {
+    const seen = engine(on, { noteFailsAt: [1], refusal: STOPPED_MAIN })
+    await $.prompt.submit(COMPOSER('fix the parser'))
+    await $.classic.Stop(QUIET_STOP)
+    await mainTurnEnd($)
+    await noteSent($, STALL_NOTE)
+    expect(seen.conversation).toMatchObject({ nudged: true, pendingNotes: [{ number: 1, text: STALL_NOTE }] })
+  })
+
+  test('a hold that finds its epoch moved writes nothing and logs no held line, though an escalation is still announced', ON, async ($, on) => {
+    const release = gate()
+    const reached = gate()
+    const seen = engine(on, { noteFailsAt: [1], refusal: STOPPED_MAIN, noteHold: { until: release.until, reached: reached.open } })
+    await workerTurn($)
+    const sending = noteSent($, 'Escalation: auth belongs in middleware.')
+    await reached.until
+    await switchOff($)
+    release.open()
+    expect((await sending).isDelivered).toBe(false)
+    await drained()
+    expect(seen.conversation.pendingNotes).toEqual([])
+    expect(seen.conversation.deliveredNotes).toEqual([])
+    expect(debugLines(seen, HELD)).toEqual([])
+    expect(debugLines(seen, 'nothing is held').length).toBe(1)
+    expect(seen.toasts).toEqual([ESCALATED_TOAST])
+  })
+
+  test('a failure of the hold change at the gate is logged with its stack, the slot stays filled so a resend is refused, and an escalation is still announced', ON, async ($, on) => {
+    const seen = engine(on, { noteFailsAt: [1], refusal: STOPPED_MAIN, writeRefusedWhen: c => c.pendingNotes.length > 0 })
+    await workerTurn($)
+    expect((await noteSent($, 'Escalation: auth belongs in middleware.')).isDelivered).toBe(false)
+    await drained()
+    const failed = debugLines(seen, 'review 1\'s note hold or release failed')
+    expect(failed.length).toBe(1)
+    expect(failed[0]).toMatch(/\n\s+at /)
+    expect(seen.conversation.pendingNotes).toEqual([])
+    expect((await noteSent($, 'a.ts:4 again.')).reason).toContain('one note already')
+    expect(seen.toasts).toEqual([ESCALATED_TOAST])
+    expect(pushes(seen)).toEqual(['auditor escalated: Escalation: auth belongs in middleware.'])
+  })
+
+  test('a failure of the hold change at the follow-up is logged with its stack, the review settles quiet, and an escalation is still announced', ON, async ($, on) => {
+    const seen = engine(on, { sendFails: 'ag1', refusal: STOPPED_TEAMMATE, writeRefusedWhen: c => c.pendingNotes.length > 0 })
+    await workerTurn($)
+    await $.turn.complete(TURN_END('ag1', FRAMED(1, 'Escalation: auth belongs in middleware.')))
+    await drained()
+    const failed = debugLines(seen, 'review 1\'s note hold or release failed')
+    expect(failed.length).toBe(1)
+    expect(failed[0]).toMatch(/\n\s+at /)
+    expect(logOf(seen, LOG_1)).toMatchObject({ status: 'complete', note: null })
+    expect(seen.toasts).toEqual([ESCALATED_TOAST])
+    expect(pushes(seen)).toEqual(['auditor escalated: Escalation: auth belongs in middleware.'])
+  })
+
+  test('the held note is attached as context beside the user\'s next own prompt, framed as its review line then its body, once, with no plugin row or line, and the next review\'s record shows it', ON, async ($, on) => {
+    const seen = engine(on, { noteFailsAt: [1], refusal: STOPPED_MAIN })
+    await interrupted($)
+    await noteSent($, BODY)
+    await $.turn.complete(TURN_END('ag1', 'Sent.'))
+    expect(seen.conversation.pendingNotes).toEqual([{ number: 1, text: BODY }])
+    await $.prompt.submit(COMPOSER('next'))
+    await $.prompt.submit(COMPOSER('and again'))
+    expect(seen.prompts).toEqual(['carry on', 'next', 'and again'])
+    expect(seen.contexts).toEqual([undefined, [WRITTEN], undefined])
+    expect(seen.conversation.pendingNotes).toEqual([])
+    expect(seen.appends).toEqual([])
+    expect(transcriptLines(seen)).toEqual([])
+    expect(debugLines(seen, 'attached the held notes of reviews 1 beside').length).toBe(1)
+    await mainTurnEnd($)
+    // Review 2 was dispatched before the prompts; its settle dispatches review 3, whose record holds them.
+    await $.turn.complete(TURN_END('ag1', 'Nothing to note.'))
+    expect(await entriesOf($, { which: 'record' })).toContain(`PROMPT (plugin): ${WRITTEN}`)
+  })
+
+  for (const how of ['drop', 'throw'] as const) {
+    test(`a prompt that a later hook ${how === 'drop' ? 'drops' : 'throws on'} leaves the note held for the next user prompt`, ON, async ($, on) => {
+      const seen = engine(on, { noteFailsAt: [1], refusal: STOPPED_MAIN, contextPrompt: how })
+      await workerTurn($)
+      await noteSent($, BODY)
+      let thrown = false
+      try {
+        await $.prompt.submit(COMPOSER('next'))
+      } catch {
+        thrown = true
+      }
+      expect(thrown).toBe(how === 'throw')
+      expect(seen.conversation.pendingNotes).toEqual([{ number: 1, text: BODY }])
+      await $.prompt.submit(COMPOSER('again'))
+      expect(seen.contexts.at(-1)).toEqual([WRITTEN])
+      expect(seen.conversation.pendingNotes).toEqual([])
+    })
+  }
+
+  test('switching off empties the held list and a /clear starts it empty: a note held before either is never attached', ON, async ($, on) => {
+    const seen = engine(on, { noteFailsAt: [1], refusal: STOPPED_MAIN })
+    await workerTurn($)
+    await noteSent($, BODY)
+    await switchOff($)
+    expect(seen.conversation.pendingNotes).toEqual([])
+    await switchOn($)
+    await $.prompt.submit(COMPOSER('after the switch'))
+    expect(seen.contexts).toEqual([undefined])
+  })
+
+  test('a /clear starts the held list empty: a note held before it is never attached', ON, async ($, on) => {
+    const seen = engine(on, { noteFailsAt: [1], refusal: STOPPED_MAIN })
+    await workerTurn($)
+    await noteSent($, BODY)
+    await $.session.end({ reason: 'clear', sessionId: 's1' } as any)
+    expect(seen.conversation.pendingNotes).toEqual([])
+    await $.prompt.submit(COMPOSER('fresh'))
+    expect(seen.contexts).toEqual([undefined])
   })
 })
