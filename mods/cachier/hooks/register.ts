@@ -1,7 +1,7 @@
 import type { EngineInterface, Register, RenderElement } from 'claude-code'
 import type { ModelForkResult, ModelUsage } from 'claude-code'
 import type { CacheView, ColdMark, HintCost, HintState, Judged, KeepaliveState, PriceCue, Spend, StatsState, TallyState, Unit } from '../types'
-import { pieOf, readingOf, rebuildDrawnOf, settleCold, touchedAt, warmthOf } from './countdown'
+import { expiredAt, pieOf, readingOf, rebuildDrawnOf, settleCold, touchedAt, warmthOf } from './countdown'
 import {
   coldBegun,
   coldLanded,
@@ -772,8 +772,8 @@ const turnOn = async ($: Dollar, leadMs: number, count: number | null) => {
   const runCount = countNow(count, view, money, leadMs, nowMs)
   await editKeepalive($, (k) => enable(k, leadMs, count, runCount, view, live, nowMs))
   await tallyWrite($, (t) => ({ ...t, raisedMs: null }))
-  // The stop enable wrote, worked out from the same figures.
-  return { view, money, runCount, stop: enabledStop(view, leadMs, live, nowMs) }
+  // The stop enable wrote, and whether the cache is warm, both worked out from the same figures.
+  return { view, money, runCount, stop: enabledStop(view, leadMs, live, nowMs), warm: !expiredAt(view, live, nowMs) }
 }
 
 // A session that starts on, at the defaults a click uses. No cache is read yet, so the run waits for its figures, which the hover
@@ -927,8 +927,8 @@ const keepaliveCommand = async ($: Dollar, args: string, origin: { kind: string 
     case 'on': {
       // Only the user's own toggle turns keepalive on: a command from a plugin, a schedule or a peer is refused.
       if (!isUserPrompt(origin)) return "keepalive stays off: only the user's own /keepalive turns it on."
-      const { view, money, runCount, stop } = await turnOn($, request.leadMs, request.count)
-      return enableText(view, request.leadMs, runCount, stop, money, view.kind === 'known' ? rebuildSpendOf(view, money) : null)
+      const { view, money, runCount, stop, warm } = await turnOn($, request.leadMs, request.count)
+      return enableText(view, request.leadMs, runCount, stop, money, { warm, rebuild: view.kind === 'known' ? rebuildSpendOf(view, money) : null })
     }
     case 'default':
       // As with on, only the user's own command makes keepalive start on in later sessions.

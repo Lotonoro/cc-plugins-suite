@@ -63,7 +63,7 @@ const step = (k: KeepaliveState, v: CacheView, live: number | null, gap: boolean
 const pairOf = (v: CacheView, money: Money, warm = true) => ({ warm, rebuild: rebuildOf(v, money) })
 const costOf = (k: KeepaliveState, v: CacheView, warm = true) => costWith(k, v, TOKENS, pairOf(v, TOKENS, warm))
 const costText = (v: typeof known, lead: number, count: number) => costTextWith(v, lead, count, TOKENS, pairOf(v, TOKENS))
-const enableText = (v: CacheView, lead: number, count: number, stop: string | null) => enableTextWith(v, lead, count, stop, TOKENS, rebuildOf(v, TOKENS))
+const enableText = (v: CacheView, lead: number, count: number, stop: string | null, warm = true) => enableTextWith(v, lead, count, stop, TOKENS, pairOf(v, TOKENS, warm))
 // Opus 5.5 rates per token: input $4, 5 m write $5, 1 h write $8, read $0.20 per million.
 const OPUS = PRICES
 const DOLLARS: Money = { unit: 'dollars', list: OPUS, model: 'claude-opus-5-5', speed: 'standard', ttl: '5m' }
@@ -858,7 +858,35 @@ describe('the pair: the warm refresh price and the cold rebuild price, stated wh
     expect(lines(on(300000, 2), T)).toEqual([REBUILD])
     expect(lines(on(400000, 2), T)).toEqual([REBUILD])
     expect(lines(on(300000, 2), T).join('\n')).not.toMatch(/refresh|warm cache/)
-    expect(enableText(known, 300000, 3, null)).not.toMatch(/warm cache|if it goes cold/)
+    const alone = enableText(known, 300000, 3, null)
+    expect(alone).toBe('keepalive on: lead 300 s, 3 refreshes. Paused: lead 300 s is not below the 300 s TTL. If it goes cold, your next prompt rebuilds it: ~33k tokens written.')
+    expect(alone).not.toMatch(/\/refresh|Next refresh|each refresh|warm cache/i)
+    expect(enableText(known, 400000, 3, null)).toContain('Paused: lead 400 s is not below the 300 s TTL. If it goes cold, ')
+  })
+
+  test('the enable text at a lead at or above the TTL puts the rebuild sentence before any stop tail', () => {
+    const text = enableText(known, 300000, 3, 'cache expired')
+    expect(text.indexOf('If it goes cold, your next prompt rebuilds it: ~33k tokens written.')).toBeGreaterThan(0)
+    expect(text.indexOf('If it goes cold')).toBeLessThan(text.indexOf('Paused: the cache expired'))
+    const failed = enableText(known, 300000, 3, 'API error 529 (overloaded)')
+    expect(failed.indexOf('If it goes cold')).toBeLessThan(failed.indexOf('Stopped: API error 529'))
+  })
+
+  test('the enable text at a lead at or above the TTL words the rebuild in dollars with tokens written, in tokens for a view with output, and tokens only for a model with no price', () => {
+    const priced = enableTextWith(known, 300000, 3, null, DOLLARS, pairOf(known, DOLLARS))
+    expect(priced).toMatch(/ If it goes cold, your next prompt rebuilds it: ~\$0\.\d\d \(~33k tokens written\)\.$/)
+    const output = { ...known, promptTokens: 33000, outputTokens: 200 }
+    expect(enableText(output, 300000, 3, null)).toMatch(/ If it goes cold, your next prompt rebuilds it: ~33k tokens written\.$/)
+    const unpriced = { ...known, model: 'claude-nonesuch-1' }
+    const none = enableTextWith(unpriced, 300000, 3, null, DOLLARS, pairOf(unpriced, DOLLARS))
+    expect(none).toMatch(/ If it goes cold, your next prompt rebuilds it: ~33k tokens written\.$/)
+    expect(none).not.toContain('$')
+  })
+
+  test('the enable text handed an expired pair at a lead at or above the TTL states the head and the lead sentence alone', () => {
+    expect(enableText(known, 300000, 24, null, false)).toBe('keepalive on: lead 300 s, 24 refreshes. Paused: lead 300 s is not below the 300 s TTL.')
+    expect(enableText(known, 400000, 3, null, false)).toBe('keepalive on: lead 400 s, 3 refreshes. Paused: lead 400 s is not below the 300 s TTL.')
+    expect(enableText({ kind: 'no-cache' }, 300000, 3, null, true)).not.toMatch(/If it goes cold/)
   })
 
   test('on an expired cache, at the tick, with no rebuild priced, or on an expired cache while a cold mark write is pending, a lead at or above the TTL adds no line', () => {

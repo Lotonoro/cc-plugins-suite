@@ -3909,6 +3909,7 @@ describe('the words the user reads: no /keepalive answer, status line or pane sa
     expect(said[1]).toContain('if it goes cold')
     expect(said[2]).toContain('if it goes cold')
     expect(said[10]).toContain('if it goes cold')
+    expect(said.find((s) => s.startsWith('keepalive on: lead 300 s'))).toContain('If it goes cold')
   })
 })
 
@@ -4263,13 +4264,20 @@ describe('the pair: keeping the cache warm against rebuilding it if it goes cold
     )
   })
 
+  test('/keepalive on at a lead at the TTL over an expired cache states the head and the lead sentence alone', { options: { keepalive_lead_s: 300 } }, async ($, on) => {
+    await started($, on, opusCached(), T0 + 400000)
+    expect(await toggle($, 'on 300')).toBe('keepalive on: lead 300 s, 24 refreshes. Paused: lead 300 s is not below the 300 s TTL.')
+  })
+
   test('a lead at the TTL on a warm cache offers no refresh: with keepalive off the hover states the rebuild alone, with it on nothing, and the section the rebuild line alone', { options: { keepalive_lead_s: 300 } }, async ($, on) => {
     await started($, on, opusCached())
     const m = await mountHint($)
     expect(JSON.stringify(await m.drawn())).toContain('if cold ~$0.09 rebuild')
     expect(JSON.stringify(await m.drawn())).not.toContain('keep warm')
     expect(await toggle($, '')).not.toMatch(/warm cache|if it goes cold|One refresh every/)
-    expect(await toggle($, 'on 300')).toBe('keepalive on: lead 300 s, 24 refreshes. Paused: lead 300 s is not below the 300 s TTL.')
+    expect(await toggle($, 'on 300')).toBe(
+      'keepalive on: lead 300 s, 24 refreshes. Paused: lead 300 s is not below the 300 s TTL. If it goes cold, your next prompt rebuilds it: ~$0.09 (~19k tokens written).',
+    )
     const section = (await toggle($, '')).replace(/\n\s*/g, ' ')
     expect(section).toContain('lead 300 s is not below the 300 s TTL')
     expect(section).toContain('if it goes cold, your next prompt rebuilds it: ~$0.09 (~19k tokens written)')

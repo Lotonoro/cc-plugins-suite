@@ -516,15 +516,19 @@ export const costText = (view: KnownView, leadMs: number, count: number, money: 
   return `${price}, every ${intervalOf(view.ttlMs - leadMs)} (${view.ttlLabel} TTL less the ${secs(leadMs)} lead)${rebuild}. The first refresh after a turn can also write that turn's new tokens. ${refreshesOf(count)}, then it stops until a prompt.`
 }
 
-// What the toggle says when it turns keepalive on: the cost with its figures when the view allows it, else what it is
-// waiting for, and any stop it has already reached. With no stop the cache is warm, and `rebuild` is what the next prompt pays to rebuild it.
-export const enableText = (view: CacheView, leadMs: number, count: number, stop: string | null, money: Money, rebuild: Spend | null): string => {
+// What the toggle says when it turns keepalive on: the cost with its figures when the view allows it, else what it is waiting for, and
+// any stop it has already reached. The pair's warm answer is the toggle's, from the expiry owner. At a lead at or above the TTL a warm
+// cache states the rebuild price alone, before the stop tail.
+export const enableText = (view: CacheView, leadMs: number, count: number, stop: string | null, money: Money, pair: Pair): string => {
   const head = `keepalive on: lead ${secs(leadMs)}, ${refreshesOf(count)}.`
   const armed = stop !== null && ENDED_BY_DESIGN.includes(stop)
   const tail = stop === null ? '' : armed ? ` Paused: ${byDesignSentence(stop)}.` : ` Stopped: ${failureSentence(stop)}.`
   if (view.kind !== 'known') return `${head} No live cache to count from yet, so nothing is scheduled until there is one.${tail}`
-  if (leadMs >= view.ttlMs) return `${head} Paused: lead ${secs(leadMs)} is not below the ${secs(view.ttlMs)} TTL.${tail}`
-  return `${head} ${armed ? `${capital(rereadFigure(view, money) ?? '')}.` : costText(view, leadMs, count, money, { warm: stop === null, rebuild })}${tail}`
+  if (leadMs >= view.ttlMs) {
+    const rebuild = (pairing(view, money, pair)?.rebuild ?? []).map((line) => ` ${capital(line)}.`).join('')
+    return `${head} Paused: lead ${secs(leadMs)} is not below the ${secs(view.ttlMs)} TTL.${rebuild}${tail}`
+  }
+  return `${head} ${armed ? `${capital(rereadFigure(view, money) ?? '')}.` : costText(view, leadMs, count, money, pair)}${tail}`
 }
 
 // The debug line of one ping, written once its outcome is known. `stale` marks a result from a generation the state has since
