@@ -11,6 +11,7 @@ import {
 } from './commands'
 import { carried, carryHeld, endTurn, giveBack, handOver, notEntered, offer, pending, reset, setOnChange, startTurn } from './turns'
 import { band, pane, toolLine, type Handlers, type View } from './ui'
+import { bandDraws } from './layout'
 import { correctionText, newlyRestated, restatedIds } from './restatement'
 import { enter } from './deliver'
 import { PANE, endPane, followShown, markRead, personClosed, pickItem, setDrawn, shownSelection, showItem, syncPane } from './pane'
@@ -427,9 +428,10 @@ export const wireHooks = (on: On, windowMs: number): void => {
     await syncPane($)
     const store = await readList($)
     setDrawn(store.items)
-    if (store.items.length === 0) return next(e)
+    const todo = await readTodo($)
+    if (!bandDraws(store.items.length, todo)) return next(e)
     const selected = await shownSelection($)
-    const view: View = { maxRows: e.props.maxRows, now: await $.clock.now(), windowMs, selected }
+    const view: View = { maxRows: e.props.maxRows, now: await $.clock.now(), windowMs, selected, claude: { items: todo, columns: e.props.bodyColumns } }
     return band($.ui.resolve(e), handlers($, windowMs), store, view)
   })
 

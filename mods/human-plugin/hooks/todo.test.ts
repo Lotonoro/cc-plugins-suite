@@ -1,5 +1,5 @@
 import { expect, test } from 'claude-code/testing'
-import { GLYPH, HEADING, STATES, TITLE_MAX, TODO_NAME, TODO_TOOL, countsText, inDisplayOrder, normalizeTodo, parseTodo, todoLine, todoReply } from './todo'
+import { GLYPH, HEADING, STATES, TITLE_MAX, TODO_NAME, TODO_TOOL, bandCountsText, countsText, inDisplayOrder, normalizeTodo, parseTodo, todoLine, todoReply } from './todo'
 import type { TodoItem } from '../types'
 
 const write = (entries: unknown): TodoItem[] | null => {
@@ -150,4 +150,11 @@ test('the transcript line is one line, whatever the title or the reply holds', (
 test('each state has one glyph: a half-filled circle in flight, an empty one queued, and done has none', () => {
   expect(GLYPH).toEqual({ in_flight: '◐', queued: '○' })
   expect(HEADING).toBe('Claude TODO')
+})
+
+test('the band\'s short counts word the same counts as the long form: active for in flight', () => {
+  expect(bandCountsText(LIST)).toBe('1 active, 2 queued')
+  expect(bandCountsText([])).toBe('0 active, 0 queued')
+  expect(bandCountsText([{ title: 'a', state: 'in_flight' }, { title: 'b', state: 'in_flight' }])).toBe('2 active, 0 queued')
+  expect(`${HEADING} ${bandCountsText(LIST)}`).toBe('Claude TODO 1 active, 2 queued')
 })

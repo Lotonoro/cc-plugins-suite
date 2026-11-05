@@ -1,10 +1,11 @@
 import type { ButtonProps, BoxProps, ElementConstructor, InputProps, MarkdownProps, RenderElement, TextProps, UiCopyArgs } from 'claude-code'
-import type { Item, Store, Turn } from '../types'
+import type { Item, Store, TodoItem, Turn } from '../types'
 import { labelOf, oneLine, orderedOptions, replyText, turnsOf } from './done'
 import { briefParts } from './fences'
 import { outcomeOf, parseInput, selectedItem, type ToolInput } from './items'
-import { bandRows } from './layout'
+import { bandRows, bandWidths, claudeRows, humanFoldRows, rowsHeight, type ClaudeRow } from './layout'
 import { tablesAsLists } from './tables'
+import { GLYPH, HEADING, bandCountsText } from './todo'
 
 // The elements the band and the pane are built from, as the surface's table hands them out. The constructors take the
 // props with `children`, as JSX would pass them; the mod has no JSX factory in an imported module.
@@ -32,8 +33,9 @@ export type Handlers = {
 }
 
 // What the band draws with: the rows the surface has, the time now, and the undo window's length. `selected`: the item the pane
-// shows, if any.
-export type View = { maxRows: number; now: number; windowMs: number; selected?: number | null }
+// shows, if any. `claude`: the Claude list and the columns the band is laid out in, which the Claude column is drawn from; without it the
+// band is the human list alone.
+export type View = { maxRows: number; now: number; windowMs: number; selected?: number | null; claude?: { items: readonly TodoItem[]; columns: number } }
 
 const CHECK = { color: 'green' }
 
@@ -183,12 +185,32 @@ export const toolLine = (call: ToolCall): string => {
 // The chip names the term the agent states for the human; it says "you" until one is stated, and again once the agent clears it (the term '').
 const chipText = (term: string | null): string => (term === null || term === '' ? 'To do for you' : `To do for ${term}`)
 
+// One row of the Claude column: the state's glyph and the title on one line, cut at the column's edge; the queued summary is dim.
+const claudeRow = (t: Table, row: ClaudeRow): RenderElement =>
+  row.kind === 'item'
+    ? t.Text({ wrap: 'truncate-end', children: [`${GLYPH[row.item.state]} ${row.item.title}`] })
+    : t.Text({ dimColor: true, wrap: 'truncate-end', children: [`+${row.count} queued`] })
+
+// The Claude column: its header with the counts in the short form, then its rows (see claudeRows), each cut at `width`. `height`: the
+// human list's lines, which the queued rows fill down to.
+const claudeColumn = (t: Table, todo: readonly TodoItem[], width: number, height: number): RenderElement =>
+  t.Box({
+    flexDirection: 'column',
+    width,
+    children: [t.Text({ wrap: 'truncate-end', children: [`${HEADING} ${bandCountsText(todo)}`] }), ...claudeRows(todo, height).map(row => claudeRow(t, row))],
+  })
+
 // The band above the prompt: a header with the count, then the rows that fit. When items are folded, the summary row is the way into
-// the pane for them. The pane is also opened by a title, and closed by its own close or a press on the item it shows.
+// the pane for them. The pane is also opened by a title, and closed by its own close or a press on the item it shows. On a band wide
+// enough, and with a Claude list to show, the Claude column is drawn beside the human list at the band's right edge (layout.ts).
 export const band = (t: Table, h: Handlers, store: Store, view: View): RenderElement => {
   const open = store.items.filter(it => it.state === 'open')
   const pending = store.items.filter(it => it.state === 'done-pending').length
-  const rows = bandRows(store.items, Math.max(0, view.maxRows - 1))
+  const todo = view.claude?.items ?? []
+  const widths = view.claude === undefined ? { human: null, claude: null } : bandWidths(view.claude.columns, store.items.length, todo)
+  // The column's fixed lines (its header and every in-flight row) can make the band taller than `maxRows` beside the human list.
+  const columnHeight = widths.human !== null && widths.claude !== null ? 1 + todo.filter(it => it.state === 'in_flight').length : 0
+  const rows = bandRows(store.items, Math.max(0, humanFoldRows(view.maxRows, columnHeight) - 1))
   const shownId = selectedItem(store.items, view.selected ?? null)?.id
   // The header is a filled chip, the line that asks for the person's attention: `warning` while the agent is stuck on an open blocking
   // item, `permission` otherwise. The count after it is plain text: the open items, and the sent ones by their own count.
@@ -199,7 +221,15 @@ export const band = (t: Table, h: Handlers, store: Store, view: View): RenderEle
     ],
   })
   const body = rows.map(row => (row.kind === 'item' ? itemRow(t, h, row.item, view, row.item.id === shownId) : summaryRow(t, h, row)))
-  return t.Box({ flexDirection: 'column', children: [header, ...body] })
+  if (view.claude === undefined || widths.claude === null) return t.Box({ flexDirection: 'column', children: [header, ...body] })
+  const humanList = t.Box({ flexDirection: 'column', width: widths.human ?? undefined, children: [header, ...body] })
+  // Two boxes at the band's width, the Claude column last: alone it keeps its width and stays at the right edge, with nothing drawn to its left.
+  return t.Box({
+    flexDirection: 'row',
+    justifyContent: 'flex-end',
+    width: view.claude.columns,
+    children: [...(widths.human === null ? [] : [humanList]), claudeColumn(t, todo, widths.claude, widths.human === null ? 0 : 1 + rowsHeight(rows))],
+  })
 }
 
 // The rows of a text: one a line.

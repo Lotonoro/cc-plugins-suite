@@ -91,8 +91,12 @@ export const inDisplayOrder = (items: readonly TodoItem[]): TodoItem[] => [
 // The glyph each state is drawn with, wherever the list is shown. A done entry is never stored, so done has none.
 export const GLYPH = { in_flight: '◐', queued: '○' } as const satisfies Record<TodoItem['state'], string>
 
-export const countsText = (items: readonly TodoItem[]): string =>
-  `${items.filter(it => it.state === 'in_flight').length} in flight, ${items.filter(it => it.state === 'queued').length} queued`
+const countOf = (items: readonly TodoItem[], state: TodoItem['state']): number => items.filter(it => it.state === state).length
+
+export const countsText = (items: readonly TodoItem[]): string => `${countOf(items, 'in_flight')} in flight, ${countOf(items, 'queued')} queued`
+
+// The same counts in the band's short form, which names the in-flight state "active" (the column's header is too narrow for the long form).
+export const bandCountsText = (items: readonly TodoItem[]): string => `${countOf(items, 'in_flight')} active, ${countOf(items, 'queued')} queued`
 
 // The tool's answer: one line that counts the list. A read also lists the entries in their written order, one line each with its state, so the
 // agent's next write can restate the list as it was given.

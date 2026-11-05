@@ -3085,3 +3085,73 @@ test('/claude-todo changes neither list: the human list and the Claude list are 
   await claudeTodo(hooks, env, 'x')
   expect(JSON.stringify(values)).toBe(before)
 })
+
+// The band with the Claude column: the AbovePrompt hook reads the Claude list beside the human one and draws both at the band's `bodyColumns`.
+type Tree = { type?: string; width?: number; children?: Tree[]; [k: string]: unknown }
+const bandAt = (hooks: Record<string, Handler>, env: unknown, bodyColumns: number, extra: Record<string, unknown> = {}) =>
+  drawn(env, () => hooks['ui.render {"component":"AbovePrompt"}']?.(env as never, { props: { hasSurvey: false, maxRows: 20, bodyColumns, ...extra } } as never, next(false) as never)) as Promise<Tree>
+// Trees are compared as JSON: a press handler is a fresh closure on every draw.
+const flat = (node: unknown): string => JSON.stringify(node)
+const sameTree = flat
+
+test('with two human items and no Claude items the band is the one drawn today at 120 columns and at 90; one queued item brings the column at 120', async () => {
+  reset()
+  const { hooks } = wire()
+  const { env, values } = memEnv([made(1), made(2)], [], null)
+  const today = await bandAt(hooks, env, 80)
+  expect(sameTree(await bandAt(hooks, env, 120))).toBe(sameTree(today))
+  expect(sameTree(await bandAt(hooks, env, 90))).toBe(sameTree(today))
+  values.todo = [entry('Write the tests', 'queued')]
+  const wide = await bandAt(hooks, env, 120)
+  expect(wide.width).toBe(120)
+  expect(wide.children?.map(c => c.width)).toEqual([80, 40])
+  expect(flat(wide.children?.[1])).toContain('○ Write the tests')
+  expect(sameTree(await bandAt(hooks, env, 90))).toBe(sameTree(today))
+})
+
+test('with no human items an item in flight draws the column alone, 40 wide, and nothing in flight hands on', async () => {
+  reset()
+  const { hooks } = wire()
+  const { env, values } = memEnv([], [], null)
+  const e = { props: { hasSurvey: false, maxRows: 20, bodyColumns: 120 } }
+  values.todo = [entry('Only queued', 'queued')]
+  expect(await (hooks['ui.render {"component":"AbovePrompt"}'] as Handler)(env as never, e as never, next(false) as never)).toEqual({ passed: e })
+  values.todo = [entry('Running', 'in_flight'), entry('Later', 'queued')]
+  const tree = await bandAt(hooks, env, 120)
+  expect(tree.children?.map(c => c.width)).toEqual([40])
+  expect(flat(tree)).toContain('◐ Running')
+  expect(flat(tree)).not.toContain('Later')
+  values.todo = []
+  expect(await (hooks['ui.render {"component":"AbovePrompt"}'] as Handler)(env as never, e as never, next(false) as never)).toEqual({ passed: e })
+})
+
+test('while a survey holds the band the mod yields it, the Claude list or not', async () => {
+  reset()
+  const { hooks } = wire()
+  const { env, values } = memEnv([made(1)], [], null)
+  values.todo = [entry('Running', 'in_flight')]
+  const e = { props: { hasSurvey: true, maxRows: 20, bodyColumns: 120 } }
+  expect(await (hooks['ui.render {"component":"AbovePrompt"}'] as Handler)(env as never, e as never, next(false) as never)).toEqual({ passed: e })
+})
+
+test('under a subagent\'s view the band is the one drawn under the main conversation\'s', async () => {
+  reset()
+  const { hooks } = wire()
+  const { env, values } = memEnv([made(1)], [], null)
+  values.todo = [entry('Running', 'in_flight'), entry('Later', 'queued')]
+  const main = await bandAt(hooks, env, 120, { view: {} })
+  expect(sameTree(await bandAt(hooks, env, 120, { view: { agentId: 'sub-1' } }))).toBe(sameTree(main))
+})
+
+test('a list the agent writes through the tool is drawn: the column follows the tool\'s writes and the removal of the last item', async () => {
+  reset()
+  const { hooks } = wire()
+  const { env } = memEnv([made(1)], [], null)
+  expect(flat(await bandAt(hooks, env, 120))).not.toContain('Claude TODO')
+  await runTodo(hooks, env, { entries: [entry('Build', 'in_flight'), entry('Test', 'queued')] })
+  const wide = await bandAt(hooks, env, 120)
+  expect(flat(wide)).toContain('Claude TODO 1 active, 1 queued')
+  expect(flat(wide)).toContain('◐ Build')
+  await runTodo(hooks, env, { entries: [] })
+  expect(flat(await bandAt(hooks, env, 120))).not.toContain('Claude TODO')
+})

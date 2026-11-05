@@ -2,7 +2,7 @@ import { expect, test } from 'claude-code/testing'
 import { act, listText, normalizeItem } from './items'
 import { answerOf, doneNotice, expire, press, reply, type Form } from './done'
 import { band, pane, paneRows, toolLine, type Handlers, type Table, type View } from './ui'
-import type { Item, Store, Turn } from '../types'
+import type { Item, Store, TodoItem, Turn } from '../types'
 
 // A table whose constructors return their props, so a test reads the tree the drawing built.
 type Node = { type: string; children?: unknown[]; wrap?: string; [k: string]: unknown }
@@ -873,4 +873,171 @@ test('a table after a fence in a second-level list item is drawn as a list, with
   const brief = '- a\n  - b\n    ```sh\n    ls\n    ```\n    | x | y |\n    |---|---|\n    | 1 | 2 |'
   const tree = pane(table, handlers, { items: [{ ...item, detail: brief, note: null }], next: 2, term: null }, view())
   expect(nodes(tree, 'Markdown').map(n => n.text)).toEqual(['- a\n  - b', '```sh\nls\n```', '- **1**: y: 2'])
+})
+
+
+// The Claude column: the band's tree with the Claude list beside the human list.
+const mk = (state: TodoItem['state'], n: number, prefix = state === 'queued' ? 'q' : 'f'): TodoItem[] => Array.from({ length: n }, (_, k) => ({ title: `${prefix}${k + 1}`, state }))
+const flight = (n: number): TodoItem[] => mk('in_flight', n)
+const queue = (n: number): TodoItem[] => mk('queued', n)
+const humans = (n: number, blocking = false): Store => ({ items: Array.from({ length: n }, (_, k) => at(k + 1, blocking && k === 0)), next: n + 1, term: null })
+const drawn = (store: Store, todo: TodoItem[], columns: number, maxRows = 50): Node => band(table, handlers, store, { ...view(), maxRows, claude: { items: todo, columns } }) as Node
+// Trees are compared as JSON: a press handler is a fresh closure on every draw.
+const sameTree = (a: unknown, b: unknown, name?: string): void => expect(JSON.stringify(a), name).toBe(JSON.stringify(b))
+const columnsOf = (tree: Node): Node[] => (tree.children ?? []) as Node[]
+const lineTexts = (column: Node): string[] => (column.children as Node[]).map(row => texts(row).join(''))
+
+test('with no Claude items the human list draws as it does today, at a wide band and a narrow one', () => {
+  const today = band(table, handlers, humans(2), view())
+  for (const columns of [120, 90, 300]) sameTree(drawn(humans(2), [], columns), today)
+})
+
+test('at 120 columns the band is two boxes, the human list 80 wide and the Claude column 40 wide at the right', () => {
+  const tree = drawn(humans(2), queue(1), 120)
+  const [left, right] = columnsOf(tree)
+  expect(tree).toMatchObject({ type: 'Box', flexDirection: 'row', width: 120 })
+  expect(left).toMatchObject({ type: 'Box', flexDirection: 'column', width: 80 })
+  expect(right).toMatchObject({ type: 'Box', flexDirection: 'column', width: 40 })
+  expect(columnsOf(tree).length).toBe(2)
+  expect(texts(left).join('')).toContain('To do for you')
+  expect(texts(left).join('')).not.toContain('Claude TODO')
+  expect(lineTexts(right as Node)[0]).toBe('Claude TODO 0 active, 1 queued')
+})
+
+test('the human column holds the rows the band draws today', () => {
+  const store = humans(3, true)
+  const today = band(table, handlers, store, view()) as Node
+  const left = columnsOf(drawn(store, queue(1), 120))[0] as Node
+  sameTree(left.children, today.children)
+  expect(nodes(left, 'Button').map(b => b.key)).toEqual(nodes(today, 'Button').map(b => b.key))
+})
+
+test('under 96 columns the Claude column hides and the human list draws as it does today', () => {
+  sameTree(drawn(humans(2), [...flight(1), ...queue(2)], 90), band(table, handlers, humans(2), view()))
+})
+
+test('the Claude header counts the list in the short form, in flight as active', () => {
+  const right = columnsOf(drawn(humans(2), [...flight(2), ...queue(3)], 120))[1] as Node
+  expect(lineTexts(right)[0]).toBe('Claude TODO 2 active, 3 queued')
+})
+
+test('the header is one line cut at the column\'s edge: whole at 12 active and 13 queued in 32 columns, set to cut with 120 active', () => {
+  const header = (todo: TodoItem[]) => (columnsOf(drawn(humans(2), todo, 96))[1] as Node).children?.[0] as Node
+  const fits = header([...flight(12), ...queue(13)])
+  expect(texts(fits).join('')).toBe('Claude TODO 12 active, 13 queued')
+  expect(texts(fits).join('').length).toBe(32)
+  expect(fits.wrap).toBe('truncate-end')
+  const over = header([...flight(120), ...queue(13)])
+  expect(texts(over).join('')).toBe('Claude TODO 120 active, 13 queued')
+  expect(over.wrap).toBe('truncate-end')
+})
+
+test('a row is the state\'s glyph and the title on one line, set to cut at the column\'s edge, in-flight first', () => {
+  const long = 'x'.repeat(80)
+  const right = columnsOf(drawn(humans(6), [{ title: 'queued one', state: 'queued' }, { title: long, state: 'in_flight' }], 120))[1] as Node
+  const rows = (right.children as Node[]).slice(1)
+  expect(rows.map(row => texts(row).join(''))).toEqual([`◐ ${long}`, '○ queued one'])
+  expect(rows.map(row => [row.type, row.wrap])).toEqual([['Text', 'truncate-end'], ['Text', 'truncate-end']])
+})
+
+test('beside one human item three queued items draw as the header and one +3 queued row, and no queued item', () => {
+  const right = columnsOf(drawn(humans(1), queue(3), 120))[1] as Node
+  expect(lineTexts(right)).toEqual(['Claude TODO 0 active, 3 queued', '+3 queued'])
+})
+
+test('queued rows fill down to the human list\'s height, the last a summary when they do not all fit', () => {
+  // The human list: its header and 3 rows, 4 in all. The column: its header, 1 in flight, 2 rows left for 3 queued.
+  const right = columnsOf(drawn(humans(3), [...flight(1), ...queue(3)], 120))[1] as Node
+  expect(lineTexts(right)).toEqual(['Claude TODO 1 active, 3 queued', '◐ f1', '○ q1', '+2 queued'])
+  const all = columnsOf(drawn(humans(3), [...flight(1), ...queue(2)], 120))[1] as Node
+  expect(lineTexts(all)).toEqual(['Claude TODO 1 active, 2 queued', '◐ f1', '○ q1', '○ q2'])
+})
+
+test('every in-flight item has a row however many there are, and no queued row draws when they fill the human list\'s height', () => {
+  const right = columnsOf(drawn(humans(2), [...flight(5), ...queue(4)], 120))[1] as Node
+  expect(lineTexts(right)).toEqual(['Claude TODO 5 active, 4 queued', ...flight(5).map(it => `◐ ${it.title}`)])
+})
+
+test('with no human items and an item in flight the column draws alone: 40 wide at the band\'s right edge, nothing to its left', () => {
+  const tree = drawn(humans(0), [...flight(2), ...queue(3)], 120)
+  expect(tree).toMatchObject({ type: 'Box', flexDirection: 'row', justifyContent: 'flex-end', width: 120 })
+  const [only, ...rest] = columnsOf(tree) as [Node, ...Node[]]
+  expect(rest).toEqual([])
+  expect(only).toMatchObject({ type: 'Box', flexDirection: 'column', width: 40 })
+  expect(lineTexts(only)).toEqual(['Claude TODO 2 active, 3 queued', '◐ f1', '◐ f2'])
+  expect(JSON.stringify(tree)).not.toContain('To do for')
+})
+
+test('the column alone never hides on a narrow band, and keeps 32 columns', () => {
+  const tree = drawn(humans(0), flight(1), 60)
+  expect(columnsOf(tree)).toHaveLength(1)
+  expect(columnsOf(tree)[0]).toMatchObject({ width: 32 })
+})
+
+test('the state table: each row, at 120 columns and at 90', () => {
+  const fold = 6 // maxRows that folds a list of 8 items into a summary row
+  const cases: { name: string; human: Store; todo: TodoItem[]; maxRows: number; wide: 'both' | 'human' | 'claude'; narrow: 'human' | 'claude' }[] = [
+    { name: '2: no human items, in flight', human: humans(0), todo: [...flight(2), ...queue(1)], maxRows: 50, wide: 'claude', narrow: 'claude' },
+    { name: '3: human, no Claude', human: humans(3), todo: [], maxRows: 50, wide: 'human', narrow: 'human' },
+    { name: '3: human folded, no Claude', human: humans(8), todo: [], maxRows: fold, wide: 'human', narrow: 'human' },
+    { name: '4: human, queued only', human: humans(3), todo: queue(4), maxRows: 50, wide: 'both', narrow: 'human' },
+    { name: '4: folded human, queued only', human: humans(8), todo: queue(4), maxRows: fold, wide: 'both', narrow: 'human' },
+    { name: '5: human, in flight within the height', human: humans(4), todo: [...flight(2), ...queue(5)], maxRows: 50, wide: 'both', narrow: 'human' },
+    { name: '5: folded human, in flight within the height', human: humans(8), todo: [...flight(2), ...queue(5)], maxRows: fold, wide: 'both', narrow: 'human' },
+    { name: '6: human, in flight overflowing', human: humans(2), todo: [...flight(6), ...queue(2)], maxRows: 50, wide: 'both', narrow: 'human' },
+    { name: '7: folded human, in flight overflowing', human: humans(8), todo: [...flight(9), ...queue(2)], maxRows: fold, wide: 'both', narrow: 'human' },
+  ]
+  for (const c of cases) {
+    const wide = drawn(c.human, c.todo, 120, c.maxRows)
+    const narrow = drawn(c.human, c.todo, 90, c.maxRows)
+    if (c.wide === 'claude') {
+      expect(columnsOf(wide).length, c.name).toBe(1)
+      expect(texts(wide).join(''), c.name).not.toContain('To do for')
+    } else if (c.wide === 'human') {
+      sameTree(wide, band(table, handlers, c.human, { ...view(), maxRows: c.maxRows }), c.name)
+    } else {
+      const [left, right] = columnsOf(wide)
+      expect(texts(left).join(''), c.name).toContain('To do for you')
+      expect(texts(right).join(''), c.name).toContain('Claude TODO')
+    }
+    if (c.narrow === 'claude') expect(texts(narrow).join(''), c.name).toContain('Claude TODO')
+    else expect(texts(narrow).join(''), c.name).not.toContain('Claude TODO')
+    if (c.narrow === 'human') sameTree(narrow, band(table, handlers, c.human, { ...view(), maxRows: c.maxRows }), c.name)
+  }
+})
+
+test('state table row 7: with a column taller than maxRows the human list folds one row earlier, its summary in the top maxRows - 1 rows and its last row', () => {
+  const store = humans(12)
+  const human = (todo: TodoItem[]) => columnsOf(drawn(store, todo, 120, 10))[0] as Node
+  const rowCount = (column: Node) => (column.children as Node[]).length
+  // Header and 9 in-flight rows are 10 rows: the human list folds where it does today (header, 8 items, summary: 10 rows).
+  const same = human(flight(9))
+  expect(rowCount(same)).toBe(10)
+  expect(nodes(same, 'Button').filter(b => b.key === 'band-more')).toHaveLength(1)
+  sameTree(same.children, (band(table, handlers, store, { ...view(), maxRows: 10 }) as Node).children)
+  // Header and 10 in-flight rows are 11 rows: one row earlier, the summary the 9th row.
+  const earlier = human(flight(10))
+  expect(rowCount(earlier)).toBe(9)
+  const last = (earlier.children as Node[])[8] as Node
+  expect(nodes(last, 'Button').map(b => b.key)).toEqual(['band-more'])
+  expect(nodes(earlier, 'Button').filter(b => String(b.key).startsWith('title-'))).toHaveLength(7)
+})
+
+test('with maxRows 10 and a column no taller than maxRows the human list folds as it does today', () => {
+  const store = humans(12)
+  sameTree((columnsOf(drawn(store, flight(3), 120, 10))[0] as Node).children, (band(table, handlers, store, { ...view(), maxRows: 10 }) as Node).children)
+})
+
+test('with maxRows 10 and 30 in-flight items the column is taller than maxRows and holds every one', () => {
+  const right = columnsOf(drawn(humans(2), flight(30), 120, 10))[1] as Node
+  expect((right.children as Node[]).length).toBe(31)
+  expect(lineTexts(right).slice(1)).toEqual(flight(30).map(it => `◐ ${it.title}`))
+})
+
+test('with maxRows 10, a folded human list and more in-flight items than maxRows, the summary row is its last row within the window\'s top maxRows - 1', () => {
+  const left = columnsOf(drawn(humans(14, true), flight(15), 120, 10))[0] as Node
+  const rows = left.children as Node[]
+  const at = rows.findIndex(row => nodes(row, 'Button').some(b => b.key === 'band-more'))
+  expect(at).toBe(rows.length - 1)
+  expect(at).toBeLessThan(10 - 1)
 })
