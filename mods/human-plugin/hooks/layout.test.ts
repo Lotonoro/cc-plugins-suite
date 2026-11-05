@@ -1,5 +1,5 @@
 import { expect, test } from 'claude-code/testing'
-import { bandDraws, bandRows, bandWidths, claudeRows, humanFoldRows, rowsHeight, type ClaudeRow } from './layout'
+import { bandDraws, bandRows, bandWidths, claudeRows, columnHeight, humanFoldRows, rowsHeight, type ClaudeRow } from './layout'
 import type { Item, TodoItem } from '../types'
 
 const item = (id: number, blocking = false): Item => ({
@@ -187,4 +187,14 @@ test('the in-flight rows come first and each group keeps its written order', () 
 
 test('an empty Claude list has no rows', () => {
   expect(claudeRows([], 10)).toEqual([])
+})
+
+test('the column\'s height is its header and every in-flight row, and the queued rows fill what is left of the height the column is given', () => {
+  expect(columnHeight([])).toBe(1)
+  expect(columnHeight(waiting(4))).toBe(1)
+  expect(columnHeight([...flying(3), ...waiting(4)])).toBe(4)
+  // The queued rows start where columnHeight ends: a height one over it leaves one row.
+  const todo = [...flying(3), ...waiting(4)]
+  expect(titles(claudeRows(todo, columnHeight(todo)))).toEqual(['f1', 'f2', 'f3'])
+  expect(titles(claudeRows(todo, columnHeight(todo) + 1))).toEqual(['f1', 'f2', 'f3', '+4 queued'])
 })

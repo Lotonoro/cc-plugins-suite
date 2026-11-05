@@ -1041,3 +1041,16 @@ test('with maxRows 10, a folded human list and more in-flight items than maxRows
   expect(at).toBe(rows.length - 1)
   expect(at).toBeLessThan(10 - 1)
 })
+
+test('a human list of exactly maxRows lines beside a column taller than maxRows still folds, one row earlier: its summary is its last row, within the window\'s top maxRows - 1', () => {
+  // The human list: its header and 9 items, 10 lines, which fits maxRows 10 whole. The column: its header and 10 in-flight rows, 11 lines.
+  const left = columnsOf(drawn(humans(9), flight(10), 120, 10))[0] as Node
+  const rows = left.children as Node[]
+  expect(rows).toHaveLength(9)
+  expect(nodes(rows[8], 'Button').map(b => b.key)).toEqual(['band-more'])
+  expect(nodes(left, 'Button').filter(b => String(b.key).startsWith('title-'))).toHaveLength(7)
+  // Beside a column of 10 lines the same list fits whole, with no summary.
+  const whole = columnsOf(drawn(humans(9), flight(9), 120, 10))[0] as Node
+  expect((whole.children as Node[]).length).toBe(10)
+  expect(nodes(whole, 'Button').some(b => b.key === 'band-more')).toBe(false)
+})

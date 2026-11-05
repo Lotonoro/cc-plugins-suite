@@ -3,7 +3,7 @@ import type { Item, Store, TodoItem, Turn } from '../types'
 import { labelOf, oneLine, orderedOptions, replyText, turnsOf } from './done'
 import { briefParts } from './fences'
 import { outcomeOf, parseInput, selectedItem, type ToolInput } from './items'
-import { bandRows, bandWidths, claudeRows, humanFoldRows, rowsHeight, type ClaudeRow } from './layout'
+import { bandRows, bandWidths, claudeRows, columnHeight, humanFoldRows, rowsHeight, type ClaudeRow } from './layout'
 import { tablesAsLists } from './tables'
 import { GLYPH, HEADING, bandCountsText } from './todo'
 
@@ -209,8 +209,8 @@ export const band = (t: Table, h: Handlers, store: Store, view: View): RenderEle
   const todo = view.claude?.items ?? []
   const widths = view.claude === undefined ? { human: null, claude: null } : bandWidths(view.claude.columns, store.items.length, todo)
   // The column's fixed lines (its header and every in-flight row) can make the band taller than `maxRows` beside the human list.
-  const columnHeight = widths.human !== null && widths.claude !== null ? 1 + todo.filter(it => it.state === 'in_flight').length : 0
-  const rows = bandRows(store.items, Math.max(0, humanFoldRows(view.maxRows, columnHeight) - 1))
+  const columnLines = widths.human !== null && widths.claude !== null ? columnHeight(todo) : 0
+  const rows = bandRows(store.items, Math.max(0, humanFoldRows(view.maxRows, columnLines) - 1))
   const shownId = selectedItem(store.items, view.selected ?? null)?.id
   // The header is a filled chip, the line that asks for the person's attention: `warning` while the agent is stuck on an open blocking
   // item, `permission` otherwise. The count after it is plain text: the open items, and the sent ones by their own count.

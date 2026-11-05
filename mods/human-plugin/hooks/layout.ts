@@ -33,10 +33,15 @@ export const bandRows = (items: readonly Item[], maxRows: number, lines: (row: B
   return [summaryOf(sorted)]
 }
 
-// The lines the human list folds to, header and summary row included, beside a Claude column of `columnHeight` lines (its header and its
+const isInFlight = (item: TodoItem): boolean => item.state === 'in_flight'
+
+// The Claude column's lines that never fold: its header and every in-flight row.
+export const columnHeight = (todo: readonly TodoItem[]): number => 1 + todo.filter(isInFlight).length
+
+// The lines the human list folds to, header and summary row included, beside a Claude column of `columnLines` lines (its header and its
 // in-flight rows). A band taller than `maxRows` is scrolled by the engine's window, which shows `maxRows` less one row (the `n more` row) at
 // its top at first draw, so the list folds to that and its summary row is in view; a band that fits folds to `maxRows`.
-export const humanFoldRows = (maxRows: number, columnHeight: number): number => (columnHeight > maxRows ? maxRows - 1 : maxRows)
+export const humanFoldRows = (maxRows: number, columnLines: number): number => (columnLines > maxRows ? maxRows - 1 : maxRows)
 
 // The columns the band's tree is laid out in, per list: null for a list that does not draw.
 export type BandWidths = { human: number | null; claude: number | null }
@@ -44,8 +49,6 @@ export type BandWidths = { human: number | null; claude: number | null }
 // The band's smallest width for both lists to draw (the human list keeps 64 of it), and the Claude column's narrowest width.
 const TWO_LIST_WIDTH = 96
 const CLAUDE_MIN_WIDTH = 32
-
-const isInFlight = (item: TodoItem): boolean => item.state === 'in_flight'
 
 // Whether the band draws anything: the human list when it has items, the Claude column alone when something is in flight.
 export const bandDraws = (humanCount: number, todo: readonly TodoItem[]): boolean => humanCount > 0 || todo.some(isInFlight)
@@ -68,7 +71,7 @@ export const claudeRows = (todo: readonly TodoItem[], height: number): ClaudeRow
   const ordered = inDisplayOrder(todo)
   const flying = ordered.filter(isInFlight)
   const queued = ordered.filter(item => !isInFlight(item))
-  const room = height - 1 - flying.length
+  const room = height - columnHeight(todo)
   const rows = flying.map((item): ClaudeRow => ({ kind: 'item', item }))
   if (queued.length === 0 || room <= 0) return rows
   if (queued.length <= room) return [...rows, ...queued.map((item): ClaudeRow => ({ kind: 'item', item }))]
