@@ -120,8 +120,8 @@ describe('decideRefusal', () => {
   const STOPPED = 'The main conversation was not messaged: the session was stopped and nobody has sent input since.'
   // Review 3 is open at epoch 7, its slot filled when the note was admitted (the gate) or still empty (the follow-up).
   const conversation = (over: Partial<Conversation> = {}, review: Partial<OpenReview> = {}): Conversation =>
-    ({ epoch: 7, interrupted: false, pendingNotes: [], deliveredNotes: [], review: { number: 3, record: [], dispatchedAt: 1, nothingWakes: true, ...review }, ...over }) as unknown as Conversation
-  const booked = (c: Conversation): Conversation => ({ ...c, deliveredNotes: [...c.deliveredNotes, 'booked'] })
+    ({ epoch: 7, interrupted: false, pendingNotes: [], memory: [], review: { number: 3, record: [], dispatchedAt: 1, nothingWakes: true, ...review }, ...over }) as unknown as Conversation
+  const booked = (c: Conversation): Conversation => ({ ...c, memory: [...c.memory, { number: 3, text: 'booked' }] })
   const NOTE = SENT('auditor, review 3:\na.ts:4 swallows it.')
   const refusal = (over: Partial<Refusal> = {}): Refusal => ({ number: 3, epoch: 7, sent: NOTE, reason: 'main is gone', filling: false, ...over })
 
@@ -129,7 +129,7 @@ describe('decideRefusal', () => {
     const c = conversation({}, { note: 'a.ts:4 swallows it.' })
     const decided = decideRefusal(c, refusal({ reason: STOPPED }), booked)
     expect(decided.outcome).toBe('hold')
-    expect(decided.next).toMatchObject({ pendingNotes: [{ number: 3, text: 'a.ts:4 swallows it.' }], deliveredNotes: ['booked'], review: { note: 'a.ts:4 swallows it.' } })
+    expect(decided.next).toMatchObject({ pendingNotes: [{ number: 3, text: 'a.ts:4 swallows it.' }], memory: [{ number: 3, text: 'booked' }], review: { note: 'a.ts:4 swallows it.' } })
     expect(decided.next.review).not.toHaveProperty('delivered')
   })
 

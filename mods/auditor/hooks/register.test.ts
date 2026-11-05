@@ -1,6 +1,8 @@
 import { describe, expect, test } from 'claude-code/testing'
 import { LOOKUP_TIMEOUT_MS, lineCommand, searchCommand } from './transcript'
+import { renderMemory } from './memory'
 import { followUpText } from './notes'
+import type { MemoryEntry } from '../types/index'
 import { REVIEWER_PROMPT } from './prompt'
 import * as register from './register'
 
@@ -57,6 +59,8 @@ type Opts = {
   stateSeed?: unknown
   // The first conversation read made while `when` holds for the conversation last written calls reached, then waits for `until` before it reads.
   getHold?: { when: (c: any) => boolean; until: Promise<void>; reached?: () => void }
+  // The first conversation write made while `when` holds calls `reached`, then waits for `until` before it lands: a write made meanwhile moves the state's version, so the held one misses and its change runs again.
+  holdWrite?: { when: () => boolean; until: Promise<void>; reached: () => void }
   // Each write whose path contains `path` calls reached, then waits for `until` before it lands.
   hold?: { path: string; until: Promise<void>; reached?: () => void }
   // Each $.session.send calls reached, then waits for `until` before the engine answers it.
@@ -195,7 +199,13 @@ const engine = (on: any, opts: Opts = {}) => {
     return opts.stateFails !== undefined && e.key === opts.stateFails ? { deny: 'state unavailable' } : opts.stateSeed !== undefined && e.key === 'conversation' && seen.conversation === undefined ? { value: { value: opts.stateSeed } } : next(e)
   })
   // The conversation as the plugin last wrote it; stripBriefs writes it as a state from before briefsInFlight existed.
-  on('state.set', (_$: any, e: any, next: any) => {
+  let writeHeld = false
+  on('state.set', async (_$: any, e: any, next: any) => {
+    if (e.key === 'conversation' && opts.holdWrite !== undefined && !writeHeld && opts.holdWrite.when()) {
+      writeHeld = true
+      opts.holdWrite.reached()
+      await opts.holdWrite.until
+    }
     if (e.key === 'conversation') seen.stateWriteAttempts++
     if (e.key === 'conversation' && opts.writesFailFromSpawn !== undefined && seen.spawns.filter(sp => typeOf(sp) === 'auditor:reviewer').length >= opts.writesFailFromSpawn) return { deny: 'state write unavailable' }
     if (e.key === 'conversation' && seen.stateWriteAttempts === seen.stateWritesFailAt) return { deny: 'state write unavailable' }
@@ -1405,7 +1415,7 @@ describe('auditor', () => {
     expect(await entriesOf($, { which: 'record' })).toBe(RECORD_OF(2, 'USER: first', 'USER: second'))
   })
 
-  test('a refused send, then a spawn that is denied, leaves no rewritten brief in flight, and the worker\'s identical Agent call is recorded', ON, async ($, on) => {
+  test('a refused send, then a spawn that is denied, leaves no brief in flight, and the worker\'s identical Agent call is recorded', ON, async ($, on) => {
     const opts: Opts = {}
     const seen = engine(on, opts)
     await busyWorker($)
@@ -1415,7 +1425,7 @@ describe('auditor', () => {
     opts.sendFails = 'ag1'
     opts.spawn = { deny: 'no' }
     await workerTurn($, 'Second.')
-    expect(seen.spawns.at(-1).prompt).toContain('You are a fresh reviewer')
+    expect(seen.spawns.at(-1).prompt).toBe(seen.sends.at(-1).text)
     expect(seen.flights.at(-1)).toContain(seen.spawns.at(-1).prompt)
     expect(seen.conversation.briefsInFlight).toEqual([])
     expect(JSON.stringify(seen.logs)).toContain('review failed: reviewer spawn refused: no')
@@ -1423,7 +1433,7 @@ describe('auditor', () => {
     expect(seen.conversation.record.blocks.at(-1)).toContain('TOOL Agent(')
   })
 
-  test('a refused send, then a spawn that throws, leaves no rewritten brief in flight, and the worker\'s identical Agent call is recorded', ON, async ($, on) => {
+  test('a refused send, then a spawn that throws, leaves no brief in flight, and the worker\'s identical Agent call is recorded', ON, async ($, on) => {
     const opts: Opts = {}
     const seen = engine(on, opts)
     await busyWorker($)
@@ -1433,7 +1443,7 @@ describe('auditor', () => {
     opts.sendFails = 'ag1'
     opts.spawnThrows = 'spawn broke'
     await workerTurn($, 'Second.')
-    expect(seen.spawns.at(-1).prompt).toContain('You are a fresh reviewer')
+    expect(seen.spawns.at(-1).prompt).toBe(seen.sends.at(-1).text)
     expect(seen.flights.at(-1)).toContain(seen.spawns.at(-1).prompt)
     expect(seen.conversation.briefsInFlight).toEqual([])
     expect(JSON.stringify(seen.logs)).toContain('review dispatch failed')
@@ -3115,7 +3125,7 @@ describe('the session mode button', () => {
     const arrived = ARRIVED(1, `Escalation: ${STALL_NOTE}`)
     await $.prompt.submit(arrived)
     expect(seen.prompts).toEqual(['fix the parser', arrived.text])
-    expect(seen.conversation).toMatchObject({ deliveredNotes: [], nudged: false })
+    expect(seen.conversation).toMatchObject({ memory: [], nudged: false })
     expect(seen.toasts).toEqual([ESCALATED_TOAST])
     expect(logOf(seen, LOG_1)).toMatchObject({ status: 'incomplete', note: `Escalation: ${STALL_NOTE}`, note_delivered: false })
   })
@@ -3131,7 +3141,7 @@ describe('the session mode button', () => {
     release.open()
     expect(await sending).toEqual({ isDelivered: true })
     await $.prompt.submit(ARRIVED(1, 'a.ts:4 before the clear.'))
-    expect(seen.conversation.deliveredNotes).toEqual([])
+    expect(seen.conversation.memory).toEqual([])
     expect(logOf(seen, LOG_1)).toMatchObject({ status: 'incomplete', note: 'a.ts:4 before the clear.', note_delivered: false })
   })
 
@@ -3470,7 +3480,7 @@ describe('the session mode button', () => {
     release.open()
     expect(await sending).toMatchObject({ isDelivered: false })
     expect(seen.conversation.review).toMatchObject({ number: 2, note: 'b.ts:1 second.' })
-    expect(seen.conversation.deliveredNotes).toEqual([FRAMED(2, 'b.ts:1 second.')])
+    expect(seen.conversation.memory).toEqual([{ number: 2, text: 'b.ts:1 second.' }])
   })
 
   test('a spawn that never settles, then the reviewer turned off and on: the next turn end dispatches again', ON, async ($, on) => {
@@ -3536,7 +3546,7 @@ describe('the session mode button', () => {
     await $.command.run({ command: 'auditor', args: 'on' } as any)
     release.open()
     expect(await sending).toEqual({ isDelivered: true })
-    expect(seen.conversation).toMatchObject({ deliveredNotes: [], nudged: false })
+    expect(seen.conversation).toMatchObject({ memory: [], nudged: false })
   })
 
   test('a brief whose send is refused after the reviewer is turned off spawns no reviewer', ON, async ($, on) => {
@@ -3905,21 +3915,21 @@ describe('the note gate', () => {
     expect(sent.isDelivered).toBe(false)
     expect(seen.toasts).toEqual([])
     expect(seen.toolCalls.filter((c: { tool: string }) => c.tool === 'PushNotification')).toEqual([])
-    expect(seen.conversation).toMatchObject({ nudged: false, deliveredNotes: [] })
+    expect(seen.conversation).toMatchObject({ nudged: false, memory: [] })
     expect(seen.conversation.review.note).toBeUndefined()
   }
 
-  test('a note the rest of the chain refuses raises no toast or push, arms no guard, is carried nowhere, and a resend is admitted and booked', ON, async ($, on) => {
+  test('a note the rest of the chain refuses raises no toast or push, arms no guard, enters no memory, and a resend is admitted and booked: its stall guard armed, no memory entry', ON, async ($, on) => {
     const seen = engine(on, { noteFailsAt: [1] })
     await unsent($, seen)
     expect(debugLines(seen, 'review 1\'s note was not delivered: main is gone').length).toBe(1)
     expect(await noteSent($, STALL_NOTE)).toEqual({ isDelivered: true })
-    expect(seen.conversation).toMatchObject({ nudged: true, deliveredNotes: [FRAMED(1, STALL_NOTE)] })
+    expect(seen.conversation).toMatchObject({ nudged: true, memory: [] })
     await $.turn.complete(TURN_END('ag1', 'Sent.'))
     expect(logOf(seen, LOG_1)).toMatchObject({ note: STALL_NOTE, note_delivered: true, stall: true, escalation: false })
   })
 
-  test('a note whose send throws below the gate raises no toast or push, arms no guard, is carried nowhere, and is logged undelivered at the turn end', ON, async ($, on) => {
+  test('a note whose send throws below the gate raises no toast or push, arms no guard, enters no memory, and is logged undelivered at the turn end', ON, async ($, on) => {
     const seen = engine(on, { noteThrows: true })
     await unsent($, seen)
     expect(debugLines(seen, 'review 1\'s note send failed').length).toBe(1)
@@ -3936,7 +3946,7 @@ describe('the note gate', () => {
     const failed = debugLines(seen, 'review 1\'s note booking failed')
     expect(failed.length).toBe(1)
     expect(failed[0]).toMatch(/\n\s+at /)
-    expect(seen.conversation.deliveredNotes).toEqual([])
+    expect(seen.conversation.memory).toEqual([])
     expect((await noteSent($, 'a.ts:4 again.')).reason).toContain('one note already')
     expect(toMain(seen)).toEqual([FRAMED(1, 'a.ts:4 delivered.')])
   })
@@ -3964,7 +3974,7 @@ describe('the note gate', () => {
     expect(seen.toolCalls.filter((c: { tool: string }) => c.tool === 'PushNotification').map((c: { message: string }) => c.message)).toEqual(['auditor escalated: Escalation: auth belongs in middleware.'])
   })
 
-  test('an escalation admitted, then switched off before its booking, still raises the toast once and the push once, and books no carried note or stall guard', ON, async ($, on) => {
+  test('an escalation admitted, then switched off before its booking, still raises the toast once and the push once, and books no memory entry or stall guard', ON, async ($, on) => {
     const release = gate()
     const reached = gate()
     const seen = engine(on, { noteHold: { until: release.until, reached: reached.open } })
@@ -3978,10 +3988,10 @@ describe('the note gate', () => {
     expect(toMain(seen)).toEqual([FRAMED(1, 'Escalation: auth belongs in middleware.\nWorker: handlers.')])
     expect(seen.toasts).toEqual([ESCALATED_TOAST])
     expect(seen.toolCalls.filter((c: { tool: string }) => c.tool === 'PushNotification').map((c: { message: string }) => c.message)).toEqual(['auditor escalated: Escalation: auth belongs in middleware.'])
-    expect(seen.conversation).toMatchObject({ deliveredNotes: [], nudged: false })
+    expect(seen.conversation).toMatchObject({ memory: [], nudged: false })
   })
 
-  test('a state stored in the older shape reads its open review with an empty slot, not delivered; its held notes ride beside the user\'s next own prompt with no toast, push or carried note, and its interrupt mark holds a refused note until that prompt', ON, async ($, on) => {
+  test('a state stored in the older shape reads its open review with an empty slot, not delivered; its held notes ride beside the user\'s next own prompt with no toast, push or memory entry, and its interrupt mark holds a refused note until that prompt', ON, async ($, on) => {
     const seed = { dispatches: 1, reviewer: { id: 'ag1', model: 'm' }, reviewerIds: ['ag1'], review: { number: 1, record: ['USER: x'], dispatchedAt: 1, nothingWakes: false }, pendingNotes: [{ number: 0, text: 'Escalation: an old held note.', stall: true }], interrupted: true }
     const seen = engine(on, { stateSeed: seed, noteFailsAt: [1] })
     // The stored mark holds a note refused for another reason, until the user's prompt.
@@ -3991,9 +4001,9 @@ describe('the note gate', () => {
     await $.prompt.submit(COMPOSER('carry on'))
     expect(seen.contexts).toEqual([[`${FRAMED(0, 'Escalation: an old held note.')}\n\n${FRAMED(1, 'a.ts:4 fresh.')}`]])
     expect(seen.conversation).toMatchObject({ pendingNotes: [], interrupted: false, nudged: false })
-    // The old note raised nothing and joined no carried notes: only the fresh note's hold booked.
+    // The old note raised nothing and joined no memory: only the fresh note's hold booked.
     expect(seen.toasts).toEqual([])
-    expect(seen.conversation.deliveredNotes).toEqual([FRAMED(1, 'a.ts:4 fresh.')])
+    expect(seen.conversation.memory).toEqual([{ number: 1, text: 'a.ts:4 fresh.' }])
   })
 
   test('a state stored in the older shape reads its open review as having had no follow-up yet', ON, async ($, on) => {
@@ -4005,11 +4015,9 @@ describe('the note gate', () => {
 })
 
 describe('reviewer rotation', () => {
-  const FRESH = 'You are a fresh reviewer of this conversation. The notes earlier reviewers gave the worker, oldest first:'
-  const FIND_AGAIN = 'Find the user\'s instructions again with your transcript tool before you judge.'
   const FINISHED = 'The worker finished a turn.'
-  // The opening of a fresh reviewer's brief that carries these notes, through the brief's first line.
-  const CARRIED = (...notes: string[]): string => [FRESH, ...notes, FIND_AGAIN, FINISHED].join('\n')
+  // A brief that carries these entries: the memory's rendering, a blank line, then the brief's own first line.
+  const REMEMBERING = (...entries: MemoryEntry[]): string => `${renderMemory(entries)}\n\n${FINISHED}`
   // A reviewer's usage whose context is `tokens` of input, with no cache reads or writes.
   const contextOf = (tokens: number) => ({ ...USAGE, input_tokens: tokens, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 })
   // The reviewer's request, answered with `usage`. STEP_USAGE is module-level, so it is reset after the request.
@@ -4079,36 +4087,47 @@ describe('reviewer rotation', () => {
     expect(seen.spawns.length).toBe(1)
   })
 
-  test('the very first reviewer of a conversation, with no notes delivered, is briefed with none of the carried lines', ON, async ($, on) => {
+  test('the very first reviewer of a conversation, with no notes delivered, is briefed with no memory heading', ON, async ($, on) => {
     const seen = engine(on)
     await workerTurn($)
     expect(seen.spawns[0].prompt.split('\n')[0]).toBe(FINISHED)
-    expect(seen.spawns[0].prompt).not.toContain(FRESH)
   })
 
-  test('a reviewer that replaces a retired one, with no notes delivered, is briefed with none of the carried lines', ON, async ($, on) => {
+  test('a reviewer that replaces a retired one, with no notes delivered, is briefed with no memory heading', ON, async ($, on) => {
     const seen = engine(on, { reviewerIds: ['ag1', 'ag2'] })
     await workerTurn($)
     await requestWith($, contextOf(80_001))
     await reviewed($, HANDBACK('Nothing to note.'), 'ag1')
     await workerTurn($, 'Second.')
     expect(seen.spawns[1].prompt.split('\n')[0]).toBe(FINISHED)
-    expect(seen.spawns[1].prompt).not.toContain(FRESH)
   })
 
-  test('a fresh reviewer is briefed with the notes earlier reviewers delivered, oldest first and framed, then the line that sends it to the transcript', ON, async ($, on) => {
+  test('a fresh reviewer is briefed with every entry of the memory, under its heading, each with its review number and text', ON, async ($, on) => {
     const seen = engine(on, { reviewerIds: ['ag1', 'ag2'] })
     await reviewCycle($, 'first', 'a.ts:1 idle.')
     await reviewCycle($, 'second', 'a.ts:2 idle.', contextOf(80_001))
-    // The third prompt carries the second note, so both notes are delivered before the fresh reviewer's brief is written.
+    // The third prompt carries the second note, so both notes are in the memory before the fresh reviewer's brief is written.
     await $.prompt.submit(COMPOSER('third'))
     await $.classic.Stop(stop)
-    const lead = CARRIED(FRAMED(1, 'a.ts:1 idle.'), FRAMED(2, 'a.ts:2 idle.'))
+    const lead = REMEMBERING({ number: 1, text: 'a.ts:1 idle.' }, { number: 2, text: 'a.ts:2 idle.' })
     expect(seen.spawns.length).toBe(2)
     expect(seen.spawns[1].prompt.slice(0, lead.length)).toBe(lead)
   })
 
-  test('a fresh reviewer\'s brief carries a delivered note as its review line once, then its body, though the reviewer repeated the line', ON, async ($, on) => {
+  test('the reviewer that is kept is briefed with the whole memory too, so its re-brief carries every entry', ON, async ($, on) => {
+    const seen = engine(on)
+    await reviewCycle($, 'first', 'a.ts:1 idle.')
+    await reviewCycle($, 'second', 'a.ts:2 idle.')
+    await $.prompt.submit(COMPOSER('third'))
+    await $.classic.Stop(stop)
+    expect(seen.spawns.length).toBe(1)
+    const lead = REMEMBERING({ number: 1, text: 'a.ts:1 idle.' }, { number: 2, text: 'a.ts:2 idle.' })
+    expect(seen.sends.map(s => s.to)).toEqual(['ag1', 'ag1'])
+    expect(seen.sends[0].text.startsWith(REMEMBERING({ number: 1, text: 'a.ts:1 idle.' }))).toBe(true)
+    expect(seen.sends[1].text.slice(0, lead.length)).toBe(lead)
+  })
+
+  test('a brief carries a delivered note once, its body only, though the reviewer repeated the review line', ON, async ($, on) => {
     const seen = engine(on, { reviewerIds: ['ag1', 'ag2'] })
     await $.prompt.submit(COMPOSER('first'))
     await $.classic.Stop(stop)
@@ -4118,23 +4137,13 @@ describe('reviewer rotation', () => {
     await $.turn.complete(TURN_END('ag1', 'Sent.'))
     await $.prompt.submit(COMPOSER('second'))
     await $.classic.Stop(stop)
-    const lead = CARRIED(FRAMED(1, 'a.ts:1 idle.'))
+    const lead = REMEMBERING({ number: 1, text: 'a.ts:1 idle.' })
     expect(seen.spawns.length).toBe(2)
     expect(seen.spawns[1].prompt.slice(0, lead.length)).toBe(lead)
     expect(logOf(seen, LOG_1)).toMatchObject({ note: 'a.ts:1 idle.', note_delivered: true })
   })
 
-  test('a fresh reviewer carries at most the last five delivered notes', ON, async ($, on) => {
-    const seen = engine(on, { reviewerIds: ['ag1', 'ag2'] })
-    for (let n = 1; n <= 6; n++) await reviewCycle($, `turn ${n}`, `a.ts:${n} idle.`, n === 6 ? contextOf(80_001) : undefined)
-    await $.prompt.submit(COMPOSER('turn 7'))
-    await $.classic.Stop(stop)
-    const lead = CARRIED(...[2, 3, 4, 5, 6].map(n => FRAMED(n, `a.ts:${n} idle.`)))
-    expect(seen.spawns.length).toBe(2)
-    expect(seen.spawns[1].prompt.slice(0, lead.length)).toBe(lead)
-  })
-
-  test('a refused send to the stored reviewer spawns one told the notes delivered earlier, and the spawn\'s Agent call is not a worker entry', ON, async ($, on) => {
+  test('a refused send to the stored reviewer spawns one that sends the brief as planned, memory included, and the spawn\'s Agent call is not a worker entry', ON, async ($, on) => {
     const seen = engine(on, { sendFails: 'ag1', reviewerIds: ['ag1', 'ag2'] })
     await workerTurn($)
     await turnEnded($, 'ag1', 'a.ts:4 idle.')
@@ -4142,7 +4151,8 @@ describe('reviewer rotation', () => {
     await $.classic.Stop(stop)
     expect(seen.sends.map(s => s.to)).toEqual(['ag1'])
     expect(seen.spawns.length).toBe(2)
-    const lead = CARRIED(FRAMED(1, 'a.ts:4 idle.'))
+    const lead = REMEMBERING({ number: 1, text: 'a.ts:4 idle.' })
+    expect(seen.spawns[1].prompt).toBe(seen.sends[0].text)
     expect(seen.spawns[1].prompt.slice(0, lead.length)).toBe(lead)
     await $.tool.call({ tool: 'Agent', prompt: seen.spawns[1].prompt, description: 'auditor review' } as any)
     expect(await entriesOf($, { which: 'live' }, 'ag2')).toBe(NONE_SINCE(2))
@@ -4503,6 +4513,17 @@ describe('the reviewer\'s compaction', () => {
     expect(seen.compactions[0].instructions.startsWith('You are the auditor reviewer. Keep:')).toBe(true)
   })
 
+  test('a compaction of the reviewer keeps the user\'s instructions and open disagreements, drops quiet reviews, and does not ask it to keep its notes', ON, async ($, on) => {
+    const seen = engine(on)
+    await workerTurn($)
+    await $.session.compact(compacting({ agentId: 'ag1' }))
+    const told = seen.compactions[0].instructions
+    expect(told).toContain('every instruction, rule and preference of the user you have found, with where it was given')
+    expect(told).toContain('any disagreement still open')
+    expect(told).toContain('Drop: the details of reviews that found nothing to note')
+    expect(told).not.toMatch(/note you gave|each note|your notes/)
+  })
+
   test('a compaction with no agent id, or of an agent that is not a reviewer, passes its instructions unchanged', ON, async ($, on) => {
     const seen = engine(on)
     await workerTurn($)
@@ -4517,10 +4538,10 @@ describe('the /auditor command', () => {
   // The command's answer to `args`; bare when none is given.
   const run = async ($: any, args = ''): Promise<string | undefined> => (await $.command.run({ command: 'auditor', args })).text
 
-  test('the command is registered as immediate, with an on-or-off argument hint', ON, async ($, on) => {
+  test('the command is registered as immediate, with an on, off or memory argument hint', ON, async ($, on) => {
     const seen = engine(on)
     await $.session.start({ cwd: '/', surface: null, isInteractive: true })
-    expect(seen.commands.find(c => c.name === 'auditor')).toMatchObject({ name: 'auditor', immediate: true, argumentHint: '[on|off]' })
+    expect(seen.commands.find(c => c.name === 'auditor')).toMatchObject({ name: 'auditor', immediate: true, argumentHint: '[on|off|memory]' })
   })
 
   test('bare, the command says whether the reviewer is on, as the footer button does', ON, async ($, on) => {
@@ -4566,9 +4587,9 @@ describe('the /auditor command', () => {
     expect(await run($)).toBe('auditor is off')
   })
 
-  test('an argument that is neither on nor off is refused with its usage, and changes nothing', ON, async ($, on) => {
+  test('an argument that is neither on, off nor memory is refused with its usage, and changes nothing', ON, async ($, on) => {
     engine(on)
-    expect(await run($, 'bogus')).toBe('Usage: /auditor [on|off]')
+    expect(await run($, 'bogus')).toBe('Usage: /auditor [on|off|memory]')
     expect(await run($)).toBe('auditor is on')
   })
 
@@ -5090,12 +5111,12 @@ describe('a note held after an interrupt', () => {
     await drained()
     expect(seen.toasts).toEqual([ESCALATED_TOAST])
     expect(pushes(seen)).toEqual(['auditor escalated: Escalation: auth belongs in middleware.'])
-    expect(seen.conversation.deliveredNotes).toEqual([FRAMED(1, escalation)])
+    expect(seen.conversation.memory).toEqual([{ number: 1, text: escalation }])
     await $.turn.complete(TURN_END('ag1', 'Sent.'))
     await $.prompt.submit(COMPOSER('more'))
     await $.classic.Stop(stop)
     expect(seen.spawns.length).toBe(2)
-    expect(seen.spawns[1].prompt).toContain(FRAMED(1, escalation))
+    expect(seen.spawns[1].prompt).toContain(`Review 1: ${escalation}`)
     expect(seen.toasts).toEqual([ESCALATED_TOAST])
   })
 
@@ -5120,7 +5141,7 @@ describe('a note held after an interrupt', () => {
     expect((await sending).isDelivered).toBe(false)
     await drained()
     expect(seen.conversation.pendingNotes).toEqual([])
-    expect(seen.conversation.deliveredNotes).toEqual([])
+    expect(seen.conversation.memory).toEqual([])
     expect(debugLines(seen, HELD)).toEqual([])
     expect(debugLines(seen, 'nothing is held').length).toBe(1)
     expect(seen.toasts).toEqual([ESCALATED_TOAST])
@@ -5211,5 +5232,356 @@ describe('a note held after an interrupt', () => {
     expect(seen.conversation.pendingNotes).toEqual([])
     await $.prompt.submit(COMPOSER('fresh'))
     expect(seen.contexts).toEqual([undefined])
+  })
+})
+
+describe('the reviewer\'s memory', () => {
+  const STOPPED_MAIN = 'The main conversation was not messaged: the session was stopped and nobody has sent input since.'
+  const FINISHED = 'The worker finished a turn.'
+  const ADDED = 'memory entry added'
+  const BOUND = 'memory entries'
+  const off = ($: any) => $.command.run({ command: 'auditor', args: 'off' } as any)
+  const on_ = ($: any) => $.command.run({ command: 'auditor', args: 'on' } as any)
+  const printed = async ($: any): Promise<string | undefined> => (await $.command.run({ command: 'auditor', args: 'memory' })).text
+  const entry = (number: number, text = `a.ts:${number} note.`): MemoryEntry => ({ number, text })
+  // The memory part of a brief: everything before the brief's own first line.
+  const memoryOf = (brief: string): string => brief.slice(0, Math.max(0, brief.indexOf(`\n\n${FINISHED}`)))
+  // A stored conversation with no open review, no reviewer and a record to dispatch, holding `memory` after `dispatches` reviews.
+  const stored = (memory: MemoryEntry[], dispatches: number, more: object = {}) => ({ dispatches, reviewerIds: [], memory, record: { blocks: ['[1] USER: x\n\n'] }, lastMessage: 'Done.', ...more })
+  // The compare-and-set trap: armed from a callback the engine makes just before the change under test, it holds that change's write at `reached` until `open`, so a write made meanwhile makes it miss and run again.
+  const trap = () => {
+    const armed = { on: false }
+    const held = gate()
+    const reached = gate()
+    return { arm: () => { armed.on = true }, hold: { when: () => armed.on, until: held.until, reached: reached.open }, reached: reached.until, open: held.open }
+  }
+
+  describe('adding entries', () => {
+    test('a delivered note adds one in-flight entry holding its body under its review number', ON, async ($, on) => {
+      const seen = engine(on)
+      await workerTurn($)
+      await noteSent($, 'a.ts:4 swallows it.')
+      expect(seen.conversation.memory).toEqual([entry(1, 'a.ts:4 swallows it.')])
+    })
+
+    test('a held note adds one too, with the entry it would have had delivered', ON, async ($, on) => {
+      const seen = engine(on, { noteFailsAt: [1], refusal: STOPPED_MAIN })
+      await workerTurn($)
+      await noteSent($, 'a.ts:4 after the Esc.')
+      expect(seen.conversation.pendingNotes).toEqual([{ number: 1, text: 'a.ts:4 after the Esc.' }])
+      expect(seen.conversation.memory).toEqual([entry(1, 'a.ts:4 after the Esc.')])
+    })
+
+    test('an escalation adds one entry', ON, async ($, on) => {
+      const seen = engine(on)
+      await workerTurn($)
+      await noteSent($, 'Escalation: auth belongs in middleware.')
+      expect(seen.conversation.memory).toEqual([entry(1, 'Escalation: auth belongs in middleware.')])
+    })
+
+    test('a stall note adds none though it arms the guard', ON, async ($, on) => {
+      const seen = engine(on)
+      await $.prompt.submit(COMPOSER('fix the parser'))
+      await $.classic.Stop(QUIET_STOP)
+      await mainTurnEnd($)
+      expect(await noteSent($, STALL_NOTE)).toEqual({ isDelivered: true })
+      expect(seen.conversation).toMatchObject({ nudged: true })
+      expect(seen.conversation.memory).toEqual([])
+    })
+
+    test('a note refused at the gate, one refused below it and a quiet status add none', ON, async ($, on) => {
+      const seen = engine(on, { noteFailsAt: [1] })
+      await workerTurn($)
+      expect((await noteSent($, 'Nothing to note.')).isDelivered).toBe(false)
+      expect((await noteSent($, 'a.ts:4 refused below.')).isDelivered).toBe(false)
+      expect(seen.conversation.memory).toEqual([])
+      expect((await noteSent($, 'a.ts:4 resent.')).isDelivered).toBe(true)
+      expect((await noteSent($, 'a.ts:4 second in one review.')).isDelivered).toBe(false)
+      expect(seen.conversation.memory).toEqual([entry(1, 'a.ts:4 resent.')])
+    })
+
+    test('an entry is clipped to 2,000 characters', ON, async ($, on) => {
+      const seen = engine(on)
+      await workerTurn($)
+      await noteSent($, 'x'.repeat(2_500))
+      expect(seen.conversation.memory).toEqual([entry(1, `${'x'.repeat(2_000)} …+500 characters`)])
+    })
+
+    test('a note booked while the auditor is off, after a switch, adds none', ON, async ($, on) => {
+      const release = gate()
+      const reached = gate()
+      const seen = engine(on, { noteHold: { until: release.until, reached: reached.open } })
+      await workerTurn($)
+      const sending = noteSent($, 'a.ts:4 before the switch.')
+      await reached.until
+      await off($)
+      release.open()
+      expect(await sending).toEqual({ isDelivered: true })
+      expect(seen.conversation.memory).toEqual([])
+    })
+  })
+
+  describe('the add line', () => {
+    test('a delivered note writes one line with its review number and its text clipped to 180 characters', ON, async ($, on) => {
+      const seen = engine(on)
+      await workerTurn($)
+      await noteSent($, 'y'.repeat(300))
+      const lines = debugLines(seen, ADDED)
+      expect(lines.length).toBe(1)
+      expect(lines[0]).toContain('review 1')
+      expect(lines[0]).toContain(`${'y'.repeat(180)} …+120 characters`)
+    })
+
+    test('a held note writes one line', ON, async ($, on) => {
+      const seen = engine(on, { noteFailsAt: [1], refusal: STOPPED_MAIN })
+      await workerTurn($)
+      await noteSent($, 'a.ts:4 after the Esc.')
+      expect(debugLines(seen, ADDED).length).toBe(1)
+    })
+
+    test('a stall note, a refused note and a released note write none', ON, async ($, on) => {
+      const seen = engine(on, { noteFailsAt: [1] })
+      await $.prompt.submit(COMPOSER('fix the parser'))
+      await $.classic.Stop(QUIET_STOP)
+      await mainTurnEnd($)
+      expect((await noteSent($, STALL_NOTE)).isDelivered).toBe(false)
+      expect((await noteSent($, 'Nothing to note.')).isDelivered).toBe(false)
+      expect(await noteSent($, STALL_NOTE)).toEqual({ isDelivered: true })
+      expect(debugLines(seen, ADDED)).toEqual([])
+    })
+
+    test('a booking under a moved epoch writes none, and neither does a hold found stale', ON, async ($, on) => {
+      const release = gate()
+      const reached = gate()
+      const seen = engine(on, { noteHold: { until: release.until, reached: reached.open } })
+      await workerTurn($)
+      const sending = noteSent($, 'a.ts:4 before the switch.')
+      await reached.until
+      await off($)
+      await on_($)
+      release.open()
+      expect(await sending).toEqual({ isDelivered: true })
+      expect(debugLines(seen, ADDED)).toEqual([])
+      expect(seen.conversation.memory).toEqual([])
+    })
+
+    test('a hold found stale writes no add line', ON, async ($, on) => {
+      const release = gate()
+      const reached = gate()
+      const seen = engine(on, { noteFailsAt: [1], refusal: STOPPED_MAIN, noteHold: { until: release.until, reached: reached.open } })
+      await workerTurn($)
+      const sending = noteSent($, 'a.ts:4 before the switch.')
+      await reached.until
+      await off($)
+      release.open()
+      expect((await sending).isDelivered).toBe(false)
+      expect(debugLines(seen, ADDED)).toEqual([])
+      expect(debugLines(seen, 'nothing is held').length).toBe(1)
+    })
+
+    test('a booking whose compare-and-set misses and runs again writes its line once, and adds its entry once', ON, async ($, on) => {
+      const t = trap()
+      const release = gate()
+      const seen = engine(on, { noteHold: { until: release.until, reached: t.arm }, holdWrite: t.hold })
+      await workerTurn($)
+      const sending = noteSent($, 'a.ts:4 swallows it.')
+      await drained()
+      release.open()
+      await t.reached
+      await $.prompt.submit(COMPOSER('meanwhile'))
+      t.open()
+      expect(await sending).toEqual({ isDelivered: true })
+      expect(seen.conversation.record.blocks.join('')).toContain('USER: meanwhile')
+      expect(seen.conversation.memory).toEqual([entry(1, 'a.ts:4 swallows it.')])
+      expect(debugLines(seen, ADDED).length).toBe(1)
+    })
+
+    test('a hold whose compare-and-set misses and runs again writes its line once', ON, async ($, on) => {
+      const t = trap()
+      const release = gate()
+      const seen = engine(on, { noteFailsAt: [1], refusal: STOPPED_MAIN, noteHold: { until: release.until, reached: t.arm }, holdWrite: t.hold })
+      await workerTurn($)
+      const sending = noteSent($, 'a.ts:4 after the Esc.')
+      await drained()
+      release.open()
+      await t.reached
+      await $.prompt.submit(COMPOSER('meanwhile'))
+      t.open()
+      expect((await sending).isDelivered).toBe(false)
+      expect(seen.conversation.record.blocks.join('')).toContain('USER: meanwhile')
+      expect(seen.conversation.memory).toEqual([entry(1, 'a.ts:4 after the Esc.')])
+      expect(debugLines(seen, ADDED).length).toBe(1)
+    })
+  })
+
+  describe('the bound at a dispatch', () => {
+    test('an entry more than 30 reviews below the new review is dropped before the brief is built, and one exactly 30 below is kept', ON, async ($, on) => {
+      const seen = engine(on, { stateSeed: stored([entry(1), entry(2), entry(31)], 31) })
+      await $.classic.Stop(stop)
+      expect(seen.conversation.review).toMatchObject({ number: 32 })
+      expect(seen.conversation.memory).toEqual([entry(2), entry(31)])
+      const brief = memoryOf(seen.spawns[0].prompt)
+      expect(brief).not.toContain('Review 1:')
+      expect(brief).toContain('Review 2: a.ts:2 note.')
+      expect(brief).toContain('Review 31: a.ts:31 note.')
+    })
+
+    test('a memory over 12,000 code points loses its oldest entries first until the brief\'s memory part holds at most 12,000', ON, async ($, on) => {
+      const big = (n: number): MemoryEntry => ({ number: n, text: `${n}`.repeat(2_000).slice(0, 2_000) })
+      const entries = [20, 21, 22, 23, 24, 25, 26, 27].map(big)
+      const seen = engine(on, { stateSeed: stored(entries, 27) })
+      await $.classic.Stop(stop)
+      const kept = seen.conversation.memory.map((e: MemoryEntry) => e.number)
+      expect(kept).toEqual([23, 24, 25, 26, 27])
+      expect(kept.length).toBeLessThan(entries.length)
+      const part = memoryOf(seen.spawns[0].prompt)
+      expect(part).toBe(renderMemory(seen.conversation.memory))
+      expect(Array.from(part).length).toBeLessThanOrEqual(12_000)
+      // One entry more would not have fitted.
+      expect(Array.from(renderMemory([big(22), ...seen.conversation.memory])).length).toBeGreaterThan(12_000)
+    })
+
+    test('a dispatch that ages out and evicts writes one line with the review number and both counts', ON, async ($, on) => {
+      const big = (n: number): MemoryEntry => ({ number: n, text: `${n}`.repeat(2_000).slice(0, 2_000) })
+      const seen = engine(on, { stateSeed: stored([entry(1), entry(2), ...[20, 21, 22, 23, 24, 25, 26, 27].map(big)], 27 + 5) })
+      await $.classic.Stop(stop)
+      // Review 33: entries 1 and 2 are more than 30 below it; of the eight large ones, three fall to the cap.
+      expect(debugLines(seen, BOUND)).toEqual([expect.stringContaining("review 33's dispatch aged out 2 and evicted 3 memory entries")])
+    })
+
+    test('a dispatch that drops nothing writes no bound line', ON, async ($, on) => {
+      const seen = engine(on, { stateSeed: stored([entry(1)], 3) })
+      await $.classic.Stop(stop)
+      expect(debugLines(seen, BOUND)).toEqual([])
+      expect(seen.conversation.memory).toEqual([entry(1)])
+    })
+
+    test('a dispatch whose compare-and-set misses and runs again writes its bound line once', ON, async ($, on) => {
+      const t = trap()
+      const seen = engine(on, { stateSeed: stored([entry(1), entry(2)], 31), sessionIdHold: { from: 1, to: 1, until: Promise.resolve(), reached: t.arm }, holdWrite: t.hold })
+      const stopping = $.classic.Stop(stop)
+      await t.reached
+      await $.prompt.submit(COMPOSER('meanwhile'))
+      t.open()
+      await stopping
+      expect(debugLines(seen, BOUND)).toEqual([expect.stringContaining("review 32's dispatch aged out 1 and evicted 0 memory entries")])
+      expect(seen.conversation.memory).toEqual([entry(2)])
+      expect(seen.conversation.review).toMatchObject({ number: 32 })
+    })
+
+    test('a dispatch that plans no review bounds nothing', ON, async ($, on) => {
+      const seen = engine(on, { stateSeed: stored([entry(1)], 40, { record: { blocks: [] } }) })
+      await $.classic.Stop(stop)
+      expect(seen.spawns).toEqual([])
+      expect(seen.conversation.memory).toEqual([entry(1)])
+      expect(debugLines(seen, BOUND)).toEqual([])
+    })
+  })
+
+  describe('the briefs', () => {
+    test('a brief with an empty memory carries no memory heading', ON, async ($, on) => {
+      const seen = engine(on)
+      await workerTurn($)
+      expect(seen.spawns[0].prompt).not.toContain(renderMemory([entry(1)]).split('\n')[0])
+      expect(seen.spawns[0].prompt.split('\n')[0]).toBe(FINISHED)
+    })
+
+    test('a spawn\'s brief and a re-brief each carry every entry, with its review number and text', ON, async ($, on) => {
+      const seen = engine(on, { stateSeed: stored([entry(4, 'a.ts:4 first.'), entry(5, 'a.ts:5 second.')], 6) })
+      await $.classic.Stop(stop)
+      await turnEnded($, 'ag1', '')
+      await $.prompt.submit(COMPOSER('again'))
+      await $.classic.Stop(stop)
+      for (const brief of [seen.spawns[0].prompt, seen.sends[0].text]) {
+        expect(memoryOf(brief)).toBe(renderMemory([entry(4, 'a.ts:4 first.'), entry(5, 'a.ts:5 second.')]))
+        expect(memoryOf(brief)).toContain('Review 4: a.ts:4 first.')
+        expect(memoryOf(brief)).toContain('Review 5: a.ts:5 second.')
+      }
+    })
+
+    test('no memory text reaches the worker: the notes held for it carry the reviewer\'s note alone', ON, async ($, on) => {
+      const seen = engine(on, { stateSeed: stored([entry(1, 'a.ts:1 earlier.')], 1) })
+      await $.classic.Stop(stop)
+      await $.prompt.submit(COMPOSER('carry on'))
+      expect(seen.contexts).toEqual([undefined])
+      expect(seen.prompts.join('\n')).not.toContain('a.ts:1 earlier.')
+    })
+  })
+
+  describe('its lifetime', () => {
+    const withEntries = async ($: any, on: any) => {
+      const seen = engine(on)
+      await workerTurn($)
+      await noteSent($, 'a.ts:4 swallows it.')
+      expect(seen.conversation.memory).toEqual([entry(1, 'a.ts:4 swallows it.')])
+      return seen
+    }
+
+    test('a /clear leaves it empty', ON, async ($, on) => {
+      const seen = await withEntries($, on)
+      await $.session.end({ reason: 'clear', sessionId: 's1' } as any)
+      expect(seen.conversation.memory).toEqual([])
+    })
+
+    test('a switch to on leaves it empty, and a switch to off leaves it as it was, and `/auditor memory` prints its entries while off', ON, async ($, on) => {
+      const seen = await withEntries($, on)
+      await off($)
+      expect(seen.conversation.memory).toEqual([entry(1, 'a.ts:4 swallows it.')])
+      expect(await printed($)).toContain('Review 1: a.ts:4 swallows it.')
+      await on_($)
+      expect(seen.conversation.memory).toEqual([])
+    })
+
+    test('a /compact of the worker leaves it as it was', ON, async ($, on) => {
+      const seen = await withEntries($, on)
+      await $.session.compact({ trigger: 'plugin' as const, messages: [{ role: 'user' as const, text: 'fix the parser', toolUses: [] }] } as any)
+      expect(seen.conversation.memory).toEqual([entry(1, 'a.ts:4 swallows it.')])
+    })
+
+    test('while the auditor is off no entry is taken, since no note is booked', ON, async ($, on) => {
+      const seen = await withEntries($, on)
+      await off($)
+      await workerTurn($, 'Second.')
+      expect(seen.conversation.memory).toEqual([entry(1, 'a.ts:4 swallows it.')])
+    })
+  })
+
+  describe('a state stored before the memory', () => {
+    test('reads with an empty memory and dispatches as usual, its stored delivered notes read by nothing', ON, async ($, on) => {
+      const seen = engine(on, { stateSeed: { dispatches: 1, reviewerIds: [], deliveredNotes: ['auditor, review 1:\na.ts:4 old.'], record: { blocks: ['[1] USER: x\n\n'] }, lastMessage: 'Done.' } })
+      await $.classic.Stop(stop)
+      expect(seen.spawns.length).toBe(1)
+      expect(seen.spawns[0].prompt.split('\n')[0]).toBe(FINISHED)
+      expect(seen.spawns[0].prompt).not.toContain('a.ts:4 old.')
+      expect(seen.conversation.memory).toEqual([])
+      expect(await printed($)).toBe('auditor memory is empty')
+    })
+  })
+
+  describe('/auditor memory', () => {
+    test('prints a count line, then every stored entry with its review number and text', ON, async ($, on) => {
+      engine(on, { stateSeed: stored([entry(4, 'a.ts:4 first.'), entry(5, 'a.ts:5 second.\nMore.')], 6) })
+      expect(await printed($)).toBe('auditor memory holds 2 entries:\n\nReview 4: a.ts:4 first.\n\nReview 5: a.ts:5 second.\nMore.')
+    })
+
+    test('says so when the memory is empty', ON, async ($, on) => {
+      engine(on)
+      expect(await printed($)).toBe('auditor memory is empty')
+    })
+
+    test('changes nothing, on or off: no state is written, and the memory, the toggle and every other field stay as they were', ON, async ($, on) => {
+      const seen = engine(on, { stateSeed: stored([entry(4)], 6) })
+      await $.classic.Stop(stop)
+      for (const switchOff of [false, true]) {
+        if (switchOff) await off($)
+        const before = structuredClone(seen.conversation)
+        const writes = seen.conversations.length
+        await printed($)
+        expect(seen.conversations.length).toBe(writes)
+        expect(seen.conversation).toEqual(before)
+        expect(seen.conversation.off).toBe(switchOff)
+        expect(seen.conversation.memory).toEqual([entry(4)])
+      }
+    })
   })
 })

@@ -1,6 +1,7 @@
 import type { AgentInfo, AgentSpawnResult, CoreEngineInterface, ProcessRunResult, Register, TurnUsage } from 'claude-code'
 import { update } from 'claude-code'
 import type { Conversation, OpenReview, PendingNote, ReviewUsage, TurnEnd, TurnRecord, TurnStart, Wake } from '../types/index'
+import { MEMORY_LOG_CHARS, bounded, printMemory, renderMemory, withNote } from './memory'
 import { MAIN, admitSend, decideRefusal, followUpText, frameNote, marksOf, readSend, settleOutcome } from './notes'
 import type { Decided, Outcome, Refusal, Sent, Verdict } from './notes'
 import { REVIEWER_PROMPT } from './prompt'
@@ -28,14 +29,12 @@ const NAMED = /(?<![\w-])auditor-reviewer(?:-\d+)?(?![\w-])/
 const REVIEWER_NAME = /^auditor-reviewer(?:-\d+)?$/
 // A reviewer whose context passed this many tokens is retired when its review is taken (`takeReview`), not at a turn end that gives the review its follow-up: under Haiku 5.5's 100,000-token price tier and the reviewer's compaction point, with room for one review's growth.
 const ROTATE_AT = 80_000
-// How many of the latest delivered notes a fresh reviewer's first brief carries.
-const CARRIED_NOTES = 5
 // How long a reviewer spawn may stay in flight before it is given up (`spawnsInFlight`).
 const SPAWN_TIMEOUT_MS = 10 * 60 * 1000
 // The reason a review is logged incomplete with when no spawn stood a reviewer in for it in SPAWN_TIMEOUT_MS (`dispatchIdle`).
 const SPAWN_LAPSED = `reviewer spawn did not settle in ${SPAWN_TIMEOUT_MS / 60_000} minutes`
 // What a compaction of the reviewer's own conversation keeps: the facts its judgement rests on, not the reviews that found nothing.
-const REVIEWER_COMPACTION = 'You are the auditor reviewer. Keep: every instruction, rule and preference of the user you have found, with where it was given; each note you gave the worker and whether it acted on it; any disagreement still open. Drop: the details of reviews that found nothing to note.'
+const REVIEWER_COMPACTION = 'You are the auditor reviewer. Keep: every instruction, rule and preference of the user you have found, with where it was given; any disagreement still open. Drop: the details of reviews that found nothing to note.'
 // A plain subagent's final report reaches prompt submission opening with this marker.
 const HAND_BACK = '[Subagent hand-back]'
 // The envelope an agent message arrives in, naming its sender.
@@ -63,9 +62,9 @@ type Finished = { answer: string; reason: string; isAborted: boolean; durationMs
 type Plan = { number: number; brief: string; send: string | undefined; epoch: number; at: number }
 type Spawn = Conversation['spawnsInFlight'][number]
 
-const fresh = (): Conversation => ({ dispatches: 0, off: false, epoch: 0, midTurn: false, pendingNotes: [], interrupted: false, lastMessage: '', transcript: null, record: EMPTY_RECORD, subagents: {}, briefsInFlight: [], failing: false, turnStart: null, reviewerIds: [], reviewerNames: [], reviewerContext: 0, deliveredNotes: [], spawnsInFlight: [], wake: null, lastAsked: false, messaged: [], nudged: false, dispatchesAtPrompt: 0 })
+const fresh = (): Conversation => ({ dispatches: 0, off: false, epoch: 0, midTurn: false, pendingNotes: [], interrupted: false, lastMessage: '', transcript: null, record: EMPTY_RECORD, subagents: {}, briefsInFlight: [], failing: false, turnStart: null, reviewerIds: [], reviewerNames: [], reviewerContext: 0, memory: [], spawnsInFlight: [], wake: null, lastAsked: false, messaged: [], nudged: false, dispatchesAtPrompt: 0 })
 
-// The toggle, by the footer button or `/auditor`. Off stops the auditor at once: the open review is dropped with its note slot, the held notes are dropped and the reviewer is let go (`toggle` stops it), so the gate refuses every reviewer send from then on; a note let through before the switch may still arrive. Its ids still mark its traffic and rows, and its late turn end matches no reviewer. On starts an empty record and a fresh run, so no entry from the off period or before it is briefed, a failure before it no longer holds the reviewer back, and an interrupt mark from before it holds no note refused for another reason. Either clears the stall guard. A switch moves the epoch (`epoch`); setting the state it already has changes nothing.
+// The toggle, by the footer button or `/auditor`. Off stops the auditor at once: the open review is dropped with its note slot, the held notes are dropped and the reviewer is let go (`toggle` stops it), so the gate refuses every reviewer send from then on; a note let through before the switch may still arrive. Its ids still mark its traffic and rows, and its late turn end matches no reviewer. On starts an empty record, an empty memory and a fresh run, so no entry from the off period or before it is briefed, no memory entry about work the reviewer never saw is briefed either, a failure before it no longer holds the reviewer back, and an interrupt mark from before it holds no note refused for another reason. Either clears the stall guard. A switch moves the epoch (`epoch`); setting the state it already has changes nothing.
 const switched = (c: Conversation, off: boolean): Conversation =>
   c.off === off
     ? c
@@ -74,7 +73,7 @@ const switched = (c: Conversation, off: boolean): Conversation =>
         epoch: c.epoch + 1,
         nudged: false,
         dispatchesAtPrompt: c.dispatches,
-        ...(off ? { off: true, review: undefined, reviewer: undefined, reviewerContext: 0, pendingNotes: [] } : { off: false, record: EMPTY_RECORD, failing: false, interrupted: false }),
+        ...(off ? { off: true, review: undefined, reviewer: undefined, reviewerContext: 0, pendingNotes: [] } : { off: false, record: EMPTY_RECORD, memory: [], failing: false, interrupted: false }),
       }
 
 // What the footer label and `/auditor` say: off by the toggle, failing until a review succeeds, else on.
@@ -332,30 +331,40 @@ const announce = ($: Scope, sent: Sent): void => {
   void $.tool.call({ tool: 'PushNotification', message, status: 'proactive' }).catch((err: unknown) => recordFailed($, 'escalation push', err))
 }
 
-// What a note's booking writes into the conversation, delivered or held, with the marks from the send's own read: a fresh reviewer's carried notes gain it, and a stall note arms the stall guard.
-const withBooked = (c: Conversation, number: number, sent: Sent): Conversation => ({ ...withStallGuard(c, number, sent.stall), deliveredNotes: [...c.deliveredNotes, frameNote(number, sent.body)].slice(-CARRIED_NOTES) })
+// What a note's booking writes into the conversation, delivered or held, with the marks from the send's own read: a stall note arms the stall guard and adds no memory entry, since once the worker moves on there is nothing to dispute; any other note, an escalation included, adds one.
+const withBooked = (c: Conversation, number: number, sent: Sent): Conversation => ({ ...withStallGuard(c, number, sent.stall), ...(sent.stall ? {} : { memory: withNote(c.memory, number, sent.body) }) })
 
-// What a delivered note triggers: its booking state, only while the conversation is still at the send's epoch (`epoch`), and in that same change its review marked delivered, while it is still open (`delivered`). An escalation is announced whatever the epoch, and even when the booking write throws: the note was delivered. The change says whether it found the review; when it found none (the review was taken, or the epoch moved), the review's log was written with `note_delivered` false and stays so, and one debug line names the review.
+// The debug line for a memory entry a booking added.
+const logAdded = ($: Pick<Scope, 'ui'>, number: number, body: string): void => {
+  $.ui.log(`${PLUGIN}: memory entry added for review ${number}: ${clip(body, MEMORY_LOG_CHARS)}`, { to: 'debug' })
+}
+
+// What a delivered note triggers: its booking state, only while the conversation is still at the send's epoch (`epoch`), and in that same change its review marked delivered, while it is still open (`delivered`). An escalation is announced whatever the epoch, and even when the booking write throws: the note was delivered. The change says whether it found the review; when it found none (the review was taken, or the epoch moved), the review's log was written with `note_delivered` false and stays so, and one debug line names the review. It says too whether the booking added a memory entry, which a moved epoch or a stall note does not; the entry's debug line is written after the change lands, since a compare-and-set change can run more than once.
 const book = async ($: Scope, sent: Sent, number: number, epoch: number): Promise<void> => {
   announce($, sent)
-  const got = { found: false }
+  const got = { found: false, added: false }
   await change($, c => {
     got.found = false
+    got.added = false
     return inEpoch(epoch, s => {
       got.found = s.review?.number === number
-      return { ...withBooked(s, number, sent), ...(s.review?.number === number ? { review: { ...s.review, delivered: true } } : {}) }
+      const booked = withBooked(s, number, sent)
+      got.added = booked.memory !== s.memory
+      return { ...booked, ...(s.review?.number === number ? { review: { ...s.review, delivered: true } } : {}) }
     })(c)
   })
   if (!got.found) $.ui.log(`${PLUGIN}: review ${number}'s note was delivered after its review closed, so its log keeps note_delivered false`, { to: 'debug' })
+  if (got.added) logAdded($, number, sent.body)
 }
 
-// The one hold-or-release step for a note whose send was not delivered (`decideRefusal`), run in one change: the gate's note, whose slot admission filled (`filling` false), and the follow-up's, which the step admits itself (`filling` true). `reason` is the engine's refusal, absent for a send that threw. A held note gets the booking effects a delivered one gets, bar the delivered mark, and an escalation is announced then. If the change throws, nothing is held or released: the failure is logged with its stack, the slot stays as it was, and an escalation is still announced, as for a failed booking. Returns what the change decided, or undefined when it threw.
+// The one hold-or-release step for a note whose send was not delivered (`decideRefusal`), run in one change: the gate's note, whose slot admission filled (`filling` false), and the follow-up's, which the step admits itself (`filling` true). `reason` is the engine's refusal, absent for a send that threw. A held note gets the booking effects a delivered one gets, bar the delivered mark, its memory entry included (logged once the change lands, when it added one), and an escalation is announced then. If the change throws, nothing is held or released: the failure is logged with its stack, the slot stays as it was, and an escalation is still announced, as for a failed booking. Returns what the change decided, or undefined when it threw.
 const holdOrRelease = async ($: Scope, refusal: Refusal): Promise<Decided | undefined> => {
   const { number, sent } = refusal
-  const got: { decided?: Decided } = {}
+  const got: { decided?: Decided; added: boolean } = { added: false }
   try {
     await change($, c => {
       got.decided = decideRefusal(c, refusal, state => withBooked(state, number, sent))
+      got.added = got.decided.next.memory !== c.memory
       return got.decided.next
     })
   } catch (err) {
@@ -365,6 +374,7 @@ const holdOrRelease = async ($: Scope, refusal: Refusal): Promise<Decided | unde
   }
   if (got.decided?.outcome === 'hold') {
     announce($, sent)
+    if (got.added) logAdded($, number, sent.body)
     $.ui.log(
       got.decided.stale === true
         ? `${PLUGIN}: review ${number}'s note was refused while the session was stopped, but a reset since its send dropped it: nothing is held`
@@ -474,13 +484,9 @@ const asksUser = (tool: string, input: Record<string, unknown>): boolean => tool
 // The addresses a worker tool call messages, appended to those the turn already named: a SendMessage's `to`. A refused or failed send woke no one, so it names none.
 const sentTo = (messaged: readonly string[], tool: string, input: Record<string, unknown>, failed: boolean): string[] => (tool === 'SendMessage' && !failed && typeof input['to'] === 'string' ? [...messaged, input['to']] : [...messaged])
 
-// The notes earlier reviewers delivered, which a fresh reviewer's first brief carries; it finds the user's rules again itself.
-const carriedLines = (notes: readonly string[]): string[] =>
-  notes.length === 0 ? [] : ['You are a fresh reviewer of this conversation. The notes earlier reviewers gave the worker, oldest first:', ...notes, 'Find the user\'s instructions again with your transcript tool before you judge.']
-
-// What the review is told: its number, the entries its record covers, how to fetch them and the entries recorded since, the wake-up line, and the worker's last message; a fresh reviewer is told the earlier notes first.
-const briefOf = (number: number, entries: number, lastMessage: string, wake: Wake | null, carried: readonly string[] = []): string => [
-  ...carriedLines(carried),
+// What the review is told: the reviewer's memory first when it holds any (`renderMemory`), the same for every reviewer, then its number, the entries its record covers, how to fetch them and the entries recorded since, the wake-up line, and the worker's last message.
+const briefOf = (number: number, entries: number, lastMessage: string, wake: Wake | null, memory: string): string => [
+  ...(memory === '' ? [] : [memory, '']),
   'The worker finished a turn.',
   `Review ${number}. Its record holds entries 1-${entries}, everything recorded since the previous review was dispatched. Fetch it with the ${ENTRIES} tool, which: 'record', page by page as each page's header says.`,
   `The worker may have kept working since this dispatch. Its later entries come from the same tool, which: 'live', read as they are at each call.`,
@@ -505,9 +511,10 @@ const dispatchIdle = async ($: Scope, log: boolean): Promise<void> => {
   // Read before the review opens, so a failed read leaves none open that no brief went out for; and before the brief goes out, so a /clear while it is in flight leaves a failed review's log in the session it was dispatched in.
   const sessionId = await $.session.id()
   // Set by the change's last run alone: a compare-and-set retry plans again from the state it read.
-  const planned: { plan?: Plan; lapsed?: OpenReview } = {}
+  const planned: { plan?: Plan; lapsed?: OpenReview; bound?: { aged: number; evicted: number } } = {}
   await change($, c => {
     planned.plan = undefined
+    planned.bound = undefined
     // The one place a spawn is given up: a review still open with no reviewer stored SPAWN_TIMEOUT_MS after its dispatch has no spawn left that will stand one in, so it fails here, its entries put back.
     const open = c.review
     planned.lapsed = open !== undefined && c.reviewer === undefined && now - open.dispatchedAt > SPAWN_TIMEOUT_MS ? open : undefined
@@ -515,15 +522,19 @@ const dispatchIdle = async ($: Scope, log: boolean): Promise<void> => {
     if (!eligible(d)) return d
     const number = d.dispatches + 1
     const { blocks } = d.record
-    planned.plan = { number, brief: briefOf(number, blocks.length, d.lastMessage, d.wake, d.reviewer === undefined ? d.deliveredNotes : []), send: d.reviewer?.id, epoch: d.epoch, at: now }
-    return { ...d, dispatches: number, review: blankReview(number, now, blocks, wakesNothing(d.wake)), record: EMPTY_RECORD }
+    // The memory is bounded in the dispatch's own change, before the brief is built, so the brief carries it as it stands after the bound.
+    const { memory, aged, evicted } = bounded(d.memory, number)
+    planned.bound = { aged, evicted }
+    planned.plan = { number, brief: briefOf(number, blocks.length, d.lastMessage, d.wake, renderMemory(memory)), send: d.reviewer?.id, epoch: d.epoch, at: now }
+    return { ...d, memory, dispatches: number, review: blankReview(number, now, blocks, wakesNothing(d.wake)), record: EMPTY_RECORD }
   })
-  const { plan, lapsed } = planned
+  const { plan, lapsed, bound } = planned
   if (lapsed !== undefined) {
     await logIncomplete($, sessionId, log, lapsed, null, SPAWN_LAPSED)
     $.ui.log(`${PLUGIN}: review failed: ${SPAWN_LAPSED}`, { to: 'debug' })
   }
   if (plan === undefined) return
+  if (bound !== undefined && bound.aged + bound.evicted > 0) $.ui.log(`${PLUGIN}: review ${plan.number}'s dispatch aged out ${bound.aged} and evicted ${bound.evicted} memory entries`, { to: 'debug' })
   try {
     await deliverBrief($, plan)
   } catch (err) {
@@ -640,22 +651,17 @@ const deliverBrief = async ($: Scope, plan: Plan): Promise<void> => {
     // The stored reviewer did not take the brief, so it is no longer the reviewer: this dispatch spawns one.
     $.ui.log(`${PLUGIN}: the reviewer's send was refused, so a new reviewer is spawned: ${sent.reason}`, { to: 'debug' })
   }
-  // A fresh reviewer is told the notes earlier reviewers delivered: a brief planned for the stored reviewer gains them here. The spawn's brief enters flight in this change, until its Agent call reaches the recorder.
+  // The spawn sends the brief as planned, whether the stored reviewer refused it or none was stored: every brief carries the memory. It enters flight in this change, until its Agent call reaches the recorder.
   // A plan whose review was dropped, before the spawn or while the send was refused, spawns no reviewer and stops the refused reviewer there as well. The spawn is committed in this change as an entry in `spawnsInFlight` under the plan's epoch (`epoch`), which the finally takes out.
-  const spawned = { brief, dropped: false }
+  const spawned = { dropped: false }
   await change($, c => {
     spawned.dropped = !ours(c)
     if (spawned.dropped) return c
-    spawned.brief = send === undefined ? brief : [...carriedLines(c.deliveredNotes), brief].join('\n')
-    return { ...c, reviewer: undefined, reviewerContext: 0, spawnsInFlight: [...c.spawnsInFlight, { brief: spawned.brief, epoch: plan.epoch, number, startedAt: plan.at }], briefsInFlight: [...c.briefsInFlight, spawned.brief] }
+    return { ...c, reviewer: undefined, reviewerContext: 0, spawnsInFlight: [...c.spawnsInFlight, { brief, epoch: plan.epoch, number, startedAt: plan.at }], briefsInFlight: [...c.briefsInFlight, brief] }
   })
   if (spawned.dropped) {
     await stopReviewer($, send, true)
     return
-  }
-  // The plan's catch takes its own brief out of flight; a brief rewritten for the spawn is taken out here when the spawn throws or is refused.
-  const unflight = async (): Promise<void> => {
-    if (spawned.brief !== brief) await unflightBrief($, spawned.brief)
   }
   // However the spawn settles, the finally takes its entry out of `spawnsInFlight`, with what the spawn hook kept on it, and stops the refused stored reviewer (`send` is set only when its send was refused).
   try {
@@ -663,19 +669,15 @@ const deliverBrief = async ($: Scope, plan: Plan): Promise<void> => {
       subagentType: REVIEWER_TYPE,
       name: REVIEWER,
       description: 'auditor review',
-      prompt: spawned.brief,
-    }).catch(async (err: unknown) => {
-      await unflight()
-      throw err
+      prompt: brief,
     })
     if (started.deny !== undefined) {
-      await unflight()
       throw new Error(`reviewer spawn refused: ${started.deny}`)
     }
     // The landing's one change, under the plan's epoch (`epoch`): its id is the result's, else its entry's, else the stored reviewer's; a spawn that is not stale stands in as the reviewer while its review is open (`spawnsInFlight`).
     const landed: { id?: string; stale: boolean; stood: boolean } = { stale: false, stood: false }
     await change($, c => {
-      const kept = matchSpawn(c.spawnsInFlight, spawned.brief)
+      const kept = matchSpawn(c.spawnsInFlight, brief)
       landed.stale = c.epoch !== plan.epoch
       landed.stood = false
       // Under the plan's epoch (`epoch`) a reviewer stored since the spawn change can only be this spawn, adopted by name before its hook stood it in.
@@ -692,17 +694,16 @@ const deliverBrief = async ($: Scope, plan: Plan): Promise<void> => {
     })
     // A stale landing with no id stops nothing. No catch takes its brief out of flight, so it leaves here.
     if (landed.id === undefined && landed.stale) {
-      await unflightBrief($, spawned.brief)
+      await unflightBrief($, brief)
       return
     }
     if (landed.id === undefined) {
-      await unflight()
       throw new Error('reviewer spawn returned no agent id')
     }
     // A stale spawn, or one whose review closed since under no reviewer of its own (`dispatchIdle` gave it up), is let go.
     if (!landed.stood) await stopReviewer($, landed.id, true)
   } finally {
-    await releaseSpawn($, spawned.brief)
+    await releaseSpawn($, brief)
     await stopReviewer($, send, true)
   }
 }
@@ -827,7 +828,7 @@ export const register: Register = (on, options) => {
 
   on('session.start', async ($, e, next) => {
     // The footer button's twin for every surface: a phone draws no footer, but its typed commands run here and their answer shows there.
-    await $.command.register({ name: 'auditor', description: 'Turn the auditor reviewer on or off for this session, or say which it is', argumentHint: '[on|off]', immediate: true })
+    await $.command.register({ name: 'auditor', description: 'Turn the auditor reviewer on or off for this session, say which it is, or print its memory of the notes delivered', argumentHint: '[on|off|memory]', immediate: true })
     await $.tool.register({
       name: 'entries',
       description: "Returns the calling auditor reviewer's record for its open review, or the entries the worker recorded after that review's dispatch, as they are at the call, one page at a time from entry `from`.",
@@ -898,7 +899,9 @@ export const register: Register = (on, options) => {
 
   on('command.run', { command: 'auditor' }, async ($, e) => {
     const wanted = e.args.trim().toLowerCase()
-    if (wanted !== '' && wanted !== 'on' && wanted !== 'off') return { text: 'Usage: /auditor [on|off]' }
+    // Read-only: the memory is printed as stored, on or off.
+    if (wanted === 'memory') return { text: printMemory((await readConversation($)).memory) }
+    if (wanted !== '' && wanted !== 'on' && wanted !== 'off') return { text: 'Usage: /auditor [on|off|memory]' }
     const after = wanted === '' ? await readConversation($) : await toggle($, log, () => wanted === 'off')
     return { text: `auditor is ${stateOf(after)}` }
   })

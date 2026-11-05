@@ -35,6 +35,9 @@ export type TurnRecord = { blocks: string[] }
 // A stall fact: what is in flight at the worker's Stop that will wake it. Each is spelled `type "description"`: a working agent or a teammate the worker messaged, from the agent list, then Stop's other tasks; the reviewer's own agents are left out.
 export type Wake = { tasks: string[]; crons: number }
 
+// One entry of the handoff doc: the body of a note delivered or held for the worker, clipped to 2,000 characters, keyed by the number of the review that gave it. Review numbers never repeat and a review gives at most one note, so the number names its entry.
+export type MemoryEntry = { number: number; text: string }
+
 // What started a worker turn: the user's own prompt (typed, from a Remote Control client, or a headless run's), a reviewer's task notification, or anything else.
 export type TurnStart = 'user' | 'notice' | 'other'
 
@@ -64,8 +67,8 @@ export type Conversation = {
   reviewerNames: string[]
   // The current reviewer's context at its last request (input, cache-read and cache-write tokens): past ROTATE_AT it is retired when its review is taken, never at a turn end that gives the review its follow-up, and the next dispatch spawns a fresh one.
   reviewerContext: number
-  // The last notes this conversation's gate let through and saw delivered, each its review line then its body, oldest first: a fresh reviewer's first brief carries them.
-  deliveredNotes: string[]
+  // The reviewer's memory of this conversation, the handoff doc: one entry per note booked, oldest first. The plugin adds an entry when a note is booked, delivered or held, and never for a `Stalled:` note; an `Escalation:` note is kept. At each dispatch it drops the entries more than 30 reviews below the new review's number, then evicts the oldest while the rendering exceeds 12,000 characters, and every brief carries what remains; between dispatches it may run over the cap. It never reaches the worker. A /clear and a switch to on start it empty; a switch to off and a /compact of the worker leave it as it is, and while off it takes no entry.
+  memory: MemoryEntry[]
   // The reviewer's open review, if it has one.
   review?: OpenReview
   // Each reviewer spawn still in flight, by the brief it was spawned with, the epoch it was spawned under, the number of the review it serves, the clock's time its dispatch started, and the id and resolved model once the spawn hook has seen it: a dispatch whose spawn result names no agent takes its id from here. No reset clears it, so a spawn a reset dropped still finds the id it is stopped by (`deliverBrief`). A spawn hook matches its spawn's entry by brief (`recordSpawnedId`), and stands the spawn in as the reviewer while its review is open in its epoch and none is stored; a hook that matches no entry only marks its id and name as reviewer traffic. A spawn from an older epoch blocks adoption by name for at most `SPAWN_TIMEOUT_MS` after it started, unless its hook named another id than the caller's (`blocksAdoption`). Its landing takes it out (`releaseSpawn`). A review no reviewer has stood in for `SPAWN_TIMEOUT_MS` after its dispatch fails at the next dispatch (`dispatchIdle`).
