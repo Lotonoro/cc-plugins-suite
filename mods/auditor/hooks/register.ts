@@ -1,8 +1,8 @@
 import type { AgentInfo, AgentSpawnResult, CoreEngineInterface, ProcessRunResult, Register, TurnUsage } from 'claude-code'
 import { update } from 'claude-code'
 import type { Conversation, OpenReview, PendingNote, ReviewUsage, TurnEnd, TurnRecord, TurnStart, Wake } from '../types/index'
-import { answerBody, frameNote, readNote } from './notes'
-import type { Note } from './notes'
+import { MAIN, admitSend, decideRefusal, followUpText, frameNote, marksOf, readSend, settleOutcome } from './notes'
+import type { Decided, Outcome, Refusal, Sent, Verdict } from './notes'
 import { REVIEWER_PROMPT } from './prompt'
 import { clip, entryBlock, pageOf, renumberBlock, toolLine } from './record'
 import { DIGEST_CHARS, LOOKUP_TIMEOUT_MS, SEARCH_TERM_CHARS, digestBlocks, digestOf, lineCommand, lookupOf, parseSearch, renderSearch, searchCommand } from './transcript'
@@ -26,7 +26,7 @@ const PUSH_CHARS = 180
 // A reviewer's spawn name, or the engine's rename of it when the name was taken (`auditor-reviewer-2`).
 const NAMED = /(?<![\w-])auditor-reviewer(?:-\d+)?(?![\w-])/
 const REVIEWER_NAME = /^auditor-reviewer(?:-\d+)?$/
-// A reviewer whose context passed this many tokens is retired at its review's end: under Haiku 5.5's 100,000-token price tier and the reviewer's compaction point, with room for one review's growth.
+// A reviewer whose context passed this many tokens is retired when its review is taken (`takeReview`), not at a turn end that gives the review its follow-up: under Haiku 5.5's 100,000-token price tier and the reviewer's compaction point, with room for one review's growth.
 const ROTATE_AT = 80_000
 // How many of the latest delivered notes a fresh reviewer's first brief carries.
 const CARRIED_NOTES = 5
@@ -36,7 +36,14 @@ const SPAWN_TIMEOUT_MS = 10 * 60 * 1000
 const SPAWN_LAPSED = `reviewer spawn did not settle in ${SPAWN_TIMEOUT_MS / 60_000} minutes`
 // What a compaction of the reviewer's own conversation keeps: the facts its judgement rests on, not the reviews that found nothing.
 const REVIEWER_COMPACTION = 'You are the auditor reviewer. Keep: every instruction, rule and preference of the user you have found, with where it was given; each note you gave the worker and whether it acted on it; any disagreement still open. Drop: the details of reviews that found nothing to note.'
-const HAND_BACK = 'Subagent hand-back'
+// A plain subagent's final report reaches prompt submission opening with this marker.
+const HAND_BACK = '[Subagent hand-back]'
+// The envelope an agent message arrives in, naming its sender.
+const ENVELOPE = '<agent-message from='
+// The reason a known reviewer's end-of-run notice is consumed with.
+const END_NOTICE = 'auditor reviewer end-of-run notice'
+// The reason the reviewer reads when its send is refused because the gate could not read the conversation.
+const UNCHECKED = 'auditor could not check this message, so it was not sent'
 // A reviewer's task notification names the reviewer's description in its summary.
 const REVIEW_NOTICE = 'Agent "auditor review"'
 const INTERRUPTED = 'INTERRUPTED: the user stopped this turn before it finished.'
@@ -44,20 +51,21 @@ const NONE_INTERRUPTED = '(none: the user interrupted the turn)'
 const EMPTY_RECORD: TurnRecord = { blocks: [] }
 
 type Scope = Pick<CoreEngineInterface, 'state' | 'ui' | 'clock' | 'fs' | 'env' | 'session' | 'prompt' | 'agent' | 'process' | 'tool'>
-type Ending = { status: 'complete'; note: Note | null } | { status: 'incomplete'; reason: string }
+// A complete review's `note`: the body the gate let through for it, or null for a quiet review.
+type Ending = { status: 'complete'; note: string | null } | { status: 'incomplete'; reason: string }
+// Held notes taken for an attach, and the `epoch` at the take.
+type TakenNotes = { notes: readonly PendingNote[]; epoch: number }
 // `retired`: the reviewer the take retired, when it did. `epoch`: the epoch at the take.
 type Taken = { review: OpenReview; model: string | null; retired: string | undefined; epoch: number }
-// Notes taken for a delivery, and the `epoch` at the take (`restorePending`).
-type TakenNotes = { notes: readonly PendingNote[]; epoch: number }
 type Closed = { review: OpenReview; model: string | null; turnEnd: TurnEnd | null }
 type Finished = { answer: string; reason: string; isAborted: boolean; durationMs: number; usage?: TurnUsage }
 // `epoch`: the epoch at the plan; `at`: the clock's time at the plan.
 type Plan = { number: number; brief: string; send: string | undefined; epoch: number; at: number }
 type Spawn = Conversation['spawnsInFlight'][number]
 
-const fresh = (): Conversation => ({ dispatches: 0, off: false, epoch: 0, midTurn: false, pendingNotes: [], interrupted: false, dropped: false, lastMessage: '', transcript: null, record: EMPTY_RECORD, subagents: {}, briefsInFlight: [], failing: false, turnStart: null, reviewerIds: [], reviewerNames: [], reviewerContext: 0, deliveredNotes: [], spawnsInFlight: [], wake: null, lastAsked: false, messaged: [], nudged: false, dispatchesAtPrompt: 0 })
+const fresh = (): Conversation => ({ dispatches: 0, off: false, epoch: 0, midTurn: false, pendingNotes: [], interrupted: false, lastMessage: '', transcript: null, record: EMPTY_RECORD, subagents: {}, briefsInFlight: [], failing: false, turnStart: null, reviewerIds: [], reviewerNames: [], reviewerContext: 0, deliveredNotes: [], spawnsInFlight: [], wake: null, lastAsked: false, messaged: [], nudged: false, dispatchesAtPrompt: 0 })
 
-// The toggle, by the footer button or `/auditor`. Off stops the auditor at once: the open review is dropped, the reviewer is let go (`toggle` stops it) and the held notes and the dropped-submit hold with it, so nothing more reaches the worker. Its ids still mark its traffic and rows, and its late turn end matches no reviewer. On starts an empty record and a fresh run, so no entry from the off period or before it is briefed and a failure before it no longer holds the reviewer back. Either clears the stall guard. A switch moves the epoch (`epoch`); setting the state it already has changes nothing.
+// The toggle, by the footer button or `/auditor`. Off stops the auditor at once: the open review is dropped with its note slot, the held notes are dropped and the reviewer is let go (`toggle` stops it), so the gate refuses every reviewer send from then on; a note let through before the switch may still arrive. Its ids still mark its traffic and rows, and its late turn end matches no reviewer. On starts an empty record and a fresh run, so no entry from the off period or before it is briefed, a failure before it no longer holds the reviewer back, and an interrupt mark from before it holds no note refused for another reason. Either clears the stall guard. A switch moves the epoch (`epoch`); setting the state it already has changes nothing.
 const switched = (c: Conversation, off: boolean): Conversation =>
   c.off === off
     ? c
@@ -66,7 +74,7 @@ const switched = (c: Conversation, off: boolean): Conversation =>
         epoch: c.epoch + 1,
         nudged: false,
         dispatchesAtPrompt: c.dispatches,
-        ...(off ? { off: true, review: undefined, reviewer: undefined, reviewerContext: 0, pendingNotes: [], dropped: false } : { off: false, record: EMPTY_RECORD, failing: false }),
+        ...(off ? { off: true, review: undefined, reviewer: undefined, reviewerContext: 0, pendingNotes: [] } : { off: false, record: EMPTY_RECORD, failing: false, interrupted: false }),
       }
 
 // What the footer label and `/auditor` say: off by the toggle, failing until a review succeeds, else on.
@@ -88,8 +96,24 @@ const isReviewerId = (c: Conversation, agentId: string | undefined): boolean => 
 
 const firstLine = (text: string): string => text.split('\n', 1)[0] ?? ''
 
-// A reviewer's hand-back: the hand-back wording, and the reviewer's spawn name on its first line.
-const isReviewerHandBack = (text: string): boolean => text.includes(HAND_BACK) && NAMED.test(firstLine(text))
+// A reviewer's hand-back, by its own frame alone: the hand-back marker opening the first line, which names the reviewer, or opening the line right after a reviewer's agent-message envelope. A note's first line is the envelope and its second the review line, so no note matches, whatever it quotes.
+const isReviewerHandBack = (text: string): boolean => {
+  const [first = '', second = ''] = text.split('\n', 2)
+  if (!NAMED.test(first)) return false
+  return first.startsWith(HAND_BACK) || (first.startsWith(ENVELOPE) && second.startsWith(HAND_BACK))
+}
+
+// A teammate's end-of-run status notice, as the team mailbox carries it: a JSON object whose type is `idle_notification`.
+const isEndNotice = (text: string): boolean => {
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(text)
+  } catch {
+    // A body that is not JSON is not a status notice; nothing failed.
+    return false
+  }
+  return typeof parsed === 'object' && parsed !== null && (parsed as { type?: unknown }).type === 'idle_notification'
+}
 
 const sessionDir = async ($: Pick<CoreEngineInterface, 'env'>, sessionId: string): Promise<string> => {
   const home = await $.env.get('HOME')
@@ -159,6 +183,9 @@ const logReview = async ($: Scope, sessionId: string, log: boolean, closed: Clos
   if (!log) return
   const { review, model, turnEnd } = closed
   try {
+    const note = ending.status === 'complete' ? ending.note : (review.note ?? null)
+    // The marks are read from the stored body, as the gate read them from the send.
+    const marks = note === null ? { escalation: false, stall: false } : marksOf(note)
     const body = {
       status: ending.status,
       reason: ending.status === 'incomplete' ? ending.reason : null,
@@ -170,10 +197,11 @@ const logReview = async ($: Scope, sessionId: string, log: boolean, closed: Clos
       model_configured: REVIEWER_MODEL,
       model_resolved: model,
       turn_end: turnEnd === null ? null : { at: turnEnd.at, answer: turnEnd.answer, reason: turnEnd.reason, duration_ms: turnEnd.durationMs },
-      note: ending.status === 'complete' && ending.note !== null ? ending.note.text : null,
-      // Written false here; the flush sets it true once the note's prompt is submitted.
-      note_delivered: false,
-      escalation: ending.status === 'complete' && ending.note !== null && ending.note.escalation,
+      note,
+      // Delivered as the gate saw it: the note's send reported delivered while its review was still open, which is not the worker having read it. A review that closed before its send reported delivery, dropped or settled while the send was out, logs its note as not delivered, though the note may still reach the worker.
+      note_delivered: review.delivered === true,
+      escalation: marks.escalation,
+      stall: marks.stall,
     }
     await $.fs.write(`${await sessionDir($, sessionId)}/${numbered(review.number)}.json`, JSON.stringify(body))
   } catch (err) {
@@ -190,18 +218,6 @@ const logDropped = async ($: Scope, sessionId: string, log: boolean, c: Conversa
   if (c.review !== undefined) await logIncomplete($, sessionId, log, c.review, c.reviewer?.model || null, reason)
 }
 
-// Sets fields in a review's log file, which its turn end wrote, in the session the caller started in; a failed write is said, and the review still settles.
-const patchLog = async ($: Scope, log: boolean, sessionId: string, number: number, patch: Record<string, unknown>): Promise<void> => {
-  if (!log) return
-  try {
-    const path = `${await sessionDir($, sessionId)}/${numbered(number)}.json`
-    const body = JSON.parse(await $.fs.read(path))
-    await $.fs.write(path, JSON.stringify({ ...body, ...patch }))
-  } catch (err) {
-    recordFailed($, 'review log', err)
-  }
-}
-
 // The entries of a review that ended without an answer go back to the front of the record, ahead of those recorded since.
 const withEntriesFirst = (entries: readonly string[], record: TurnRecord): TurnRecord => {
   const { blocks } = record
@@ -213,7 +229,7 @@ const currentConversation = ($: Pick<Scope, 'state'>): Promise<Conversation> => 
 
 const currentReviewerId = async ($: Pick<Scope, 'state'>): Promise<string | undefined> => (await currentConversation($)).reviewer?.id
 
-// Stops a reviewer the auditor lets go (one a take retired, one a session end forgot, one a refused brief dropped, or one the toggle switched off or whose spawn landed after it), so it does not sit idle for the rest of the session; each caller says when it issues it. The engine call is not awaited, so no caller's flush or dispatch waits on it; the helper resolves once the stop is issued. Any failure, the state read included, is logged and leaves the reviewer idle, and the caller goes on. Where a respawn can follow (`mayRespawn`), an id the state holds as the current reviewer is not stopped: a fresh reviewer can come back under a forgotten id, and the stop would end it. A session end spawns none, and when its reset failed the state still names the reviewer it forgot, so it passes false.
+// Stops a reviewer the auditor lets go (one a take retired, one a session end forgot, one a refused brief dropped, or one the toggle switched off or whose spawn landed after it), so it does not sit idle for the rest of the session; each caller says when it issues it. The engine call is not awaited, so no caller's settle or dispatch waits on it; the helper resolves once the stop is issued. Any failure, the state read included, is logged and leaves the reviewer idle, and the caller goes on. Where a respawn can follow (`mayRespawn`), an id the state holds as the current reviewer is not stopped: a fresh reviewer can come back under a forgotten id, and the stop would end it. A session end spawns none, and when its reset failed the state still names the reviewer it forgot, so it passes false.
 const stopReviewer = async ($: Pick<Scope, 'state' | 'tool' | 'ui'>, id: string | undefined, mayRespawn: boolean): Promise<void> => {
   if (id === undefined) return
   try {
@@ -230,18 +246,22 @@ const stopReviewer = async ($: Pick<Scope, 'state' | 'tool' | 'ui'>, id: string 
   }
 }
 
-// Takes the open review if `ready`, judged on the conversation the change reads; with `back`, the review's entries are put back in the record in the same change.
-const takeReview = async ($: Pick<Scope, 'state'>, ready: (r: OpenReview, c: Conversation) => boolean, back: boolean): Promise<Taken | undefined> => {
+// Takes the open review if `ready`, judged on the conversation the change reads; where `back` holds for the review taken, its entries are put back in the record in the same change. Where `mark` holds instead, the review is not taken but marked as followed up (`followedUp`), in the same change: it stays open with its entries held, and its reviewer is not retired. The dispatch failure never asks for a mark.
+const takeReview = async ($: Pick<Scope, 'state'>, ready: (r: OpenReview, c: Conversation) => boolean, back: (r: OpenReview) => boolean, mark: (r: OpenReview) => boolean = () => false): Promise<Taken | undefined> => {
   const got: { taken?: Taken } = {}
   await change($, c => {
     got.taken = undefined
     const open = c.review
     if (open === undefined || !ready(open, c)) return c
+    if (mark(open)) {
+      got.taken = { review: open, model: c.reviewer?.model || null, retired: undefined, epoch: c.epoch }
+      return { ...c, review: { ...open, followedUp: true } }
+    }
     // A reviewer past ROTATE_AT is retired in the same change that ends its review, so no dispatch can plan a brief to it in between. The retired one's ids and name still mark its traffic and rows, and its tools refuse it; the caller stops it.
     const retiring = c.reviewerContext > ROTATE_AT
     got.taken = { review: open, model: c.reviewer?.model || null, retired: retiring ? c.reviewer?.id : undefined, epoch: c.epoch }
     const retire = retiring ? { reviewer: undefined, reviewerContext: 0 } : {}
-    return { ...c, ...retire, review: undefined, record: back ? withEntriesFirst(open.record, c.record) : c.record }
+    return { ...c, ...retire, review: undefined, record: back(open) ? withEntriesFirst(open.record, c.record) : c.record }
   })
   return got.taken
 }
@@ -267,148 +287,151 @@ const markFailed = async ($: Pick<Scope, 'state' | 'ui'>, reason: string, epoch:
   $.ui.log(`${PLUGIN}: review failed: ${reason}`, { to: 'debug' })
 }
 
-// Where held notes are taken to: a submit, a tool batch's append, or a user prompt that carries them.
-type Hold = 'submit' | 'append' | 'prompt'
+// Whether a prompt is the user's own: typed at the terminal, sent from a Remote Control client, or a headless run's.
+const isUserKind = (kind: string): boolean => kind === 'composer' || kind === 'bridge' || kind === 'sdk'
 
-// Takes every pending note in one change, so each note is taken by one delivery only. A switched-off auditor holds none (`switched` drops them, and nothing holds one while off). An interrupt holds them from every destination but a user prompt that carries them; a dropped submit holds them from submits, not from a tool batch's append.
-const takePending = async ($: Pick<Scope, 'state'>, to: Hold): Promise<TakenNotes> => {
+// Takes every held note in one change, so each is attached by one prompt only. `epoch`: the epoch at the take (`restorePending`).
+const takePending = async ($: Pick<Scope, 'state'>): Promise<TakenNotes> => {
   const got: TakenNotes = { notes: [], epoch: 0 }
   await change($, c => {
-    const blocked = to !== 'prompt' && (c.interrupted || (to === 'submit' && c.dropped))
-    got.notes = blocked ? [] : c.pendingNotes
+    got.notes = c.pendingNotes
     got.epoch = c.epoch
     return got.notes.length === 0 ? c : { ...c, pendingNotes: [] }
   })
   return got
 }
 
-// Whether a prompt is the user's own: typed at the terminal, sent from a Remote Control client, or a headless run's.
-const isUserKind = (kind: string): boolean => kind === 'composer' || kind === 'bridge' || kind === 'sdk'
-
-// Puts notes back at the front of the pending list, unless the epoch has moved since the take (`epoch`); notes that settled since the take stay behind them.
+// Puts notes back at the front of the held list, unless the epoch has moved since the take (`epoch`); notes held since the take stay behind them.
 const restorePending = ($: Pick<Scope, 'state'>, taken: TakenNotes): Promise<Conversation> =>
   change($, inEpoch(taken.epoch, c => ({ ...c, pendingNotes: [...taken.notes, ...c.pendingNotes] })))
 
-// The notes as the worker reads them: each framed, oldest first.
+// The held notes as the worker reads them: each framed as its review line then its body, oldest first.
 const framedOf = (notes: readonly PendingNote[]): string => notes.map(n => frameNote(n.number, n.text)).join('\n\n')
 
-// A delivered stall note sets the once-per-stall guard only when its review was dispatched after the user's latest prompt. An older review's note answers a turn the user has already moved past, so it must not hold back the stall fact of the turn it lands in.
-const withStallGuard = (c: Conversation, notes: readonly PendingNote[]): Conversation => (notes.some(n => n.stall && n.number > c.dispatchesAtPrompt) ? { ...c, nudged: true } : c)
+// A booked stall note sets the once-per-stall guard only when its review was dispatched after the user's latest prompt. An older review's note answers a turn the user has already moved past, so it must not hold back the stall fact of the turn it lands in.
+const withStallGuard = (c: Conversation, number: number, stall: boolean): Conversation => (stall && number > c.dispatchesAtPrompt ? { ...c, nudged: true } : c)
 
-// What the user sees of each delivered note that no prompt row of its own shows: a dim transcript line, which the model is not sent, one line for
-// each note, its line breaks drawn as spaces. An appended row and context beside the user's prompt draw nothing of their own, so the line is their
-// one view; a submitted note is its own prompt row, and markDelivered shows no line for it.
-const showNotes = ($: Pick<Scope, 'ui'>, notes: readonly PendingNote[]): void => {
-  for (const note of notes) $.ui.log(`auditor note ${note.number} to Claude: ${note.text.replace(/\s*[\r\n\u2028\u2029]+\s*/g, ' ')}`)
+// Whether a send is a reviewer's: from the model inside an agent this plugin spawned, which the engine stamps with this plugin's origin and the agent's id. The plugin's own briefs carry no agent id.
+const isReviewerSend = (e: { origin: { kind: string; name?: string }; agentId?: string }): boolean => e.origin.kind === 'plugin' && e.origin.name === PLUGIN && e.agentId !== undefined
+
+// Admits a reviewer's send in one change (`admitSend`): an admitted note fills its open review's note slot in that change, so of two notes sent at once one is admitted.
+const admit = async ($: Pick<Scope, 'state'>, sent: Sent): Promise<Verdict> => {
+  const got: { verdict: Verdict } = { verdict: { admitted: false, reason: UNCHECKED } }
+  await change($, c => {
+    got.verdict = admitSend(sent, c.review, c.epoch)
+    return got.verdict.admitted && c.review !== undefined ? { ...c, review: { ...c.review, note: sent.body } } : c
+  })
+  return got.verdict
 }
 
-// The bookkeeping of a delivery, by every path: the notes are shown (showNotes) unless they went as a submit, whose prompt row is their view, a delivered stall note is the nudge for its stall (no second one until the user's next prompt), the notes are kept for a fresh reviewer's brief, and each log is marked delivered. The guard and the kept notes are written under the take's epoch (`epoch`).
-const markDelivered = async ($: Scope, log: boolean, sessionId: string, to: Hold, taken: TakenNotes): Promise<void> => {
-  const { notes } = taken
-  if (to !== 'submit') showNotes($, notes)
-  // The latest delivered notes are kept for a fresh reviewer's first brief, in the change that arms the guard.
-  await change($, inEpoch(taken.epoch, c => ({ ...withStallGuard(c, notes), deliveredNotes: [...c.deliveredNotes, ...notes.map(n => frameNote(n.number, n.text))].slice(-CARRIED_NOTES) })))
-  for (const note of notes) await patchLog($, log, sessionId, note.number, { note_delivered: true })
+// The user is told of an escalation when the reviewer gives it, whether or not the worker has read it yet: a toast, and a push that reaches a phone when the user is away from the terminal (the engine holds it back while they are at it).
+const announce = ($: Scope, sent: Sent): void => {
+  if (!sent.escalation) return
+  $.ui.toast(ESCALATED)
+  const message = clip(`auditor escalated: ${firstLine(sent.body)}`, PUSH_CHARS)
+  void $.tool.call({ tool: 'PushNotification', message, status: 'proactive' }).catch((err: unknown) => recordFailed($, 'escalation push', err))
 }
 
-// Submits every held note as one prompt, oldest first, and marks each one's log delivered. A submit that throws puts the notes back at the front of the pending list for the next flush. Returns whether the prompt entered.
-const flush = async ($: Scope, log: boolean): Promise<boolean> => {
-  // Read before the notes are taken, so a /clear while the submit is in flight leaves their logs in the session they were held in.
-  const sessionId = await $.session.id()
-  const taken = await takePending($, 'submit')
-  const { notes } = taken
-  if (notes.length === 0) return false
+// What a note's booking writes into the conversation, delivered or held, with the marks from the send's own read: a fresh reviewer's carried notes gain it, and a stall note arms the stall guard.
+const withBooked = (c: Conversation, number: number, sent: Sent): Conversation => ({ ...withStallGuard(c, number, sent.stall), deliveredNotes: [...c.deliveredNotes, frameNote(number, sent.body)].slice(-CARRIED_NOTES) })
+
+// What a delivered note triggers: its booking state, only while the conversation is still at the send's epoch (`epoch`), and in that same change its review marked delivered, while it is still open (`delivered`). An escalation is announced whatever the epoch, and even when the booking write throws: the note was delivered. The change says whether it found the review; when it found none (the review was taken, or the epoch moved), the review's log was written with `note_delivered` false and stays so, and one debug line names the review.
+const book = async ($: Scope, sent: Sent, number: number, epoch: number): Promise<void> => {
+  announce($, sent)
+  const got = { found: false }
+  await change($, c => {
+    got.found = false
+    return inEpoch(epoch, s => {
+      got.found = s.review?.number === number
+      return { ...withBooked(s, number, sent), ...(s.review?.number === number ? { review: { ...s.review, delivered: true } } : {}) }
+    })(c)
+  })
+  if (!got.found) $.ui.log(`${PLUGIN}: review ${number}'s note was delivered after its review closed, so its log keeps note_delivered false`, { to: 'debug' })
+}
+
+// The one hold-or-release step for a note whose send was not delivered (`decideRefusal`), run in one change: the gate's note, whose slot admission filled (`filling` false), and the follow-up's, which the step admits itself (`filling` true). `reason` is the engine's refusal, absent for a send that threw. A held note gets the booking effects a delivered one gets, bar the delivered mark, and an escalation is announced then. If the change throws, nothing is held or released: the failure is logged with its stack, the slot stays as it was, and an escalation is still announced, as for a failed booking. Returns what the change decided, or undefined when it threw.
+const holdOrRelease = async ($: Scope, refusal: Refusal): Promise<Decided | undefined> => {
+  const { number, sent } = refusal
+  const got: { decided?: Decided } = {}
   try {
-    const result = await $.prompt.submit({ text: framedOf(notes) })
-    if ('drop' in result) {
-      // Held from submits until the user's next prompt carries them beside it: submitting them again would meet the same hook.
-      $.ui.log(`${PLUGIN}: the held notes were dropped at the prompt, so they wait for the user's next prompt: ${result.drop}`, { to: 'debug' })
-      // The stall's one nudge was this attempt, so its guard is armed now, in the change that holds the notes, under the take's epoch (`epoch`).
-      await change($, inEpoch(taken.epoch, c => ({ ...withStallGuard(c, notes), pendingNotes: [...notes, ...c.pendingNotes], dropped: true })))
-      return false
-    }
+    await change($, c => {
+      got.decided = decideRefusal(c, refusal, state => withBooked(state, number, sent))
+      return got.decided.next
+    })
   } catch (err) {
-    recordFailed($, 'note delivery', err)
-    await restorePending($, taken)
-    return false
+    recordFailed($, `review ${number}'s note hold or release`, err)
+    announce($, sent)
+    return undefined
   }
-  await markDelivered($, log, sessionId, 'submit', taken)
-  return true
-}
-
-// Appends the held notes as one user row at the worker's tool batch, which the model reads at its next request. A refused or failed append puts them back for the turn-end flush.
-const deliverAtToolBatch = async ($: Scope, log: boolean): Promise<void> => {
-  const sessionId = await $.session.id()
-  const taken = await takePending($, 'append')
-  const { notes } = taken
-  if (notes.length === 0) return
-  const text = framedOf(notes)
-  try {
-    const row = await $.session.append({ message: { type: 'user', content: [{ type: 'text', text }] } })
-    if (typeof row.deny === 'string') {
-      $.ui.log(`${PLUGIN}: the held notes were refused at the tool batch, so the turn end submits them: ${row.deny}`, { to: 'debug' })
-      await restorePending($, taken)
-      return
-    }
-  } catch (err) {
-    recordFailed($, 'mid-turn note delivery', err)
-    await restorePending($, taken)
-    return
+  if (got.decided?.outcome === 'hold') {
+    announce($, sent)
+    $.ui.log(
+      got.decided.stale === true
+        ? `${PLUGIN}: review ${number}'s note was refused while the session was stopped, but a reset since its send dropped it: nothing is held`
+        : `${PLUGIN}: review ${number}'s note was refused while the session was stopped, so it is held for the user's next prompt`,
+      { to: 'debug' },
+    )
   }
-  await markDelivered($, log, sessionId, 'append', taken)
-  // Labelled as the flush's prompt is: the plugin's own submission, which the record reads by its origin. Written under the take's epoch (`epoch`), as the delivery's bookkeeping is.
-  await change($, inEpoch(taken.epoch, c => withEntry(c, promptEntry('plugin', text))))
+  return got.decided
 }
 
-// Why the reviewer's turn ended without an answer to deliver, or null when it ended with one.
-const incompleteReason = (done: Finished): string | null => {
-  if (done.reason !== 'answer') return `reviewer turn ended with reason ${done.reason}, isAborted ${done.isAborted}`
-  return answerBody(done.answer) === '' ? 'reviewer ended its turn with an empty answer' : null
-}
-
-// The reviewer's turn end closes its open review. Its answer is the note, so it is read here: the note does not wait for a hand-back.
-// The review is taken only while `agentId` is still the stored reviewer, in the take's own change: a reviewer a switch or a /clear let go after its turn end was matched must not close the next run's review.
-const settle = async ($: Scope, log: boolean, agentId: string, done: Finished): Promise<void> => {
-  const incomplete = incompleteReason(done)
-  const taken = await takeReview($, (_r, c) => isReviewerId(c, agentId), incomplete !== null)
+// The reviewer's turn end settles its open review, with the outcome the gate saw (`settleOutcome`): the take computes it in its own change, which takes the review, so the entries go back exactly when it fails, or marks it for its one follow-up (`followUp`) and leaves it open.
+// The review is taken or marked only while `agentId` is still the stored reviewer, in the take's own change: a reviewer a switch or a /clear let go after its turn end was matched must not close the next run's review.
+// `unsent`: this settle follows a follow-up that could not be sent, whose attempt already put the answer in the debug log.
+const settle = async ($: Scope, log: boolean, agentId: string, done: Finished, unsent = false): Promise<void> => {
+  const outcomeOf = (r: OpenReview): Outcome => settleOutcome({ note: r.note, number: r.number, followedUp: r.followedUp === true, reason: done.reason, answer: done.answer })
+  const taken = await takeReview($, (_r, c) => isReviewerId(c, agentId), r => outcomeOf(r).status === 'incomplete', r => outcomeOf(r).status === 'follow-up')
   if (taken === undefined) {
     $.ui.log(`${PLUGIN}: the reviewer ended a turn with no review in progress; not recorded`, { to: 'debug' })
     return
   }
   const { review, model, retired, epoch } = taken
-  // The stop is issued last whatever the close, flush or dispatch does: a retired reviewer is never left running by a throw.
+  const outcome = outcomeOf(review)
+  if (outcome.status === 'follow-up') {
+    await followUp($, log, agentId, done, review.number, epoch)
+    return
+  }
+  // The stop is issued last whatever the close or dispatch does: a retired reviewer is never left running by a throw.
   try {
     const turnEnd: TurnEnd = { at: await $.clock.now(), answer: done.answer, reason: done.reason, durationMs: done.durationMs, usage: usageOf(done.usage) }
     const sessionId = await $.session.id()
     const closed: Closed = { review, model, turnEnd }
-    if (incomplete !== null) {
-      await markFailed($, incomplete, epoch)
-      await logReview($, sessionId, log, closed, { status: 'incomplete', reason: incomplete })
-    } else {
-      const note = readNote(done.answer)
-      // The log is written before the note can be flushed, so a flush never patches a log that does not exist yet.
-      await logReview($, sessionId, log, closed, { status: 'complete', note })
-      // The failure clears under the take's epoch (`epoch`), and a moved epoch returns before the escalation and the note.
-      const after = await change($, inEpoch(epoch, c => ({ ...c, failing: false })))
-      if (after.epoch !== epoch) return
-      // An escalation is the one note the user is told of, when it settles: the worker may not read it until later. The push reaches a phone when the user is away from the terminal; the engine holds it back while they are at it.
-      if (note?.escalation === true) {
-        $.ui.toast(ESCALATED)
-        const message = clip(`auditor escalated: ${firstLine(note.text)}`, PUSH_CHARS)
-        void $.tool.call({ tool: 'PushNotification', message, status: 'proactive' }).catch((err: unknown) => recordFailed($, 'escalation push', err))
-      }
-      // A note is held until the worker can take it (PendingNote says where). A stall note is held only from a review whose brief said nothing will wake the worker: its text says so, and the mod knows that only for such a review.
-      if (note !== null && note.stall && !review.nothingWakes) $.ui.log(`${PLUGIN}: review ${review.number} gave a stall note, but its brief did not say nothing will wake the worker; the note is dropped`, { to: 'debug' })
-      else if (note !== null) await change($, inEpoch(epoch, c => ({ ...c, pendingNotes: [...c.pendingNotes, { number: review.number, text: note.text, stall: note.stall }] })))
+    if (outcome.status === 'incomplete') {
+      // settleOutcome fails an answer only when it is empty.
+      const reason = done.reason === 'answer' ? 'reviewer ended its turn with an empty answer' : `reviewer turn ended with reason ${done.reason}, isAborted ${done.isAborted}`
+      await markFailed($, reason, epoch)
+      await logReview($, sessionId, log, closed, { status: 'incomplete', reason })
+      // Its restored entries wait for the worker's next turn end.
+      return
     }
-    // An idle worker takes the held notes at once, and their prompt starts its turn. A busy worker's notes go out at its next tool batch or turn end. An incomplete review's restored entries wait for the worker's next turn end.
-    // midTurn is read through a change (currentConversation), since a plain get answers the dispatch's starting moment and misses a user prompt that entered while this settle ran. It is read again before the dispatch: a prompt entering during the flush makes the worker busy, and a brief then would say it finished a turn.
-    if ((await currentConversation($)).midTurn) return
-    const started = await flush($, log)
-    if (incomplete === null && !started && !(await currentConversation($)).midTurn) await dispatchIdle($, log)
+    // An answer the reviewer wrote instead of sending reaches no one: it is kept here, in the debug log alone, once.
+    if (outcome.logAnswer && !unsent) $.ui.log(`${PLUGIN}: review ${review.number} sent no note, and its final answer was: ${done.answer}`, { to: 'debug' })
+    await logReview($, sessionId, log, closed, { status: 'complete', note: outcome.note })
+    // The failure clears under the take's epoch (`epoch`), and a moved epoch dispatches nothing.
+    const after = await change($, inEpoch(epoch, c => ({ ...c, failing: false })))
+    if (after.epoch !== epoch) return
+    // An idle worker gets the next brief at once; a busy one's turn end dispatches. midTurn is read through a change (currentConversation), since a plain get answers the dispatch's starting moment and misses a prompt that entered while this settle ran, a note's own among them.
+    if (!(await currentConversation($)).midTurn) await dispatchIdle($, log)
   } finally {
     await stopReviewer($, retired, true)
   }
+}
+
+// A review marked for its follow-up asks its reviewer once, through the step briefs use (`sendToReviewer`), to send the note it wrote as its answer. The answer goes to the debug log as the follow-up is attempted, so its text is kept whatever becomes of the follow-up. A follow-up the engine refuses in its stopped-session state (or refuses while the interrupt mark is set) has the note the reviewer wrote admitted and held by the shared hold-or-release step (`holdOrRelease`), which fills the review's slot. A follow-up that is not delivered, or whose send throws, then settles the review through the same settle, with this turn end's answer: the review is marked, so it completes quiet, or with the held note, and nothing is retried. One a reset made stale before it went out is not sent, and settles nothing.
+const followUp = async ($: Scope, log: boolean, agentId: string, done: Finished, number: number, epoch: number): Promise<void> => {
+  $.ui.log(`${PLUGIN}: review ${number} wrote its note as its final answer, so its reviewer is asked once to send it; the answer was: ${done.answer}`, { to: 'debug' })
+  let failure: string
+  try {
+    const sent = await sendToReviewer($, agentId, followUpText(number), epoch, number)
+    if (sent.status !== 'refused') return
+    failure = sent.reason
+    const held = await holdOrRelease($, { number, epoch, sent: readSend(MAIN, done.answer), reason: sent.reason, filling: true })
+    if (held?.refused !== undefined) failure = `${failure} (its note was not held: ${held.refused})`
+  } catch (err) {
+    failure = err instanceof Error ? (err.stack ?? err.message) : String(err)
+  }
+  $.ui.log(`${PLUGIN}: review ${number}'s follow-up could not be sent: ${failure}`, { to: 'debug' })
+  await settle($, log, agentId, done, true)
 }
 
 // A guard withholds the stall fact: the turn's last tool call asked the user, or a stall note on a review dispatched since the user's last prompt was delivered.
@@ -572,39 +595,59 @@ const releaseSpawn = async ($: Pick<Scope, 'state' | 'ui'>, brief: string): Prom
   await change($, c => ({ ...c, spawnsInFlight: c.spawnsInFlight.filter(s => s.brief !== brief) })).catch((err: unknown) => recordFailed($, 'spawn bookkeeping', err))
 }
 
+type Delivery = { status: 'stale' } | { status: 'delivered' } | { status: 'refused'; reason: string }
+
+// Takes a plugin message out of flight; a failed write is logged, so the send's own outcome or error is what its caller sees.
+const leaveFlight = ($: Pick<Scope, 'state' | 'ui'>, text: string): Promise<void> =>
+  unflightBrief($, text).then(
+    () => undefined,
+    (err: unknown) => recordFailed($, 'flight bookkeeping', err),
+  )
+
+// The one step that sends a plugin message, a brief or a follow-up, to the stored reviewer `to`. It goes out only while the conversation is still at the epoch (`epoch`) and open review `number` it was planned under, and is 'stale' otherwise. It is held in flight (`briefsInFlight`) until its call reaches the recorder, which takes it out and leaves the call out of the record; a refused or thrown send takes it out here. It carries no agent id, so the send gate passes it untouched. Each caller decides what a refusal means.
+const sendToReviewer = async ($: Scope, to: string, text: string, epoch: number, number: number): Promise<Delivery> => {
+  const ours = (c: Conversation): boolean => c.epoch === epoch && c.review?.number === number
+  const queued = await change($, c => (ours(c) ? { ...c, briefsInFlight: [...c.briefsInFlight, text] } : c))
+  if (!ours(queued)) return { status: 'stale' }
+  const sent = await $.session.send({ to, text }).catch(async (err: unknown) => {
+    await leaveFlight($, text)
+    throw err
+  })
+  if (!sent.isDelivered) {
+    await leaveFlight($, text)
+    return { status: 'refused', reason: sent.reason }
+  }
+  // A reset (`epoch`) while the send was in flight let this reviewer go, and its stop may have landed before the message: the message must not run a turn nothing settles, so the reviewer is stopped again.
+  // A failed read is logged, not thrown: the message was delivered, so its caller must not treat it as failed.
+  const moved = await currentConversation($).then(
+    c => c.epoch !== epoch,
+    (err: unknown) => {
+      recordFailed($, 'reviewer send bookkeeping', err)
+      return false
+    },
+  )
+  if (moved) await stopReviewer($, to, true)
+  return { status: 'delivered' }
+}
+
 const deliverBrief = async ($: Scope, plan: Plan): Promise<void> => {
   const { send, brief, number } = plan
   // The plan's review must still be the open one, at the plan's epoch (`epoch`); otherwise its brief goes to no reviewer, stored or spawned.
   const ours = (c: Conversation): boolean => c.epoch === plan.epoch && c.review?.number === number
-  // The brief stays in flight until its call reaches the recorder, which takes it out and skips the call; a failed delivery takes it out in dispatchIdle.
-  const queued = await change($, c => (ours(c) ? { ...c, briefsInFlight: [...c.briefsInFlight, brief] } : c))
-  if (!ours(queued)) return
   if (send !== undefined) {
-    const sent = await $.session.send({ to: send, text: brief })
-    if (sent.isDelivered) {
-      // A reset (`epoch`) while the send was in flight let this reviewer go, and its stop may have landed before the brief: the brief must not run a review nothing settles, so the reviewer is stopped again.
-      // A failed read is logged, not thrown: the brief was delivered, so the dispatch must not fail its review.
-      const moved = await currentConversation($).then(
-        c => c.epoch !== plan.epoch,
-        (err: unknown) => {
-          recordFailed($, 'reviewer send bookkeeping', err)
-          return false
-        },
-      )
-      if (moved) await stopReviewer($, send, true)
-      return
-    }
+    const sent = await sendToReviewer($, send, brief, plan.epoch, number)
+    if (sent.status !== 'refused') return
     // The stored reviewer did not take the brief, so it is no longer the reviewer: this dispatch spawns one.
     $.ui.log(`${PLUGIN}: the reviewer's send was refused, so a new reviewer is spawned: ${sent.reason}`, { to: 'debug' })
   }
-  // A fresh reviewer is told the notes earlier reviewers delivered: a brief planned for the stored reviewer gains them here, in flight under its new text.
-  // A plan whose review was dropped while the send was refused spawns no reviewer, stops the refused reviewer there as well, and leaves its brief out of flight. The spawn is committed in this change as an entry in `spawnsInFlight` under the plan's epoch (`epoch`), which the finally takes out.
+  // A fresh reviewer is told the notes earlier reviewers delivered: a brief planned for the stored reviewer gains them here. The spawn's brief enters flight in this change, until its Agent call reaches the recorder.
+  // A plan whose review was dropped, before the spawn or while the send was refused, spawns no reviewer and stops the refused reviewer there as well. The spawn is committed in this change as an entry in `spawnsInFlight` under the plan's epoch (`epoch`), which the finally takes out.
   const spawned = { brief, dropped: false }
   await change($, c => {
     spawned.dropped = !ours(c)
-    if (spawned.dropped) return { ...c, briefsInFlight: c.briefsInFlight.filter(b => b !== brief) }
+    if (spawned.dropped) return c
     spawned.brief = send === undefined ? brief : [...carriedLines(c.deliveredNotes), brief].join('\n')
-    return { ...c, reviewer: undefined, reviewerContext: 0, spawnsInFlight: [...c.spawnsInFlight, { brief: spawned.brief, epoch: plan.epoch, number, startedAt: plan.at }], briefsInFlight: [...c.briefsInFlight.filter(b => b !== brief), spawned.brief] }
+    return { ...c, reviewer: undefined, reviewerContext: 0, spawnsInFlight: [...c.spawnsInFlight, { brief: spawned.brief, epoch: plan.epoch, number, startedAt: plan.at }], briefsInFlight: [...c.briefsInFlight, spawned.brief] }
   })
   if (spawned.dropped) {
     await stopReviewer($, send, true)
@@ -666,7 +709,7 @@ const deliverBrief = async ($: Scope, plan: Plan): Promise<void> => {
 
 // A dispatch error marks the reviewer failing (`markFailed`) whether or not its review is still open; only an open review is logged.
 const failReview = async ($: Scope, sessionId: string, log: boolean, plan: Plan, reason: string): Promise<void> => {
-  const taken = await takeReview($, r => r.number === plan.number, true)
+  const taken = await takeReview($, r => r.number === plan.number, () => true)
   // As in settle, the stop is issued last whatever the bookkeeping does: a retired reviewer is never left running by a throw.
   try {
     await markFailed($, reason, plan.epoch)
@@ -816,7 +859,8 @@ export const register: Register = (on, options) => {
       name: 'reviewer',
       description: 'auditor reviewer: audits the worker session each turn',
       prompt: REVIEWER_PROMPT,
-      tools: ['Read', 'Glob', 'Grep', ENTRIES, TRANSCRIPT],
+      // SendMessage carries the review's one note to the worker; the gate (`session.send`) refuses every other send.
+      tools: ['Read', 'Glob', 'Grep', 'SendMessage', ENTRIES, TRANSCRIPT],
       model: REVIEWER_MODEL,
       effort: REVIEWER_EFFORT,
       autoCompactWindow: 100_000,
@@ -865,7 +909,7 @@ export const register: Register = (on, options) => {
     return next({ ...e, instructions: e.instructions === undefined ? REVIEWER_COMPACTION : `${e.instructions}\n\n${REVIEWER_COMPACTION}` })
   })
 
-  // A reviewer's own traffic to the worker (its finish notice, any message) is taken where it arrives, so nothing is shown and the worker spends no turn on it: the note is read from the reviewer's turn end. The sender is the delivery's verified team name, never words in its body, since a taken message is gone.
+  // A known reviewer's verified end-of-run notice is consumed where it arrives, so no "Teammate … finished" row is drawn and the worker spends no turn on it; a reviewer from before a /clear included. Any other verified delivery from a known reviewer is logged and passed on, so a shape no one has measured is seen, not swallowed. A note never arrives here: it reaches the worker as a peer prompt. The sender is the delivery's verified team name, never words in its body, since a consumed delivery is gone.
   on('session.receive', async ($, e, next) => {
     const { origin } = e
     if (e.agentId !== undefined || !('teammate' in origin) || !origin.isVerified) return next(e)
@@ -875,17 +919,62 @@ export const register: Register = (on, options) => {
       recordFailed($, 'reviewer traffic check', err)
       return next(e)
     }
-    return { consumed: 'auditor reviewer traffic' }
+    if (isEndNotice(e.text)) {
+      $.ui.log(`${PLUGIN}: consumed the end-of-run notice of reviewer ${origin.teammate}`, { to: 'debug' })
+      return { consumed: END_NOTICE }
+    }
+    $.ui.log(`${PLUGIN}: a delivery from reviewer ${origin.teammate} that is not its end-of-run notice was passed on: ${clip(firstLine(e.text), PUSH_CHARS)}`, { to: 'debug' })
+    return next(e)
   })
 
-  // A session end forgets the reviewer and its open review, so a late hand-back or turn end from it matches nothing; its open review is logged as incomplete.
+  // The gate on every send of a reviewer this plugin spawned, current or former, by its origin alone (`isReviewerSend`): it reads no agent list. It admits only a note for the open review (`admitSend`), and refuses the rest before the chain below runs, silently to the user: the reviewer reads the reason as its tool result, and the debug log names the reason and the send's review number, never its body. An admitted note is booked once the chain reports it delivered (`book`). A send the chain refuses in the engine's stopped-session state, or refuses while the interrupt mark is set, holds the note for the user's next prompt; any other send not delivered releases its slot, so a resend in the same turn may be admitted (`holdOrRelease`). Every other send passes untouched: the main conversation's, the worker's own agents', and this plugin's briefs.
+  on('session.send', async ($, e, next) => {
+    if (!isReviewerSend(e)) return next(e)
+    const sent = readSend(e.to, e.text)
+    const of = sent.number === null ? '' : ` (review ${sent.number})`
+    let verdict: Verdict
+    try {
+      verdict = await admit($, sent)
+    } catch (err) {
+      // Fails closed: an unchecked message never reaches the worker.
+      $.ui.log(`${PLUGIN}: a reviewer send${of} was refused, since its check could not read the conversation: ${reasonOf(err)}`, { to: 'debug' })
+      return { isDelivered: false, reason: UNCHECKED }
+    }
+    if (!verdict.admitted) {
+      $.ui.log(`${PLUGIN}: a reviewer send${of} was refused: ${verdict.reason}`, { to: 'debug' })
+      return { isDelivered: false, reason: verdict.reason }
+    }
+    const { number, epoch } = verdict
+    let result: Awaited<ReturnType<typeof next>>
+    try {
+      result = await next(e)
+    } catch (err) {
+      recordFailed($, `review ${number}'s note send`, err)
+      await holdOrRelease($, { number, epoch, sent, reason: undefined, filling: false })
+      return { isDelivered: false, reason: `the message was not sent: ${reasonOf(err)}` }
+    }
+    if (!result.isDelivered) {
+      $.ui.log(`${PLUGIN}: review ${number}'s note was not delivered: ${result.reason}`, { to: 'debug' })
+      await holdOrRelease($, { number, epoch, sent, reason: result.reason, filling: false })
+      return result
+    }
+    // The note reached the worker's queue, so a failure here leaves its slot filled, and a resend stays refused.
+    try {
+      await book($, sent, number, epoch)
+    } catch (err) {
+      recordFailed($, `review ${number}'s note booking`, err)
+    }
+    return result
+  })
+
+  // A session end forgets the current reviewer, its open review and that review's note slot, so a late turn end from it matches nothing and its late sends are refused; its open review is logged as incomplete. The reviewer markers are kept: they mark traffic, not a review.
   on('session.end', async ($, e, next) => {
     const ended = { conversation: undefined as Conversation | undefined }
     try {
       await change($, c => {
         ended.conversation = c
-        // The toggle is the session's: a /clear keeps it off. Everything else starts over, held notes included, and the epoch moves on (`epoch`). The spawns still in flight are kept for their dispatches to settle (`spawnsInFlight`).
-        return { ...fresh(), dispatches: c.dispatches, dispatchesAtPrompt: c.dispatches, off: c.off, epoch: c.epoch + 1, spawnsInFlight: c.spawnsInFlight, reviewerIds: c.spawnsInFlight.flatMap(s => (s.id === undefined ? [] : [s.id])) }
+        // The toggle is the session's: a /clear keeps it off. The reviewer markers are kept, so a pre-/clear reviewer's late end notice is still consumed, its calls stay out of the record and its task row stays hidden. Everything else starts over, and the epoch moves on (`epoch`). The spawns still in flight are kept for their dispatches to settle (`spawnsInFlight`).
+        return { ...fresh(), dispatches: c.dispatches, dispatchesAtPrompt: c.dispatches, off: c.off, epoch: c.epoch + 1, spawnsInFlight: c.spawnsInFlight, reviewerIds: c.reviewerIds, reviewerNames: c.reviewerNames }
       })
     } catch (err) {
       recordFailed($, 'session end', err)
@@ -903,23 +992,21 @@ export const register: Register = (on, options) => {
     return next(e)
   })
 
-  // Every prompt the worker receives goes into the record where it arrives. A prompt a later hook drops never entered.
+  // Every prompt the worker receives goes into the record where it arrives, a reviewer's note among them: it arrives as a peer prompt carrying the reviewer's agent message, and passes on unchanged. A prompt a later hook drops never entered. The one note the plugin itself delivers is a held one (`holdOrRelease`): it rides beside the user's next own prompt.
   on('prompt.submit', async ($, e, next) => {
-    // A reviewer's hand-back that reaches prompt submission is bookkeeping, not the worker's: an idle reviewer notice is kept, since dropping it would show a "Prompt dropped by a hook" row each time, and the retry gate (`eligible`) stops a failure from re-triggering.
+    // A reviewer's hand-back reaches prompt submission only in a session without agent teams, where the reviewer is a plain subagent: it is bookkeeping, not the worker's, and is dropped rather than start a worker turn. No note is ever dropped here, since a drop always shows the user a "Prompt dropped by a hook" row.
     if (e.origin.kind === 'peer' && isReviewerHandBack(e.text)) return { drop: 'reviewer bookkeeping' }
-    // The notes an interrupt or a dropped submit held back ride beside the user's next prompt; never beside a slash command, which may not reach the model.
+    // The held notes ride beside the user's next own prompt; never beside a slash command, which may not reach the model, nor a plugin's or a peer's prompt.
     const carries = isUserKind(e.origin.kind) && e.command === undefined
-    // Read before the notes are taken, so a failed read loses none; a failure carries none, and they wait for the next prompt.
-    let sessionId = ''
     let taken: TakenNotes = { notes: [], epoch: 0 }
-    // Whether this prompt took the held notes, none or some: only then does it release the holds.
+    // Whether this prompt took the held notes, none or some: only then does it clear the interrupt mark.
     let took = false
     if (carries) {
       try {
-        sessionId = await $.session.id()
-        taken = await takePending($, 'prompt')
+        taken = await takePending($)
         took = true
       } catch (err) {
+        // A failed take carries none, and they wait for the next prompt.
         recordFailed($, 'held notes', err)
       }
     }
@@ -932,28 +1019,21 @@ export const register: Register = (on, options) => {
       if (held.length > 0) await restorePending($, taken)
       throw err
     }
-    // A dropped prompt never entered, so its notes go back as they were: the drop was of the user's prompt, not of a submit of the notes.
+    // A dropped prompt never entered, so its notes go back as they were.
     if ('drop' in result) {
       if (held.length > 0) await restorePending($, taken)
       return result
     }
     try {
-      // The prompt entered, so the worker is mid-turn until its turn ends. A plugin's own submission reaches this hook too. The user's own prompt ends the stall guard; one that took the held notes, whether or not any were waiting, releases the interrupt and the dropped submit's hold, so neither outlives the user's next prompt.
-      await change($, c => ({ ...c, midTurn: true, turnStart: turnStartOf(c, e), ...(isUserKind(e.origin.kind) ? { nudged: false, dispatchesAtPrompt: c.dispatches } : {}), ...(took ? { interrupted: false, dropped: false } : {}) }))
+      // The prompt entered, so the worker is mid-turn until its turn ends; a note's peer prompt too. A plugin's own submission reaches this hook too. The user's own prompt ends the stall guard; one that took the held notes, whether or not any were waiting, clears the interrupt mark.
+      await change($, c => ({ ...c, midTurn: true, turnStart: turnStartOf(c, e), ...(isUserKind(e.origin.kind) ? { nudged: false, dispatchesAtPrompt: c.dispatches } : {}), ...(took ? { interrupted: false } : {}) }))
       await appendEntry($, promptEntry(e.origin.kind, result.text))
       // The notes enter the record as the plugin's own prompt, so the reviewer sees what it already said.
       if (held.length > 0) await appendEntry($, promptEntry('plugin', notesText))
     } catch (err) {
       recordFailed($, 'turn record', err)
     }
-    // The notes reached the model beside the prompt whatever became of the record, so their delivery is marked apart from it.
-    if (held.length > 0) {
-      try {
-        await markDelivered($, log, sessionId, 'prompt', taken)
-      } catch (err) {
-        recordFailed($, 'note delivery bookkeeping', err)
-      }
-    }
+    if (held.length > 0) $.ui.log(`${PLUGIN}: attached the held notes of reviews ${held.map(n => n.number).join(', ')} beside the user's prompt`, { to: 'debug' })
     return result
   })
 
@@ -1055,7 +1135,7 @@ export const register: Register = (on, options) => {
     })
   })
 
-  // Hidden unless the transcript is expanded: a reviewer's task row, whatever its status, for any reviewer this conversation has spawned (a
+  // Hidden unless the transcript is expanded: a reviewer's task row, whatever its status, for any reviewer this session has spawned (a
   // failure shows in the footer label instead).
   on('ui.render', { component: 'UserMessage' }, async ($, e, next) => {
     const { isExpanded, origin, task } = e.props
@@ -1082,29 +1162,17 @@ export const register: Register = (on, options) => {
     return next(e)
   })
 
-  // The worker's tool batch is a read point: a note settled mid-turn is appended here, so the model reads it at its next request. A subagent's batch is not.
-  on('classic.PostToolBatch', async ($, e, next) => {
-    if (e.agent_id === undefined) {
-      try {
-        await deliverAtToolBatch($, log)
-      } catch (err) {
-        recordFailed($, 'mid-turn note delivery', err)
-      }
-    }
-    return next(e)
-  })
-
-  // A reviewer's turn end closes its review and settles it, inline. The worker's own turn end, which every outcome reaches, ends its mid-turn, flushes the notes held for it, and dispatches when no flush started a turn.
+  // A reviewer's turn end settles its review inline: it closes it, or gives it its one follow-up and leaves it open. The worker's own turn end, which every outcome reaches, ends its mid-turn and dispatches.
   on('turn.complete', async ($, e, next) => {
     try {
       if (e.agentId === undefined) {
         // Stop does not fire when the user aborts a turn, and its answer comes back empty (observed live), so an aborted turn's last message is its answer or the interruption.
         const last = e.answer !== '' ? e.answer : e.isAborted ? NONE_INTERRUPTED : null
-        // An aborted turn has no Stop, so its end clears the stall fact the last Stop left and holds its notes for the user's next prompt; every turn end resets the last-tool-call guard and the addresses messaged in the turn.
+        // An aborted turn has no Stop, so its end clears the stall fact the last Stop left and sets the interrupt mark; every turn end resets the last-tool-call guard and the addresses messaged in the turn.
         await change($, c => ({ ...c, midTurn: false, lastAsked: false, messaged: [], ...(e.isAborted ? { wake: null, interrupted: true } : {}), ...(last === null ? {} : { lastMessage: last }) }))
         if (e.isAborted) await appendEntry($, INTERRUPTED)
         // Stop and this turn end both dispatch: a turn with no Stop (an abort), or a reviewer settling between Stop and this end, is dispatched nowhere else.
-        if (!(await flush($, log))) await atTurnEnd($, () => dispatchAtTurnEnd($, log))
+        await atTurnEnd($, () => dispatchAtTurnEnd($, log))
       } else if (await reviewerAgent($, e.agentId)) {
         await settle($, log, e.agentId, e)
       }
