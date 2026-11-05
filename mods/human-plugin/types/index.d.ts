@@ -56,8 +56,14 @@ export type Notice = { id: number; text: string }
 // The owed notices as the state keeps them: held for the human's next prompt, or waiting for a read point or a turn.
 export type OwedNotices = { held: Notice[]; waiting: Notice[] }
 
+// One entry of the Claude TODO list, the agent's own running list (todo.ts): a title and the state of its step. A step that is done
+// leaves the list at once, so no stored entry is.
+export type TodoState = 'queued' | 'in_flight'
+export type TodoItem = { title: string; state: TodoState }
+
 declare module 'claude-code' {
   interface PluginState {
-    'human-plugin': { list: Store; selection: number | null; corrected: number[]; notices: OwedNotices }
+    // `todo` is null until the Claude list is first written in a session, so a rebuild can tell a list not written yet from an emptied one.
+    'human-plugin': { list: Store; selection: number | null; corrected: number[]; notices: OwedNotices; todo: TodoItem[] | null }
   }
 }

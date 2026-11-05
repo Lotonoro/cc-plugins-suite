@@ -2,6 +2,8 @@ import { expect, test } from 'claude-code/testing'
 import { register, wireHooks } from './register'
 import { offer, reset, setOnChange, startTurn, takeHeld, endTurn } from './turns'
 import { EMPTY, TOOL, act, normalizeStore } from './items'
+import { TODO_TOOL } from './todo'
+import { TODO_SPEC, TOOL_SPEC } from './steering'
 import { paneRows } from './ui'
 import { correctionText } from './restatement'
 import { ARG_HINT, DESCRIPTION, FAILED, PHONE_REBUILDING, REBUILDING, USAGE } from './commands'
@@ -30,6 +32,7 @@ const wire = (load: Load = on => register(on, {} as never)) => {
     return {
       catch: (catchHandler: Handler) => {
         catches[event] = catchHandler
+        if (rest.length === 2) catches[`${event} ${JSON.stringify(rest[0])}`] = catchHandler
       },
     }
   }
@@ -337,7 +340,7 @@ test('a session.end whose carry throws still empties the list, with the id count
   const e = { reason: 'clear' }
   const answered = await (catches['session.end'] as Handler)(broken(logs, [], stored, writes) as never, e as never, next(false) as never)
   expect(answered).toEqual({ passed: e })
-  expect(writes).toEqual([{ items: [], next: 7, term: null }])
+  expect(writes).toEqual([{ items: [], next: 7, term: null }, []])
   expect(logs).toEqual(['human-plugin: the session.end hook throw: list unreadable'])
 })
 
@@ -2774,4 +2777,137 @@ test('every form an open item\'s foot names is accepted by the command: a range 
       }
     }
   }
+})
+
+// The Claude TODO list's hooks, filtered on the tool: each is kept under its filter, as the human tool's are under their own events.
+const todoHook = (hooks: Record<string, Handler>, event: string): Handler => hooks[`${event} ${JSON.stringify({ tool: TODO_TOOL })}`] as Handler
+const runTodo = (hooks: Record<string, Handler>, env: unknown, input: Record<string, unknown>) =>
+  todoHook(hooks, 'tool.call')(env as never, { tool: TODO_TOOL, ...input } as never, next(false) as never)
+const entry = (title: string, state: string) => ({ title, state })
+
+test('session.start registers both tools, neither deferred: the human list\'s and the Claude list\'s', async () => {
+  reset()
+  const { hooks } = wire()
+  const { env } = memEnv([], [], null)
+  const registered: unknown[] = []
+  await (hooks['session.start'] as Handler)({ ...env, tool: { register: async (spec: unknown) => void registered.push(spec) } } as never, {} as never, next(false) as never)
+  expect(registered).toEqual([TOOL_SPEC, TODO_SPEC])
+  expect(TODO_SPEC.isDeferred).toBe(false)
+})
+
+test('the permission check allows the Claude list\'s tool without asking the person', async () => {
+  const { hooks } = wire()
+  expect(await todoHook(hooks, 'tool.check')({} as never, { tool: TODO_TOOL, input: {} } as never, next(false) as never)).toEqual({ decision: 'allow' })
+})
+
+test('a write stores the queued and in-flight entries in the order given and none of the done ones, and answers with the counts', async () => {
+  reset()
+  const { hooks } = wire()
+  const { env, values } = memEnv([], [], null)
+  const entries = [entry('Queued first', 'queued'), entry('Finished', 'done'), entry('Running', 'in_flight'), entry('Queued last', 'queued')]
+  expect(await runTodo(hooks, env, { entries })).toEqual({ result: 'Claude TODO: 1 in flight, 2 queued' })
+  expect(values.todo).toEqual([entry('Queued first', 'queued'), entry('Running', 'in_flight'), entry('Queued last', 'queued')])
+})
+
+test('a call with an empty array empties the list, and one with no array leaves it as it is and lists the entries with their states in written order', async () => {
+  reset()
+  const { hooks } = wire()
+  const { env, values } = memEnv([], [], null)
+  await runTodo(hooks, env, { entries: [entry('Queued first', 'queued'), entry('Running', 'in_flight')] })
+  const before = values.todo
+  expect(await runTodo(hooks, env, {})).toEqual({ result: 'Claude TODO: 1 in flight, 1 queued\n- queued: Queued first\n- in_flight: Running' })
+  expect(values.todo).toEqual(before)
+  expect(await runTodo(hooks, env, { entries: [] })).toEqual({ result: 'Claude TODO: 0 in flight, 0 queued' })
+  expect(values.todo).toEqual([])
+  expect(await runTodo(hooks, env, {})).toEqual({ result: 'Claude TODO: 0 in flight, 0 queued' })
+})
+
+test('a title of 81 units, a title with a line break, an empty title and an unknown state are each refused with a reason, and the list is unchanged', async () => {
+  reset()
+  const { hooks } = wire()
+  const { env, values } = memEnv([], [], null)
+  await runTodo(hooks, env, { entries: [entry('Keep me', 'in_flight')] })
+  const kept = [entry('Keep me', 'in_flight')]
+  for (const [bad, reason] of [
+    [entry('x'.repeat(81), 'queued'), '80'],
+    [entry('two\nlines', 'queued'), 'one line'],
+    [entry('  ', 'queued'), 'empty'],
+    [entry('Fine', 'paused'), 'queued, in_flight or done'],
+  ] as const) {
+    const out = (await runTodo(hooks, env, { entries: [entry('Would replace', 'queued'), bad] })) as { deny: string }
+    expect(out.deny).toContain('claude_todo: entry 2')
+    expect(out.deny).toContain(reason)
+    expect(values.todo).toEqual(kept)
+  }
+})
+
+test('a subagent\'s call, a write or a read, is refused with the reason that only the main agent keeps the list, and changes nothing', async () => {
+  reset()
+  const { hooks } = wire()
+  const { env, values } = memEnv([], [], null)
+  await runTodo(hooks, env, { entries: [entry('Keep me', 'in_flight')] })
+  for (const input of [{ entries: [entry('Sub plan', 'queued')] }, { entries: [] }, {}]) {
+    expect(await runTodo(hooks, env, { ...input, agentId: 'sub-1' })).toEqual({ deny: 'claude_todo: only the main agent keeps the Claude TODO list' })
+  }
+  expect(values.todo).toEqual([entry('Keep me', 'in_flight')])
+})
+
+test('a write to the Claude list leaves the human list as it was, and a human tool call leaves the Claude list as it was', async () => {
+  reset()
+  const { hooks } = wire()
+  const { env, values } = memEnv([], [], null)
+  await runTodo(hooks, env, { entries: [entry('Build', 'in_flight')] })
+  expect(values.list).toEqual({ items: [], next: 1 })
+  await (hooks['tool.call'] as Handler)(env as never, { tool: TOOL, action: 'add', title: 'Pick a db' } as never, next(false) as never)
+  expect(values.todo).toEqual([entry('Build', 'in_flight')])
+})
+
+test('a throw in the Claude list\'s tool is answered with a refusal that changes nothing', async () => {
+  const { catches } = wire()
+  const answered = await (catches[`tool.call ${JSON.stringify({ tool: TODO_TOOL })}`] as Handler)({} as never, { tool: TODO_TOOL } as never, next(false) as never)
+  expect(answered).toEqual({ deny: 'claude_todo: the mod failed to answer the call' })
+  const passed = { tool: TODO_TOOL }
+  expect(await (catches[`tool.call ${JSON.stringify({ tool: TODO_TOOL })}`] as Handler)({} as never, passed as never, next(true) as never)).toEqual({ passed })
+})
+
+test('a call to the Claude list\'s tool is drawn as one line, its result row empty; the human tool\'s and another tool\'s rows are as before', async () => {
+  const { hooks } = wire()
+  const $ = { ui: { resolve: () => table } }
+  const callRow = hooks['ui.render {"component":"ToolUse"}'] as Handler
+  const resultRow = hooks['ui.render {"component":"ToolResult"}'] as Handler
+  const line = (props: object) => callRow($ as never, { props } as never, next(false) as never)
+  const dim = (text: string) => ({ type: 'Text', dimColor: true, wrap: 'truncate-end', children: [text] })
+  const entries = [entry('Build', 'in_flight'), entry('Ship', 'queued')]
+  expect(await line({ tool: TODO_TOOL, input: { entries }, isRunning: true, isErrored: false })).toEqual(dim('human-plugin: writing the Claude TODO list…'))
+  expect(await line({ tool: TODO_TOOL, input: {}, isRunning: true, isErrored: false })).toEqual(dim('human-plugin: reading the Claude TODO list…'))
+  expect(await line({ tool: TODO_TOOL, input: { entries }, output: 'Claude TODO: 1 in flight, 1 queued', isRunning: false, isErrored: false })).toEqual(dim('human-plugin: Claude TODO 1 in flight, 1 queued'))
+  expect(await line({ tool: TODO_TOOL, input: { entries: [entry('', 'queued')] }, output: 'x', isRunning: false, isErrored: true })).toEqual(dim('human-plugin: entry 1: the title is empty'))
+  expect(await line({ tool: TODO_TOOL, input: { entries }, output: 'claude_todo: only the main agent keeps the Claude TODO list', isRunning: false, isErrored: true })).toEqual(dim('human-plugin: claude_todo: only the main agent keeps the Claude TODO list'))
+  expect(await line({ tool: TODO_TOOL, input: { entries }, output: '', isRunning: false, isErrored: true })).toEqual(dim('human-plugin: failed'))
+  expect(await resultRow($ as never, { props: { tool: TODO_TOOL, output: 'Claude TODO: 1 in flight, 1 queued', isErrored: false } } as never, next(false) as never)).toEqual({ type: 'Box', display: 'none' })
+  expect(await line({ tool: TOOL, input: { action: 'remove', id: 2 }, output: 'removed #2', isRunning: false, isErrored: false })).toEqual(dim('human-plugin: removed #2'))
+  const other = { props: { tool: 'Bash', input: { command: 'ls' }, output: undefined, isRunning: false, isErrored: false } }
+  expect(await callRow($ as never, other as never, next(false) as never)).toEqual({ passed: other })
+  const otherResult = { props: { tool: 'Bash', output: 'x', isErrored: false } }
+  expect(await resultRow($ as never, otherResult as never, next(false) as never)).toEqual({ passed: otherResult })
+})
+
+test('a /clear leaves the Claude list empty, and a session end that is not a /clear leaves it', async () => {
+  reset()
+  const { hooks } = wire()
+  const { env, values } = memEnv([], [], null)
+  await runTodo(hooks, env, { entries: [entry('Build', 'in_flight')] })
+  await (hooks['session.end'] as Handler)(env as never, { reason: 'exit' } as never, next(false) as never)
+  expect(values.todo).toEqual([entry('Build', 'in_flight')])
+  await (hooks['session.end'] as Handler)(env as never, { reason: 'clear' } as never, next(false) as never)
+  expect(values.todo).toEqual([])
+  expect(await runTodo(hooks, env, {})).toEqual({ result: 'Claude TODO: 0 in flight, 0 queued' })
+})
+
+test('a /clear whose session.end hook fails part-way still empties the Claude list', async () => {
+  reset()
+  const { catches } = wire()
+  const writes: unknown[] = []
+  await (catches['session.end'] as Handler)(broken([], [], { next: 3 }, writes) as never, { reason: 'clear' } as never, next(false) as never)
+  expect(writes).toContainEqual([])
 })

@@ -73,6 +73,7 @@ Then start a new session and let the agent do the asking.
 - **Survives compaction and resume.** `claude --resume` rebuilds the list from the session's transcript, subagents
   included, and leaves out anything on a branch that `/rewind` abandoned. `/clear` empties the list. Item numbers
   are never reused.
+- **The Claude TODO list.** The agent also keeps a list of its own work through a second tool, `claude_todo`: the step it is on (`in_flight`) and the steps queued after it (`queued`). Each call gives the whole list, and a step that is done leaves it at once. Only the main agent keeps it; a subagent's call is refused. A title is a few words on one line, at most 80 characters. Asks of you never go on it: they go on the list above, filed once. This version only keeps the list: the agent can read it back, and each call shows in the transcript as one line (`human-plugin: Claude TODO 2 in flight, 3 queued`); nothing draws it yet. `claude --resume` rebuilds it from the session's transcript, in the same pass as the list above, as the last write that was live and succeeded gave it; a list the agent has already written in the resumed session is kept as written. `/clear` empties it.
 - **Transcript rows.** The agent's calls to the list show as one line each (`human-plugin: added #4 …`), not as the
   raw call.
 - **Restatement check.** At the end of a turn the mod checks the agent's closing reply for an open item's ask restated
@@ -89,6 +90,7 @@ Then start a new session and let the agent do the asking.
 - A session that enables the plugin partway through may keep asking in chat until a `/clear` or a new session.
 - `/rewind` inside a running session does not rewind the list, because Claude Code gives a plugin no signal that a
   rewind happened. The agent can still remove what no longer applies, and a resume rebuilds the list correctly.
+- `/rewind` inside a running session, and a fork made after a compaction, affect the Claude TODO list as they do the list above: it is not rewound, and a fork carries only the writes the copied transcript holds.
 - A session forked with `--fork-session` after a compaction starts from that compaction, so items filed before it
   are not carried over. No fork carries over items its subagents filed.
 - A forked session whose transcript is not yet written at session start is rebuilt at its first turn, so until then `/asks`, and the agent's tool, can show an empty or partial list.

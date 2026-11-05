@@ -1,6 +1,7 @@
 import { expect, test } from 'claude-code/testing'
 import { replay, rowsOf, type Source } from './replay'
 import { TOOL } from './items'
+import { TODO_TOOL } from './todo'
 import { correctionText } from './restatement'
 
 const row = (ts: string, content: unknown, extra: Record<string, unknown> = {}) =>
@@ -629,4 +630,125 @@ const OLD_BARE = lines(
 test('the bare done notice an older release wrote still marks its item done-pending, with no answer', async () => {
   const { store } = await replay([sourceOf(OLD_BARE)])
   expect(store.items[0]).toMatchObject({ state: 'done-pending', answer: null, replied: false })
+})
+
+// The Claude TODO list: the last live, successful, main-agent write is the rebuilt list. A write gives the whole list, so the transcript's
+// earlier writes are not replayed.
+const todoUse = (id: string, input: Record<string, unknown>) => toolUse(id, input, TODO_TOOL)
+const todoError = (id: string, text: string) => ({ type: 'user', message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: id, content: text, is_error: true }] } })
+const entries = (...pairs: [string, string][]) => pairs.map(([title, state]) => ({ title, state }))
+
+const TODO_WRITES = lines(
+  link('u0', null, at(0), prompt('start')),
+  link('a1', 'u0', at(1), todoUse('w1', { entries: entries(['First plan', 'in_flight']) })),
+  link('r1', 'a1', at(2), toolResult('w1', 'Claude TODO: 1 in flight, 0 queued')),
+  link('a2', 'r1', at(3), todoUse('w2', { entries: entries(['First plan', 'done'], ['Second', 'in_flight'], ['Third', 'queued']) })),
+  link('r2', 'a2', at(4), toolResult('w2', 'Claude TODO: 1 in flight, 1 queued')),
+  link('a3', 'r2', at(5), todoUse('w3', { entries: entries(['Second', 'done'], ['Third', 'in_flight'], ['Fourth', 'queued'], ['Fifth', 'queued']) })),
+  link('r3', 'a3', at(6), toolResult('w3', 'Claude TODO: 1 in flight, 2 queued')),
+)
+
+test('the rebuilt Claude list is the last write\'s, with its done entries absent and its written order kept', async () => {
+  expect((await replay([sourceOf(TODO_WRITES)])).todo).toEqual(entries(['Third', 'in_flight'], ['Fourth', 'queued'], ['Fifth', 'queued']))
+})
+
+test('a transcript with no Claude list write rebuilds an empty Claude list, and the human list rebuilds as before', async () => {
+  const none = await replay([sourceOf(MAIN)])
+  expect(none.todo).toEqual([])
+  expect(none.store.items.map(it => it.id)).toEqual([1])
+  expect((await replay([sourceOf('')])).todo).toEqual([])
+})
+
+test('the human list and the Claude list are rebuilt from the same transcript, each by its own tool', async () => {
+  const text = lines(
+    link('u0', null, at(0), prompt('start')),
+    link('a1', 'u0', at(1), toolUse('t1', { action: 'add', title: 'Pick a db' })),
+    link('r1', 'a1', at(2), toolResult('t1', 'added #1')),
+    link('a2', 'r1', at(3), todoUse('w1', { entries: entries(['Build', 'in_flight']) })),
+    link('r2', 'a2', at(4), toolResult('w1', 'Claude TODO: 1 in flight, 0 queued')),
+  )
+  const { store, todo } = await replay([sourceOf(text)])
+  expect(store.items.map(it => it.title)).toEqual(['Pick a db'])
+  expect(todo).toEqual(entries(['Build', 'in_flight']))
+})
+
+test('a write whose result was an error, a refused call and a call the check refuses are not taken as the list', async () => {
+  const text = lines(
+    link('u0', null, at(0), prompt('start')),
+    link('a1', 'u0', at(1), todoUse('w1', { entries: entries(['Good', 'queued']) })),
+    link('r1', 'a1', at(2), toolResult('w1', 'Claude TODO: 0 in flight, 1 queued')),
+    link('a2', 'r1', at(3), todoUse('w2', { entries: entries(['Errored', 'queued']) })),
+    link('r2', 'a2', at(4), todoError('w2', 'the mod failed to answer the call')),
+    link('a3', 'r2', at(5), todoUse('w3', { entries: entries(['Subagent', 'queued']) })),
+    link('r3', 'a3', at(6), todoError('w3', 'claude_todo: only the main agent keeps the Claude TODO list')),
+    link('a4', 'r3', at(7), todoUse('w4', { entries: entries(['x'.repeat(81), 'queued']) })),
+    link('r4', 'a4', at(8), toolResult('w4', 'entry 1: the title is over 80')),
+  )
+  expect((await replay([sourceOf(text)])).todo).toEqual(entries(['Good', 'queued']))
+})
+
+test('a read-only call is not a write: the list stays the last write\'s', async () => {
+  const text = lines(
+    link('u0', null, at(0), prompt('start')),
+    link('a1', 'u0', at(1), todoUse('w1', { entries: entries(['Build', 'in_flight']) })),
+    link('r1', 'a1', at(2), toolResult('w1', 'Claude TODO: 1 in flight, 0 queued')),
+    link('a2', 'r1', at(3), todoUse('w2', {})),
+    link('r2', 'a2', at(4), toolResult('w2', 'Claude TODO: 1 in flight, 0 queued\n- in_flight: Build')),
+  )
+  expect((await replay([sourceOf(text)])).todo).toEqual(entries(['Build', 'in_flight']))
+})
+
+test('an emptying write is a write: the rebuilt list is empty', async () => {
+  const text = lines(
+    link('u0', null, at(0), prompt('start')),
+    link('a1', 'u0', at(1), todoUse('w1', { entries: entries(['Build', 'in_flight']) })),
+    link('r1', 'a1', at(2), toolResult('w1', 'Claude TODO: 1 in flight, 0 queued')),
+    link('a2', 'r1', at(3), todoUse('w2', { entries: [] })),
+    link('r2', 'a2', at(4), toolResult('w2', 'Claude TODO: 0 in flight, 0 queued')),
+  )
+  expect((await replay([sourceOf(text)])).todo).toEqual([])
+})
+
+test('a write on a branch a /rewind abandoned does not count: the list is the one the last live write gave', async () => {
+  const text = lines(
+    link('u0', null, at(0), prompt('start')),
+    link('a1', 'u0', at(1), todoUse('w1', { entries: entries(['Kept', 'in_flight']) })),
+    link('r1', 'a1', at(2), toolResult('w1', 'Claude TODO: 1 in flight, 0 queued')),
+    link('p-old', 'r1', at(3), prompt('ask for gone')),
+    link('a-old', 'p-old', at(4), todoUse('old', { entries: entries(['Rewound away', 'in_flight']) })),
+    link('r-old', 'a-old', at(5), toolResult('old', 'Claude TODO: 1 in flight, 0 queued')),
+    link('p-new', 'r1', at(6), prompt('ask for new')),
+  )
+  expect((await replay([sourceOf(text)])).todo).toEqual(entries(['Kept', 'in_flight']))
+})
+
+test('the result of a write made in parallel with another tool counts', async () => {
+  const text = lines(
+    link('u0', null, at(0), prompt('start')),
+    link('a1', 'u0', at(1), todoUse('w1', { entries: entries(['In parallel', 'queued']) })),
+    link('a2', 'a1', at(1), toolUse('t2', { command: 'ls' }, 'Bash')),
+    link('r1', 'a1', at(2), toolResult('w1', 'Claude TODO: 0 in flight, 1 queued')),
+    link('r2', 'a2', at(3), toolResult('t2', 'ok')),
+    link('tail', 'r2', at(4), { type: 'assistant', message: { role: 'assistant', content: 'done' } }),
+  )
+  expect((await replay([sourceOf(text)])).todo).toEqual(entries(['In parallel', 'queued']))
+})
+
+test('a subagent\'s transcript holds no write that counts', async () => {
+  const sub = lines(
+    link('sa', null, at(7), todoUse('s1', { entries: entries(['Sub plan', 'in_flight']) })),
+    link('sr', 'sa', at(8), toolResult('s1', 'Claude TODO: 1 in flight, 0 queued')),
+  )
+  expect((await replay([sourceOf(TODO_WRITES), sourceOf(sub, 'sub-1')])).todo).toEqual(entries(['Third', 'in_flight'], ['Fourth', 'queued'], ['Fifth', 'queued']))
+  expect((await replay([sourceOf(''), sourceOf(sub, 'sub-1')])).todo).toEqual([])
+})
+
+test('a write whose row carries no id is taken as live, as the human list\'s calls are', async () => {
+  const text = [
+    call(at(0), 'a', { action: 'add', title: 'Pick a db' }),
+    result(at(1), 'a', 'added #1'),
+    JSON.stringify({ type: 'assistant', timestamp: at(2), message: { role: 'assistant', content: [{ type: 'tool_use', id: 'w1', name: TODO_TOOL, input: { entries: entries(['Build', 'queued']) } }] } }),
+    result(at(3), 'w1', 'Claude TODO: 0 in flight, 1 queued'),
+  ].join('\n') + '\n'
+  expect((await replay([sourceOf(text)])).todo).toEqual(entries(['Build', 'queued']))
 })

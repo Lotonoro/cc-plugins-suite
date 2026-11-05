@@ -1,4 +1,5 @@
 import type { PromptComposeSection } from 'claude-code'
+import { STATES, TITLE_MAX, TODO_NAME } from './todo'
 
 // Static text: the same bytes on every turn and after every list change, so the system prompt's cache is written once.
 export const STEERING: PromptComposeSection = {
@@ -22,6 +23,10 @@ export const STEERING: PromptComposeSection = {
     '- A yes/no question is filed with yesno: true and no options, not as two options named Yes and No.',
     "- When pressing ✓ would mean anything other than 'I did it', such as approving a proposal or going with your recommendation, file it with `done`, the label naming what a press does (e.g. \"Go with sqlite\"), when there is no meaningful 'no'; otherwise use yesno.",
     '- Use AskUserQuestion for a question you need answered now, with a few clear options. Use the list for anything the human does outside the chat, anything that can wait, and any decision that needs a long brief. Never put the same ask in both.',
+    '- The Claude TODO list is your own work, kept through claude_todo: your own steps, the step you are on (in_flight) and the steps queued after it (queued). Each call gives the whole list and replaces the last one; a step that is done is dropped.',
+    '- Only the main agent keeps the Claude TODO list; a subagent does not call claude_todo.',
+    '- Write the Claude TODO list when a step starts or finishes, or when the plan of steps changes, not on a turn where nothing moved. Keep it short and current: titles are a few words. Call claude_todo with no entries to read it back, for example after a compaction.',
+    '- Asks of the human never go on the Claude TODO list: they go on the human_items list, filed once and never restated, and the Claude TODO list does not repeat a human item.',
   ].join('\n'),
 }
 
@@ -72,6 +77,35 @@ export const TOOL_SPEC = {
       term: { type: 'string', description: "The word or name this session uses for the human, shown on the band's tag: at most 20 columns. Give it on your first add, and again, on an add or an update, only when that word changes. It belongs to no item, so giving it reopens nothing." },
     },
     required: ['action'],
+  },
+  isDeferred: false,
+} as const
+
+export const TODO_SPEC = {
+  name: TODO_NAME,
+  description:
+    'Your own running list, shown to the human as the Claude TODO list: your own steps, the step you are on (in_flight) and the ' +
+    'steps queued after it (queued). A call gives the whole list in entries, in the order you want it kept, and replaces the last ' +
+    'one; an entry marked done is dropped at once. An empty entries array empties the list. Call with no entries to read the list back, ' +
+    'for example after a compaction. Write it when a step starts or finishes, or when the plan of steps changes, not on a turn where ' +
+    'nothing moved. Keep it short: titles are a few words. Only the main agent keeps this list. Asks of the human never go here: ' +
+    'file them with human_items.',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      entries: {
+        type: 'array',
+        description: 'The whole list, in the order to keep: each entry a title and a state. Leave it out to read the list.',
+        items: {
+          type: 'object',
+          properties: {
+            title: { type: 'string', description: `One line of a few words, at most ${TITLE_MAX} characters.` },
+            state: { type: 'string', enum: [...STATES] },
+          },
+          required: ['title', 'state'],
+        },
+      },
+    },
   },
   isDeferred: false,
 } as const

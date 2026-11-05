@@ -2,6 +2,8 @@ import type { On, PromptComposeInput, SessionAppendInput, UiPane } from 'claude-
 import { expect, mock, test, type Engine } from 'claude-code/testing'
 import { STEERING } from './steering'
 import { TOOL } from './items'
+import { TODO_TOOL } from './todo'
+import { correctionText } from './restatement'
 
 const FACTS: PromptComposeInput = {
   model: 'claude-opus-5-5',
@@ -732,4 +734,32 @@ test('a reply typed into the terminal pane is sent through the undo window, and 
   expect(sent).toEqual([
     '#1 is done: Pick a db\nThe human replied on #1: Use sqlite\nIf that reply settles the ask, act on it, then remove the item; if you need more from the human, or they asked you something, append what you have to say to #1; the item is then open for their next reply. Your own follow-up work never stays on the list.',
   ])
+})
+
+// The restatement check reads the closing reply alone, and never sees the Claude list's writes. The write carries an open human item's topic
+// and asks the human; only the reply decides whether the turn restated the item.
+const CLAUDE_WRITE = [{ title: `Ask the human: ${RETRY}`, state: 'queued' }]
+
+test('a turn whose Claude list write carries an open item\'s topic and whose closing reply neither carries it nor names the item raises no correction', async ($, on) => {
+  const { rows } = turnEngine(on)
+  mock.clock(on)
+  mock.store(on)
+  on('ui.panes', () => ({ value: [] }))
+  await $.tool.call({ tool: TOOL, action: 'add', title: RETRY })
+  await $.tool.call({ tool: TODO_TOOL, entries: CLAUDE_WRITE })
+  await end($, 'answer', 'The sync client is wired up and its tests pass.')
+  expect(corrections(rows).length).toBe(0)
+})
+
+test('the same turn with a closing reply that restates the item\'s topic as an ask, without naming its id, raises the correction it raises with no Claude list write', async ($, on) => {
+  const { rows } = turnEngine(on)
+  mock.clock(on)
+  mock.store(on)
+  on('ui.panes', () => ({ value: [] }))
+  await $.tool.call({ tool: TOOL, action: 'add', title: RETRY })
+  await $.tool.call({ tool: TODO_TOOL, entries: CLAUDE_WRITE })
+  const restating = `${RETRY} is undecided, please pick one.`
+  await end($, 'answer', restating)
+  expect(corrections(rows).length).toBe(1)
+  expect(textOf(corrections(rows)[0] as SessionAppendInput)).toBe(correctionText([1]))
 })

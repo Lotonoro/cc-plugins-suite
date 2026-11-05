@@ -1,5 +1,6 @@
-import type { Store } from '../types'
+import type { Store, TodoItem } from '../types'
 import { PLUGIN, TOOL, EMPTY, act, parseInput, type ToolInput } from './items'
+import { TODO_TOOL, parseTodo } from './todo'
 
 type Block = Record<string, unknown>
 export type Row = Record<string, unknown>
@@ -9,8 +10,9 @@ export type Row = Record<string, unknown>
 export type Source = { rows: AsyncIterable<Row | null>; agent: string | null }
 
 // `skipped` counts rows that could not be read, `unreadable` the subagent transcripts left out because reading them
-// failed, and `known` every id the transcripts handed out, on any branch.
-export type Replayed = { store: Store; skipped: number; unreadable: { agent: string; reason: string }[]; known: number[] }
+// failed, and `known` every id the transcripts handed out, on any branch. `todo` is the Claude list the main transcript's last live write
+// gave: empty when it holds no write.
+export type Replayed = { store: Store; todo: TodoItem[]; skipped: number; unreadable: { agent: string; reason: string }[]; known: number[] }
 
 type Step = { at: number; seq: number; run: (store: Store) => Store }
 
@@ -157,12 +159,21 @@ const noticeText = (row: Row, blocks: Block[]): string | null => {
   return Array.isArray(attachment.content) ? attachment.content.filter((text): text is string => typeof text === 'string').join('\n') : null
 }
 
-// What one transcript holds for the list: its rows' places, the mod's own actions by row, and the subagents it spawned.
-type Read = { nodes: Node[]; own: { k: number; step: Step }[]; spawns: { agent: string; k: number }[]; issued: number[]; skipped: number }
+// What one transcript holds for the list: its rows' places, the mod's own actions by row, the Claude list's writes by row (in file order), and
+// the subagents it spawned.
+type Read = {
+  nodes: Node[]
+  own: { k: number; step: Step }[]
+  writes: { k: number; items: TodoItem[] }[]
+  spawns: { agent: string; k: number }[]
+  issued: number[]
+  skipped: number
+}
 
 const readSource = async (source: Source, next: () => number): Promise<Read> => {
-  const read: Read = { nodes: [], own: [], spawns: [], issued: [], skipped: 0 }
+  const read: Read = { nodes: [], own: [], writes: [], spawns: [], issued: [], skipped: 0 }
   const pending = new Map<string, ToolInput>()
+  const pendingWrites = new Map<string, TodoItem[]>()
   for await (const row of source.rows) {
     if (row === null) {
       read.skipped++
@@ -177,7 +188,19 @@ const readSource = async (source: Source, next: () => number): Promise<Read> => 
         const parsed = parseInput(block.input)
         // A call the mod refused as malformed never ran; its result is an error and is not replayed.
         if (parsed.ok) pending.set(block.id, parsed.value)
+      } else if (block.type === 'tool_use' && block.name === TODO_TOOL && typeof block.id === 'string') {
+        // Only a write that passed the check counts: a read-only call (no list) and a call the check refused change nothing. Only the main
+        // transcript's writes are kept, since only the main agent keeps the list.
+        const written = parseTodo(block.input)
+        if (source.agent === null && written.ok && written.value !== null) pendingWrites.set(block.id, written.value)
       } else if (block.type === 'tool_result' && typeof block.tool_use_id === 'string') {
+        const items = pendingWrites.get(block.tool_use_id)
+        if (items !== undefined) {
+          pendingWrites.delete(block.tool_use_id)
+          // A write whose result is an error was refused or failed and changed nothing.
+          if (block.is_error !== true) read.writes.push({ k, items })
+          continue
+        }
         const input = pending.get(block.tool_use_id)
         if (input === undefined) continue
         pending.delete(block.tool_use_id)
@@ -225,6 +248,7 @@ export const replay = async (sources: readonly Source[]): Promise<Replayed> => {
   let seq = 0
   let skipped = 0
   const spawnedLive = new Map<string, boolean>()
+  let todo: TodoItem[] = []
   for (const source of sources) {
     let read: Read
     try {
@@ -243,11 +267,13 @@ export const replay = async (sources: readonly Source[]): Promise<Replayed> => {
       continue
     }
     for (const { k, step } of read.own) if (k < 0 || live(k)) steps.push(step)
+    // The last live write is the list: a write gives the whole list, so the ones before it are not replayed.
+    for (const write of read.writes) if (write.k < 0 || live(write.k)) todo = write.items
   }
   steps.sort((a, b) => a.at - b.at || a.seq - b.seq)
   const replayed = steps.reduce<Store>((store, step) => step.run(store), EMPTY)
   let next = replayed.next
   for (const id of known) next = Math.max(next, id + 1)
   const store = { items: replayed.items.map(it => ({ ...it, unread: false })), next, term: replayed.term }
-  return { store, skipped, unreadable, known: [...known] }
+  return { store, todo, skipped, unreadable, known: [...known] }
 }

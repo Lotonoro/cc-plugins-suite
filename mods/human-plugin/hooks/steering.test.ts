@@ -1,6 +1,7 @@
 import { expect, test } from 'claude-code/testing'
-import { STEERING, TOOL_NAME, TOOL_SPEC } from './steering'
+import { STEERING, TODO_SPEC, TOOL_NAME, TOOL_SPEC } from './steering'
 import { TOOL } from './items'
+import { STATES, TITLE_MAX, TODO_NAME, TODO_TOOL } from './todo'
 
 test('the steering section is a session section that names the tool and its rules', () => {
   expect(STEERING.id).toBe('human-plugin:steering')
@@ -117,4 +118,48 @@ test('the term schema says what the term is, when to give it, its limit, and tha
   for (const phrase of ["The word or name this session uses for the human, shown on the band's tag", 'at most 20 columns', 'Give it on your first add, and again, on an add or an update, only when that word changes.', 'It belongs to no item, so giving it reopens nothing.']) {
     expect(description).toContain(phrase)
   }
+})
+
+test('the steering section names the Claude TODO tool, and says what the list holds, who keeps it, when to write it and how to title an entry', () => {
+  for (const rule of [
+    'claude_todo',
+    'the Claude TODO list',
+    'your own steps',
+    'the step you are on',
+    'Only the main agent keeps the Claude TODO list',
+    'a subagent does not call claude_todo',
+    'when a step starts or finishes, or when the plan of steps changes, not on a turn where nothing moved',
+    'titles are a few words',
+  ]) {
+    expect(STEERING.text).toContain(rule)
+  }
+})
+
+test('the steering section keeps asks of the human off the Claude TODO list: they go on the human list, filed once and never restated', () => {
+  expect(STEERING.text).toContain('Asks of the human never go on the Claude TODO list: they go on the human_items list, filed once and never restated, and the Claude TODO list does not repeat a human item.')
+})
+
+test('the Claude TODO tool spec registers under the name its hooks answer to, and is in the prompt\'s tool list', () => {
+  expect(TODO_TOOL).toBe(`mcp__human-plugin__${TODO_SPEC.name}`)
+  expect(TODO_SPEC.name).toBe(TODO_NAME)
+  expect(TODO_SPEC.isDeferred).toBe(false)
+  expect(TODO_SPEC.inputSchema.type).toBe('object')
+})
+
+test('the Claude TODO schema offers exactly the states the check accepts, and its title description names the limit the check refuses past', () => {
+  const entry = TODO_SPEC.inputSchema.properties.entries.items
+  expect(entry.properties.state.enum).toEqual([...STATES])
+  expect(entry.properties.title.description).toContain(`at most ${TITLE_MAX}`)
+  expect(entry.required).toEqual(['title', 'state'])
+  expect(TODO_SPEC.inputSchema.properties.entries.type).toBe('array')
+})
+
+test('the Claude TODO tool description carries the steering\'s rules in short', () => {
+  for (const rule of ['the whole list', 'done', 'main agent', 'when a step starts or finishes', 'few words', 'never go here']) {
+    expect(TODO_SPEC.description).toContain(rule)
+  }
+})
+
+test('the steering section stays static: it names no count and no entry of the list', () => {
+  expect(STEERING.text).not.toMatch(/\d+ in flight/)
 })

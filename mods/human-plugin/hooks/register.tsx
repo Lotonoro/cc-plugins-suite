@@ -2,7 +2,8 @@ import { atom, read, update, type EngineInterface } from 'claude-code'
 import type { HookFailure, On, Register, UiCopyArgs } from 'claude-code'
 import type { OwedNotices, Store } from '../types'
 import { TOOL, act, carryNext, clearAll, parseInput, type Outcome } from './items'
-import { STEERING, TOOL_SPEC } from './steering'
+import { STEERING, TODO_SPEC, TOOL_SPEC } from './steering'
+import { SUBAGENT_REFUSAL, TODO_NAME, TODO_TOOL, emptyTodo, parseTodo, readTodo, todoLine, todoReply, writeTodo } from './todo'
 import { messageOf, oneLine, stateOf } from './done'
 import { ARG_HINT, COMMAND, DESCRIPTION, FAILED, PHONE_REBUILDING, REBUILDING, USAGE, answerLine, answerTo, parseAsk, phoneBlock } from './commands'
 import { carried, carryHeld, endTurn, giveBack, handOver, notEntered, offer, pending, reset, setOnChange, startTurn } from './turns'
@@ -186,6 +187,18 @@ const asks = async ($: EngineInterface, args: string, windowMs: number): Promise
   return text
 }
 
+// The Claude list tool's answer: a write replaces the list whole, a call with no list reads it. Only the main agent keeps the list, so a
+// subagent's call is refused. Like the human tool's, a call waits for a rebuild in progress, so it never reads or replaces a list the rebuild
+// has not filled in.
+const todoAnswer = async ($: EngineInterface, e: unknown) => {
+  const parsed = parseTodo(e)
+  if (!parsed.ok) return { deny: `${TODO_NAME}: ${parsed.reason}` }
+  if (typeof (e as { agentId?: unknown }).agentId === 'string') return { deny: `${TODO_NAME}: ${SUBAGENT_REFUSAL}` }
+  if (!(await restored($))) return { deny: `${TODO_NAME}: the list is still being rebuilt from the transcript; call again in a moment` }
+  if (parsed.value !== null) await writeTodo($, parsed.value)
+  return { result: todoReply(parsed.value ?? (await readTodo($)), parsed.value === null) }
+}
+
 // The id counter outlives a /clear in the plugin store: the old session saves it (never lower than what is stored) and the
 // new session, which starts with a fresh state, carries it back.
 const NEXT_KEY = 'next'
@@ -217,6 +230,7 @@ export const wireHooks = (on: On, windowMs: number): void => {
     owed.catch(() => {})
     setOnChange(() => saveNotices($))
     await $.tool.register(TOOL_SPEC)
+    await $.tool.register(TODO_SPEC)
     // A failed registration is logged, and the rest of the start still runs: the rebuild, the undo windows and the owed notices.
     try {
       await $.command.register({ name: COMMAND, description: DESCRIPTION, argumentHint: ARG_HINT, immediate: true })
@@ -237,6 +251,12 @@ export const wireHooks = (on: On, windowMs: number): void => {
   // The mod answers its own calls in tool.call, so the engine never checks them; this allow is the verdict the
   // engine's own check would otherwise ask the person for (the default is ask). The matchers spell the tool's name out, since
   // `claude plugin validate` reports a matcher whose value is a constant as {tool=?}.
+  on('tool.check', { tool: 'mcp__human-plugin__claude_todo' }, () => ({ decision: 'allow' })).catch(($, e, next) => next(e))
+
+  on('tool.call', { tool: 'mcp__human-plugin__claude_todo' }, ($, e) => todoAnswer($, e)).catch(($, e, next) =>
+    next.called ? next(e) : { deny: `${TODO_NAME}: the mod failed to answer the call` },
+  )
+
   on('tool.check', { tool: 'mcp__human-plugin__human_items' }, () => ({ decision: 'allow' })).catch(($, e, next) => next(e))
 
   on('tool.call', { tool: 'mcp__human-plugin__human_items' }, ($, e) => answer($, e)).catch(($, e, next) =>
@@ -330,12 +350,16 @@ export const wireHooks = (on: On, windowMs: number): void => {
       const kept = carryNext(await readList($), await $.store.get(NEXT_KEY))
       await $.store.set(NEXT_KEY, kept.next)
       await updateList($, clearAll)
+      await emptyTodo($)
     }
     return next(e)
   }).catch(async ($, e, next) => {
     failed($, 'session.end', next.error)
     // A /clear empties the list even when the carry failed, and the counter comes from the store, which every add saved.
-    if (!next.called && e.reason === 'clear') await emptyList($, await $.store.get(NEXT_KEY))
+    if (!next.called && e.reason === 'clear') {
+      await emptyList($, await $.store.get(NEXT_KEY))
+      await emptyTodo($)
+    }
     return next(e)
   })
 
@@ -352,15 +376,15 @@ export const wireHooks = (on: On, windowMs: number): void => {
     return next(e)
   })
 
-  // The mod's tool draws its own rows: one line for the call, and the result row beneath a standalone call, which would
+  // The mod's tools draw their own rows: one line for the call, and the result row beneath a standalone call, which would
   // only repeat the reply, is drawn empty. Every other tool's rows pass through.
   on('ui.render', { component: 'ToolUse' }, ($, e, next) => {
-    if (e.props.tool !== TOOL) return next(e)
-    return $.ui.resolve(e).Text({ dimColor: true, wrap: 'truncate-end', children: [toolLine(e.props)] })
+    if (e.props.tool !== TOOL && e.props.tool !== TODO_TOOL) return next(e)
+    return $.ui.resolve(e).Text({ dimColor: true, wrap: 'truncate-end', children: [e.props.tool === TOOL ? toolLine(e.props) : todoLine(e.props)] })
   })
 
   on('ui.render', { component: 'ToolResult' }, ($, e, next) => {
-    if (e.props.tool !== TOOL) return next(e)
+    if (e.props.tool !== TOOL && e.props.tool !== TODO_TOOL) return next(e)
     return $.ui.resolve(e).Box({ display: 'none' })
   })
 
