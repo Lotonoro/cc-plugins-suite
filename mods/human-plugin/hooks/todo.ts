@@ -15,7 +15,7 @@ const STATE_LIST = `${STATES.slice(0, -1).join(', ')} or ${STATES[STATES.length 
 // The longest title, in UTF-16 units: the unit the length of a JavaScript string is, and the one /asks's bounds are counted in.
 export const TITLE_MAX = 80
 
-const HEADING = 'Claude TODO'
+export const HEADING = 'Claude TODO'
 
 // The list lives in $.state under its own key (a hot reload keeps it), and is null until it is first written in a session: that tells a list
 // not written yet from an emptied one (fillTodo). The reference is declared here, with literal plugin and key, where the engine's scan of the
@@ -87,6 +87,9 @@ export const inDisplayOrder = (items: readonly TodoItem[]): TodoItem[] => [
   ...items.filter(it => it.state === 'in_flight'),
   ...items.filter(it => it.state === 'queued'),
 ]
+
+// The glyph each state is drawn with, wherever the list is shown. A done entry is never stored, so done has none.
+export const GLYPH = { in_flight: '◐', queued: '○' } as const satisfies Record<TodoItem['state'], string>
 
 export const countsText = (items: readonly TodoItem[]): string =>
   `${items.filter(it => it.state === 'in_flight').length} in flight, ${items.filter(it => it.state === 'queued').length} queued`

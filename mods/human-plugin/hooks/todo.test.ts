@@ -1,5 +1,5 @@
 import { expect, test } from 'claude-code/testing'
-import { STATES, TITLE_MAX, TODO_NAME, TODO_TOOL, countsText, inDisplayOrder, normalizeTodo, parseTodo, todoLine, todoReply } from './todo'
+import { GLYPH, HEADING, STATES, TITLE_MAX, TODO_NAME, TODO_TOOL, countsText, inDisplayOrder, normalizeTodo, parseTodo, todoLine, todoReply } from './todo'
 import type { TodoItem } from '../types'
 
 const write = (entries: unknown): TodoItem[] | null => {
@@ -145,4 +145,9 @@ test('the transcript line gives the check\'s reason for an input the check refus
 
 test('the transcript line is one line, whatever the title or the reply holds', () => {
   expect(call({ entries: [] }, 'one\ntwo   three', false, true)).toBe('human-plugin: one two three')
+})
+
+test('each state has one glyph: a half-filled circle in flight, an empty one queued, and done has none', () => {
+  expect(GLYPH).toEqual({ in_flight: '◐', queued: '○' })
+  expect(HEADING).toBe('Claude TODO')
 })

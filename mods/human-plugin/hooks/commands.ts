@@ -1,7 +1,8 @@
-import type { Item, Turn } from '../types'
+import type { Item, TodoItem, Turn } from '../types'
 import { cutLine, cutText, formsOf, humanTurn, isNumbered, labelOf, orderedOptions, replyText, turnsOf, type AnswerOutcome, type Form } from './done'
 import { LINE_BREAK } from './items'
 import { bandOrder } from './layout'
+import { GLYPH, HEADING, countsText, inDisplayOrder } from './todo'
 
 // The bounds the answers keep, in UTF-16 units. `cap` is the most `/asks <n>` prints, the cut line included; `floor` is the least its cut newest
 // turn keeps, as printed, one unit less when a surrogate pair straddles the cut; `title` and `label` cut those fields in `/asks <n>`;
@@ -25,6 +26,12 @@ const INDENT = '  '
 export const USAGE = `${INDENT}Usage: /asks, or /asks <n> for one item.\n${INDENT}Answer an item: /asks <n> ${FORMS}.`
 export const REBUILDING = `${INDENT}The list is still being rebuilt from the transcript; run /asks again in a moment.`
 export const FAILED = `${INDENT}/asks failed: the error was logged.`
+export const CLAUDE_COMMAND = 'claude-todo'
+export const CLAUDE_DESCRIPTION = 'Print the Claude TODO list: the steps the agent is on and those queued after them.'
+export const CLAUDE_USAGE = `${INDENT}Usage: /${CLAUDE_COMMAND} takes no argument.`
+export const CLAUDE_REBUILDING = `${INDENT}The list is still being rebuilt from the transcript; run /${CLAUDE_COMMAND} again in a moment.`
+export const CLAUDE_FAILED = `${INDENT}/${CLAUDE_COMMAND} failed: the error was logged.`
+const CLAUDE_EMPTY = `${INDENT}The ${HEADING} list is empty.`
 const NOTHING = `${INDENT}Nothing is on the list.`
 const NO_SUCH = `${INDENT}There is no such item.`
 const CUT = `${INDENT}The rest was cut.`
@@ -53,6 +60,28 @@ export const phoneBlock = (items: readonly Item[]): string | null => {
     'End this reply with the line below, which lists the open items:',
     line,
   ])
+}
+
+// Whether the argument holds anything: `/claude-todo` takes none. Blanks are the ASCII spaces and tabs, as `/asks` reads them.
+export const hasArgument = (args: string): boolean => args.replace(/^[ \t]+|[ \t]+$/g, '') !== ''
+
+// The Claude TODO list as `/claude-todo` prints it: a line that counts it, then the in-flight entries and the queued ones, each group in written
+// order under a heading of its own, an entry as its state's glyph and its title cut to the list's width. At most LIMITS.listItems entries are
+// named, in-flight first, and a last line counts what is left out of each group that lost any. The entry lines are indented twice, so no line
+// of the print starts short of the indent.
+export const claudeTodoText = (items: readonly TodoItem[]): string => {
+  if (items.length === 0) return CLAUDE_EMPTY
+  const named = inDisplayOrder(items).slice(0, LIMITS.listItems)
+  const lines = [`${INDENT}${HEADING}: ${countsText(items)}`]
+  const left: string[] = []
+  for (const [state, heading] of [['in_flight', 'in flight'], ['queued', 'queued']] as const) {
+    const group = named.filter(it => it.state === state)
+    if (group.length > 0) lines.push(`${INDENT}${heading}:`, ...group.map(it => `${INDENT}${INDENT}${GLYPH[state]} ${cutLine(it.title, LIMITS.listLine)}`))
+    const more = items.filter(it => it.state === state).length - group.length
+    if (more > 0) left.push(`${more} more ${heading}`)
+  }
+  if (left.length > 0) lines.push(`${INDENT}and ${left.join(', ')}`)
+  return lines.join('\n')
 }
 
 // What the argument asks for: the list (blank), one item by its number, an answer to an item by its number and a form, or nothing the command knows

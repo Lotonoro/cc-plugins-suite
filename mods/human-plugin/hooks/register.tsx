@@ -5,7 +5,10 @@ import { TOOL, act, carryNext, clearAll, parseInput, type Outcome } from './item
 import { STEERING, TODO_SPEC, TOOL_SPEC } from './steering'
 import { SUBAGENT_REFUSAL, TODO_NAME, TODO_TOOL, emptyTodo, parseTodo, readTodo, todoLine, todoReply, writeTodo } from './todo'
 import { messageOf, oneLine, stateOf } from './done'
-import { ARG_HINT, COMMAND, DESCRIPTION, FAILED, PHONE_REBUILDING, REBUILDING, USAGE, answerLine, answerTo, parseAsk, phoneBlock } from './commands'
+import {
+  ARG_HINT, CLAUDE_COMMAND, CLAUDE_DESCRIPTION, CLAUDE_FAILED, CLAUDE_REBUILDING, CLAUDE_USAGE, COMMAND, DESCRIPTION, FAILED, PHONE_REBUILDING, REBUILDING, USAGE,
+  answerLine, answerTo, claudeTodoText, hasArgument, parseAsk, phoneBlock,
+} from './commands'
 import { carried, carryHeld, endTurn, giveBack, handOver, notEntered, offer, pending, reset, setOnChange, startTurn } from './turns'
 import { band, pane, toolLine, type Handlers, type View } from './ui'
 import { correctionText, newlyRestated, restatedIds } from './restatement'
@@ -187,6 +190,13 @@ const asks = async ($: EngineInterface, args: string, windowMs: number): Promise
   return text
 }
 
+// The `/claude-todo` command's answer: the Claude TODO list, once a rebuild in progress has ended, as the print commands.ts words. It takes no argument.
+const claudeTodo = async ($: EngineInterface, args: string): Promise<string> => {
+  if (hasArgument(args)) return CLAUDE_USAGE
+  if (!(await restored($))) return CLAUDE_REBUILDING
+  return claudeTodoText(await readTodo($))
+}
+
 // The Claude list tool's calls, in the order they arrived. The engine does not promise to finish parallel calls in the order it started them,
 // and a resume replays the transcript's order, so each call waits for the one before it: the list left live is the list a resume rebuilds.
 let todoTurn: Promise<void> = Promise.resolve()
@@ -243,11 +253,17 @@ export const wireHooks = (on: On, windowMs: number): void => {
     setOnChange(() => saveNotices($))
     await $.tool.register(TOOL_SPEC)
     await $.tool.register(TODO_SPEC)
-    // A failed registration is logged, and the rest of the start still runs: the rebuild, the undo windows and the owed notices.
-    try {
-      await $.command.register({ name: COMMAND, description: DESCRIPTION, argumentHint: ARG_HINT, immediate: true })
-    } catch (err) {
-      $.ui.log(`human-plugin: the /${COMMAND} command was not registered: ${String(err)}`)
+    // A failed registration is logged, and the rest of the start still runs: the other command, the rebuild, the undo windows and the owed notices.
+    const commands = [
+      { name: COMMAND, description: DESCRIPTION, argumentHint: ARG_HINT, immediate: true },
+      { name: CLAUDE_COMMAND, description: CLAUDE_DESCRIPTION, immediate: true },
+    ] as const
+    for (const spec of commands) {
+      try {
+        await $.command.register(spec)
+      } catch (err) {
+        $.ui.log(`human-plugin: the /${spec.name} command was not registered: ${String(err)}`)
+      }
     }
     await startForkRestore($)
     await rearmWindows($, windowMs)
@@ -279,6 +295,12 @@ export const wireHooks = (on: On, windowMs: number): void => {
   on('command.run', { command: 'asks' }, ($, e) => asks($, e.args, windowMs).then(text => ({ text }))).catch(($, _e, next) => {
     failed($, 'command.run', next.error)
     return { text: FAILED }
+  })
+
+  // The same for `/claude-todo`: the name spelled out in the matcher, and a throw logged and answered by its own failure line.
+  on('command.run', { command: 'claude-todo' }, ($, e) => claudeTodo($, e.args).then(text => ({ text }))).catch(($, _e, next) => {
+    failed($, 'command.run', next.error)
+    return { text: CLAUDE_FAILED }
   })
 
   // A done notice reaches a running turn at a read point the engine holds before its next request (turns.ts): the end of

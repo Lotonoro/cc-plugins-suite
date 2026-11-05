@@ -6,7 +6,7 @@ import { TODO_TOOL } from './todo'
 import { TODO_SPEC, TOOL_SPEC } from './steering'
 import { paneRows } from './ui'
 import { correctionText } from './restatement'
-import { ARG_HINT, DESCRIPTION, FAILED, PHONE_REBUILDING, REBUILDING, USAGE } from './commands'
+import { ARG_HINT, CLAUDE_DESCRIPTION, CLAUDE_FAILED, CLAUDE_REBUILDING, CLAUDE_USAGE, DESCRIPTION, FAILED, PHONE_REBUILDING, REBUILDING, USAGE } from './commands'
 import { resetRebuild, setForkedTranscript, startRestore } from './rebuild'
 import { pressAnswer, pressDone, stopTicker } from './windows'
 import type { Item } from '../types'
@@ -2172,6 +2172,7 @@ test('a session end drops the stored notices with the module\'s own', async () =
 
 // The `/asks` command: registered at session start, answered by its command hook, and waiting for a rebuild as the tool does.
 const asksOf = (hooks: Record<string, Handler>): Handler => hooks['command.run {"command":"asks"}'] as Handler
+const claudeTodoOf = (hooks: Record<string, Handler>): Handler => hooks['command.run {"command":"claude-todo"}'] as Handler
 
 test('/asks is registered at session start with the flag that runs it mid-turn, under the name its hook\'s matcher spells out', async () => {
   freshModule()
@@ -2179,8 +2180,21 @@ test('/asks is registered at session start with the flag that runs it mid-turn, 
   const { env } = memEnv([], [], null)
   const registered: Record<string, unknown>[] = []
   await started(wired, { ...env, command: { register: async (spec: Record<string, unknown>) => void registered.push(spec) } })
-  expect(registered).toEqual([{ name: 'asks', description: DESCRIPTION, argumentHint: ARG_HINT, immediate: true }])
+  expect(registered).toContainEqual({ name: 'asks', description: DESCRIPTION, argumentHint: ARG_HINT, immediate: true })
   expect(typeof asksOf(wired.hooks)).toBe('function')
+})
+
+test('/claude-todo is registered at session start with the flag that runs it mid-turn and no argument hint, under the name its hook\'s matcher spells out', async () => {
+  freshModule()
+  const wired = wire()
+  const { env } = memEnv([], [], null)
+  const registered: Record<string, unknown>[] = []
+  await started(wired, { ...env, command: { register: async (spec: Record<string, unknown>) => void registered.push(spec) } })
+  expect(registered).toEqual([
+    { name: 'asks', description: DESCRIPTION, argumentHint: ARG_HINT, immediate: true },
+    { name: 'claude-todo', description: CLAUDE_DESCRIPTION, immediate: true },
+  ])
+  expect(typeof claudeTodoOf(wired.hooks)).toBe('function')
 })
 
 test('a failed /asks registration is logged, and the rest of the session start still delivers an owed notice', async () => {
@@ -2200,7 +2214,10 @@ test('a failed /asks registration is logged, and the rest of the session start s
   }
   await started(wire(), failing)
   await settle()
-  expect(logs).toEqual(['human-plugin: the /asks command was not registered: Error: no room for the command'])
+  expect(logs).toEqual([
+    'human-plugin: the /asks command was not registered: Error: no room for the command',
+    'human-plugin: the /claude-todo command was not registered: Error: no room for the command',
+  ])
   expect(submitted).toEqual([{ text: '#1 is done: Item 1' }])
 })
 
@@ -2281,7 +2298,7 @@ test('/asks <n> keeps the unread mark an agent turn raised after it read the ite
 })
 
 // A host whose list rebuild waits for `finish`: the transcript the rebuild reads holds one item, 'Rebuilt ask'.
-const rebuilding = (env: object) => {
+const rebuilding = (env: object, extra: Record<string, unknown>[] = []) => {
   let finish = (): void => {}
   const gate = new Promise<void>(resolve => {
     finish = resolve
@@ -2289,6 +2306,7 @@ const rebuilding = (env: object) => {
   const transcript = [
     { type: 'assistant', timestamp: '2026-10-20T10:00:00.000Z', message: { role: 'assistant', content: [{ type: 'tool_use', id: 'a', name: TOOL, input: { action: 'add', title: 'Rebuilt ask' } }] } },
     { type: 'user', timestamp: '2026-10-20T10:00:01.000Z', message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'a', content: 'added #1' }] } },
+    ...extra,
   ]
     .map(row => `${JSON.stringify(row)}\n`)
     .join('')
@@ -2336,7 +2354,7 @@ test('a /asks whose list read throws answers one error line, logs the failure, a
     thrown = err
   }
   expect(String(thrown)).toContain('list unreadable')
-  const answer = await (catches['command.run'] as Handler)(broken(logs, submits, {}, writes) as never, { args: '' } as never, next(false) as never)
+  const answer = await (catches['command.run {"command":"asks"}'] as Handler)(broken(logs, submits, {}, writes) as never, { args: '' } as never, next(false) as never)
   expect(answer).toEqual({ text: FAILED })
   expect(logs).toEqual(['human-plugin: the command.run hook throw: list unreadable'])
   expect(writes).toEqual([])
@@ -2698,7 +2716,7 @@ test('an answer form whose list read throws answers one error line, logs the fai
     thrown = err
   }
   expect(String(thrown)).toContain('list unreadable')
-  expect(await (catches['command.run'] as Handler)(unreadable as never, { args: '1 done' } as never, next(false) as never)).toEqual({ text: FAILED })
+  expect(await (catches['command.run {"command":"asks"}'] as Handler)(unreadable as never, { args: '1 done' } as never, next(false) as never)).toEqual({ text: FAILED })
   expect(logs).toEqual(['human-plugin: the command.run hook throw: list unreadable'])
   expect(values.list).toMatchObject({ items: [{ id: 1, state: 'open' }] })
 })
@@ -2939,4 +2957,86 @@ test('two writes whose first one is slower apply in the order the calls arrived:
   expect(await second).toEqual({ result: 'Claude TODO: 1 in flight, 0 queued' })
   expect(await read).toEqual({ result: 'Claude TODO: 1 in flight, 0 queued\n- in_flight: Second' })
   expect(values.todo).toEqual([entry('Second', 'in_flight')])
+})
+
+// The `/claude-todo` command: the Claude TODO list printed as text, registered to run mid-turn, waiting for a rebuild as `/asks` does.
+const claudeTodo = (hooks: Record<string, Handler>, env: unknown, args = '') => claudeTodoOf(hooks)(env as never, { args } as never, next(false) as never)
+
+test('/claude-todo prints the Claude list the tool keeps: the in-flight items, then the queued ones, each in written order', async () => {
+  freshModule()
+  const { hooks } = wire()
+  const { env } = memEnv([], [], null)
+  await runTodo(hooks, env, { entries: [entry('Queued first', 'queued'), entry('Running', 'in_flight'), entry('Queued last', 'queued')] })
+  expect(await claudeTodo(hooks, env)).toEqual({
+    text: '  Claude TODO: 1 in flight, 2 queued\n  in flight:\n    ◐ Running\n  queued:\n    ○ Queued first\n    ○ Queued last',
+  })
+  await runTodo(hooks, env, { entries: [] })
+  expect(await claudeTodo(hooks, env)).toEqual({ text: '  The Claude TODO list is empty.' })
+})
+
+test('/claude-todo with an argument prints its usage, reads no list and writes none', async () => {
+  freshModule()
+  const { hooks } = wire()
+  const writes: unknown[] = []
+  expect(await claudeTodo(hooks, broken([], [], {}, writes), 'x')).toEqual({ text: CLAUDE_USAGE })
+  expect(await claudeTodo(hooks, broken([], [], {}, writes), ' 1 ')).toEqual({ text: CLAUDE_USAGE })
+  expect(writes).toEqual([])
+})
+
+test('/claude-todo prints the rebuilt list once a rebuild has finished, and its rebuilding line while the rebuild runs past its wait', async () => {
+  freshModule()
+  const wired = wire()
+  const timers: Timer[] = []
+  const { env, clock } = memEnv([], [], null, [], timers)
+  const write = {
+    type: 'assistant',
+    timestamp: '2026-10-20T10:00:02.000Z',
+    message: { role: 'assistant', content: [{ type: 'tool_use', id: 'w', name: TODO_TOOL, input: { entries: [entry('Rebuilt step', 'in_flight')] } }] },
+  }
+  const result = {
+    type: 'user',
+    timestamp: '2026-10-20T10:00:03.000Z',
+    message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'w', content: 'Claude TODO: 1 in flight, 0 queued' }] },
+  }
+  const { host, finish } = rebuilding(env, [write, result])
+  setForkedTranscript('/sessions/s.jsonl')
+  try {
+    await started(wired, host)
+    const waiting = claudeTodo(wired.hooks, host)
+    await tickAt(timers, clock, 5000)
+    expect(await waiting).toEqual({ text: CLAUDE_REBUILDING })
+    finish()
+    expect(await claudeTodo(wired.hooks, host)).toEqual({ text: '  Claude TODO: 1 in flight, 0 queued\n  in flight:\n    ◐ Rebuilt step' })
+  } finally {
+    resetRebuild()
+  }
+})
+
+test('a /claude-todo whose list read throws answers its failure line, logs the failure, and writes no list', async () => {
+  freshModule()
+  const { hooks, catches } = wire()
+  const logs: string[] = []
+  const writes: unknown[] = []
+  let thrown: unknown = null
+  try {
+    await claudeTodoOf(hooks)(broken(logs, [], {}, writes) as never, { args: '' } as never, next(false) as never)
+  } catch (err) {
+    thrown = err
+  }
+  expect(String(thrown)).toContain('list unreadable')
+  const handler = catches['command.run {"command":"claude-todo"}'] as Handler
+  expect(await handler(broken(logs, [], {}, writes) as never, { args: '' } as never, next(false) as never)).toEqual({ text: CLAUDE_FAILED })
+  expect(logs).toEqual(['human-plugin: the command.run hook throw: list unreadable'])
+  expect(writes).toEqual([])
+})
+
+test('/claude-todo changes neither list: the human list and the Claude list are as they were after it prints', async () => {
+  freshModule()
+  const { hooks } = wire()
+  const { env, values } = memEnv([made(1, { detail: '' })], [], null)
+  await runTodo(hooks, env, { entries: [entry('Build', 'in_flight')] })
+  const before = JSON.stringify(values)
+  await claudeTodo(hooks, env)
+  await claudeTodo(hooks, env, 'x')
+  expect(JSON.stringify(values)).toBe(before)
 })
