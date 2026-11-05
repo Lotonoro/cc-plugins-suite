@@ -2221,6 +2221,28 @@ test('a failed /asks registration is logged, and the rest of the session start s
   expect(submitted).toEqual([{ text: '#1 is done: Item 1' }])
 })
 
+test('a failed registration of one command leaves the other registered: /asks failing keeps /claude-todo, and the reverse', async () => {
+  for (const failing of ['asks', 'claude-todo']) {
+    freshModule()
+    const logs: string[] = []
+    const registered: string[] = []
+    const { env } = memEnv([], [], null)
+    await started(wire(), {
+      ...env,
+      ui: { ...env.ui, log: (text: string) => void logs.push(text) },
+      command: {
+        register: async (spec: { name: string }) => {
+          if (spec.name === failing) throw new Error('no room for the command')
+          registered.push(spec.name)
+        },
+      },
+    })
+    await settle()
+    expect(registered).toEqual([failing === 'asks' ? 'claude-todo' : 'asks'])
+    expect(logs).toEqual([`human-plugin: the /${failing} command was not registered: Error: no room for the command`])
+  }
+})
+
 test('a failed /asks registration leaves an undo window to be restored at session start: its tick sends the answer once the window has run', async () => {
   freshModule()
   const submitted: unknown[] = []
@@ -2983,22 +3005,27 @@ test('/claude-todo with an argument prints its usage, reads no list and writes n
   expect(writes).toEqual([])
 })
 
+// A transcript holding one Claude TODO write, for a rebuild that gives the list its step 'Rebuilt step'.
+const REBUILT_STEP = [
+  {
+    type: 'assistant',
+    timestamp: '2026-10-20T10:00:02.000Z',
+    message: { role: 'assistant', content: [{ type: 'tool_use', id: 'w', name: TODO_TOOL, input: { entries: [entry('Rebuilt step', 'in_flight')] } }] },
+  },
+  {
+    type: 'user',
+    timestamp: '2026-10-20T10:00:03.000Z',
+    message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'w', content: 'Claude TODO: 1 in flight, 0 queued' }] },
+  },
+]
+const REBUILT_TEXT = '  Claude TODO: 1 in flight, 0 queued\n  in flight:\n    ◐ Rebuilt step'
+
 test('/claude-todo prints the rebuilt list once a rebuild has finished, and its rebuilding line while the rebuild runs past its wait', async () => {
   freshModule()
   const wired = wire()
   const timers: Timer[] = []
   const { env, clock } = memEnv([], [], null, [], timers)
-  const write = {
-    type: 'assistant',
-    timestamp: '2026-10-20T10:00:02.000Z',
-    message: { role: 'assistant', content: [{ type: 'tool_use', id: 'w', name: TODO_TOOL, input: { entries: [entry('Rebuilt step', 'in_flight')] } }] },
-  }
-  const result = {
-    type: 'user',
-    timestamp: '2026-10-20T10:00:03.000Z',
-    message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'w', content: 'Claude TODO: 1 in flight, 0 queued' }] },
-  }
-  const { host, finish } = rebuilding(env, [write, result])
+  const { host, finish } = rebuilding(env, REBUILT_STEP)
   setForkedTranscript('/sessions/s.jsonl')
   try {
     await started(wired, host)
@@ -3006,7 +3033,25 @@ test('/claude-todo prints the rebuilt list once a rebuild has finished, and its 
     await tickAt(timers, clock, 5000)
     expect(await waiting).toEqual({ text: CLAUDE_REBUILDING })
     finish()
-    expect(await claudeTodo(wired.hooks, host)).toEqual({ text: '  Claude TODO: 1 in flight, 0 queued\n  in flight:\n    ◐ Rebuilt step' })
+    expect(await claudeTodo(wired.hooks, host)).toEqual({ text: REBUILT_TEXT })
+  } finally {
+    resetRebuild()
+  }
+})
+
+test('a /claude-todo run during a rebuild that ends inside its wait prints the rebuilt list, not its rebuilding line', async () => {
+  freshModule()
+  const wired = wire()
+  const timers: Timer[] = []
+  const { env } = memEnv([], [], null, [], timers)
+  const { host, finish } = rebuilding(env, REBUILT_STEP)
+  setForkedTranscript('/sessions/s.jsonl')
+  try {
+    await started(wired, host)
+    const waiting = claudeTodo(wired.hooks, host)
+    await settle()
+    finish()
+    expect(await waiting).toEqual({ text: REBUILT_TEXT })
   } finally {
     resetRebuild()
   }

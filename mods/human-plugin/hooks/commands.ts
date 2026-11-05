@@ -62,8 +62,11 @@ export const phoneBlock = (items: readonly Item[]): string | null => {
   ])
 }
 
-// Whether the argument holds anything: `/claude-todo` takes none. Blanks are the ASCII spaces and tabs, as `/asks` reads them.
-export const hasArgument = (args: string): boolean => args.replace(/^[ \t]+|[ \t]+$/g, '') !== ''
+// An argument without the ASCII spaces and tabs around it: the blanks both commands read an argument by.
+const trimmed = (args: string): string => args.replace(/^[ \t]+|[ \t]+$/g, '')
+
+// Whether the argument holds anything: `/claude-todo` takes none.
+export const hasArgument = (args: string): boolean => trimmed(args) !== ''
 
 // The Claude TODO list as `/claude-todo` prints it: a line that counts it, then the in-flight entries and the queued ones, each group in written
 // order under a heading of its own, an entry as its state's glyph and its title cut to the list's width. At most LIMITS.listItems entries are
@@ -91,7 +94,7 @@ export type ListAsk = { kind: 'list' } | { kind: 'item'; digits: string }
 export type Ask = { kind: 'usage' } | ListAsk | { kind: 'answer'; digits: string; form: Form }
 
 export const parseAsk = (args: string): Ask => {
-  const text = args.replace(/^[ \t]+|[ \t]+$/g, '')
+  const text = trimmed(args)
   if (text === '') return { kind: 'list' }
   const blank = text.search(/[ \t]/)
   const number = blank === -1 ? text : text.slice(0, blank)

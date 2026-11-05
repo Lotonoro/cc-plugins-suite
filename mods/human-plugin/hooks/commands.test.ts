@@ -678,6 +678,10 @@ test('the command takes no argument: a blank one is none, anything else is an ar
   expect(hasArgument(' 1 ')).toBe(true)
 })
 
+test('/claude-todo and /asks agree on what a blank argument is: the argument is blank to one exactly when /asks reads it as the list', () => {
+  for (const args of ['', ' ', '\t', ' \t ', 'x', ' 1 ', '\u00a0', '\n', ' \n ']) expect(hasArgument(args)).toBe(parseAsk(args).kind !== 'list')
+})
+
 test('the usage, rebuilding and failure lines each name /claude-todo, none names /asks, and every line is indented', () => {
   expect(CLAUDE_COMMAND).toBe('claude-todo')
   for (const text of [CLAUDE_USAGE, CLAUDE_REBUILDING, CLAUDE_FAILED]) {
