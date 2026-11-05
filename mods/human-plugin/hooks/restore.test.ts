@@ -367,3 +367,27 @@ test('a rebuild whose human list write fails logs it and still rebuilds the Clau
   expect(await todoList($)).toBe(LAST_LIST)
   expect(shown.filter(line => line.includes('the list was not rebuilt')).length).toBeGreaterThan(0)
 })
+
+test('a session that ends between the rebuild\'s two writes does not get the old conversation\'s Claude list', async ($, on) => {
+  const clock = mock.clock(on)
+  mock.store(on)
+  on('session.end', (_$, e) => ({ sessionId: e.sessionId }))
+  host(on, { [MAIN]: BOTH })
+  // The human list's write is held, so the session can end after the rebuild passed its first check and before it fills the Claude list.
+  const held: { release: () => void; reached: () => void } = { release: () => undefined, reached: () => undefined }
+  const gate = new Promise<void>(resolve => (held.release = resolve))
+  const reached = new Promise<void>(resolve => (held.reached = resolve))
+  on('state.set', async (_$, e, next) => {
+    if (e.key === 'list') {
+      held.reached()
+      await gate
+    }
+    return next(e)
+  })
+  await $.classic.SessionStart({ source: 'resume', transcript_path: MAIN })
+  await reached
+  await $.session.end({ reason: 'resume', sessionId: 's1', resume: { id: 's1' } })
+  held.release()
+  await clock.settle()
+  expect(await todoList($)).toBe('Claude TODO: 0 in flight, 0 queued')
+})
