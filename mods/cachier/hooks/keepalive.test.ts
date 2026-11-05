@@ -174,9 +174,9 @@ describe('step', () => {
       kind: 'wait',
       heading: 'paused',
       why: 'lead 300 s is not below the 300 s TTL',
-      lines: [],
+      lines: [REBUILD],
     })
-    expect(step(on(400000, 2), known, null, true, T)).toMatchObject({ heading: 'paused', why: 'lead 400 s is not below the 300 s TTL', lines: [] })
+    expect(step(on(400000, 2), known, null, true, T)).toMatchObject({ heading: 'paused', why: 'lead 400 s is not below the 300 s TTL', lines: [REBUILD] })
   })
 
   test('a due refresh is sent with no record of a cost shown: nothing holds it back once the lead has begun', () => {
@@ -286,7 +286,7 @@ describe('step', () => {
       [
         'a lead at or above the TTL',
         run({}, known, true, T, 300000),
-        { kind: 'wait', heading: 'paused', why: 'lead 300 s is not below the 300 s TTL', lines: [LAST] },
+        { kind: 'wait', heading: 'paused', why: 'lead 300 s is not below the 300 s TTL', lines: [REBUILD, LAST] },
       ],
       [
         'no live cache',
@@ -366,7 +366,7 @@ describe('a pending cold-mark write keeps the lines the settled verdict gives, a
     [
       'a lead at or above the TTL',
       run({}, known, true, T, 300000),
-      { kind: 'wait', heading: 'paused', why: PENDING, lines: ['lead 300 s is not below the 300 s TTL', LAST] },
+      { kind: 'wait', heading: 'paused', why: PENDING, lines: ['lead 300 s is not below the 300 s TTL', REBUILD, LAST] },
     ],
     [
       'an expired cache with its stop unrecorded',
@@ -854,9 +854,25 @@ describe('the pair: the warm refresh price and the cold rebuild price, stated wh
     expect(lines(on(400000, 2, { stop: 'cache expired' }), T)).toEqual([REREAD, REBUILD])
   })
 
-  test('a lead at or above the TTL with no stop held states no price and no rebuild', () => {
-    expect(lines(on(300000, 2), T)).toEqual([])
+  test('a lead at or above the TTL with no stop held states the rebuild price alone on a warm cache, and nothing else', () => {
+    expect(lines(on(300000, 2), T)).toEqual([REBUILD])
+    expect(lines(on(400000, 2), T)).toEqual([REBUILD])
+    expect(lines(on(300000, 2), T).join('\n')).not.toMatch(/refresh|warm cache/)
     expect(enableText(known, 300000, 3, null)).not.toMatch(/warm cache|if it goes cold/)
+  })
+
+  test('on an expired cache, at the tick, with no rebuild priced, or on an expired cache while a cold mark write is pending, a lead at or above the TTL adds no line', () => {
+    expect(lines(on(300000, 2), T + 300000)).toEqual([])
+    expect(stepWith(on(300000, 2), known, null, true, T, TOKENS, null)).toMatchObject({ kind: 'wait', heading: 'paused', lines: [] })
+    expect(step({ ...on(300000, 2), coldPending: true }, known, null, true, T + 300000)).toMatchObject({ why: 'until the cache reset is recorded', lines: ['lead 300 s is not below the 300 s TTL'] })
+  })
+
+  test('the rebuild line at a lead at or above the TTL is present one millisecond before the touch plus the TTL and absent exactly at it', () => {
+    expect(lines(on(300000, 2), T + 299999)).toEqual([REBUILD])
+    expect(lines(on(300000, 2), T + 300000)).toEqual([])
+    expect(lines(on(300000, 2), T + 399999, known)).toEqual([])
+    expect(step(on(300000, 2), known, T + 100000, true, T + 399999).lines).toEqual([REBUILD])
+    expect(step(on(300000, 2), known, T + 100000, true, T + 400000).lines).toEqual([])
   })
 
   test('a verdict handed no rebuild spend, as the tick works it out, states the warm half alone and the same kind', () => {

@@ -304,7 +304,7 @@ const settledOf = (k: KeepaliveState, leadMs: number, view: CacheView, liveMs: n
   const r = readiness(view, leadMs, liveMs, nowMs)
   if (r.kind === 'not-ready' || figures === null) {
     if (view.kind === 'known' && leadMs >= view.ttlMs) {
-      return { kind: 'wait', heading: 'paused', why: `lead ${secs(leadMs)} is not below the ${secs(view.ttlMs)} TTL`, figure: [] }
+      return { kind: 'wait', heading: 'paused', why: `lead ${secs(leadMs)} is not below the ${secs(view.ttlMs)} TTL`, figure: pairing(view, money, pair)?.rebuild ?? [] }
     }
     // A no-cache view's next reply is what writes a cache, so its line says so; a TTL-unknown or unread view may hold one unseen, so it says nothing of replies.
     const reply = view.kind === 'no-cache' ? '; there is no cache until the next reply' : ''

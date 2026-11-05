@@ -56,7 +56,7 @@ and a close another plugin refuses leaves the pane open to be closed by the next
   at the model that last wrote the cache, so after a model switch it is at the rates of the model switched from;
 - **Keepalive**: its state on the heading (`off`, `on, refreshing`, `paused`, `stopped`), and beneath it why it is paused or stopped and
   that it resumes after your next prompt, what the pie's colours warn of while it is amber or red, what a refresh costs and when the next is due (while
-  the cache is warm, with a line of its own for what your next prompt pays to rebuild it, opening `if it goes cold`), how many
+  the cache is warm, with a line of its own for what your next prompt pays to rebuild it, opening `if it goes cold`; a run whose lead is not below the TTL states that line alone on a warm cache), how many
   refreshes a pause sends, when keepalive pays off (`Keepalive pays off if you're back between 5:00 and 1:54:00`), and this
   pause's and this session's refreshes and their cost;
 - **Advice**: the best setup's sentence (see [Best setup](#best-setup)), priced from your recorded pauses, and the notes on the TTL
@@ -167,7 +167,7 @@ tenth: the cache is about to lapse) just below the heading or that reason, whate
 with a reading and not refreshing, on a reset or expired cache too. With keepalive off, and where a press would send refreshes,
 the refresh's cost or the context it reads, and how often one is sent, come straight after the warning. While the cache is warm, each price
 of a refresh is followed by a line of its own for what the next prompt pays to rebuild the cache if it goes cold (`if it goes cold, your next prompt rebuilds it: ~$0.21 (~33k tokens written)`);
-once it has expired the refresh's price stands alone. A keepalive paused by design
+once it has expired the refresh's price stands alone. A run whose lead is not below the TTL sends no refresh, so on a warm cache it states the `if it goes cold` line alone. A keepalive paused by design
 (its count used, or its cache expired) names what a refresh reads or costs and, where the cache is known and the lead is below the TTL, how often one would
 be sent. With keepalive on and no stop held, the heading reads `paused` while a cache reset is being recorded, and the first line
 beneath it says so; the reason the section would give with no reset pending, when it has one, follows as a second reason row, after

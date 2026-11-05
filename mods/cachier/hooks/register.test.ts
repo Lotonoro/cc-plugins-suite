@@ -3891,6 +3891,12 @@ describe('the words the user reads: no /keepalive answer, status line or pane sa
     said.push(await toggle($, 'on 60 1'))
     said.push(await toggle($, ''))
     said.push(await drawnHint($))
+    // A fresh reply re-warms the cache and lifts the cold mark; `on 300` re-arms the run at a lead at the TTL.
+    await userPrompt($)
+    await mainStep($)
+    await turnEnd($)
+    said.push(await toggle($, 'on 300'))
+    said.push(await toggle($, ''))
     // Each state was reached, so the scan below covers it.
     expect(said[0]).toMatch(/Keepalive {2}off/)
     expect(said[2]).toContain('its refreshes for this pause are used up')
@@ -3902,6 +3908,7 @@ describe('the words the user reads: no /keepalive answer, status line or pane sa
     expect(said[0]).toContain('if it goes cold')
     expect(said[1]).toContain('if it goes cold')
     expect(said[2]).toContain('if it goes cold')
+    expect(said[10]).toContain('if it goes cold')
   })
 })
 
@@ -4256,14 +4263,17 @@ describe('the pair: keeping the cache warm against rebuilding it if it goes cold
     )
   })
 
-  test('a lead at the TTL on a warm cache offers no refresh: with keepalive off the hover states the rebuild alone, with it on nothing, and the section no price', { options: { keepalive_lead_s: 300 } }, async ($, on) => {
+  test('a lead at the TTL on a warm cache offers no refresh: with keepalive off the hover states the rebuild alone, with it on nothing, and the section the rebuild line alone', { options: { keepalive_lead_s: 300 } }, async ($, on) => {
     await started($, on, opusCached())
     const m = await mountHint($)
     expect(JSON.stringify(await m.drawn())).toContain('if cold ~$0.09 rebuild')
     expect(JSON.stringify(await m.drawn())).not.toContain('keep warm')
     expect(await toggle($, '')).not.toMatch(/warm cache|if it goes cold|One refresh every/)
     expect(await toggle($, 'on 300')).toBe('keepalive on: lead 300 s, 24 refreshes. Paused: lead 300 s is not below the 300 s TTL.')
-    expect(await toggle($, '')).not.toMatch(/warm cache|if it goes cold/)
+    const section = (await toggle($, '')).replace(/\n\s*/g, ' ')
+    expect(section).toContain('lead 300 s is not below the 300 s TTL')
+    expect(section).toContain('if it goes cold, your next prompt rebuilds it: ~$0.09 (~19k tokens written)')
+    expect(section).not.toMatch(/\/refresh|Next refresh|each refresh|warm cache/)
     await m.unmount()
   })
 
@@ -4297,6 +4307,17 @@ describe('the pair: keeping the cache warm against rebuilding it if it goes cold
     expect(text).not.toMatch(/warm cache|if it goes cold/)
     expect(text).toContain('Prompt cache reset')
     await m.unmount()
+  })
+
+  test('under a recorded cold mark at a lead at or above the TTL, the Keepalive section adds no rebuild price and the Cache section states the rebuild as before', { options: { keepalive_lead_s: 300, keepalive_count: 3 } }, async ($, on) => {
+    const clock = await started($, on, opusCached())
+    await toggle($, 'on 300 3')
+    await $.classic.PostModelSwitch({ from_model: 'a', to_model: 'b', requested_model: 'b', source: 'command', prompt_cache_warm: true, cache_ttl: '5m', context_tokens: 1, estimated_cache_write_usd: 0, pricing: 'catalog' } as any)
+    await clock.advance(1000)
+    const text = (await toggle($, '')).replace(/\n\s*/g, ' ')
+    expect(text).toContain('Keepalive  on, no count')
+    expect(text).not.toMatch(/warm cache|if it goes cold/)
+    expect(text).toMatch(/Prompt cache reset, ~\$[\d.]+ to rebuild\./)
   })
 })
 
@@ -6005,7 +6026,7 @@ describe('the Keepalive section: the colour sentence wherever no refresh is comi
     await toggle($, 'on 300')
     await clock.advance(240000)
     expect(await drawnHint($)).not.toContain('"color":"success"')
-    expect(await toggle($, '')).toContain(`Keepalive  paused lead 300 s is not below the 300 s TTL ${SENTENCE}`)
+    expect(await toggle($, '')).toContain(`Keepalive  paused lead 300 s is not below the 300 s TTL ${SENTENCE} ${REBUILD}`)
   })
 
   test('keepalive stopped with its count used, in the last quarter: the sentence sits between the reason and the last-refresh line', async ($, on) => {
@@ -6143,6 +6164,43 @@ describe('the Keepalive section: the colour sentence wherever no refresh is comi
     await switching
   })
 
+  test('a cold mark being written at a lead at the TTL on a warm cache: the overlay reads the pending reason, the sentence, the lead reason, then the rebuild line', { options: { keepalive_lead_s: 300, keepalive_count: 2 } }, async ($, on) => {
+    const doc: any = { text: '', exists: false }
+    kaWorld(on, doc)
+    let release: () => void = () => {}
+    const gate = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    let holding = false
+    on('state.set', (_$: any, e: any, next: any) => {
+      if (e.key === 'cold' && e.value !== null && !holding) {
+        holding = true
+        return gate.then(() => next(e))
+      }
+      return next(e)
+    })
+    const clock = mock.clock(on, { now: T0 })
+    await $.classic.SessionStart({ source: 'startup', transcript_path: PATH })
+    await clock.settle()
+    await toggle($, 'on 300 2')
+    doc.exists = undefined
+    doc.text = cached().text
+    await mainStep($)
+    await turnEnd($)
+    await clock.advance(1000)
+    const switching = $.classic.PostModelSwitch({ from_model: 'a', to_model: 'b', requested_model: 'b', source: 'command', prompt_cache_warm: true, cache_ttl: '5m', context_tokens: 1, estimated_cache_write_usd: 0, pricing: 'catalog' } as any)
+    await clock.settle()
+    try {
+      expect(holding).toBe(true)
+      expect(await toggle($, '')).toContain(
+        `Keepalive  paused until the cache reset is recorded ${SENTENCE} lead 300 s is not below the 300 s TTL if it goes cold, your next prompt rebuilds it: ~19k tokens written`,
+      )
+    } finally {
+      release()
+    }
+    await switching
+  })
+
   test('a cold mark from a model switch with its mark set and its write unrecorded, in the last quarter: the sentence is followed by the no-live-cache line', { options: { keepalive_lead_s: 20, keepalive_count: 2 } }, async ($, on) => {
     const doc: any = { text: '', exists: false }
     kaWorld(on, doc)
@@ -6260,7 +6318,7 @@ describe('the Keepalive section: the colour sentence wherever no refresh is comi
     await clock.advance(1000)
     expect(await drawnHint($)).not.toContain('"color":"success"')
     const text = await toggle($, '')
-    expect(text).toContain(`Keepalive  paused lead 300 s is not below the 300 s TTL ${SENTENCE}`)
+    expect(text).toContain(`Keepalive  paused lead 300 s is not below the 300 s TTL ${SENTENCE} ${REBUILD}`)
     expect(text.split(SENTENCE).length - 1).toBe(1)
   })
 
