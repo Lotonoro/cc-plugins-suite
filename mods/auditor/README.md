@@ -24,8 +24,8 @@ earlier one, confirm a fix, or correct the wording of a message when nothing wou
   `auditor is on`, resumes the reviewer, and the next review covers only what happens from then on. `/auditor off` and
   `/auditor on` do the same from anywhere, mid-turn too, and bare `/auditor` says which it is: the Claude mobile app
   draws no footer, but runs the command and shows its answer. `/auditor memory` prints the reviewer's memory of the
-  notes it delivered, from any surface, the phone included. Every new session starts on. To stop it for good,
-  disable the plugin with `/plugin`.
+  notes it delivered, the findings still in flight and the ones it settled, from any surface, the phone included.
+  Every new session starts on. To stop it for good, disable the plugin with `/plugin`.
 - **Notes** reach the agent as a message from the reviewer, headed `auditor, review N:`, never as your words. Each
   shows in your transcript as Claude Code's grey collapsed `› Message from @auditor-reviewer` row. An idle agent
   takes its note at once, in a turn of its own, which the reviewer then reviews too, so the agent and the reviewer
@@ -65,11 +65,13 @@ Then start a new session. The reviewer is on as soon as the plugin is loaded.
   80,000 tokens, which keeps it under Haiku's higher price tier, the next review goes to a fresh reviewer; every
   brief, a fresh reviewer's included, carries the reviewer's memory of the notes delivered, and it finds your
   instructions again in the transcript. A fresh reviewer carries none of the old one's own reading of the session,
-  only the notes in its memory, which keeps its judgement independent. The memory is the reviewer's own, never sent
-  to the agent: it is bounded in size and age, reset on `/clear` and on switching on, and kept while the auditor is
-  off. The retired reviewer is stopped, so it does not stay idle for the rest of the session. So is a reviewer
-  forgotten on a `/clear`, one whose brief was refused, or one the toggle switched off. Should one review alone
-  outgrow 100,000 tokens, the reviewer compacts, keeping your instructions and any open disagreement.
+  only the notes in its memory, which keeps its judgement independent. The memory also records the disputes the
+  reviewer settled, where the agent countered a finding and the reviewer had no new evidence, so a later reviewer does
+  not raise a settled finding again without new evidence. The memory is the reviewer's own, never sent to the agent:
+  it is bounded in size and age, reset on `/clear` and on switching on, and kept while the auditor is off. The retired
+  reviewer is stopped, so it does not stay idle for the rest of the session. So is a reviewer forgotten on a `/clear`,
+  one whose brief was refused, or one the toggle switched off. Should one review alone outgrow 100,000 tokens, the
+  reviewer compacts, keeping your instructions and where you gave them.
 - **What the reviewer reads.** A record of the agent's turns since the previous review: your prompts, the agent's
   replies and every tool call with its result. It also reads files on disk, and it can search the whole session's
   transcript to find an instruction you gave many turns ago. Search results come back as short snippets around each

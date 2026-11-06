@@ -35,8 +35,8 @@ export type TurnRecord = { blocks: string[] }
 // A stall fact: what is in flight at the worker's Stop that will wake it. Each is spelled `type "description"`: a working agent or a teammate the worker messaged, from the agent list, then Stop's other tasks; the reviewer's own agents are left out.
 export type Wake = { tasks: string[]; crons: number }
 
-// One entry of the handoff doc: the body of a note delivered or held for the worker, clipped to 2,000 characters, keyed by the number of the review that gave it. Review numbers never repeat and a review gives at most one note, so the number names its entry.
-export type MemoryEntry = { number: number; text: string }
+// One entry of the handoff doc: the body of a note delivered or held for the worker, clipped to 2,000 characters, keyed by the number of the review that gave it. Review numbers never repeat and a review gives at most one note, so the number names its entry. The plugin adds an entry, in flight; the reviewer only settles or removes one, through its memory tool. `touched` is the number of the review that last touched it, the one that settled it last; absent means its key. An entry is in flight or settled: absent `kind` means in flight, as in an entry stored before kinds existed. A settled entry holds the reviewer's reason for settling it, `why`, the worker's counter and where it is.
+export type MemoryEntry = { number: number; text: string; touched?: number } & ({ kind?: 'in flight' } | { kind: 'settled'; why: string })
 
 // What started a worker turn: the user's own prompt (typed, from a Remote Control client, or a headless run's), a reviewer's task notification, or anything else.
 export type TurnStart = 'user' | 'notice' | 'other'
@@ -67,7 +67,7 @@ export type Conversation = {
   reviewerNames: string[]
   // The current reviewer's context at its last request (input, cache-read and cache-write tokens): past ROTATE_AT it is retired when its review is taken, never at a turn end that gives the review its follow-up, and the next dispatch spawns a fresh one.
   reviewerContext: number
-  // The reviewer's memory of this conversation, the handoff doc: one entry per note booked, oldest first. The plugin adds an entry when a note is booked, delivered or held, and never for a `Stalled:` note; an `Escalation:` note is kept. At each dispatch it drops the entries more than 30 reviews below the new review's number, then evicts the oldest while the rendering exceeds 12,000 characters, and every brief carries what remains; between dispatches it may run over the cap. It never reaches the worker. A /clear and a switch to on start it empty; a switch to off and a /compact of the worker leave it as it is, and while off it takes no entry.
+  // The reviewer's memory of this conversation, the handoff doc: one entry per note booked, oldest first. The plugin adds an entry when a note is booked, delivered or held, and never for a `Stalled:` note; an `Escalation:` note is kept. The current reviewer settles or removes an entry with its memory tool while its review is open, and does nothing else to it. At each dispatch it drops the entries last touched more than 30 reviews below the new review's number, then, while the rendering exceeds 12,000 characters, evicts the oldest-touched settled entry, or the oldest-touched in-flight one once none is settled, and every brief carries what remains; between dispatches it may run over the cap. It never reaches the worker. A /clear and a switch to on start it empty; a switch to off and a /compact of the worker leave it as it is, and while off it takes no entry.
   memory: MemoryEntry[]
   // The reviewer's open review, if it has one.
   review?: OpenReview
@@ -108,5 +108,6 @@ declare module 'claude-code' {
   interface McpToolInputs {
     'mcp__auditor__entries': { which: unknown; from?: unknown }
     'mcp__auditor__transcript': { search?: unknown; line?: unknown; full?: unknown; from?: unknown }
+    'mcp__auditor__memory': { action: unknown; review: unknown; why: unknown }
   }
 }

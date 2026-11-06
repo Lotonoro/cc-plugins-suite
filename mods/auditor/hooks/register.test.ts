@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'claude-code/testing'
 import { LOOKUP_TIMEOUT_MS, lineCommand, searchCommand } from './transcript'
-import { renderMemory } from './memory'
+import { MEMORY, MEMORY_ACTION, MEMORY_FIELD, REVIEW_ENDED, renderMemory } from './memory'
 import { followUpText } from './notes'
 import type { MemoryEntry } from '../types/index'
 import { REVIEWER_PROMPT } from './prompt'
@@ -2310,11 +2310,11 @@ describe('the entries tool', () => {
     return pages
   }
 
-  test('the entries tool is registered deferred, and the reviewer is given it and the transcript tool beside Read, Glob, Grep and SendMessage', ON, async ($, on) => {
+  test('the entries tool is registered deferred, and the reviewer is given it, the transcript tool and the memory tool beside Read, Glob, Grep and SendMessage', ON, async ($, on) => {
     const seen = engine(on)
     await $.session.start({ cwd: '/', surface: null, isInteractive: true })
-    expect(seen.registeredTools).toMatchObject([{ name: 'entries', isDeferred: true, inputSchema: { required: ['which'] } }, { name: 'transcript', isDeferred: true }])
-    expect(seen.registered[0].tools).toEqual(['Read', 'Glob', 'Grep', 'SendMessage', ENTRIES, TRANSCRIPT])
+    expect(seen.registeredTools).toMatchObject([{ name: 'entries', isDeferred: true, inputSchema: { required: ['which'] } }, { name: 'transcript', isDeferred: true }, { name: 'memory', isDeferred: true }])
+    expect(seen.registered[0].tools).toEqual(['Read', 'Glob', 'Grep', 'SendMessage', ENTRIES, TRANSCRIPT, MEMORY])
   })
 
   test('the registered input schema pins which to record or live, and from to a whole number from 1', ON, async ($, on) => {
@@ -4513,14 +4513,14 @@ describe('the reviewer\'s compaction', () => {
     expect(seen.compactions[0].instructions.startsWith('You are the auditor reviewer. Keep:')).toBe(true)
   })
 
-  test('a compaction of the reviewer keeps the user\'s instructions and open disagreements, drops quiet reviews, and does not ask it to keep its notes', ON, async ($, on) => {
+  test('a compaction of the reviewer keeps the user\'s instructions with where they were given, drops quiet reviews, and asks it to keep neither its notes nor open disagreements', ON, async ($, on) => {
     const seen = engine(on)
     await workerTurn($)
     await $.session.compact(compacting({ agentId: 'ag1' }))
     const told = seen.compactions[0].instructions
-    expect(told).toContain('every instruction, rule and preference of the user you have found, with where it was given')
-    expect(told).toContain('any disagreement still open')
+    expect(told).toContain('Keep: every instruction, rule and preference of the user you have found, with where it was given.')
     expect(told).toContain('Drop: the details of reviews that found nothing to note')
+    expect(told).not.toMatch(/disagree|dispute/)
     expect(told).not.toMatch(/note you gave|each note|your notes/)
   })
 
@@ -5116,7 +5116,7 @@ describe('a note held after an interrupt', () => {
     await $.prompt.submit(COMPOSER('more'))
     await $.classic.Stop(stop)
     expect(seen.spawns.length).toBe(2)
-    expect(seen.spawns[1].prompt).toContain(`Review 1: ${escalation}`)
+    expect(seen.spawns[1].prompt).toContain(`Review 1 (in flight, last touched in review 1): ${escalation}`)
     expect(seen.toasts).toEqual([ESCALATED_TOAST])
   })
 
@@ -5244,6 +5244,8 @@ describe('the reviewer\'s memory', () => {
   const on_ = ($: any) => $.command.run({ command: 'auditor', args: 'on' } as any)
   const printed = async ($: any): Promise<string | undefined> => (await $.command.run({ command: 'auditor', args: 'memory' })).text
   const entry = (number: number, text = `a.ts:${number} note.`): MemoryEntry => ({ number, text })
+  // An in-flight entry as the brief and the printout state it.
+  const inFlight = (number: number, text = `a.ts:${number} note.`): string => `Review ${number} (in flight, last touched in review ${number}): ${text}`
   // The memory part of a brief: everything before the brief's own first line.
   const memoryOf = (brief: string): string => brief.slice(0, Math.max(0, brief.indexOf(`\n\n${FINISHED}`)))
   // A stored conversation with no open review, no reviewer and a record to dispatch, holding `memory` after `dispatches` reviews.
@@ -5421,9 +5423,9 @@ describe('the reviewer\'s memory', () => {
       expect(seen.conversation.review).toMatchObject({ number: 32 })
       expect(seen.conversation.memory).toEqual([entry(2), entry(31)])
       const brief = memoryOf(seen.spawns[0].prompt)
-      expect(brief).not.toContain('Review 1:')
-      expect(brief).toContain('Review 2: a.ts:2 note.')
-      expect(brief).toContain('Review 31: a.ts:31 note.')
+      expect(brief).not.toContain('Review 1 (')
+      expect(brief).toContain(inFlight(2))
+      expect(brief).toContain(inFlight(31))
     })
 
     test('a memory over 12,000 code points loses its oldest entries first until the brief\'s memory part holds at most 12,000', ON, async ($, on) => {
@@ -5494,8 +5496,8 @@ describe('the reviewer\'s memory', () => {
       await $.classic.Stop(stop)
       for (const brief of [seen.spawns[0].prompt, seen.sends[0].text]) {
         expect(memoryOf(brief)).toBe(renderMemory([entry(4, 'a.ts:4 first.'), entry(5, 'a.ts:5 second.')]))
-        expect(memoryOf(brief)).toContain('Review 4: a.ts:4 first.')
-        expect(memoryOf(brief)).toContain('Review 5: a.ts:5 second.')
+        expect(memoryOf(brief)).toContain(inFlight(4, 'a.ts:4 first.'))
+        expect(memoryOf(brief)).toContain(inFlight(5, 'a.ts:5 second.'))
       }
     })
 
@@ -5527,7 +5529,7 @@ describe('the reviewer\'s memory', () => {
       const seen = await withEntries($, on)
       await off($)
       expect(seen.conversation.memory).toEqual([entry(1, 'a.ts:4 swallows it.')])
-      expect(await printed($)).toContain('Review 1: a.ts:4 swallows it.')
+      expect(await printed($)).toContain(inFlight(1, 'a.ts:4 swallows it.'))
       await on_($)
       expect(seen.conversation.memory).toEqual([])
     })
@@ -5561,7 +5563,7 @@ describe('the reviewer\'s memory', () => {
   describe('/auditor memory', () => {
     test('prints a count line, then every stored entry with its review number and text', ON, async ($, on) => {
       engine(on, { stateSeed: stored([entry(4, 'a.ts:4 first.'), entry(5, 'a.ts:5 second.\nMore.')], 6) })
-      expect(await printed($)).toBe('auditor memory holds 2 entries:\n\nReview 4: a.ts:4 first.\n\nReview 5: a.ts:5 second.\nMore.')
+      expect(await printed($)).toBe(`auditor memory holds 2 entries, 2 in flight and 0 settled:\n\n${inFlight(4, 'a.ts:4 first.')}\n\n${inFlight(5, 'a.ts:5 second.\nMore.')}`)
     })
 
     test('says so when the memory is empty', ON, async ($, on) => {
@@ -5583,5 +5585,301 @@ describe('the reviewer\'s memory', () => {
         expect(seen.conversation.memory).toEqual([entry(4)])
       }
     })
+  })
+
+  describe('the memory tool', () => {
+    const SETTLE = MEMORY_ACTION.settle
+    const REMOVE = MEMORY_ACTION.remove
+    const CHANGED = 'memory entry for review'
+    // The reviewer (ag1 unless told otherwise; null for the main loop) calls the memory tool; resolves to the tool's answer.
+    const memoryCall = ($: any, action: unknown, review: unknown, why: unknown, agentId: string | null = 'ag1') =>
+      $.tool.call({ tool: MEMORY, ...(agentId === null ? {} : { agentId }), [MEMORY_FIELD.action]: action, [MEMORY_FIELD.review]: review, [MEMORY_FIELD.why]: why })
+    const settled = (number: number, touched: number, why: string, text = `a.ts:${number} note.`): MemoryEntry => ({ number, text, kind: 'settled', touched, why })
+    // Review 1 open under ag1, its note booked as an in-flight entry.
+    const noted = async ($: any, on: any, opts: Opts = {}) => {
+      const seen = engine(on, opts)
+      await workerTurn($)
+      await noteSent($, 'a.ts:4 swallows it.')
+      expect(seen.conversation.memory).toEqual([entry(1, 'a.ts:4 swallows it.')])
+      return seen
+    }
+    // Review 1's note is booked and review 1 ends, then review 2 opens under ag1: an entry review 1 booked is one review 2 may settle.
+    const notedThenNext = async ($: any, on: any, opts: Opts = {}) => {
+      const seen = await noted($, on, opts)
+      await turnEnded($, 'ag1', '')
+      await $.prompt.submit(COMPOSER('next'))
+      await $.classic.Stop(stop)
+      expect(seen.conversation.review).toMatchObject({ number: 2 })
+      return seen
+    }
+
+    test('is registered deferred under the short name the engine names MEMORY, with the fields and actions memory.ts names, all required', ON, async ($, on) => {
+      const seen = engine(on)
+      await $.session.start({ cwd: '/', surface: null, isInteractive: true })
+      const tool = seen.registeredTools.find(t => `mcp__auditor__${t.name}` === MEMORY)
+      expect(tool).toMatchObject({ isDeferred: true })
+      expect(Object.keys(tool.inputSchema.properties).sort()).toEqual(Object.values(MEMORY_FIELD).sort())
+      expect(tool.inputSchema.properties[MEMORY_FIELD.action].enum).toEqual([SETTLE, REMOVE])
+      expect(tool.inputSchema.properties[MEMORY_FIELD.review]).toMatchObject({ type: 'integer', minimum: 1 })
+      expect([...tool.inputSchema.required].sort()).toEqual(Object.values(MEMORY_FIELD).sort())
+      expect(seen.registered[0].tools).toContain(MEMORY)
+    })
+
+    test('a caller that is not the current reviewer is denied with the reviewer tools\' refusal, and the memory is unchanged', ON, async ($, on) => {
+      const seen = await noted($, on)
+      for (const agentId of [null, 'sub1', 'zz']) {
+        expect(await memoryCall($, SETTLE, 1, 'countered', agentId)).toMatchObject({ deny: REFUSED })
+      }
+      expect(seen.conversation.memory).toEqual([entry(1, 'a.ts:4 swallows it.')])
+      expect(debugLines(seen, CHANGED)).toEqual([])
+    })
+
+    test('a former reviewer, forgotten at a /clear, is denied, and the memory is unchanged', ON, async ($, on) => {
+      const seen = await noted($, on)
+      await $.session.end({ reason: 'clear', sessionId: 's1' } as any)
+      const writes = seen.conversations.length
+      expect(await memoryCall($, REMOVE, 1, 'fixed')).toMatchObject({ deny: REFUSED })
+      expect(seen.conversations.length).toBe(writes)
+      expect(seen.conversation.memory).toEqual([])
+      expect(debugLines(seen, CHANGED)).toEqual([])
+    })
+
+    test('settle turns an in-flight entry settled with its reason, touched at the open review, and answers with its review number and new state', ON, async ($, on) => {
+      const seen = await notedThenNext($, on)
+      const why = 'the worker countered at transcript line 12: the error is rethrown by the caller'
+      expect(await memoryCall($, SETTLE, 1, why)).toEqual({ result: `Review 1's entry is now settled, with the reason: ${why}` })
+      expect(seen.conversation.memory).toEqual([settled(1, 2, why, 'a.ts:4 swallows it.')])
+    })
+
+    test('settling a settled entry again replaces its reason and moves its last touch to the open review, so it ages from there; remove takes either kind out', ON, async ($, on) => {
+      const seen = engine(on, { stateSeed: stored([settled(2, 3, 'first counter'), entry(4)], 5) })
+      await $.classic.Stop(stop)
+      expect(seen.conversation.review).toMatchObject({ number: 6 })
+      expect(await memoryCall($, SETTLE, 2, 'met again; the counter at line 40 holds')).toEqual({ result: "Review 2's entry is now settled, with the reason: met again; the counter at line 40 holds" })
+      expect(seen.conversation.memory).toEqual([settled(2, 6, 'met again; the counter at line 40 holds'), entry(4)])
+      expect(await memoryCall($, REMOVE, 4, 'fixed: a.ts:4 now rethrows, read at line 9')).toEqual({ result: "Review 4's entry is removed." })
+      expect(await memoryCall($, REMOVE, 2, 'new evidence: c.test.ts:30 fails')).toEqual({ result: "Review 2's entry is removed." })
+      expect(seen.conversation.memory).toEqual([])
+    })
+
+    test('an entry settled again is kept at a dispatch more than 30 reviews after its key and within 30 of its last touch', ON, async ($, on) => {
+      const seen = engine(on, { stateSeed: stored([entry(2)], 31) })
+      await $.classic.Stop(stop)
+      await memoryCall($, SETTLE, 2, 'countered at line 5')
+      await turnEnded($, 'ag1', '')
+      await $.prompt.submit(COMPOSER('again'))
+      await $.classic.Stop(stop)
+      // Review 33 is 31 past the entry's key, which would age it out; settling at review 32 moved its touch.
+      expect(seen.conversation.review).toMatchObject({ number: 33 })
+      expect(seen.conversation.memory).toEqual([settled(2, 32, 'countered at line 5')])
+    })
+
+    test('a dispatch ages a settled entry by its last touch: kept at 30 reviews past it, while an in-flight entry with a later key is dropped', ON, async ($, on) => {
+      const seen = engine(on, { stateSeed: stored([settled(2, 21, 'countered at line 5'), entry(3)], 50) })
+      await $.classic.Stop(stop)
+      expect(seen.conversation.memory).toEqual([settled(2, 21, 'countered at line 5')])
+    })
+
+    test('each refusal reaches the reviewer as its reason, leaves the memory unchanged and writes no debug line', ON, async ($, on) => {
+      const seen = await noted($, on)
+      const cases: [unknown, unknown, unknown, string][] = [
+        ['reopen', 1, 'ok', 'action must be settle or remove, so the memory was not changed'],
+        [undefined, 1, 'ok', 'action must be settle or remove, so the memory was not changed'],
+        [SETTLE, undefined, 'ok', 'review is missing: give the review number of the entry to change, so the memory was not changed'],
+        [SETTLE, '1', 'ok', 'review must be a whole review number, so the memory was not changed'],
+        [SETTLE, 1.5, 'ok', 'review must be a whole review number, so the memory was not changed'],
+        [REMOVE, 7, 'ok', 'the memory holds no entry for review 7, so it was not changed'],
+        [SETTLE, 1, undefined, 'why is missing or blank, so the memory was not changed'],
+        [SETTLE, 1, '   ', 'why is missing or blank, so the memory was not changed'],
+        [SETTLE, 1, 'w'.repeat(401), 'why is 401 characters, over the 400 allowed, so the memory was not changed'],
+        [SETTLE, 1, 'ok', "review 1 is this review's own entry, which the worker has not answered yet, and a settle needs the worker's counter, so the memory was not changed"],
+      ]
+      for (const [action, review, why, refusal] of cases) expect(await memoryCall($, action, review, why)).toEqual({ result: refusal })
+      expect(seen.conversation.memory).toEqual([entry(1, 'a.ts:4 swallows it.')])
+      expect(debugLines(seen, CHANGED)).toEqual([])
+    })
+
+    test('with no open review, the call is refused and the memory unchanged', ON, async ($, on) => {
+      const seen = await noted($, on)
+      await turnEnded($, 'ag1', '')
+      expect(seen.conversation.review).toBeUndefined()
+      expect(seen.conversation.reviewer).toMatchObject({ id: 'ag1' })
+      expect(await memoryCall($, SETTLE, 1, 'countered')).toEqual({ result: 'auditor has no review in progress for this reviewer, so the memory was not changed' })
+      expect(seen.conversation.memory).toEqual([entry(1, 'a.ts:4 swallows it.')])
+      expect(debugLines(seen, CHANGED)).toEqual([])
+    })
+
+    // The call's change reads the review open, and its write is held while `meanwhile` lands; the change then runs again on the state `meanwhile` left.
+    const landsAfter = async ($: any, on: any, meanwhile: () => Promise<unknown>) => {
+      const t = trap()
+      const seen = await notedThenNext($, on, { holdWrite: t.hold })
+      t.arm()
+      const calling = memoryCall($, SETTLE, 1, 'countered at line 3')
+      await t.reached
+      await meanwhile()
+      t.open()
+      return { seen, answer: await calling }
+    }
+
+    test('a call that lands after a /clear changes nothing, and its result is the review-ended text', ON, async ($, on) => {
+      const { seen, answer } = await landsAfter($, on, () => $.session.end({ reason: 'clear', sessionId: 's1' } as any))
+      expect(answer).toEqual({ result: REVIEW_ENDED })
+      expect(seen.conversation.memory).toEqual([])
+      expect(debugLines(seen, CHANGED)).toEqual([])
+    })
+
+    test('a call that lands after a switch changes nothing, and its result is the review-ended text', ON, async ($, on) => {
+      const { seen, answer } = await landsAfter($, on, () => off($))
+      expect(answer).toEqual({ result: REVIEW_ENDED })
+      expect(seen.conversation.memory).toEqual([entry(1, 'a.ts:4 swallows it.')])
+      expect(debugLines(seen, CHANGED)).toEqual([])
+    })
+
+    test('a call that lands after its review\'s settle changes nothing, and its result is the review-ended text, though the next review is open under the same reviewer', ON, async ($, on) => {
+      const { seen, answer } = await landsAfter($, on, async () => {
+        await turnEnded($, 'ag1', '')
+        await $.prompt.submit(COMPOSER('next'))
+        await $.classic.Stop(stop)
+      })
+      expect(seen.conversation.review).toMatchObject({ number: 3 })
+      expect(seen.conversation.reviewer).toMatchObject({ id: 'ag1' })
+      expect(answer).toEqual({ result: REVIEW_ENDED })
+      expect(seen.conversation.memory).toEqual([entry(1, 'a.ts:4 swallows it.')])
+      expect(debugLines(seen, CHANGED)).toEqual([])
+    })
+
+    test('a settle writes one debug line with the review number, the change and its why clipped to 180, also when its compare-and-set ran more than once', ON, async ($, on) => {
+      const why = 'w'.repeat(300)
+      const t = trap()
+      const seen = await notedThenNext($, on, { holdWrite: t.hold })
+      t.arm()
+      const calling = memoryCall($, SETTLE, 1, why)
+      await t.reached
+      await $.prompt.submit(COMPOSER('meanwhile'))
+      t.open()
+      expect((await calling).result).toContain("Review 1's entry is now settled")
+      expect(seen.conversation.record.blocks.join('')).toContain('USER: meanwhile')
+      expect(seen.conversation.memory).toEqual([settled(1, 2, why, 'a.ts:4 swallows it.')])
+      expect(debugLines(seen, CHANGED)).toEqual([`auditor: memory entry for review 1 settled: ${'w'.repeat(180)} …+120 characters`])
+    })
+
+    test('a remove writes one debug line with the review number, the change, the removed entry\'s text and its why, each clipped to 180', ON, async ($, on) => {
+      const seen = engine(on)
+      await workerTurn($)
+      await noteSent($, 't'.repeat(200))
+      await memoryCall($, REMOVE, 1, 'fixed: read at a.ts:9')
+      expect(debugLines(seen, CHANGED)).toEqual([`auditor: memory entry for review 1 removed: ${'t'.repeat(180)} …+20 characters; why: fixed: read at a.ts:9`])
+    })
+
+    test('no memory call enters the worker\'s record, and no memory text reaches the worker', ON, async ($, on) => {
+      const why = 'the worker countered at transcript line 12'
+      const seen = await notedThenNext($, on)
+      await memoryCall($, SETTLE, 1, why)
+      await memoryCall($, SETTLE, 9, 'refused')
+      expect(seen.conversation.record.blocks.join('')).not.toContain(MEMORY)
+      expect(await entriesOf($, { which: 'live' })).toBe(NONE_SINCE(2))
+      await turnEnded($, 'ag1', '')
+      await $.prompt.submit(COMPOSER('carry on'))
+      await $.classic.Stop(stop)
+      // Review 3's brief, the second send to the reviewer, carries the entry settled in review 2; the worker's prompts and notes carry none of it.
+      expect(seen.sends[1].text).toContain(why)
+      expect([...seen.prompts, ...seen.contexts.flat().filter((c: unknown) => c !== undefined), ...toMain(seen)].join('\n')).not.toContain(why)
+      expect(seen.conversation.record.blocks.join('')).not.toContain(MEMORY)
+    })
+
+    test('the brief and `/auditor memory` show each entry\'s kind, both review numbers and a settled entry\'s reason, in-flight entries first', ON, async ($, on) => {
+      const seen = engine(on, { stateSeed: stored([entry(2, 'a.ts:2 first.'), entry(4, 'a.ts:4 second.')], 5) })
+      await $.classic.Stop(stop)
+      await memoryCall($, SETTLE, 2, 'countered at line 8')
+      const settledLine = 'Review 2 (settled, last touched in review 6; the reason: countered at line 8): a.ts:2 first.'
+      expect(await printed($)).toBe(`auditor memory holds 2 entries, 1 in flight and 1 settled:\n\n${inFlight(4, 'a.ts:4 second.')}\n\n${settledLine}`)
+      await turnEnded($, 'ag1', '')
+      await $.prompt.submit(COMPOSER('again'))
+      await $.classic.Stop(stop)
+      expect(memoryOf(seen.sends[0].text).split('\n\n').slice(1)).toEqual([inFlight(4, 'a.ts:4 second.'), settledLine])
+    })
+
+    test('a memory stored before kinds reads with every entry in flight and touched at its key, and its entries settle', ON, async ($, on) => {
+      const seen = engine(on, { stateSeed: stored([entry(1), entry(3)], 31) })
+      expect(await printed($)).toBe(`auditor memory holds 2 entries, 2 in flight and 0 settled:\n\n${inFlight(1)}\n\n${inFlight(3)}`)
+      await $.classic.Stop(stop)
+      // Review 32: entry 1, touched at its key, is more than 30 below it.
+      expect(seen.conversation.memory).toEqual([entry(3)])
+      expect(await memoryCall($, SETTLE, 3, 'countered')).toMatchObject({ result: "Review 3's entry is now settled, with the reason: countered" })
+      expect(seen.conversation.memory).toEqual([settled(3, 32, 'countered')])
+    })
+  })
+})
+
+describe('the prompt on the memory', () => {
+  const { settle: SETTLE, remove: REMOVE } = MEMORY_ACTION
+  const { action: ACTION, review: REVIEW, why: WHY } = MEMORY_FIELD
+  // The after-challenge state whose line opens with `name`.
+  const stateLine = (name: string): string => REVIEWER_PROMPT.split('\n').find(line => line.startsWith(`- **${name}**`)) ?? ''
+  // The memory section: from its heading to the next.
+  const section = (): string => {
+    const start = REVIEWER_PROMPT.indexOf('### Your memory')
+    const end = REVIEWER_PROMPT.indexOf('\n#', start + 1)
+    return start < 0 ? '' : REVIEWER_PROMPT.slice(start, end < 0 ? undefined : end)
+  }
+
+  test('names the memory tool, its two actions and its fields by the names the tool accepts, as the registered reviewer reads it', ON, async ($, on) => {
+    const seen = engine(on)
+    await $.session.start({ cwd: '/', surface: null, isInteractive: true })
+    const prompt: string = seen.registered[0].prompt
+    const tool = seen.registeredTools.find(t => `mcp__auditor__${t.name}` === MEMORY)
+    expect(prompt).toContain(`\`${MEMORY}\``)
+    for (const action of [SETTLE, REMOVE]) {
+      expect(prompt).toContain(`\`${ACTION}: "${action}"\``)
+      expect(tool.inputSchema.properties[ACTION].enum).toContain(action)
+    }
+    for (const field of [REVIEW, WHY]) {
+      expect(prompt).toContain(`\`${field}\``)
+      expect(tool.inputSchema.properties[field]).toBeDefined()
+    }
+  })
+
+  test('says the memory is the reviewer\'s own, never delivered to the worker, and not a note', () => {
+    expect(section()).toContain('The memory is your own: it is never delivered to the worker, and it is not a note.')
+  })
+
+  test('Addressed and resolved removes the entry; Addressed with specifics, an accepted answer, calls nothing and leaves it in flight; neither state says both', () => {
+    const resolved = stateLine('Addressed and resolved')
+    const disputed = stateLine('Addressed with specifics (disputed)')
+    expect(resolved).toContain('remove its entry from your memory')
+    expect(disputed).toContain('A finding you drop because you accept the worker\'s answer calls no memory action: its entry stays in flight and ages out like any other.')
+    expect(resolved).not.toMatch(/stays in flight|calls no memory action/)
+    expect(disputed).not.toMatch(/remove/)
+  })
+
+  test('a settle happens at a re-raise without new evidence, each later meeting settles again, and both send nothing', () => {
+    const memory = section()
+    expect(memory).toContain('When you are about to raise a finding the worker already countered in the transcript, and you have no new evidence, do not raise it: settle its entry')
+    expect(memory).toContain('and send nothing about it. Each later time you meet a finding a settled entry covers, settle that entry again, which refreshes its age, and send nothing about it.')
+    expect(memory).toContain('A finding you drop when the worker answers it calls nothing: a silent drop is not a settle, and its entry stays in flight.')
+  })
+
+  test('a settle is the reviewer\'s claim for the whole note: settled only when every finding is answered or settled, and a partly answered note stays in flight', () => {
+    const memory = section()
+    expect(memory).toContain('An entry is one whole note, every finding in it. Settle an entry only when every finding in it is answered or settled; a partly answered note stays in flight')
+    expect(memory).toContain(`the \`${WHY}\` of the settle that comes names what was answered`)
+  })
+
+  test('an entry is removed when met, for one of two causes, never as a sweep, and the reviewer is not asked to check every entry', () => {
+    const memory = section()
+    expect(memory).toContain('Remove an entry when you meet its finding, for one of two causes.')
+    expect(memory).toContain('Your own review work shows its findings fixed or moot')
+    expect(memory).toContain('Or you have new evidence that a settled finding must be raised again')
+    expect(memory).toContain('Never remove entries as a sweep, and do not check every entry each review')
+    expect(REVIEWER_PROMPT).not.toMatch(/check (each|every) entry (of|in) (the|your) memory/)
+  })
+
+  test('a settled finding is raised again only after removing its entry with a why naming new evidence, and the note then cites it', () => {
+    const memory = section()
+    expect(memory).toContain(`remove the settled entry with a \`${WHY}\` naming that evidence, then raise the finding in your note, citing it. A settled finding is not raised again otherwise.`)
+  })
+
+  test('a countered finding with no entry is judged as it would be with no memory', () => {
+    expect(section()).toContain('A finding the worker countered that has no entry, because its entry aged out or was evicted, is judged as it would be with no memory: you may raise it once more if the worker\'s counter does not hold.')
   })
 })

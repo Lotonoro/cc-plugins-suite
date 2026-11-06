@@ -1,7 +1,8 @@
 import type { AgentInfo, AgentSpawnResult, CoreEngineInterface, ProcessRunResult, Register, TurnUsage } from 'claude-code'
 import { update } from 'claude-code'
 import type { Conversation, OpenReview, PendingNote, ReviewUsage, TurnEnd, TurnRecord, TurnStart, Wake } from '../types/index'
-import { MEMORY_LOG_CHARS, bounded, printMemory, renderMemory, withNote } from './memory'
+import { MEMORY, MEMORY_ACTION, MEMORY_FIELD, MEMORY_LOG_CHARS, REVIEW_ENDED, WHY_CHARS, bounded, changeMemory, printMemory, renderMemory, withNote } from './memory'
+import type { MemoryChange } from './memory'
 import { MAIN, admitSend, decideRefusal, followUpText, frameNote, marksOf, readSend, settleOutcome } from './notes'
 import type { Decided, Outcome, Refusal, Sent, Verdict } from './notes'
 import { REVIEWER_PROMPT } from './prompt'
@@ -33,8 +34,8 @@ const ROTATE_AT = 80_000
 const SPAWN_TIMEOUT_MS = 10 * 60 * 1000
 // The reason a review is logged incomplete with when no spawn stood a reviewer in for it in SPAWN_TIMEOUT_MS (`dispatchIdle`).
 const SPAWN_LAPSED = `reviewer spawn did not settle in ${SPAWN_TIMEOUT_MS / 60_000} minutes`
-// What a compaction of the reviewer's own conversation keeps: the facts its judgement rests on, not the reviews that found nothing.
-const REVIEWER_COMPACTION = 'You are the auditor reviewer. Keep: every instruction, rule and preference of the user you have found, with where it was given; any disagreement still open. Drop: the details of reviews that found nothing to note.'
+// What a compaction of the reviewer's own conversation keeps: the facts its judgement rests on, not the reviews that found nothing. Neither its notes nor its disputes: the memory every brief carries is their one record.
+const REVIEWER_COMPACTION = 'You are the auditor reviewer. Keep: every instruction, rule and preference of the user you have found, with where it was given. Drop: the details of reviews that found nothing to note.'
 // A plain subagent's final report reaches prompt submission opening with this marker.
 const HAND_BACK = '[Subagent hand-back]'
 // The envelope an agent message arrives in, naming its sender.
@@ -856,12 +857,27 @@ export const register: Register = (on, options) => {
       },
       isDeferred: true,
     })
+    // Registered as `memory`, which the engine names MEMORY: a test holds the two together, since nothing else does.
+    await $.tool.register({
+      name: 'memory',
+      description: `Changes one entry of the calling auditor reviewer's memory during its open review, and adds none: ${MEMORY_ACTION.settle} marks the entry settled, with ${MEMORY_FIELD.why} as its reason, touched at this review, whether it was settled before or not; ${MEMORY_ACTION.remove} takes it out of the memory. The answer names the entry and its new state, or why nothing changed.`,
+      inputSchema: {
+        type: 'object',
+        properties: {
+          [MEMORY_FIELD.action]: { type: 'string', enum: [MEMORY_ACTION.settle, MEMORY_ACTION.remove], description: `'${MEMORY_ACTION.settle}': the worker countered the entry's finding and there is no new evidence; '${MEMORY_ACTION.remove}': its findings are fixed or moot, or new evidence means a settled finding must be raised again` },
+          [MEMORY_FIELD.review]: { type: 'integer', minimum: 1, description: 'the review number the entry is kept under, as the memory states it' },
+          [MEMORY_FIELD.why]: { type: 'string', description: `at most ${WHY_CHARS} characters: for ${MEMORY_ACTION.settle}, the worker's counter and where it is, a transcript line or a record entry; for ${MEMORY_ACTION.remove}, which cause and how, or the new evidence` },
+        },
+        required: [MEMORY_FIELD.action, MEMORY_FIELD.review, MEMORY_FIELD.why],
+      },
+      isDeferred: true,
+    })
     await $.agent.register({
       name: 'reviewer',
       description: 'auditor reviewer: audits the worker session each turn',
       prompt: REVIEWER_PROMPT,
       // SendMessage carries the review's one note to the worker; the gate (`session.send`) refuses every other send.
-      tools: ['Read', 'Glob', 'Grep', 'SendMessage', ENTRIES, TRANSCRIPT],
+      tools: ['Read', 'Glob', 'Grep', 'SendMessage', ENTRIES, TRANSCRIPT, MEMORY],
       model: REVIEWER_MODEL,
       effort: REVIEWER_EFFORT,
       autoCompactWindow: 100_000,
@@ -1099,6 +1115,26 @@ export const register: Register = (on, options) => {
     const c = await readConversation($)
     if (!(await isReviewerCaller($, c, e.agentId))) return { deny: REFUSED }
     return { result: await lookUp($, c.transcript, e) }
+  })
+
+  // The reviewer's memory tool, behind the same gate as the entries tool: one call settles or removes one entry (`changeMemory`). The gate reads the conversation once, and a /clear, a switch or the review's settle can land before the write, so the change judges the call again, with the test the settle's take uses: it writes only while the caller is still the stored reviewer and the review the gate read is still open in the gate's epoch, and otherwise changes nothing and answers REVIEW_ENDED. The debug line is written once the change lands, never inside it, since a compare-and-set change can run more than once. The result is the reviewer's alone: nothing here reaches the worker, and the recorder leaves the call out of the record, as it does every reviewer call.
+  on('tool.call', { tool: MEMORY }, async ($, e) => {
+    const c = await readConversation($)
+    if (!(await isReviewerCaller($, c, e.agentId))) return { deny: REFUSED }
+    const acted = c.review?.number
+    const got: { judged?: MemoryChange } = {}
+    await change($, s => {
+      got.judged = undefined
+      if (s.epoch !== c.epoch || s.review?.number !== acted || !isReviewerId(s, e.agentId)) return s
+      const judged = changeMemory(s.memory, s.review?.number, e)
+      got.judged = judged
+      return 'refusal' in judged ? s : { ...s, memory: judged.memory }
+    })
+    const { judged } = got
+    if (judged === undefined) return { result: REVIEW_ENDED }
+    if ('refusal' in judged) return { result: judged.refusal }
+    $.ui.log(`${PLUGIN}: ${judged.logged}`, { to: 'debug' })
+    return { result: judged.answer }
   })
 
   // The worker's own model replies go into the record. The reviewer's request is not one of them: its usage is the reviewer's context, which rotation reads.
