@@ -35,7 +35,8 @@ type Opts = {
   reviewerIds?: string[]
   agents?: { id: string; name?: string; type?: string; status?: string; description?: string; teammateId?: string; spawnedBy?: string }[]
   listFails?: boolean
-  tools?: Record<string, { text: string; isError?: boolean }>
+  // What a tool answers, by name: `isError` fails the call and `deny` refuses it, and the record counts either as a failed call.
+  tools?: Record<string, { text: string; isError?: boolean; deny?: string }>
   // The canned answer of every host command; the fields not given keep a clean run's values.
   run?: { stdout?: string; exitCode?: number; isStdoutTruncated?: boolean }
   sendFails?: string
@@ -187,7 +188,7 @@ const engine = (on: any, opts: Opts = {}) => {
     if (e.tool === 'TaskStop' && opts.stopRefuses !== undefined) return { deny: opts.stopRefuses }
     if (e.tool === opts.toolThrows) return Promise.reject(new Error('tool unavailable'))
     const answer = tools[e.tool] ?? { text: `ran ${e.tool}` }
-    return { ref: 1, result: null, text: answer.text, isError: answer.isError }
+    return answer.deny === undefined ? { ref: 1, result: null, text: answer.text, isError: answer.isError } : { deny: answer.deny }
   })
   let getHeld = false
   on('state.get', async (_$: any, e: any, next: any) => {
@@ -2048,6 +2049,56 @@ describe('the stall nudge', () => {
     const seen = engine(on, { agents: [TEAMMATE], tools: { SendMessage: { text: 'no such recipient', isError: true } } })
     await $.prompt.submit(COMPOSER('ask the helper'))
     await $.tool.call({ tool: 'SendMessage', to: 'helper', message: 'Look at the lexer.' } as any)
+    await $.classic.Stop(QUIET_STOP)
+    expect(seen.spawns[0].prompt).toContain(NOTHING)
+  })
+
+  test('a turn whose main loop broadcasts states no stall fact, and the stall note its review sends is refused', ON, async ($, on) => {
+    const seen = engine(on)
+    await $.prompt.submit(COMPOSER('tell the team to stop'))
+    await $.tool.call({ tool: 'SendMessage', to: '*', message: 'Stop for the day.' } as any)
+    await $.classic.Stop(QUIET_STOP)
+    expect(seen.spawns[0].prompt).not.toContain('wake the worker')
+    await mainTurnEnd($)
+    const sent = await noteSent($, STALL_NOTE)
+    expect(sent.isDelivered).toBe(false)
+    expect(sent.reason).toContain('did not say nothing will wake the worker')
+    expect(toMain(seen)).toEqual([])
+  })
+
+  test('the turn after a broadcast, which sends none, says nothing will wake the worker', ON, async ($, on) => {
+    const seen = engine(on)
+    await $.prompt.submit(COMPOSER('tell the team to stop'))
+    await $.tool.call({ tool: 'SendMessage', to: '*', message: 'Stop for the day.' } as any)
+    await $.classic.Stop(QUIET_STOP)
+    await reviewed($, HANDBACK('Nothing to note.'), 'ag1')
+    await mainTurnEnd($)
+    await $.prompt.submit(COMPOSER('thanks'))
+    await $.classic.Stop(QUIET_STOP)
+    expect(seen.sends.map(s => s.to)).toEqual(['ag1'])
+    expect(seen.sends[0].text).toContain(NOTHING)
+  })
+
+  test('a broadcast that failed wakes no one, so its turn still says nothing will wake the worker', ON, async ($, on) => {
+    const seen = engine(on, { tools: { SendMessage: { text: 'no such recipient', isError: true } } })
+    await $.prompt.submit(COMPOSER('tell the team to stop'))
+    await $.tool.call({ tool: 'SendMessage', to: '*', message: 'Stop for the day.' } as any)
+    await $.classic.Stop(QUIET_STOP)
+    expect(seen.spawns[0].prompt).toContain(NOTHING)
+  })
+
+  test('a broadcast the engine refused wakes no one, so its turn still says nothing will wake the worker', ON, async ($, on) => {
+    const seen = engine(on, { tools: { SendMessage: { text: 'refused', deny: 'SendMessage is not allowed' } } })
+    await $.prompt.submit(COMPOSER('tell the team to stop'))
+    await $.tool.call({ tool: 'SendMessage', to: '*', message: 'Stop for the day.' } as any)
+    await $.classic.Stop(QUIET_STOP)
+    expect(seen.spawns[0].prompt).toContain(NOTHING)
+  })
+
+  test('a broadcast from a listed subagent of the worker withholds nothing, so its turn says nothing will wake the worker', ON, async ($, on) => {
+    const seen = engine(on, { agents: [{ id: 'sub7', name: 'helper', type: 'general-purpose', status: 'completed', description: 'Scan the docs' }] })
+    await $.prompt.submit(COMPOSER('fix the parser'))
+    await $.tool.call({ tool: 'SendMessage', to: '*', message: 'Stop for the day.', agentId: 'sub7' } as any)
     await $.classic.Stop(QUIET_STOP)
     expect(seen.spawns[0].prompt).toContain(NOTHING)
   })

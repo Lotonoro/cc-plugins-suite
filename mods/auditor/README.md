@@ -91,9 +91,10 @@ other note.
   failed or killed agent does not count, nor does the reviewer's own, even one whose id the plugin has not learned yet, and "nothing in flight" is exact. The limit: a
   teammate in a terminal pane of its own that has died still reads as working, so no nudge comes for it.
 - **No nudge** when the agent's own last tool call asked you something (`AskUserQuestion`, or filing a human-plugin
-  item), when the turn ended aborted, or when a stall note on a review dispatched since your last prompt already reached the
-  agent. So one stall gets one nudge; your next prompt, `/clear` or the toggle re-arms it. A stall note from a review whose
-  brief did not say nothing will wake the agent is refused, and never reaches it.
+  item), when the turn ended aborted, when the agent itself sends a broadcast in its turn (a `SendMessage` to `*` names
+  no agent, so that turn gets no stall verdict at all), or when a stall note on a review dispatched since your last prompt
+  already reached the agent. So one stall gets one nudge; your next prompt, `/clear` or the toggle re-arms it. A stall
+  note from a review whose brief did not say nothing will wake the agent is refused, and never reaches it.
 - **The limit.** The reviewer judges the wording of the last turn, so it can miss a stall, and it can flag one that is
   not. Only the guards above are mechanical.
 

@@ -409,8 +409,8 @@ const followUp = async ($: Scope, log: boolean, agentId: string, done: Finished,
   await settle($, log, agentId, done, true)
 }
 
-// A guard withholds the stall fact: the turn's last tool call asked the user, or a stall note on a review dispatched since the user's last prompt was delivered.
-const withheld = (c: Conversation): boolean => c.lastAsked || c.nudged
+// A guard withholds the stall fact: the turn's last tool call asked the user; a stall note on a review dispatched since the user's last prompt was delivered; or the turn's main loop sent a broadcast (`"*"`), which names no listed agent, so the agent list cannot say what it wakes.
+const withheld = (c: Conversation): boolean => c.lastAsked || c.nudged || c.messaged.includes('*')
 
 // The agent list's statuses that are in flight. A waiting agent is held on background work it owns, or on a plan's approval, and resumes by itself or by a message it can send the worker.
 const WORKING = ['pending', 'running', 'waiting']

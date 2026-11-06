@@ -77,11 +77,11 @@ export type Conversation = {
   failing: boolean
   // What started the worker's latest turn. A turn a reviewer's task notification started records nothing and dispatches nothing at its end.
   turnStart: TurnStart | null
-  // The stall fact the worker's latest Stop gave, which the brief states. Null when the guards withheld it, a Stop omitted a list, the agent list was unread, or an aborted turn cleared it.
+  // The stall fact the worker's latest Stop gave, which the brief states. Null when the guards withheld it, a Stop omitted a list, the agent list was unread, or an aborted turn cleared it: a turn whose main loop sent a broadcast gets no stall verdict.
   wake: Wake | null
   // Whether the worker's latest main-loop tool call asked the user: AskUserQuestion, or a human_items add. A subagent's call leaves it as it was. Reset at each worker turn end.
   lastAsked: boolean
-  // The addresses the worker's main-loop SendMessage calls named in this turn: a message wakes its recipient whatever its status. Reset at each worker turn end.
+  // The addresses the worker's main-loop SendMessage calls named in this turn: a message wakes its recipient whatever its status. A broadcast (`"*"`) names no agent, so a turn that sent one gets no stall verdict. Reset at each worker turn end.
   messaged: string[]
   // Whether a stall note from a review dispatched after the user's latest own prompt has been let through and delivered since that prompt, /clear or toggle: one nudge per stall.
   nudged: boolean
