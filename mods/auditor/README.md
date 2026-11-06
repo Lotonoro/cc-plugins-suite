@@ -88,7 +88,7 @@ other note.
 
 - **What counts as in flight.** A subagent or teammate that is working or waiting on its own work, or one the agent messaged in the turn
   whatever its status; a shell, a monitor or another background task; or a scheduled wake-up. An idle, finished,
-  failed or killed agent does not count, nor does the reviewer's own, and "nothing in flight" is exact. The limit: a
+  failed or killed agent does not count, nor does the reviewer's own, even one whose id the plugin has not learned yet, and "nothing in flight" is exact. The limit: a
   teammate in a terminal pane of its own that has died still reads as working, so no nudge comes for it.
 - **No nudge** when the agent's own last tool call asked you something (`AskUserQuestion`, or filing a human-plugin
   item), when the turn ended aborted, or when a stall note on a review dispatched since your last prompt already reached the

@@ -59,11 +59,11 @@ export type Conversation = {
   lastMessage: string
   // The session transcript's path from the engine's events; a session end clears it, so a /clear keeps it only if the engine reports it again.
   transcript: string | null
-  // The reviewer, once its spawn result names it.
+  // The current reviewer, once its spawn result names it or a call it makes is adopted by name. The state-based answer (`standingOf` in reviewer.ts) reads it for `current`: only this id settles a review, calls the reviewer's tools or has its context counted.
   reviewer?: { id: string; model: string }
-  // Every reviewer id this session's spawns have returned, oldest first, kept across /clear: a retired or forgotten reviewer's task row is hidden too, its calls stay out of the record, and its compaction keeps what a reviewer keeps.
+  // Every reviewer id this session's spawns have returned, oldest first, kept across /clear. The state-based answer reads it for `former`: an id here that is not the stored reviewer's is a retired, switched-off, forgotten or stale reviewer's, and is still a reviewer's wherever the answer asks for any reviewer: its task row is hidden, its calls stay out of the record, its compaction keeps what a reviewer keeps, and the agent list's entry for it is left out of the stall fact.
   reviewerIds: string[]
-  // The team name each of this session's reviewer spawns runs under, as the agent list names it (the engine renames a taken name), kept across /clear: a verified end-of-run notice from one of these is consumed.
+  // The team name each of this session's reviewer spawns runs under, as the agent list names it (the engine renames a taken name), kept across /clear: the name decisions in reviewer.ts read them, and a verified end-of-run notice from one of these is consumed.
   reviewerNames: string[]
   // The current reviewer's context at its last request (input, cache-read and cache-write tokens): past ROTATE_AT it is retired when its review is taken, never at a turn end that gives the review its follow-up, and the next dispatch spawns a fresh one.
   reviewerContext: number
@@ -71,7 +71,7 @@ export type Conversation = {
   memory: MemoryEntry[]
   // The reviewer's open review, if it has one.
   review?: OpenReview
-  // Each reviewer spawn still in flight, by the brief it was spawned with, the epoch it was spawned under, the number of the review it serves, the clock's time its dispatch started, and the id and resolved model once the spawn hook has seen it: a dispatch whose spawn result names no agent takes its id from here. No reset clears it, so a spawn a reset dropped still finds the id it is stopped by (`deliverBrief`). A spawn hook matches its spawn's entry by brief (`recordSpawnedId`), and stands the spawn in as the reviewer while its review is open in its epoch and none is stored; a hook that matches no entry only marks its id and name as reviewer traffic. A spawn from an older epoch blocks adoption by name for at most `SPAWN_TIMEOUT_MS` after it started, unless its hook named another id than the caller's (`blocksAdoption`). Its landing takes it out (`releaseSpawn`). A review no reviewer has stood in for `SPAWN_TIMEOUT_MS` after its dispatch fails at the next dispatch (`dispatchIdle`).
+  // Each reviewer spawn still in flight, by the brief it was spawned with, the epoch it was spawned under, the number of the review it serves, the clock's time its dispatch started, and the id and resolved model once the spawn hook has seen it: a dispatch whose spawn result names no agent takes its id from here. No reset clears it, so a spawn a reset dropped still finds the id it is stopped by (`deliverBrief`). `learn`, `adopt` and `land` in reviewer.ts read and write it. Its landing takes it out (`releaseSpawn`). A review no reviewer has stood in for `SPAWN_TIMEOUT_MS` after its dispatch fails at the next dispatch (`dispatchIdle`).
   spawnsInFlight: { brief: string; epoch: number; number: number; startedAt: number; id?: string; model?: string }[]
   // Whether the last review failed and none has succeeded since: no review is dispatched until a turn the user's own prompt started ends.
   failing: boolean

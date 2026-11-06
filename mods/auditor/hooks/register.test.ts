@@ -2006,6 +2006,13 @@ describe('the stall nudge', () => {
     expect(seen.spawns[0].prompt).toContain(NOTHING)
   })
 
+  test('a reviewer this plugin spawned whose id is not stored yet wakes nothing, since the list names it as this plugin\'s spawn', ON, async ($, on) => {
+    const seen = engine(on, { agents: [{ id: 'ag7', name: 'auditor-reviewer', type: 'auditor:reviewer', status: 'running', description: 'auditor review', spawnedBy: 'auditor' }] })
+    await $.prompt.submit(COMPOSER('fix the parser'))
+    await $.classic.Stop(QUIET_STOP)
+    expect(seen.spawns[0].prompt).toContain(NOTHING)
+  })
+
   test('an idle agent\'s task under a label other than teammate or subagent is still set aside by its id', ON, async ($, on) => {
     const seen = engine(on, { agents: [TEAMMATE] })
     await $.prompt.submit(COMPOSER('fix the parser'))
@@ -3847,6 +3854,21 @@ describe('the note gate', () => {
     expect(seen.conversation.review.note).toBeUndefined()
     expect(toMain(seen)).toEqual([])
     expect(seen.toasts).toEqual([])
+  })
+
+  test('a send from a reviewer whose spawn result has not landed is gated by the verdict: a note for another review is refused, and one for the open review is admitted', ON, async ($, on) => {
+    const held = heldSpawn()
+    const seen = engine(on, { spawnHold: held.hold })
+    await $.prompt.submit(COMPOSER('fix'))
+    const stopping = $.classic.Stop(stop)
+    await held.reached
+    expect(seen.conversation.reviewer).toBeUndefined()
+    expect((await $.session.send(SEND(2, SECRET, 'ag1'))).reason).toContain('review 2 is not the open review')
+    expect(toMain(seen)).toEqual([])
+    expect(await $.session.send(SEND(1, 'a.ts:1 idle.', 'ag1'))).toEqual({ isDelivered: true })
+    expect(toMain(seen)).toEqual([FRAMED(1, 'a.ts:1 idle.')])
+    held.land()
+    await stopping
   })
 
   test('a second note in one review is refused, while the first is still out and after it was delivered', ON, async ($, on) => {

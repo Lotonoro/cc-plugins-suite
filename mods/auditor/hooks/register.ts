@@ -7,11 +7,17 @@ import { MAIN, admitSend, decideRefusal, followUpText, frameNote, marksOf, readS
 import type { Decided, Outcome, Refusal, Sent, Verdict } from './notes'
 import { REVIEWER_PROMPT } from './prompt'
 import { clip, entryBlock, pageOf, renumberBlock, toolLine } from './record'
+import { adopt, forget, isEndNotice, isHandBack, isNotice, isReviewerEntry, land, learn, learnName, markers, nameKnown, nameListed, originOf, retire, reviewerNameOf, spawnName, spawning, standingOf } from './reviewer'
+import type { Identity } from './reviewer'
 import { DIGEST_CHARS, LOOKUP_TIMEOUT_MS, SEARCH_TERM_CHARS, digestBlocks, digestOf, lineCommand, lookupOf, parseSearch, renderSearch, searchCommand } from './transcript'
 
 const PLUGIN = 'auditor'
 const REVIEWER = 'auditor-reviewer'
 const REVIEWER_TYPE = `${PLUGIN}:reviewer`
+// What the spawn is described as, which the engine's task notification for the reviewer names.
+const REVIEW_DESCRIPTION = 'auditor review'
+// The literals `reviewer.ts` tests against; the plugin's identity stays with this file.
+const IDENTITY: Identity = { plugin: PLUGIN, name: REVIEWER, description: REVIEW_DESCRIPTION }
 const REVIEWER_MODEL = 'claude-haiku-5-5'
 const REVIEWER_EFFORT = 'high'
 const CONV = { plugin: 'auditor', key: 'conversation' } as const
@@ -25,9 +31,6 @@ const NO_LOOKUP = 'auditor could not look in the session transcript; the lookup 
 const ESCALATED = 'auditor: the reviewer escalated a disagreement; see its note to the worker'
 // A push is cut here: phones truncate a notification past about 200 characters.
 const PUSH_CHARS = 180
-// A reviewer's spawn name, or the engine's rename of it when the name was taken (`auditor-reviewer-2`).
-const NAMED = /(?<![\w-])auditor-reviewer(?:-\d+)?(?![\w-])/
-const REVIEWER_NAME = /^auditor-reviewer(?:-\d+)?$/
 // A reviewer whose context passed this many tokens is retired when its review is taken (`takeReview`), not at a turn end that gives the review its follow-up: under Haiku 5.5's 100,000-token price tier and the reviewer's compaction point, with room for one review's growth.
 const ROTATE_AT = 80_000
 // How long a reviewer spawn may stay in flight before it is given up (`spawnsInFlight`).
@@ -36,16 +39,10 @@ const SPAWN_TIMEOUT_MS = 10 * 60 * 1000
 const SPAWN_LAPSED = `reviewer spawn did not settle in ${SPAWN_TIMEOUT_MS / 60_000} minutes`
 // What a compaction of the reviewer's own conversation keeps: the facts its judgement rests on, not the reviews that found nothing. Neither its notes nor its disputes: the memory every brief carries is their one record.
 const REVIEWER_COMPACTION = 'You are the auditor reviewer. Keep: every instruction, rule and preference of the user you have found, with where it was given. Drop: the details of reviews that found nothing to note.'
-// A plain subagent's final report reaches prompt submission opening with this marker.
-const HAND_BACK = '[Subagent hand-back]'
-// The envelope an agent message arrives in, naming its sender.
-const ENVELOPE = '<agent-message from='
 // The reason a known reviewer's end-of-run notice is consumed with.
 const END_NOTICE = 'auditor reviewer end-of-run notice'
 // The reason the reviewer reads when its send is refused because the gate could not read the conversation.
 const UNCHECKED = 'auditor could not check this message, so it was not sent'
-// A reviewer's task notification names the reviewer's description in its summary.
-const REVIEW_NOTICE = 'Agent "auditor review"'
 const INTERRUPTED = 'INTERRUPTED: the user stopped this turn before it finished.'
 const NONE_INTERRUPTED = '(none: the user interrupted the turn)'
 const EMPTY_RECORD: TurnRecord = { blocks: [] }
@@ -61,21 +58,15 @@ type Closed = { review: OpenReview; model: string | null; turnEnd: TurnEnd | nul
 type Finished = { answer: string; reason: string; isAborted: boolean; durationMs: number; usage?: TurnUsage }
 // `epoch`: the epoch at the plan; `at`: the clock's time at the plan.
 type Plan = { number: number; brief: string; send: string | undefined; epoch: number; at: number }
-type Spawn = Conversation['spawnsInFlight'][number]
 
 const fresh = (): Conversation => ({ dispatches: 0, off: false, epoch: 0, midTurn: false, pendingNotes: [], interrupted: false, lastMessage: '', transcript: null, record: EMPTY_RECORD, subagents: {}, briefsInFlight: [], failing: false, turnStart: null, reviewerIds: [], reviewerNames: [], reviewerContext: 0, memory: [], spawnsInFlight: [], wake: null, lastAsked: false, messaged: [], nudged: false, dispatchesAtPrompt: 0 })
 
 // The toggle, by the footer button or `/auditor`. Off stops the auditor at once: the open review is dropped with its note slot, the held notes are dropped and the reviewer is let go (`toggle` stops it), so the gate refuses every reviewer send from then on; a note let through before the switch may still arrive. Its ids still mark its traffic and rows, and its late turn end matches no reviewer. On starts an empty record, an empty memory and a fresh run, so no entry from the off period or before it is briefed, no memory entry about work the reviewer never saw is briefed either, a failure before it no longer holds the reviewer back, and an interrupt mark from before it holds no note refused for another reason. Either clears the stall guard. A switch moves the epoch (`epoch`); setting the state it already has changes nothing.
-const switched = (c: Conversation, off: boolean): Conversation =>
-  c.off === off
-    ? c
-    : {
-        ...c,
-        epoch: c.epoch + 1,
-        nudged: false,
-        dispatchesAtPrompt: c.dispatches,
-        ...(off ? { off: true, review: undefined, reviewer: undefined, reviewerContext: 0, pendingNotes: [] } : { off: false, record: EMPTY_RECORD, memory: [], failing: false, interrupted: false }),
-      }
+const switched = (c: Conversation, off: boolean): Conversation => {
+  if (c.off === off) return c
+  const moved = { ...c, epoch: c.epoch + 1, nudged: false, dispatchesAtPrompt: c.dispatches }
+  return off ? { ...forget(moved), off: true, review: undefined, pendingNotes: [] } : { ...moved, off: false, record: EMPTY_RECORD, memory: [], failing: false, interrupted: false }
+}
 
 // What the footer label and `/auditor` say: off by the toggle, failing until a review succeeds, else on.
 const stateOf = (c: Conversation): 'on' | 'off' | 'failing' => (c.off ? 'off' : c.failing ? 'failing' : 'on')
@@ -92,28 +83,7 @@ const wordsOf = (node: unknown, engine: string): string => {
   return own.join('') + wordsOf(el.children, engine)
 }
 
-const isReviewerId = (c: Conversation, agentId: string | undefined): boolean => agentId !== undefined && c.reviewer?.id === agentId
-
 const firstLine = (text: string): string => text.split('\n', 1)[0] ?? ''
-
-// A reviewer's hand-back, by its own frame alone: the hand-back marker opening the first line, which names the reviewer, or opening the line right after a reviewer's agent-message envelope. A note's first line is the envelope and its second the review line, so no note matches, whatever it quotes.
-const isReviewerHandBack = (text: string): boolean => {
-  const [first = '', second = ''] = text.split('\n', 2)
-  if (!NAMED.test(first)) return false
-  return first.startsWith(HAND_BACK) || (first.startsWith(ENVELOPE) && second.startsWith(HAND_BACK))
-}
-
-// A teammate's end-of-run status notice, as the team mailbox carries it: a JSON object whose type is `idle_notification`.
-const isEndNotice = (text: string): boolean => {
-  let parsed: unknown
-  try {
-    parsed = JSON.parse(text)
-  } catch {
-    // A body that is not JSON is not a status notice; nothing failed.
-    return false
-  }
-  return typeof parsed === 'object' && parsed !== null && (parsed as { type?: unknown }).type === 'idle_notification'
-}
 
 const sessionDir = async ($: Pick<CoreEngineInterface, 'env'>, sessionId: string): Promise<string> => {
   const home = await $.env.get('HOME')
@@ -227,14 +197,12 @@ const withEntriesFirst = (entries: readonly string[], record: TurnRecord): TurnR
 // The conversation as it is now: read through a change, which writes the state back unchanged. A plain get answers the dispatch's starting moment; no read in the dispatch sees the writes made since it began, its own or another dispatch's, except a change.
 const currentConversation = ($: Pick<Scope, 'state'>): Promise<Conversation> => change($, c => c)
 
-const currentReviewerId = async ($: Pick<Scope, 'state'>): Promise<string | undefined> => (await currentConversation($)).reviewer?.id
-
 // Stops a reviewer the auditor lets go (one a take retired, one a session end forgot, one a refused brief dropped, or one the toggle switched off or whose spawn landed after it), so it does not sit idle for the rest of the session; each caller says when it issues it. The engine call is not awaited, so no caller's settle or dispatch waits on it; the helper resolves once the stop is issued. Any failure, the state read included, is logged and leaves the reviewer idle, and the caller goes on. Where a respawn can follow (`mayRespawn`), an id the state holds as the current reviewer is not stopped: a fresh reviewer can come back under a forgotten id, and the stop would end it. A session end spawns none, and when its reset failed the state still names the reviewer it forgot, so it passes false.
 const stopReviewer = async ($: Pick<Scope, 'state' | 'tool' | 'ui'>, id: string | undefined, mayRespawn: boolean): Promise<void> => {
   if (id === undefined) return
   try {
-    // A plain get would miss a spawn this dispatch made under the id (currentReviewerId).
-    if (mayRespawn && (await currentReviewerId($)) === id) return
+    // A plain get would miss a spawn this dispatch made under the id (currentConversation).
+    if (mayRespawn && standingOf(await currentConversation($), id) === 'current') return
     void $.tool.call({ tool: 'TaskStop', task_id: id }).then(
       result => {
         if (result.deny !== undefined || result.isError === true) $.ui.log(`${PLUGIN}: reviewer stop refused: ${result.deny ?? result.text ?? ''}`, { to: 'debug' })
@@ -257,11 +225,10 @@ const takeReview = async ($: Pick<Scope, 'state'>, ready: (r: OpenReview, c: Con
       got.taken = { review: open, model: c.reviewer?.model || null, retired: undefined, epoch: c.epoch }
       return { ...c, review: { ...open, followedUp: true } }
     }
-    // A reviewer past ROTATE_AT is retired in the same change that ends its review, so no dispatch can plan a brief to it in between. The retired one's ids and name still mark its traffic and rows, and its tools refuse it; the caller stops it.
-    const retiring = c.reviewerContext > ROTATE_AT
-    got.taken = { review: open, model: c.reviewer?.model || null, retired: retiring ? c.reviewer?.id : undefined, epoch: c.epoch }
-    const retire = retiring ? { reviewer: undefined, reviewerContext: 0 } : {}
-    return { ...c, ...retire, review: undefined, record: back(open) ? withEntriesFirst(open.record, c.record) : c.record }
+    // A reviewer past ROTATE_AT is retired in the same change that ends its review (`retire`); the caller stops it.
+    const { next, retired } = retire(c, ROTATE_AT)
+    got.taken = { review: open, model: c.reviewer?.model || null, retired, epoch: c.epoch }
+    return { ...next, review: undefined, record: back(open) ? withEntriesFirst(open.record, c.record) : c.record }
   })
   return got.taken
 }
@@ -310,9 +277,6 @@ const framedOf = (notes: readonly PendingNote[]): string => notes.map(n => frame
 
 // A booked stall note sets the once-per-stall guard only when its review was dispatched after the user's latest prompt. An older review's note answers a turn the user has already moved past, so it must not hold back the stall fact of the turn it lands in.
 const withStallGuard = (c: Conversation, number: number, stall: boolean): Conversation => (stall && number > c.dispatchesAtPrompt ? { ...c, nudged: true } : c)
-
-// Whether a send is a reviewer's: from the model inside an agent this plugin spawned, which the engine stamps with this plugin's origin and the agent's id. The plugin's own briefs carry no agent id.
-const isReviewerSend = (e: { origin: { kind: string; name?: string }; agentId?: string }): boolean => e.origin.kind === 'plugin' && e.origin.name === PLUGIN && e.agentId !== undefined
 
 // Admits a reviewer's send in one change (`admitSend`): an admitted note fills its open review's note slot in that change, so of two notes sent at once one is admitted.
 const admit = async ($: Pick<Scope, 'state'>, sent: Sent): Promise<Verdict> => {
@@ -391,7 +355,7 @@ const holdOrRelease = async ($: Scope, refusal: Refusal): Promise<Decided | unde
 // `unsent`: this settle follows a follow-up that could not be sent, whose attempt already put the answer in the debug log.
 const settle = async ($: Scope, log: boolean, agentId: string, done: Finished, unsent = false): Promise<void> => {
   const outcomeOf = (r: OpenReview): Outcome => settleOutcome({ note: r.note, number: r.number, followedUp: r.followedUp === true, reason: done.reason, answer: done.answer })
-  const taken = await takeReview($, (_r, c) => isReviewerId(c, agentId), r => outcomeOf(r).status === 'incomplete', r => outcomeOf(r).status === 'follow-up')
+  const taken = await takeReview($, (_r, c) => standingOf(c, agentId) === 'current', r => outcomeOf(r).status === 'incomplete', r => outcomeOf(r).status === 'follow-up')
   if (taken === undefined) {
     $.ui.log(`${PLUGIN}: the reviewer ended a turn with no review in progress; not recorded`, { to: 'debug' })
     return
@@ -462,7 +426,7 @@ const stallFact = (c: Conversation, e: StopFacts, listed: AgentInfo[] | undefine
   if (withheld(c)) return null
   const { background_tasks: running, session_crons: crons } = e
   if (running === undefined || crons === undefined || listed === undefined) return null
-  const agents = listed.filter(a => !c.reviewerIds.includes(a.id) && (WORKING.includes(a.status) || c.messaged.some(to => addressedBy(a, to))))
+  const agents = listed.filter(a => !isReviewerEntry(IDENTITY, c, a) && (WORKING.includes(a.status) || c.messaged.some(to => addressedBy(a, to))))
   // An agent's task is set aside by its id as well as its label: a task carries its agent's id, and a label the engine spells another way must not count an idle agent.
   const tasks = running.filter(t => t.type !== 'teammate' && t.type !== 'subagent' && !listed.some(a => a.id === t.id))
   return { tasks: [...agents.map(a => `${a.teammateId === undefined ? 'subagent' : 'teammate'} "${a.description}"`), ...tasks.map(t => `${t.type} "${t.description}"`)], crons: crons.length }
@@ -560,24 +524,12 @@ const atTurnEnd = async ($: Scope, dispatch: () => Promise<void>): Promise<void>
   }
 }
 
-// Whether an older epoch's spawn still in flight blocks adoption of `agentId` by name at `now` (`spawnsInFlight`): one whose hook named another id does not, nor one past SPAWN_TIMEOUT_MS. With no clock reading every such spawn blocks.
-const blocksAdoption = (c: Conversation, s: Spawn, agentId: string, now: number | undefined): boolean =>
-  s.epoch !== c.epoch && (s.id === undefined || s.id === agentId) && (now === undefined || now - s.startedAt <= SPAWN_TIMEOUT_MS)
-
-// The entry a spawn hook's brief names, matched as `spawnsInFlight` states.
-const matchSpawn = (spawns: readonly Spawn[], brief: string): Spawn | undefined => spawns.find(s => s.brief === brief)
-
-// A reviewer spawn's id, as the spawn hook sees it, and the team name it runs under: the agent list's, since the engine renames a taken name, else the name it was spawned under. The id and name mark the reviewer's traffic and rows from here on. The id and the model the spawn resolved to are kept on the spawn's entry in `spawnsInFlight` for the spawning dispatch, which has the last word on whether the spawn stays the reviewer (`deliverBrief`). The spawn stands in as the reviewer at once where `spawnsInFlight` allows it, so its calls and turn end are the reviewer's before its dispatch resumes.
+// A reviewer spawn's id, as the spawn hook sees it, and the team name it runs under (`spawnName`). The id and name mark the reviewer's traffic and rows from here on, and the spawn stands in as the reviewer at once where `spawnsInFlight` allows it (`learn`).
 const recordSpawnedId = async ($: Pick<Scope, 'state' | 'ui' | 'agent'>, brief: string, started: AgentSpawnResult): Promise<void> => {
   if (started.deny !== undefined || started.agentId === undefined) return
   const { agentId: id, model } = started
-  const listed = await listAgents($)
-  const name = listed?.find(a => a.id === id)?.name ?? REVIEWER
-  await change($, c => {
-    const own = matchSpawn(c.spawnsInFlight, brief)
-    const standsIn = !c.off && c.reviewer === undefined && own !== undefined && own.epoch === c.epoch && own.number === c.review?.number
-    return { ...c, spawnsInFlight: c.spawnsInFlight.map(s => (s === own ? { ...s, id, model } : s)), ...(standsIn ? { reviewer: { id, model } } : {}), reviewerIds: c.reviewerIds.includes(id) ? c.reviewerIds : [...c.reviewerIds, id], reviewerNames: c.reviewerNames.includes(name) ? c.reviewerNames : [...c.reviewerNames, name] }
-  })
+  const name = spawnName(IDENTITY, await listAgents($), id)
+  await change($, c => learn(c, brief, id, model, name))
   $.ui.log(`${PLUGIN}: reviewer id ${id} (${name}) from its spawn result`, { to: 'debug' })
 }
 
@@ -588,21 +540,17 @@ const listAgents = ($: Pick<Scope, 'agent' | 'ui'>): Promise<AgentInfo[] | undef
     return undefined
   })
 
-// Whether a verified team name is one of this conversation's reviewers. A name shaped like a reviewer's that is not yet known (its spawn result's list lookup failed or lagged) is looked up again by the agent list: it is learned when the list gives it to one of this conversation's reviewer ids.
+// Whether a verified team name is one of this conversation's reviewers. A name shaped like a reviewer's that is not yet known (its spawn result's list lookup failed or lagged) is looked up again by the agent list, and learned when the list gives it to one of this conversation's reviewer ids (`nameListed`).
 const knownReviewerName = async ($: Pick<Scope, 'state' | 'agent' | 'ui'>, name: string): Promise<boolean> => {
   const c = await readConversation($)
-  if (c.reviewerNames.includes(name)) return true
-  if (!REVIEWER_NAME.test(name)) return false
-  // A failed list takes the name as a reviewer's: a verified sender under a reviewer's name is this plugin's, and its traffic to the worker is clutter either way.
-  const listed = await listAgents($)
-  if (listed === undefined) return true
-  const owner = listed.find(a => a.name === name && c.reviewerIds.includes(a.id))
-  if (owner === undefined) return false
-  await change($, s => (s.reviewerNames.includes(name) ? s : { ...s, reviewerNames: [...s.reviewerNames, name] }))
-  return true
+  const known = nameKnown(IDENTITY, c, name)
+  if (known !== 'ask') return known === 'known'
+  const listed = nameListed(c, name, await listAgents($))
+  if (listed === 'learn') await change($, s => learnName(s, name))
+  return listed !== 'other'
 }
 
-// Takes `brief`'s entry out of `spawnsInFlight`. A failed write is logged and leaves the entry, which blocks no adoption past SPAWN_TIMEOUT_MS (`blocksAdoption`).
+// Takes `brief`'s entry out of `spawnsInFlight`. A failed write is logged and leaves the entry, which blocks no adoption past SPAWN_TIMEOUT_MS (`adopt`).
 const releaseSpawn = async ($: Pick<Scope, 'state' | 'ui'>, brief: string): Promise<void> => {
   await change($, c => ({ ...c, spawnsInFlight: c.spawnsInFlight.filter(s => s.brief !== brief) })).catch((err: unknown) => recordFailed($, 'spawn bookkeeping', err))
 }
@@ -658,7 +606,7 @@ const deliverBrief = async ($: Scope, plan: Plan): Promise<void> => {
   await change($, c => {
     spawned.dropped = !ours(c)
     if (spawned.dropped) return c
-    return { ...c, reviewer: undefined, reviewerContext: 0, spawnsInFlight: [...c.spawnsInFlight, { brief, epoch: plan.epoch, number, startedAt: plan.at }], briefsInFlight: [...c.briefsInFlight, brief] }
+    return { ...spawning(c, { brief, epoch: plan.epoch, number, startedAt: plan.at }), briefsInFlight: [...c.briefsInFlight, brief] }
   })
   if (spawned.dropped) {
     await stopReviewer($, send, true)
@@ -669,29 +617,20 @@ const deliverBrief = async ($: Scope, plan: Plan): Promise<void> => {
     const started = await $.agent.spawn({
       subagentType: REVIEWER_TYPE,
       name: REVIEWER,
-      description: 'auditor review',
+      description: REVIEW_DESCRIPTION,
       prompt: brief,
     })
     if (started.deny !== undefined) {
       throw new Error(`reviewer spawn refused: ${started.deny}`)
     }
-    // The landing's one change, under the plan's epoch (`epoch`): its id is the result's, else its entry's, else the stored reviewer's; a spawn that is not stale stands in as the reviewer while its review is open (`spawnsInFlight`).
+    // The landing's one change, under the plan's epoch (`epoch`): `land` decides the id and whether the spawn stands in as the reviewer (`spawnsInFlight`).
     const landed: { id?: string; stale: boolean; stood: boolean } = { stale: false, stood: false }
     await change($, c => {
-      const kept = matchSpawn(c.spawnsInFlight, brief)
-      landed.stale = c.epoch !== plan.epoch
-      landed.stood = false
-      // Under the plan's epoch (`epoch`) a reviewer stored since the spawn change can only be this spawn, adopted by name before its hook stood it in.
-      const id = started.agentId ?? kept?.id ?? (landed.stale ? undefined : c.reviewer?.id)
-      landed.id = id
-      if (id === undefined) return c
-      // The id marks the spawn's traffic and rows even when the spawn hook never saw it.
-      const known = c.reviewerIds.includes(id) ? c : { ...c, reviewerIds: [...c.reviewerIds, id] }
-      // A review that already closed, with another reviewer or none stored, means this spawn was retired or replaced since: it is not stood in again.
-      landed.stood = !landed.stale && (c.review?.number === number || c.reviewer?.id === id)
-      if (landed.stood) return { ...known, reviewer: { id, model: kept?.id === id && kept.model !== undefined ? kept.model : (started.model ?? '') } }
-      // Otherwise the stored reviewer stays as it is: a stale spawn stored as the reviewer was adopted by name in the current epoch and may hold a later review, which clearing it would leave open with no reviewer to settle it. The landing then stops a stale id that is not the stored reviewer; `stopReviewer` skips the stored one, so the adopted reviewer runs on.
-      return known
+      const landing = land(c, brief, number, plan.epoch, started)
+      landed.id = landing.id
+      landed.stale = landing.stale
+      landed.stood = landing.stood
+      return landing.next
     })
     // A stale landing with no id stops nothing. No catch takes its brief out of flight, so it leaves here.
     if (landed.id === undefined && landed.stale) {
@@ -741,26 +680,24 @@ const toggle = async ($: Scope, log: boolean, off: (c: Conversation) => boolean)
   return after
 }
 
-// Whether the caller is the reviewer: the one gate of the reviewer's tools.
+// Whether the caller is the reviewer: the one gate of the reviewer's tools. A caller no stored reviewer id names may be the reviewer whose spawn result has not landed yet, so it is looked up by name (`adoptByName`).
 const isReviewerCaller = async ($: Pick<Scope, 'agent' | 'state' | 'ui' | 'clock'>, c: Conversation, agentId: string | undefined): Promise<boolean> =>
-  isReviewerId(c, agentId) || (agentId !== undefined && (await adoptByName($, agentId)))
+  standingOf(c, agentId) === 'current' || (agentId !== undefined && (await adoptByName($, agentId)))
 
 const reviewerAgent = async ($: Pick<Scope, 'state'>, agentId: string | undefined): Promise<boolean> =>
-  isReviewerId(await readConversation($), agentId)
+  standingOf(await readConversation($), agentId) === 'current'
 
-// A caller no stored reviewer id names may be the reviewer whose spawn result has not landed yet: the agent list names it by its spawn name and as this plugin's spawn (`spawnedBy`), and its id is stored here. A worker's own subagent under a reviewer's name, of the reviewer's type or another, is not adopted, so its calls stay in the record.
-// Only a reviewer with no stored id is adopted: a second agent under the reviewer's name is refused, not swapped in. Nothing is adopted while off, nor while a spawn from an older epoch blocks it (`spawnsInFlight`): the caller could be that spawn's agent. One whose hook named another id cannot be the caller, so it blocks nothing.
+// The agent list names the caller by its spawn name and as this plugin's spawn (`reviewerNameOf`), and `adopt` stores its id. A failed list or clock read adopts nobody, so the caller is refused.
 const adoptByName = async ($: Pick<Scope, 'agent' | 'state' | 'ui' | 'clock'>, agentId: string): Promise<boolean> => {
   const listed = await listAgents($)
-  const caller = listed?.find(a => a.id === agentId)
-  if (caller?.name === undefined || !REVIEWER_NAME.test(caller.name) || caller.spawnedBy !== PLUGIN) return false
-  const name = caller.name
+  const name = reviewerNameOf(IDENTITY, listed?.find(a => a.id === agentId))
+  if (name === undefined) return false
   const now = await $.clock.now().catch((err: unknown) => {
     recordFailed($, 'adoption clock read', err)
     return undefined
   })
-  const after = await change($, c => (!c.off && c.reviewer?.id === undefined && !c.reviewerIds.includes(agentId) && !c.spawnsInFlight.some(s => blocksAdoption(c, s, agentId, now)) ? { ...c, reviewer: { id: agentId, model: '' }, reviewerIds: [...c.reviewerIds, agentId], reviewerNames: c.reviewerNames.includes(name) ? c.reviewerNames : [...c.reviewerNames, name] } : c))
-  return isReviewerId(after, agentId)
+  const after = await change($, c => adopt(c, agentId, name, now, SPAWN_TIMEOUT_MS))
+  return standingOf(after, agentId) === 'current'
 }
 
 // What `$.agent.list()` says of a subagent id: its label when the list names it as the worker's, `other` when it does not name it or names it as this plugin's spawn (a reviewer whose id has not landed yet), `unlisted` when the list rejects. A rejected list still records the call, since a lost list costs one stray entry, not a worker's entry; only an id named as the worker's is kept.
@@ -768,23 +705,14 @@ const listedLabel = async ($: Pick<Scope, 'agent' | 'ui'>, agentId: string): Pro
   const listed = await listAgents($)
   if (listed === undefined) return 'unlisted'
   const found = listed.find(a => a.id === agentId)
-  return found === undefined || found.spawnedBy === PLUGIN ? 'other' : { type: found.type ?? '', name: found.name ?? '' }
-}
-
-// A reviewer's task notification (failed, stopped or finished), which the engine raises as a prompt of task-notification origin. A batch that holds another task's notification too is a normal turn: every block in it must name the reviewer. Text with no block at all is judged by its text, as before.
-const TASK_BLOCK = /<task-notification>[\s\S]*?<\/task-notification>/g
-const isReviewerNotice = (e: { text: string; origin: { kind: string } }): boolean => {
-  if (e.origin.kind !== 'task-notification') return false
-  const blocks = e.text.match(TASK_BLOCK)
-  if (blocks === null) return e.text.includes(REVIEW_NOTICE)
-  return blocks.every(block => block.includes(REVIEW_NOTICE))
+  return found === undefined || originOf(PLUGIN, { from: 'listed', agent: found }) === 'spawned' ? 'other' : { type: found.type ?? '', name: found.name ?? '' }
 }
 
 // What started a worker turn, by the prompt that starts it. A user prompt that joins a running turn makes that turn the user's; any other prompt joining one leaves the turn's start as it was. A user prompt that joins a notice turn starts recording there: the notice's own entries and the turn's earlier replies stay out of the record, so the review covers what follows.
 const turnStartOf = (c: Conversation, e: { text: string; origin: { kind: string } }): TurnStart => {
   if (isUserKind(e.origin.kind)) return 'user'
   if (c.midTurn) return c.turnStart ?? 'other'
-  return isReviewerNotice(e) ? 'notice' : 'other'
+  return isNotice(IDENTITY, e) ? 'notice' : 'other'
 }
 
 const promptEntry = (kind: string, text: string): string => (isUserKind(kind) ? `USER: ${text}` : `PROMPT (${kind}): ${text}`)
@@ -900,7 +828,7 @@ export const register: Register = (on, options) => {
     const started = await next(e)
     try {
       // Who spawned it, not its type or name: a worker may spawn its own agent of the reviewer's type, under the reviewer's name.
-      if (next.origin.plugin === PLUGIN) {
+      if (originOf(PLUGIN, { from: 'hook', origin: next.origin }) === 'own') {
         await recordSpawnedId($, e.prompt, started)
       } else if (started.deny === undefined && started.agentId !== undefined) {
         const label = { type: subagentTypeOf(e), name: e.name ?? '' }
@@ -924,7 +852,7 @@ export const register: Register = (on, options) => {
 
   // A compaction of a reviewer's own conversation keeps what its judgement rests on; the worker's is left as it is.
   on('session.compact', async ($, e, next) => {
-    if (e.agentId === undefined || !(await readConversation($)).reviewerIds.includes(e.agentId)) return next(e)
+    if (e.agentId === undefined || standingOf(await readConversation($), e.agentId) === 'neither') return next(e)
     return next({ ...e, instructions: e.instructions === undefined ? REVIEWER_COMPACTION : `${e.instructions}\n\n${REVIEWER_COMPACTION}` })
   })
 
@@ -946,9 +874,9 @@ export const register: Register = (on, options) => {
     return next(e)
   })
 
-  // The gate on every send of a reviewer this plugin spawned, current or former, by its origin alone (`isReviewerSend`): it reads no agent list. It admits only a note for the open review (`admitSend`), and refuses the rest before the chain below runs, silently to the user: the reviewer reads the reason as its tool result, and the debug log names the reason and the send's review number, never its body. An admitted note is booked once the chain reports it delivered (`book`). A send the chain refuses in the engine's stopped-session state, or refuses while the interrupt mark is set, holds the note for the user's next prompt; any other send not delivered releases its slot, so a resend in the same turn may be admitted (`holdOrRelease`). Every other send passes untouched: the main conversation's, the worker's own agents', and this plugin's briefs.
+  // The gate on every send of a reviewer this plugin spawned, current or former, by its origin alone (`originOf`): it reads no agent list. It admits only a note for the open review (`admitSend`), and refuses the rest before the chain below runs, silently to the user: the reviewer reads the reason as its tool result, and the debug log names the reason and the send's review number, never its body. An admitted note is booked once the chain reports it delivered (`book`). A send the chain refuses in the engine's stopped-session state, or refuses while the interrupt mark is set, holds the note for the user's next prompt; any other send not delivered releases its slot, so a resend in the same turn may be admitted (`holdOrRelease`). Every other send passes untouched: the main conversation's, the worker's own agents', and this plugin's briefs.
   on('session.send', async ($, e, next) => {
-    if (!isReviewerSend(e)) return next(e)
+    if (originOf(PLUGIN, { from: 'send', origin: e.origin, agentId: e.agentId }) !== 'spawned') return next(e)
     const sent = readSend(e.to, e.text)
     const of = sent.number === null ? '' : ` (review ${sent.number})`
     let verdict: Verdict
@@ -993,7 +921,7 @@ export const register: Register = (on, options) => {
       await change($, c => {
         ended.conversation = c
         // The toggle is the session's: a /clear keeps it off. The reviewer markers are kept, so a pre-/clear reviewer's late end notice is still consumed, its calls stay out of the record and its task row stays hidden. Everything else starts over, and the epoch moves on (`epoch`). The spawns still in flight are kept for their dispatches to settle (`spawnsInFlight`).
-        return { ...fresh(), dispatches: c.dispatches, dispatchesAtPrompt: c.dispatches, off: c.off, epoch: c.epoch + 1, spawnsInFlight: c.spawnsInFlight, reviewerIds: c.reviewerIds, reviewerNames: c.reviewerNames }
+        return { ...fresh(), dispatches: c.dispatches, dispatchesAtPrompt: c.dispatches, off: c.off, epoch: c.epoch + 1, spawnsInFlight: c.spawnsInFlight, ...markers(c) }
       })
     } catch (err) {
       recordFailed($, 'session end', err)
@@ -1014,7 +942,7 @@ export const register: Register = (on, options) => {
   // Every prompt the worker receives goes into the record where it arrives, a reviewer's note among them: it arrives as a peer prompt carrying the reviewer's agent message, and passes on unchanged. A prompt a later hook drops never entered. The one note the plugin itself delivers is a held one (`holdOrRelease`): it rides beside the user's next own prompt.
   on('prompt.submit', async ($, e, next) => {
     // A reviewer's hand-back reaches prompt submission only in a session without agent teams, where the reviewer is a plain subagent: it is bookkeeping, not the worker's, and is dropped rather than start a worker turn. No note is ever dropped here, since a drop always shows the user a "Prompt dropped by a hook" row.
-    if (e.origin.kind === 'peer' && isReviewerHandBack(e.text)) return { drop: 'reviewer bookkeeping' }
+    if (isHandBack(IDENTITY, e)) return { drop: 'reviewer bookkeeping' }
     // The held notes ride beside the user's next own prompt; never beside a slash command, which may not reach the model, nor a plugin's or a peer's prompt.
     const carries = isUserKind(e.origin.kind) && e.command === undefined
     let taken: TakenNotes = { notes: [], epoch: 0 }
@@ -1062,7 +990,7 @@ export const register: Register = (on, options) => {
     try {
       const c = await readConversation($)
       // A reviewer's calls, a retired one's included, are not the worker's.
-      if (e.agentId !== undefined && c.reviewerIds.includes(e.agentId)) return result
+      if (standingOf(c, e.agentId) !== 'neither') return result
       const { tool, tool_use_id: _id, agentId, ...input } = e
       // A brief's own call leaves flight whichever origin the engine tags it with.
       const brief = briefCalled(c, tool, input)
@@ -1125,7 +1053,7 @@ export const register: Register = (on, options) => {
     const got: { judged?: MemoryChange } = {}
     await change($, s => {
       got.judged = undefined
-      if (s.epoch !== c.epoch || s.review?.number !== acted || !isReviewerId(s, e.agentId)) return s
+      if (s.epoch !== c.epoch || s.review?.number !== acted || standingOf(s, e.agentId) !== 'current') return s
       const judged = changeMemory(s.memory, s.review?.number, e)
       got.judged = judged
       return 'refusal' in judged ? s : { ...s, memory: judged.memory }
@@ -1180,7 +1108,7 @@ export const register: Register = (on, options) => {
     const { isExpanded, origin, task } = e.props
     if (isExpanded) return next(e)
     if (origin.kind !== 'task-notification' || task?.id === undefined) return next(e)
-    if (!(await readConversation($)).reviewerIds.includes(task.id)) return next(e)
+    if (standingOf(await readConversation($), task.id) === 'neither') return next(e)
     const { Box } = $.ui.resolve(e)
     return Box({})
   })
