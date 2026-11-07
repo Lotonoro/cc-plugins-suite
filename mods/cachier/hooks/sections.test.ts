@@ -12,24 +12,26 @@ const SETTINGS: Setting[] = [
 const FULL: Snapshot = {
   cache: ['Prompt cache warm, 3:12 left (5-minute cache)'],
   keepalive: { state: 'on, refreshing', lines: ['next refresh in 4:59, 3 left', 'Next refresh: $0.006 (~33k cached tokens read).'] },
+  session: ['This session: 2 refreshes costing $0.007.', 'Cache misses: 1 (lapse 1), $0.10 rewritten'],
   advice: ['A 1-hour cache would have saved $4.74 over 10 pauses: set "promptCacheTtl": "1h" in settings.json.'],
   settings: SETTINGS,
 }
-const EMPTY: Snapshot = { cache: [], keepalive: { state: 'off', lines: [] }, advice: [], settings: [] }
+const EMPTY: Snapshot = { cache: [], keepalive: { state: 'off', lines: [] }, session: [], advice: [], settings: [] }
 
-describe('sectionsOf: the four sections in order, each with its lines', () => {
-  test('the sections come Cache, Keepalive, Advice, Settings', () => {
-    expect(sectionsOf(FULL).map((s) => s.title)).toEqual(['Cache', 'Keepalive', 'Advice', 'Settings'])
+describe('sectionsOf: the five sections in order, each with its lines', () => {
+  test('the sections come Cache, Keepalive, This session, Advice, Settings', () => {
+    expect(sectionsOf(FULL).map((s) => s.title)).toEqual(['Cache', 'Keepalive', 'This session', 'Advice', 'Settings'])
   })
 
   test('a section with no line and no state is absent, and no empty line is drawn', () => {
     expect(sectionsOf({ ...EMPTY, cache: ['warm'] }).map((s) => s.title)).toEqual(['Cache', 'Keepalive'])
     expect(sectionsOf({ ...EMPTY, advice: ['a'] }).map((s) => s.title)).toEqual(['Keepalive', 'Advice'])
+    expect(sectionsOf({ ...EMPTY, session: ['This session: no refreshes yet.'] }).map((s) => s.title)).toEqual(['Keepalive', 'This session'])
   })
 
   test('a section that carries a state is never left out: the Keepalive section is there with no line, and only it carries a state', () => {
     expect(sectionsOf(EMPTY)).toEqual([{ title: 'Keepalive', state: 'off', lines: [] }])
-    expect(sectionsOf(FULL).map((s) => s.state)).toEqual([null, 'on, refreshing', null, null])
+    expect(sectionsOf(FULL).map((s) => s.state)).toEqual([null, 'on, refreshing', null, null, null])
   })
 
   test('a setting is one line: its name, its value, its source in brackets when there is one, and its change', () => {
@@ -66,10 +68,12 @@ describe('answerOf: the sections as the bare command answers them', () => {
     expect(text).toBe('Cache\n  warm\n\nKeepalive  paused\n  why')
   })
 
-  test('the full answer names the four sections in order, and every figure is in one of them', () => {
+  test('the full answer names the five sections in order, and every figure is in one of them', () => {
     const text = answerOf(FULL)
-    expect(text.split('\n').filter((line) => ['Cache', 'Keepalive  on, refreshing', 'Advice', 'Settings'].includes(line))).toEqual(['Cache', 'Keepalive  on, refreshing', 'Advice', 'Settings'])
-    expect(text.indexOf('Keepalive  on, refreshing')).toBeLessThan(text.indexOf('Advice'))
+    const headings = ['Cache', 'Keepalive  on, refreshing', 'This session', 'Advice', 'Settings']
+    expect(text.split('\n').filter((line) => headings.includes(line))).toEqual(headings)
+    expect(text.indexOf('Keepalive  on, refreshing')).toBeLessThan(text.indexOf('This session'))
+    expect(text.indexOf('This session')).toBeLessThan(text.indexOf('Advice'))
     expect(text.indexOf('Advice')).toBeLessThan(text.indexOf('Settings'))
     expect(text).toContain('Next refresh: $0.006')
   })
@@ -81,9 +85,10 @@ describe('layoutOf: the rows the answer is joined from, a heading row marked and
     expect(layoutOf({ ...EMPTY, cache: ['warm'], keepalive: { state: 'paused', lines: ['why'] } }).map((row) => row.text)).toEqual(['Cache', '  warm', '', 'Keepalive  paused', '  why'])
   })
 
-  test('only the heading rows are marked, in an answer with all four sections and in one with a section left out', () => {
-    expect(layoutOf(FULL).filter((row) => row.heading).map((row) => row.text)).toEqual(['Cache', 'Keepalive  on, refreshing', 'Advice', 'Settings'])
-    expect(layoutOf({ ...FULL, advice: [] }).filter((row) => row.heading).map((row) => row.text)).toEqual(['Cache', 'Keepalive  on, refreshing', 'Settings'])
+  test('only the heading rows are marked, in an answer with all five sections and in one with a section left out', () => {
+    expect(layoutOf(FULL).filter((row) => row.heading).map((row) => row.text)).toEqual(['Cache', 'Keepalive  on, refreshing', 'This session', 'Advice', 'Settings'])
+    expect(layoutOf({ ...FULL, advice: [] }).filter((row) => row.heading).map((row) => row.text)).toEqual(['Cache', 'Keepalive  on, refreshing', 'This session', 'Settings'])
+    expect(layoutOf({ ...FULL, session: [] }).filter((row) => row.heading).map((row) => row.text)).toEqual(['Cache', 'Keepalive  on, refreshing', 'Advice', 'Settings'])
   })
 
   test('exactly one blank row stands between two sections, and none before the first or after the last', () => {

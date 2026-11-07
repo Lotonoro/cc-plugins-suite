@@ -228,6 +228,7 @@ describe('footerLine: a recorded stop standing with keepalive on draws the pie r
 const SNAPSHOT: Snapshot = {
   cache: ['Prompt cache warm, 3:12 left (5-minute cache)'],
   keepalive: { state: 'off', lines: ['The pie turns amber in the cache\'s last quarter and red in its last tenth: the cache is about to lapse.'] },
+  session: ['This session: no refreshes yet.'],
   advice: ['A 1-hour cache with keepalive off would have saved $1.20 over 10 recent pauses.'],
   settings: [{ name: 'unit', value: 'dollars', source: 'cost_unit option', change: '/keepalive unit tokens|dollars' }],
 }
@@ -252,7 +253,7 @@ describe('paneOf: the answer\'s rows as text, one Text per row, headings bold an
     const pane = paneOf(t, ROWS) as any
     const bold = pane.children.map((child: any) => child.props.bold === true)
     expect(bold).toEqual(ROWS.map((row) => row.heading === true))
-    expect(pane.children.filter((child: any) => child.props.bold === true).map((child: any) => child.children[0])).toEqual(['Cache', 'Keepalive  off', 'Advice', 'Settings'])
+    expect(pane.children.filter((child: any) => child.props.bold === true).map((child: any) => child.children[0])).toEqual(['Cache', 'Keepalive  off', 'This session', 'Advice', 'Settings'])
   })
 
   test('no row is coloured, and no button, hover or absolute position is in it', () => {

@@ -49,7 +49,7 @@ A click on the time, the rebuild figure, `reset` or `no count` opens the pane, s
 pane has drawn this session it opens at 12 rows by 48 columns, and an open pane is re-sized to its drawing within a second. A terminal too short for the rows
 scrolls them with the wheel. A click on that word while it is open closes it, as Esc or the person's close does. The click acts on the pane as the engine
 lists it: a pane closed some way cachier did not hear of (a reload, another plugin) is opened by the next click after a second,
-and a close another plugin refuses leaves the pane open to be closed by the next click. The pane shows the four sections a bare
+and a close another plugin refuses leaves the pane open to be closed by the next click. The pane shows the five sections a bare
 `/keepalive` answers with, in the same order with the same text, each heading in bold:
 
 - **Cache**: the cache's warmth, `Prompt cache warm, 3:12 left (5-minute cache)`, or, once the cache has expired or been reset, the
@@ -60,12 +60,16 @@ and a close another plugin refuses leaves the pane open to be closed by the next
   the cache is warm, with a line of its own for what your next prompt pays to rebuild it, opening `if it goes cold`; a run whose lead is not below the TTL states that line alone on a warm cache), how many
   refreshes a pause sends, when keepalive pays off (`Keepalive pays off if you're back between 5:00 and 1:54:00`), and this
   pause's and this session's refreshes and their cost;
+- **This session**: the session's refreshes and their cost (`This session: no refreshes yet.` before the first), keepalive's
+  balance against the other setting once a pause is judged, and the cache misses once one is counted. The refreshes and the
+  balance start over at a `/clear` or a resume and are kept at a compaction; the misses line is the Advice section's, counted
+  over the current transcript, so a resume of the same transcript keeps its misses;
 - **Advice**: the best setup's sentence (see [Best setup](#best-setup)), priced from your recorded pauses, and the notes on the TTL
   and the unit;
 - **Settings**: each setting's value, where it came from, and what changes it.
 
 The pane draws these rows itself, from the same figures the command reads, and its countdown advances each second. A press on the pie
-changes what an open pane shows at once; the pane is re-sized to the new rows by the next second's tick. The rows run to about 30 to 40, so in
+changes what an open pane shows at once; the pane is re-sized to the new rows by the next second's tick. The rows run to about 30 to 45, so in
 a short terminal the lower sections are scrolled to with the wheel.
 
 ## Keepalive
@@ -157,8 +161,9 @@ Each message has its time at its top right, so you can see how long each phase t
 ## `/keepalive`
 
 `on <lead_s> [count]`, `off`, `default on|off`, `unit dollars|tokens`, or no argument for the state and the full
-rundown, in four sections: Cache (the warmth, with the figure to rebuild an expired or reset cache), Keepalive (the
-refresh cost, how many refreshes a pause gets and why, when it pays off, this session and your pauses), Advice (the best
+rundown, in five sections: Cache (the warmth, with the figure to rebuild an expired or reset cache), Keepalive (the
+refresh cost, how many refreshes a pause gets and why, when it pays off, this session and your pauses), This session (the
+session's refreshes, balance and misses), Advice (the best
 setup's sentence, the one-hour cache advice, the misses by cause, why figures are in tokens) and Settings (the TTL, lead,
 refresh count, start mode and unit: each value, where it came from when that is known, and what changes it; the TTL and
 start mode apply to new sessions). The Keepalive heading names keepalive's state, one of `off`, `on, refreshing`,
@@ -172,7 +177,7 @@ once it has expired the refresh's price stands alone. A run whose lead is not be
 (its count used, or its cache expired) names what a refresh reads or costs and, where the cache is known and the lead is below the TTL, how often one would
 be sent. With keepalive on and no stop held, the heading reads `paused` while a cache reset is being recorded, and the first line
 beneath it says so; the reason the section would give with no reset pending, when it has one, follows as a second reason row, after
-the colour sentence when that shows. The Keepalive section is always shown, as its heading alone when it has nothing else to say. Cache, Advice and Settings
+the colour sentence when that shows. The Keepalive section is always shown, as its heading alone when it has nothing else to say, and so is This session, which says `This session: no refreshes yet.` before the first refresh. Cache, Advice and Settings
 are left out when they have nothing to say. The text wraps at 48 columns. A count pins the refreshes per pause for the session;
 without one, each pause sends the learned count, else the break-even count.
 

@@ -889,6 +889,8 @@ const snapshotNow = async ($: Dollar): Promise<Snapshot> => {
   const judged = (await $.state.get(JUDGED)).value ?? NO_JUDGED
   const run = runOf(held, defaultRun)
   const rundown = rundownSections(tally, stats, money)
+  const balance = sessionBalanceLine(judged, money.unit)
+  const refreshes = sessionLineOf(tally, money)
   const kept = keptOf(held, view, money, nowMs)
   const verdict = step(held, view, live, gapOpen(held), nowMs, money, rebuildPriced)
   // The pie's own judgement, from the held state and the view under the cold mark, so the sentence agrees with the heading above it.
@@ -906,10 +908,13 @@ const snapshotNow = async ($: Dollar): Promise<Snapshot> => {
         ...verdict.lines,
         ...countLines(held, view, money, nowMs, kept),
         ...(defaultRun === undefined ? [] : [breakEvenLine(held, view, money, defaultsNow(defaultRun, view, money, nowMs))]),
-        sessionBalanceLine(judged, money.unit),
+        balance,
         ...rundown.keepalive,
       ].filter((line) => line !== ''),
     },
+    // This session repeats the Keepalive section's refreshes line and balance, and the Advice section's misses line, word for word. Before the
+    // first refresh the refreshes line is the fallback here, this section's own.
+    session: [refreshes === '' ? 'This session: no refreshes yet.' : refreshes, balance, ...rundown.advice].filter((line) => line !== ''),
     advice: [sentenceNow(held, view, money), ...ttlAdviceLines(held, view, money), ...rundown.advice, ...unitNotes(money, view, rebuildSpend, tally, stats)].filter((line) => line !== ''),
     settings: settingsOf(raw, run, kept, tally, view, money, nowMs, unitPressedNow(unitHeld)),
   }

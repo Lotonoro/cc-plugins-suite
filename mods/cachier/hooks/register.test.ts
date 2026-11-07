@@ -3506,7 +3506,7 @@ describe('the details pane draws the sections /keepalive answers with, built by 
     await clock.advance(1000)
     const pane = await mountPane($)
     const rows = await rowsOf(pane)
-    const headings = rows.filter((row) => /^(Cache|Keepalive|Advice|Settings)\b/.test(row))
+    const headings = rows.filter((row) => /^(Cache|Keepalive|This session|Advice|Settings)\b/.test(row))
     expect(headings.length).toBeGreaterThanOrEqual(3)
     expect(await boldRows(pane)).toEqual(headings)
     expect(JSON.stringify(await pane.drawn())).not.toMatch(/"color"|"dimColor"|"backgroundColor"/)
@@ -5437,15 +5437,15 @@ describe("the TTL advice: the bare command names the other TTL once the recorded
   })
 })
 
-describe('the bare command answers four sections, in order: Cache, Keepalive, Advice, Settings', () => {
+describe('the bare command answers five sections, in order: Cache, Keepalive, This session, Advice, Settings', () => {
   test('the sections come in that order, each headed by its name on a line of its own, and the cache line comes first', async ($, on) => {
     kaWorld(on, cached())
     const clock = mock.clock(on, { now: T0 })
     await $.classic.SessionStart({ source: 'startup', transcript_path: PATH })
     await clock.advance(1000)
     const text = await commandText($, '')
-    const headings = text.split('\n').filter((line: string) => ['Cache', 'Advice', 'Settings'].includes(line) || line.startsWith('Keepalive'))
-    expect(headings).toEqual(['Cache', 'Keepalive  off', 'Advice', 'Settings'])
+    const headings = text.split('\n').filter((line: string) => ['Cache', 'This session', 'Advice', 'Settings'].includes(line) || line.startsWith('Keepalive'))
+    expect(headings).toEqual(['Cache', 'Keepalive  off', 'This session', 'Advice', 'Settings'])
     expect(text.startsWith('Cache\n  Prompt cache warm, ')).toBe(true)
   })
 
@@ -5507,6 +5507,210 @@ describe('the bare command answers four sections, in order: Cache, Keepalive, Ad
   })
 })
 
+// The rows that are headings: unindented, the section's title with its state when it has one.
+const headingsOf = (text: string): string[] => text.split('\n').filter((row) => row !== '' && !row.startsWith(' '))
+// A section's lines as the answer states them: the rows under its heading up to the blank row that ends it, each line's wrapped rows joined
+// back into one. Undefined when the answer has no such heading.
+const sectionLines = (text: string, title: string): string[] | undefined => {
+  const rows = text.replace(/\n {4}/g, ' ').split('\n')
+  const at = rows.findIndex((row) => row === title || row.startsWith(`${title}  `))
+  if (at < 0) return undefined
+  const body: string[] = []
+  for (const row of rows.slice(at + 1)) {
+    if (row === '') break
+    body.push(row.trim())
+  }
+  return body
+}
+const MISSES = 'Cache misses: 1 (lapse 1), $0.10 rewritten'
+// A session on PATH whose keepalive sends one refresh and is then turned off; the pause is judged on the prompt that ends it, and the reply
+// after the lapse counts a miss.
+const withMiss = async ($: any, on: any) => {
+  const doc: any = opusCached()
+  kaWorld(on, doc)
+  const clock = mock.clock(on, { now: T0 })
+  await $.classic.SessionStart({ source: 'startup', transcript_path: PATH })
+  await clock.advance(1000)
+  await toggle($, 'on 60 2')
+  await mainStep($)
+  await turnEnd($)
+  await clock.advance(240500)
+  await toggle($, 'off')
+  await clock.advance(359000)
+  await userPrompt($)
+  doc.text += lines([assistant({ uuid: 'a2', parent: 'a1', ts: iso(T0 + 600000), write: 20000, tags: FIVE, msg: 'm2', model: 'claude-opus-5-5', speed: 'standard' })])
+  await mainStep($)
+  await turnEnd($)
+  await clock.advance(1000)
+  return clock
+}
+
+describe('the This session section: the session figures, copied from the Keepalive and Advice sections under a heading of its own', () => {
+  test('at a fresh session start it reads that no refresh has been sent, after Keepalive, and Keepalive has no session line', async ($, on) => {
+    await startedWorld($, on)
+    const text = await commandText($, '')
+    expect(headingsOf(text)).toEqual(['Cache', 'Keepalive  off', 'This session', 'Settings'])
+    expect(sectionLines(text, 'This session')).toEqual(['This session: no refreshes yet.'])
+    expect(sectionLines(text, 'Keepalive')?.some((line) => line.startsWith('This session:'))).toBe(false)
+    expect(await drawnPane($)).toContain('This session: no refreshes yet.')
+  })
+
+  test('after one refresh read in tokens, its first line is the Keepalive section\'s session line, and Keepalive still carries that line once', async ($, on) => {
+    const clock = await startedWorld($, on)
+    await toggle($, 'unit tokens')
+    await toggle($, 'on 60 2')
+    await mainStep($)
+    await turnEnd($)
+    await clock.advance(240500)
+    await clock.advance(1000)
+    const text = await commandText($, '')
+    const session = 'This session: 1 refresh costing ~19k tokens read.'
+    expect(sectionLines(text, 'This session')?.[0]).toBe(session)
+    expect(sectionLines(text, 'Keepalive')?.filter((line) => line === session)).toHaveLength(1)
+  })
+
+  test('with dollars chosen and no price for the model, the refreshes are stated in tokens', async ($, on) => {
+    const clock = await startedWorld($, on, cached())
+    await toggle($, 'on 60 2')
+    await mainStep($)
+    await turnEnd($)
+    await clock.advance(240500)
+    await clock.advance(1000)
+    const text = await commandText($, '')
+    expect(text).toContain('unit dollars (cost_unit option)')
+    const session = 'This session: 1 refresh costing ~19k tokens read.'
+    expect(sectionLines(text, 'This session')?.[0]).toBe(session)
+    expect(sectionLines(text, 'Keepalive')).toContain(session)
+  })
+
+  test('after two refreshes in dollars on a priced model, its first line is the Keepalive section\'s session line, the same text', async ($, on) => {
+    const clock = await startedWorld($, on)
+    await toggle($, 'on 60 3')
+    await mainStep($)
+    await turnEnd($)
+    await clock.advance(240500)
+    await clock.advance(240000)
+    const text = await commandText($, '')
+    const session = 'This session: 2 refreshes costing $0.007.'
+    expect(sectionLines(text, 'This session')?.[0]).toBe(session)
+    expect(sectionLines(text, 'Keepalive')).toContain(session)
+  })
+
+  test('once a pause is judged, its second line is the Keepalive section\'s balance line, the same text, in dollars and in tokens', async ($, on) => {
+    const clock = await startedWorld($, on)
+    await clock.advance(10 * MIN)
+    await userPrompt($)
+    const text = await commandText($, '')
+    const balance = sectionLines(text, 'Keepalive')?.find((line) => line.startsWith('Over 1 pause this session'))
+    expect(balance).toMatch(/^Over 1 pause this session, keepalive (saved|cost)/)
+    expect(sectionLines(text, 'This session')).toEqual(['This session: no refreshes yet.', balance])
+    await toggle($, 'unit tokens')
+    const tokens = await commandText($, '')
+    const pointer = 'Over 1 pause this session, the balance is stated in dollars: /keepalive unit dollars.'
+    expect(sectionLines(tokens, 'Keepalive')).toContain(pointer)
+    expect(sectionLines(tokens, 'This session')).toEqual(['This session: no refreshes yet.', pointer])
+  })
+
+  test('once a miss is counted, its last line is the Advice section\'s misses line, the same text', async ($, on) => {
+    const doc: any = { text: lines([user({ uuid: 'u1', parent: null, ts: iso(T0 - 60000) }), assistant({ uuid: 'a1', parent: 'u1', ts: iso(T0), write: 18551, tags: FIVE, msg: 'm1', model: 'claude-opus-5-5', speed: 'standard' })]) }
+    kaWorld(on, doc)
+    const clock = mock.clock(on, { now: T0 + 360000 })
+    await $.classic.SessionStart({ source: 'startup', transcript_path: PATH })
+    await clock.advance(1000)
+    doc.text += lines([assistant({ uuid: 'a2', parent: 'a1', ts: iso(T0 + 360000), write: 20000, tags: FIVE, msg: 'm2', model: 'claude-opus-5-5', speed: 'standard' })])
+    await mainStep($)
+    await turnEnd($)
+    await clock.advance(1000)
+    const text = await commandText($, '')
+    expect(sectionLines(text, 'Advice')).toContain(MISSES)
+    expect(sectionLines(text, 'This session')).toEqual(['This session: no refreshes yet.', MISSES])
+  })
+
+  test('a /clear starts the refreshes and the balance over, and a compaction keeps them', async ($, on) => {
+    const clock = await startedWorld($, on)
+    await toggle($, 'on 60 2')
+    await mainStep($)
+    await turnEnd($)
+    await clock.advance(240500)
+    await clock.advance(240000)
+    await clock.advance(20000)
+    await userPrompt($)
+    await clock.advance(1000)
+    const before = sectionLines(await commandText($, ''), 'This session')
+    expect(before?.[0]).toBe('This session: 2 refreshes costing $0.007.')
+    expect(before?.[1]).toMatch(/^Over 1 pause this session/)
+    await $.classic.PostCompact({ trigger: 'manual', compact_summary: 's' } as any)
+    await $.classic.SessionStart({ source: 'compact', transcript_path: PATH })
+    await clock.advance(1000)
+    expect(sectionLines(await commandText($, ''), 'This session')).toEqual(before)
+    await $.classic.SessionStart({ source: 'clear', transcript_path: PATH })
+    await clock.advance(1000)
+    const cleared = sectionLines(await commandText($, ''), 'This session')
+    expect(cleared?.[0]).toBe('This session: no refreshes yet.')
+    expect(cleared?.some((line) => line.startsWith('Over '))).toBe(false)
+  })
+
+  test('a resume of the same transcript starts the refreshes and the balance over, and keeps the misses the section ends with', async ($, on) => {
+    const clock = await withMiss($, on)
+    const before = sectionLines(await commandText($, ''), 'This session')
+    expect(before?.[0]).toBe('This session: 1 refresh costing $0.004.')
+    expect(before?.[2]).toBe(MISSES)
+    await $.classic.SessionStart({ source: 'resume', transcript_path: PATH })
+    await clock.advance(1000)
+    const after = await commandText($, '')
+    expect(sectionLines(after, 'This session')).toEqual(['This session: no refreshes yet.', MISSES])
+    expect(sectionLines(after, 'Advice')).toContain(MISSES)
+    expect(sectionLines(after, 'Keepalive')?.some((line) => line.startsWith('Over '))).toBe(false)
+  })
+
+  test('a session start on another transcript: neither the section nor Advice has the misses line', async ($, on) => {
+    const clock = await withMiss($, on)
+    expect(await commandText($, '')).toContain(MISSES)
+    await $.classic.SessionStart({ source: 'resume', transcript_path: '/other/session.jsonl' })
+    await clock.advance(1000)
+    const text = await commandText($, '')
+    expect(sectionLines(text, 'This session')).toEqual(['This session: no refreshes yet.'])
+    expect(text).not.toContain('Cache misses')
+  })
+
+  test('the section is shown with keepalive off, on and paused', async ($, on) => {
+    const clock = await startedWorld($, on)
+    for (const args of ['off', 'on 60 2', 'on 300']) {
+      await toggle($, args)
+      await clock.advance(1000)
+      const text = await commandText($, '')
+      expect(headingsOf(text)).toContain('This session')
+      expect(sectionLines(text, 'This session')?.[0]).toMatch(/^This session: /)
+    }
+  })
+
+  test('the section is shown with keepalive stopped', async ($, on) => {
+    const doc: any = cached()
+    doc.fork = { isAnswered: false, reason: 'empty-reply', usage: { ...ZERO, cache_creation_input_tokens: 18000 } }
+    kaWorld(on, doc)
+    const clock = mock.clock(on, { now: T0 })
+    await $.classic.SessionStart({ source: 'startup', transcript_path: PATH })
+    await clock.settle()
+    await toggle($, 'on 60 2')
+    await mainStep($)
+    await turnEnd($)
+    await clock.advance(241000)
+    const text = await commandText($, '')
+    expect(headingsOf(text)).toContain('Keepalive  stopped')
+    expect(headingsOf(text)).toContain('This session')
+    expect(sectionLines(text, 'This session')?.[0]).toMatch(/^This session: /)
+  })
+
+  test('the section is shown with no cache to count from', async ($, on) => {
+    const clock = await startedWorld($, on, { text: '', exists: false })
+    await toggle($, 'on 15')
+    await clock.advance(1000)
+    const text = await commandText($, '')
+    expect(headingsOf(text)).toContain('This session')
+    expect(sectionLines(text, 'This session')?.[0]).toMatch(/^This session: /)
+  })
+})
+
 // The bare command's whole answer for fixed states: the text its sections lay out, headings and blank lines included. The cold-mark and
 // shared-price pins take the fixtures of the existing tests of those two scenes and pin their whole answers, not a phrase of them.
 describe('the bare command answers whole: the text its sections lay out, for fixed states', () => {
@@ -5539,6 +5743,9 @@ describe('the bare command answers whole: the text its sections lay out, for fix
         '    cost no more than the rewrite they avoid.',
         "  Keepalive pays off if you're back between 5:00",
         '    and 1:54:00',
+        '',
+        'This session',
+        '  This session: no refreshes yet.',
         '',
         'Settings',
         '  TTL 5 min (read from the last response): set',
@@ -5581,6 +5788,9 @@ describe('the bare command answers whole: the text its sections lay out, for fix
         "  Keepalive pays off if you're back between 5:00",
         '    and 1:54:00',
         '',
+        'This session',
+        '  This session: no refreshes yet.',
+        '',
         'Settings',
         '  TTL 5 min (read from the last response): set',
         '    "promptCacheTtl": "1h" in settings.json for',
@@ -5618,6 +5828,9 @@ describe('the bare command answers whole: the text its sections lay out, for fix
         '    count you pinned with /keepalive on.',
         "  Keepalive pays off if you're back between 5:00",
         '    and 13:00',
+        '',
+        'This session',
+        '  This session: no refreshes yet.',
         '',
         'Settings',
         '  TTL 5 min (read from the last response): set',
@@ -5658,6 +5871,9 @@ describe('the bare command answers whole: the text its sections lay out, for fix
         "  Keepalive pays off if you're back between 5:00",
         '    and 1:54:00',
         '',
+        'This session',
+        '  This session: no refreshes yet.',
+        '',
         'Settings',
         '  TTL 5 min (read from the last response): set',
         '    "promptCacheTtl": "1h" in settings.json for',
@@ -5696,6 +5912,9 @@ describe('the bare command answers whole: the text its sections lay out, for fix
         '    cost no more than the rewrite they avoid.',
         "  Keepalive pays off if you're back between 5:00",
         '    and 1:54:00',
+        '',
+        'This session',
+        '  This session: no refreshes yet.',
         '',
         'Advice',
         '  A 5-minute cache write costs about 25 cache',
@@ -5755,6 +5974,9 @@ describe('the bare command answers whole: the text its sections lay out, for fix
           '  a refresh reads the warm cache: ~19k cached tokens, every 4 min',
           '  if it goes cold, your next prompt rebuilds it: ~19k tokens written',
           '  Each pause sends at most 2 refreshes: the count you pinned with /keepalive on.',
+          '',
+          'This session',
+          '  This session: no refreshes yet.',
           '',
           'Advice',
           '  Shown in tokens: no price for an unnamed model.',
@@ -5827,6 +6049,10 @@ describe('the bare command answers whole: the text its sections lay out, for fix
         '  Long pauses: 1 · p90 6:00 · mean 6:00 · max',
         '    6:00',
         '',
+        'This session',
+        '  This session: no refreshes yet.',
+        '  Cache misses: 1 (lapse 1), $0.20 rewritten',
+        '',
         'Advice',
         '  Cache misses: 1 (lapse 1), $0.20 rewritten',
         '',
@@ -5859,6 +6085,9 @@ describe('the bare command answers whole: the text its sections lay out, for fix
         "  The pie turns amber in the cache's last",
         '    quarter and red in its last tenth: the cache',
         '    is about to lapse.',
+        '',
+        'This session',
+        '  This session: no refreshes yet.',
         '',
         'Settings',
         '  TTL 5 min (read from the last response): set',
@@ -5899,6 +6128,9 @@ describe('the bare command answers whole: the text its sections lay out, for fix
         '    quarter and red in its last tenth: the cache',
         '    is about to lapse.',
         '',
+        'This session',
+        '  This session: no refreshes yet.',
+        '',
         'Settings',
         '  TTL 5 min (read from the last response): set',
         '    "promptCacheTtl": "1h" in settings.json for',
@@ -5928,6 +6160,9 @@ describe('the bare command answers whole: the text its sections lay out, for fix
         "  The pie turns amber in the cache's last",
         '    quarter and red in its last tenth: the cache',
         '    is about to lapse.',
+        '',
+        'This session',
+        '  This session: no refreshes yet.',
         '',
         'Settings',
         '  TTL 5 min (read from the last response): set',

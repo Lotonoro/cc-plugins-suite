@@ -1,6 +1,7 @@
-// The four sections bare `/keepalive` answers with: Cache, Keepalive, Advice and Settings. A pure builder: the command gathers the figures
+// The five sections bare `/keepalive` answers with: Cache, Keepalive, This session, Advice and Settings. A pure builder: the command gathers the figures
 // and sentences into a snapshot, and this turns them into sections and wrapped rows, so the text reads the same wherever it is drawn. It
-// takes no engine handle, so it is tested without one. It knows no state's words: the Keepalive part brings its state as a string.
+// takes no engine handle, so it is tested without one. It knows no state's words: the Keepalive part brings its state as a string, and the
+// other parts bring finished lines, the This session fallback included.
 
 // The width a line is wrapped at, counting its indent.
 export const WRAP = 48
@@ -13,12 +14,13 @@ export type Setting = { name: string; value: string; source: string | null; chan
 export type Snapshot = {
   cache: string[]
   keepalive: { state: string; lines: string[] }
+  session: string[]
   advice: string[]
   settings: Setting[]
 }
 
 // A section's state is written on its heading beside the title; a section that carries one is never left out.
-export type Section = { title: 'Cache' | 'Keepalive' | 'Advice' | 'Settings'; state: string | null; lines: string[] }
+export type Section = { title: 'Cache' | 'Keepalive' | 'This session' | 'Advice' | 'Settings'; state: string | null; lines: string[] }
 
 // One row of the laid-out answer. A section's heading row carries the heading mark, so a drawing bolds it without reading its text;
 // no other row is marked.
@@ -31,6 +33,7 @@ export const sectionsOf = (snap: Snapshot): Section[] =>
   [
     { title: 'Cache' as const, state: null, lines: snap.cache },
     { title: 'Keepalive' as const, state: snap.keepalive.state, lines: snap.keepalive.lines },
+    { title: 'This session' as const, state: null, lines: snap.session },
     { title: 'Advice' as const, state: null, lines: snap.advice },
     { title: 'Settings' as const, state: null, lines: snap.settings.map(settingLine) },
   ].filter((section) => section.state !== null || section.lines.length > 0)
