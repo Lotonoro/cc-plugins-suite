@@ -688,7 +688,7 @@ test('a correction the engine refuses is logged, and the turn end still submits 
   expect(logs.some(line => line.includes('a notice was refused') && line.includes('refused by the test'))).toBe(true)
 })
 
-test('a reply typed in the pane keeps the pane on its item once sent, and the agent\'s next append brings the reply field back', async ($, on) => {
+test('a reply typed in the pane moves the pane on to the next open item once sent, and the agent\'s next append to the reply\'s item leaves the pane there, the item open and unread', async ($, on) => {
   const opened: string[] = []
   const shown = new Set<string>()
   on('ui.open', (_$, e) => {
@@ -708,14 +708,17 @@ test('a reply typed in the pane keeps the pane on its item once sent, and the ag
   await pane.input({ key: 'reply-1', text: 'Use sqlite' })
   opened.length = 0
   await clock.advance(5000)
-  const sent = JSON.stringify(await pane.drawn())
-  expect(sent).toContain('#1 non-blocking, done-pending: Pick a db')
-  expect(sent).toContain('✓ sent')
-  expect(sent).not.toContain('reply-1')
+  const moved = JSON.stringify(await pane.drawn())
+  expect(moved).toContain('#2 non-blocking, open: Pick a cache')
+  expect(moved).not.toContain('Pick a db')
   expect(opened).toEqual(['human-items'])
   await $.tool.call({ tool: TOOL, action: 'append', id: 1, text: 'more' })
-  expect(JSON.stringify(await pane.drawn())).toContain('reply-1')
-  expect(opened).toEqual(['human-items', 'human-items'])
+  const after = JSON.stringify(await pane.drawn())
+  expect(after).toContain('#2 non-blocking, open: Pick a cache')
+  expect(after).not.toContain('Pick a db')
+  expect(String((await $.tool.call({ tool: TOOL, action: 'list' })).result)).toContain('#1 non-blocking, open: Pick a db')
+  expect(JSON.stringify(await band.drawn())).toContain('• #1')
+  expect(opened).toEqual(['human-items'])
 })
 
 test('a reply typed into the terminal pane is sent through the undo window, and the agent is told it', async ($, on) => {
