@@ -20,10 +20,11 @@ lifetime is left, and next to it the time left, or a word where there is no time
 - The pie's shape is the time left in quarters of the cache's lifetime, rounded up: `●` above three quarters, then `◕`,
   `◑`, `◔`, and `○` once the cache is gone. The lifetime is 5 minutes or 1 hour, as the transcript records it: on a subscription the
   main conversation defaults to 1 hour and on an API key to 5 minutes, and the `promptCacheTtl` setting changes it.
-- The pie's colour: green while keepalive refreshes, and with keepalive on and nothing to count. Otherwise (keepalive off,
-  or on but paused or spent) it is the normal text colour, then amber in the cache's last quarter, and red in its last
-  tenth (1:15 and 0:30 on a 5-minute cache, 15 and 6 minutes on an hour's). An expired cache is red with keepalive on and
-  dim with it off.
+- The pie's colour: green while keepalive refreshes, and with keepalive on and nothing to count. While keepalive has a recorded
+  stop (its refreshes used up, the cache expired, or a failure), the pie beside `reset` or `no count` is red until your next
+  prompt; a pending cold mark alone leaves it green. Otherwise (keepalive off, or on but paused or spent) it is the normal text
+  colour, then amber in the cache's last quarter, and red in its last tenth (1:15 and 0:30 on a 5-minute cache, 15 and 6
+  minutes on an hour's). An expired cache is red with keepalive on and dim with it off.
 - The price cue: after the words (not after a footer that is not drawn), `⟳` (dim) shows while this session reads Anthropic's pricing
   page, whoever started the read (the weekly schedule, a switch to dollars). When the read lands a `✓` takes its place, and when it
   fails an amber `!` does, each for about 3 seconds; then the footer is as before. Only the session that ran the read shows it, a

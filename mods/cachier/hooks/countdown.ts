@@ -53,9 +53,10 @@ export const readingOf = (view: CacheView, liveMs: number | null, cold: ColdMark
   return { words: `${Math.floor(seconds / 60)}:${pad(seconds % 60)}`, state: 'warm', quarter: quarterOf(left, view.ttlMs), warn }
 }
 
-// The pie's tone: green while keepalive will send the next refresh, and whenever it is on with nothing to count. Otherwise the cache is
-// left to the person: the normal text, then amber in the TTL's last quarter and red in its last tenth, where a prompt can still keep it
-// warm. An expired cache is red with keepalive on (only a click or a prompt resumes it) and dim off, where nothing is left to act on.
+// The pie's tone: green while keepalive will send the next refresh, and whenever it is on with nothing to count or a cold cache, unless a
+// recorded stop stands, which makes it red. Otherwise the cache is left to the person: the normal text, then amber in the TTL's last
+// quarter and red in its last tenth, where a prompt can still keep it warm. An expired cache is red with keepalive on (only a click or a
+// prompt resumes it) and dim off, where nothing is left to act on.
 export type Tone = 'on' | 'quiet' | 'warning' | 'alarm' | 'gone'
 // The word for a reset cache: the footer's cold word and the warmth line's `Prompt cache reset` read this one constant.
 const RESET = 'reset'
@@ -66,11 +67,12 @@ export type Footer = { quarter: number; words: string; tone: Tone }
 const WARN_TONE: Record<Reading['warn'], Tone> = { calm: 'quiet', quarter: 'warning', tenth: 'alarm' }
 
 // What the footer draws for a reading, or null for nothing: with nothing to count, the empty pie and `no count`, only while keepalive is on;
-// a cold reading is the empty pie and `reset`. `refreshing`
-// is whether keepalive will send the next refresh (`refreshingOf`).
-export const footerOf = (reading: Reading | null, on: boolean, refreshing: boolean): Footer | null => {
-  if (reading === null) return on ? { quarter: 0, words: NO_COUNT, tone: 'on' } : null
-  if (reading.state === 'cold') return { quarter: 0, words: RESET, tone: on ? 'on' : 'gone' }
+// a cold reading is the empty pie and `reset`. `refreshing` is whether keepalive will send the next refresh (`refreshingOf`). `stopped` is
+// whether a recorded stop stands: with keepalive on it turns those two empty pies red, as an expired cache's is, since only a prompt resumes them.
+export const footerOf = (reading: Reading | null, on: boolean, refreshing: boolean, stopped: boolean): Footer | null => {
+  const onTone: Tone = stopped ? 'alarm' : 'on'
+  if (reading === null) return on ? { quarter: 0, words: NO_COUNT, tone: onTone } : null
+  if (reading.state === 'cold') return { quarter: 0, words: RESET, tone: on ? onTone : 'gone' }
   if (reading.state === 'expired') return { quarter: 0, words: reading.words, tone: on ? 'alarm' : 'gone' }
   return { quarter: reading.quarter, words: reading.words, tone: refreshing ? 'on' : WARN_TONE[reading.warn] }
 }
@@ -91,15 +93,15 @@ export const refreshingOf = (on: boolean, reading: Reading | null, refresh: stri
 // What the pie's colours warn of where no refresh is coming, worded in the Keepalive section while the pie is amber or red.
 export const COLOUR_SENTENCE = "The pie turns amber in the cache's last quarter and red in its last tenth: the cache is about to lapse."
 
-// The pie's whole judgement from its inputs: the reading, whether keepalive is on, and the label of the refresh figure (null when none
-// holds). `footer` is what the pie draws, tone included, null exactly where `footerOf` gives none. `colour` is the sentence wording where
-// no refresh is coming: not refreshing, and either keepalive is off or a reading is held, whatever the pie's tone. So it is absent only
-// while keepalive refreshes, and with keepalive on and nothing to count.
+// The pie's whole judgement from its inputs: the reading, whether keepalive is on, the label of the refresh figure (null when none holds),
+// and whether a recorded stop stands. `footer` is what the pie draws, tone included, null exactly where `footerOf` gives none. `colour` is
+// the sentence wording where no refresh is coming: not refreshing, and either keepalive is off or a reading is held, whatever the pie's
+// tone. So it is absent only while keepalive refreshes, and with keepalive on and nothing to count.
 export type Pie = { footer: Footer | null; colour: string | null }
-export const pieOf = (reading: Reading | null, on: boolean, refresh: string | null): Pie => {
+export const pieOf = (reading: Reading | null, on: boolean, refresh: string | null, stopped: boolean): Pie => {
   const refreshing = refreshingOf(on, reading, refresh)
   const warns = !refreshing && (!on || reading !== null)
-  return { footer: footerOf(reading, on, refreshing), colour: warns ? COLOUR_SENTENCE : null }
+  return { footer: footerOf(reading, on, refreshing, stopped), colour: warns ? COLOUR_SENTENCE : null }
 }
 
 // Whether the warmth line draws the rebuild figure: a reading that is not warm, with a figure to draw. The bare command gives the figure's

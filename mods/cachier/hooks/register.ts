@@ -892,7 +892,7 @@ const snapshotNow = async ($: Dollar): Promise<Snapshot> => {
   const kept = keptOf(held, view, money, nowMs)
   const verdict = step(held, view, live, gapOpen(held), nowMs, money, rebuildPriced)
   // The pie's own judgement, from the held state and the view under the cold mark, so the sentence agrees with the heading above it.
-  const { colour } = pieOf(reading, held.config !== null, costOf(held, view, money, pair)?.label ?? null)
+  const { colour } = pieOf(reading, held.config !== null, costOf(held, view, money, pair)?.label ?? null, held.stop !== null)
   // While keepalive is off, the offer a press would start: the same figure the tick writes, from the same inputs.
   const offer = held.config === null && defaultRun !== undefined ? offerNow(held, view, money, nowMs, defaultRun, pair) : null
   return {
@@ -1621,6 +1621,7 @@ export const register: Register = (on, options) => {
       // The size is the pane's draw's record, read as the press is made: the open must be made inside the press, with nothing awaited (pane.ts).
       () => inBackground($, togglePane($, pressSize())),
       cue,
+      keepalive.stop !== null,
     )
     if (line === null) return tree
     // The separator stands between the line and what is drawn beneath, and only where something is: judged from what the hooks beneath

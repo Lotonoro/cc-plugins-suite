@@ -51,9 +51,9 @@ const popup = (t: Table, text: string): RenderElement =>
 // The footer line: the pie, which a click switches keepalive with, and beside it the time, the rebuild figure, `reset` or `no count`, which a click
 // opens the details with. After them, the price read's cue when one stands (`cue`): `⟳` while it runs, `✓` once it landed, an amber `!` once it
 // failed; none without a line. The refresh cost shows on hover, in a popup above the time, for reference at any time. `on` is whether keepalive is
-// on. Null when there is no line to show.
-export const footerLine = (t: Table, state: HintState | null, on: boolean, onToggle: () => void, onDetails: () => void, cue: PriceCue | null = null): RenderElement | null => {
-  const { footer } = pieOf(state?.reading ?? null, on, state?.cost?.label ?? null)
+// on, and `stopped` whether a recorded stop stands, which the pie's tone reads (`footerOf`). Null when there is no line to show.
+export const footerLine = (t: Table, state: HintState | null, on: boolean, onToggle: () => void, onDetails: () => void, cue: PriceCue | null = null, stopped = false): RenderElement | null => {
+  const { footer } = pieOf(state?.reading ?? null, on, state?.cost?.label ?? null, stopped)
   if (footer === null) return null
   const pie = t.Button({
     key: 'pie',

@@ -203,6 +203,28 @@ describe('footerLine: the pie, and its words', () => {
   })
 })
 
+describe('footerLine: a recorded stop standing with keepalive on draws the pie red beside reset or no count', () => {
+  const COLD_READING: Reading = { words: '', state: 'cold', quarter: 0, warn: 'calm' }
+
+  test('a cold cache is the empty pie in red with `reset` beside it, and the hover reads paused', () => {
+    const line = footerLine(t, state({ reading: COLD_READING }), true, noop, noop, null, true) as any
+    expect(toneOf(pieOf(line))).toEqual({ color: 'error' })
+    expect(timeOf(line).children[0].props).toMatchObject({ key: 'details', children: ['reset'] })
+    expect(pieBoxOf(line).children[1]).toMatchObject({ children: [{ children: ['cache keepalive is paused'] }] })
+  })
+
+  test('nothing to count is the empty pie in red beside `no count`', () => {
+    const line = footerLine(t, state({ reading: null }), true, noop, noop, null, true) as any
+    expect(toneOf(pieOf(line))).toEqual({ color: 'error' })
+    expect(timeOf(line).children[0].props).toMatchObject({ key: 'details', children: ['no count'] })
+  })
+
+  test('with keepalive off no stop stands: a cold cache is dim beside reset', () => {
+    const line = footerLine(t, state({ reading: COLD_READING }), false, noop, noop, null, true) as any
+    expect(toneOf(pieOf(line))).toEqual({ dimColor: true })
+  })
+})
+
 const SNAPSHOT: Snapshot = {
   cache: ['Prompt cache warm, 3:12 left (5-minute cache)'],
   keepalive: { state: 'off', lines: ['The pie turns amber in the cache\'s last quarter and red in its last tenth: the cache is about to lapse.'] },

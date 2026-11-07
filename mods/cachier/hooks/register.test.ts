@@ -7621,3 +7621,222 @@ describe('the pane\'s sections hold every line the old pane drew, in each state 
     })
   }
 })
+
+// The footer as it is drawn now: the whole drawing, the pie's own element, and the words beside it.
+const pieDrawn = async ($: any) => {
+  const m = await mountHint($)
+  const drawn = JSON.stringify(await m.drawn())
+  const pie = JSON.stringify((await m.find({ type: 'Button', key: 'pie' })) ?? null)
+  const words = await hintOf(m)
+  await m.unmount()
+  return { drawn, pie, words }
+}
+// Keepalive on for one refresh, sent four minutes in: the stop for the count used stands once that refresh is in.
+const countUsed = async ($: any, clock: any) => {
+  await toggle($, 'on 60 1')
+  await mainStep($)
+  await turnEnd($)
+  await clock.advance(240500)
+  await clock.advance(1000)
+  await clock.advance(240000)
+}
+
+describe('the pie follows a standing stop: red beside reset or no count with keepalive on, until the next prompt', () => {
+  test('a count-used stop stands over a model switch: the pie is red beside reset, its hover reads paused, and the heading reads paused', async ($, on) => {
+    const clock = await startedWorld($, on)
+    await countUsed($, clock)
+    await SWITCH($)
+    await clock.advance(1000)
+    const pie = await pieDrawn($)
+    expect(pie.words).toBe('reset')
+    expect(pie.pie).toContain('"color":"error"')
+    expect(pie.drawn).toContain('cache keepalive is paused')
+    expect(await toggle($, '')).toContain('Keepalive  paused')
+  })
+
+  test('a cache-expired stop stands over a compaction: the pie is red beside reset, and the heading reads paused', async ($, on) => {
+    const clock = await startedWorld($, on)
+    await toggle($, 'on 60 2')
+    await mainStep($)
+    await clock.advance(310000)
+    await turnEnd($)
+    await clock.advance(1000)
+    expect(await toggle($, '')).toContain('Keepalive  paused')
+    await COMPACT($)
+    await clock.advance(1000)
+    const pie = await pieDrawn($)
+    expect(pie.words).toBe('reset')
+    expect(pie.pie).toContain('"color":"error"')
+    expect(pie.drawn).toContain('cache keepalive is paused')
+  })
+
+  test('a failure stop stands over a model switch: the pie is red beside reset, and the heading reads stopped', async ($, on) => {
+    const doc: any = opusCached()
+    doc.fork = { isAnswered: false, reason: 'empty-reply', usage: { ...ZERO, cache_creation_input_tokens: 18000 } }
+    const clock = await startedWorld($, on, doc)
+    await toggle($, 'on 60 2')
+    await mainStep($)
+    await turnEnd($)
+    await clock.advance(241000)
+    expect(await toggle($, '')).toContain('Keepalive  stopped')
+    await SWITCH($)
+    await clock.advance(1000)
+    const pie = await pieDrawn($)
+    expect(pie.words).toBe('reset')
+    expect(pie.pie).toContain('"color":"error"')
+    expect(pie.drawn).toContain('cache keepalive is paused')
+  })
+
+  test('a stop standing, then a failed transcript read that leaves the TTL unread: the pie is red beside no count', async ($, on) => {
+    const doc: any = opusCached()
+    const clock = await startedWorld($, on, doc)
+    await countUsed($, clock)
+    doc.broken = true
+    await mainStep($)
+    await turnEnd($)
+    await clock.advance(1000)
+    const pie = await pieDrawn($)
+    expect(pie.words).toBe('no count')
+    expect(pie.pie).toContain('"color":"error"')
+  })
+
+  test('with no stop, a cold cache whose stats write is refused and the heading on, no count: the pie is green beside reset', async ($, on) => {
+    kaWorld(on, opusCached())
+    const { held } = gatedWrite(on, isMarkedStats)
+    const clock = mock.clock(on, { now: T0 })
+    await $.classic.SessionStart({ source: 'startup', transcript_path: PATH })
+    await clock.settle()
+    await toggle($, 'on 60 2')
+    await mainStep($)
+    await turnEnd($)
+    await clock.advance(100000)
+    held.failing = true
+    await SWITCH($)
+    held.failing = false
+    await clock.advance(1000)
+    expect(await toggle($, '')).toContain('Keepalive  on, no count')
+    const pie = await pieDrawn($)
+    expect(pie.words).toBe('reset')
+    expect(pie.pie).toContain('"color":"success"')
+  })
+
+  test('with no stop, a cold cache whose mark is pending and the heading paused: the pie is green beside reset', async ($, on) => {
+    kaWorld(on, opusCached())
+    const { held, release } = gatedWrite(on, isMarkedStats)
+    const clock = mock.clock(on, { now: T0 })
+    await $.classic.SessionStart({ source: 'startup', transcript_path: PATH })
+    await clock.settle()
+    await toggle($, 'on 60 2')
+    await mainStep($)
+    await turnEnd($)
+    await clock.advance(100000)
+    const marking = SWITCH($)
+    await clock.settle()
+    try {
+      expect(held.holding).toBe(true)
+      await clock.advance(1000)
+      expect(await toggle($, '')).toContain('Keepalive  paused')
+      const pie = await pieDrawn($)
+      expect(pie.words).toBe('reset')
+      expect(pie.pie).toContain('"color":"success"')
+    } finally {
+      release()
+      await marking
+    }
+  })
+
+  test('a prompt over a stop, after a model switch, draws the pie green again beside reset before the turn touches the cache', async ($, on) => {
+    const clock = await startedWorld($, on)
+    await countUsed($, clock)
+    await SWITCH($)
+    await clock.advance(1000)
+    expect((await pieDrawn($)).pie).toContain('"color":"error"')
+    await userPrompt($)
+    const pie = await pieDrawn($)
+    expect(pie.words).toBe('reset')
+    expect(pie.pie).toContain('"color":"success"')
+  })
+
+  test('a prompt over a stop with no reading draws the pie green again beside no count', async ($, on) => {
+    const doc: any = opusCached()
+    const clock = await startedWorld($, on, doc)
+    await countUsed($, clock)
+    doc.broken = true
+    await mainStep($)
+    await turnEnd($)
+    await clock.advance(1000)
+    expect((await pieDrawn($)).pie).toContain('"color":"error"')
+    await userPrompt($)
+    const pie = await pieDrawn($)
+    expect(pie.words).toBe('no count')
+    expect(pie.pie).toContain('"color":"success"')
+  })
+
+  test('with keepalive_default on, a /clear over a lapsed cache carrying its session state starts under a cache expired stop: the pie is red beside no count, heading paused', { options: { keepalive_lead_s: 60, keepalive_default: 'on' } }, async ($, on) => {
+    kaWorld(on, cached())
+    const clock = mock.clock(on, { now: T0 })
+    await $.classic.SessionStart({ source: 'startup', transcript_path: PATH })
+    await clock.settle()
+    // A turn runs across the lapse, so the idle gap stays shut and no refresh is sent before the cache expires.
+    await mainStep($)
+    await clock.advance(310000)
+    await $.classic.SessionStart({ source: 'clear', transcript_path: PATH } as any)
+    await clock.advance(1000)
+    expect(await toggle($, '')).toContain('Keepalive  paused')
+    const pie = await pieDrawn($)
+    expect(pie.words).toBe('no count')
+    expect(pie.pie).toContain('"color":"error"')
+  })
+
+  test('a held footer over no reading under a stop is drawn green by the next prompt, with no hint write between', async ($, on) => {
+    const doc: any = opusCached()
+    const hintWrites: unknown[] = []
+    on('state.set', (_$: any, e: any, next: any) => {
+      if (e.key === 'hint') hintWrites.push(e.value)
+      return next(e)
+    })
+    const clock = await startedWorld($, on, doc)
+    await countUsed($, clock)
+    doc.broken = true
+    await mainStep($)
+    await turnEnd($)
+    await clock.advance(1000)
+    const m = await mountHint($)
+    expect(JSON.stringify(await m.find({ type: 'Button', key: 'pie' }))).toContain('"color":"error"')
+    hintWrites.length = 0
+    await userPrompt($)
+    expect(hintWrites).toEqual([])
+    expect(JSON.stringify(await m.find({ type: 'Button', key: 'pie' }))).toContain('"color":"success"')
+    await m.unmount()
+  })
+
+  test('keepalive turned off after a stop: a cold cache is dim beside reset', async ($, on) => {
+    const clock = await startedWorld($, on)
+    await countUsed($, clock)
+    await SWITCH($)
+    await clock.advance(1000)
+    expect((await pieDrawn($)).pie).toContain('"color":"error"')
+    await toggle($, 'off')
+    await clock.advance(1000)
+    const pie = await pieDrawn($)
+    expect(pie.words).toBe('reset')
+    expect(pie.pie).toContain('"dimColor":true')
+    expect(pie.pie).not.toContain('"color":"error"')
+  })
+
+  test('keepalive turned off after a stop over no reading draws no footer', async ($, on) => {
+    const doc: any = opusCached()
+    const clock = await startedWorld($, on, doc)
+    await countUsed($, clock)
+    doc.broken = true
+    await mainStep($)
+    await turnEnd($)
+    await clock.advance(1000)
+    expect((await pieDrawn($)).pie).toContain('"color":"error"')
+    await toggle($, 'off')
+    await clock.advance(1000)
+    const m = await mountHint($)
+    expect(await m.find({ type: 'Button', key: 'pie' })).toBeUndefined()
+    await m.unmount()
+  })
+})
