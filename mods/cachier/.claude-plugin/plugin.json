@@ -10,7 +10,7 @@
     "keepalive_lead_s": {
       "type": "number",
       "title": "Keepalive lead (seconds)",
-      "description": "Seconds before the cache expires that a keepalive refresh is sent (default 15). A refresh slower than half this raises the lead to twice its round trip for the session; keepalive stops only if that would pass half the TTL. Each refresh re-reads the whole cached context, so each one costs a cache read.",
+      "description": "Seconds before the cache expires that a keepalive refresh is sent (default 15). An answered refresh slower than half this raises the lead to twice its round trip for the session; keepalive stops only if that would pass half the TTL. Each refresh re-reads the whole cached context, so each one costs a cache read.",
       "default": 15
     },
     "keepalive_count": {

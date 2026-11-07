@@ -1,7 +1,7 @@
 // Keepalive's decisions, pure: what the toggle accepts, the gap and turn bookkeeping, what one tick does with the state
 // and the reader's TTL and touch, the status line's and the footer line's words, how a ping's outcome is
 // judged, and the debug line of a ping. register.ts holds the state, writes it, and makes the fork; nothing here reads the engine.
-import type { ModelForkResult, ModelUsage, PluginOptions } from 'claude-code'
+import type { ModelApiError, ModelForkResult, ModelUsage, PluginOptions } from 'claude-code'
 import type { CacheView, HintCost, KeepaliveState, Spend, Tally, TallyState, Unit } from '../types'
 import { expiredAt, expiryOf } from './countdown'
 import { addSpend, dollars, figureOf, kTokens, NO_KINDS, NO_SPEND, spendOf, uponOf, type Money } from './prices'
@@ -479,13 +479,42 @@ export const outcomeOf = (r: ModelForkResult): string => reasonOf(r) ?? 'answere
 // A fork's usage, or null for a reply that reports none.
 export const usageOf = (r: ModelForkResult): ModelUsage | null => ('usage' in r ? r.usage : null)
 
-// Why a fork's reply must stop keepalive, or null when keepalive may go on. An answer, or an empty reply that reports its usage, is
-// judged by the cache it read, since a refresh exists to read the cache. Any other reply stops keepalive with its reason (reasonOf).
+// Why a fork's reply did not keep the cache alive, or null when it did. An answer, or an empty reply that reports its usage, is judged by
+// the cache it read, since a refresh exists to read the cache. Any other reply gives its reason (reasonOf); a rate-limited refusal gives
+// its reason too, and `refused` decides whether that reason stops keepalive.
 export const stopFor = (r: ModelForkResult): string | null => {
   const usage = usageOf(r)
   if (!r.isAnswered && (r.reason !== 'empty-reply' || usage === null)) return reasonOf(r)
   if (usage !== null && usage.cache_read_input_tokens === 0) return 'reply not served from cache'
   return null
+}
+
+// The API error kinds a refused refresh is retried for: the rate limit alone, the kind the user named and the engine's doc says may clear on
+// its own. The other kinds it names as may clear (`overloaded`, `server_error`) stop keepalive at once, as any failure does.
+const RETRIED_KINDS: readonly ModelApiError[] = ['rate_limit']
+
+// Whether a fork's reply is a refusal of a kind a refresh is retried for. The kind is Claude Code's own classification of the error, so the
+// status is not asked: a rate limit with no response is retried as one with status 429.
+export const retriedOf = (r: ModelForkResult): boolean => !r.isAnswered && r.reason === 'api-error' && RETRIED_KINDS.includes(r.error)
+
+// Whether a rate-limited refusal's retry may go: `allowed` when the next tick sends it, `none` when the refusal ended the run.
+export type Retry = 'allowed' | 'none'
+
+// A rate-limited refusal, decided at its end. A retry goes at the next tick when the refusal's reply time plus one tick still leaves half
+// the run's lead before the expiry; the run then stays due with its count given back, and the tick sends the attempt, so nothing is held
+// between attempts. Otherwise the run ends with the refusal's reason and the window's close. Either way the count is given back, since no
+// refresh reached the cache, and the lead and `last` are untouched, since a refusal measured nothing. A null expiry allows no retry.
+export const refused = (
+  k: KeepaliveState,
+  leadMs: number,
+  reason: string,
+  repliedMs: number,
+  expiryMs: number | null,
+  tickMs: number,
+): { state: KeepaliveState; retry: Retry } => {
+  const given = { ...k, remaining: k.remaining + 1 }
+  if (expiryMs !== null && expiryMs - (repliedMs + tickMs) >= leadMs / 2) return { state: given, retry: 'allowed' }
+  return { state: { ...given, stop: `${reason}, no retry left before the cache's expiry` }, retry: 'none' }
 }
 
 // A ping whose reply has not come by the TTL: the cache may have lapsed while it was in flight, so keepalive stops with it.
@@ -532,7 +561,7 @@ export const enableText = (view: CacheView, leadMs: number, count: number, stop:
 }
 
 // The debug line of one ping, written once its outcome is known. `stale` marks a result from a generation the state has since
-// left, or one that came after the TTL lapsed: it changed nothing.
+// left, or one that came after the TTL lapsed: it changed nothing. `retry` is what a rate-limited refusal decided, null on every other line.
 export type PingLine = {
   time: string
   seq: number
@@ -543,6 +572,7 @@ export type PingLine = {
   usage: { read: number; write: number; input: number; output: number } | null
   outcome: string
   stale: boolean
+  retry: Retry | null
 }
 
 export const pingLine = (p: {
@@ -555,6 +585,7 @@ export const pingLine = (p: {
   usage: ModelUsage | null
   outcome: string
   stale: boolean
+  retry: Retry | null
 }): PingLine => ({
   time: new Date(p.decidedMs).toISOString(),
   seq: p.seq,
@@ -573,6 +604,7 @@ export const pingLine = (p: {
         },
   outcome: p.outcome,
   stale: p.stale,
+  retry: p.retry,
 })
 
 // The tallies: every fork counts, stale ones and late ones included, and what it read and wrote is its spend. A reply with

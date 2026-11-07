@@ -29,8 +29,10 @@ import {
   promptSubmitted,
   rearm,
   reasonOf,
+  refused,
   reset,
   restored,
+  retriedOf,
   step as stepWith,
   stopFor,
   turnBegun,
@@ -591,6 +593,50 @@ describe('reasonOf and stopFor: how a ping\'s outcome stops keepalive', () => {
   })
 })
 
+describe('retriedOf and refused: a refusal the engine calls a rate limit is retried until half the lead is left before the expiry', () => {
+  // A refusal of the given kind at the given status, null for no response, as the engine reports an API error.
+  const refusedWith = (error: string, status: number | null = 429): any => ({ isAnswered: false, reason: 'api-error', status, error, usage: zero })
+  const LIMIT = "API error 429 (rate_limit), no retry left before the cache's expiry"
+
+  test('a rate limit is retried whatever its status, null included; no other kind of API error is', () => {
+    expect(retriedOf(refusedWith('rate_limit'))).toBe(true)
+    expect(retriedOf(refusedWith('rate_limit', null))).toBe(true)
+    expect(retriedOf(refusedWith('overloaded', 529))).toBe(false)
+    expect(retriedOf(refusedWith('server_error', null))).toBe(false)
+    expect(retriedOf(refusedWith('unknown', 500))).toBe(false)
+    expect(retriedOf({ isAnswered: false, reason: 'empty-reply', usage: zero })).toBe(false)
+    expect(retriedOf({ isAnswered: true, text: 'ok', usage: { ...zero, cache_read_input_tokens: 1 } })).toBe(false)
+  })
+
+  test('a refusal whose reply and one tick leave half the lead before the expiry is retried: the count is given back and no stop is written', () => {
+    const k = on(15000, 3, { remaining: 2, last: { read: 18551, write: 0 } })
+    expect(refused(k, 15000, 'API error 429 (rate_limit)', 286500, 300000, 1000)).toEqual({ state: { ...k, remaining: 3 }, retry: 'allowed' })
+  })
+
+  test('the allowance is exact at half the lead: a reply and tick that leave exactly half the lead allow a retry, one millisecond more does not', () => {
+    const k = on(15000, 3, { remaining: 2 })
+    expect(refused(k, 15000, 'API error 429 (rate_limit)', 291500, 300000, 1000).retry).toBe('allowed')
+    expect(refused(k, 15000, 'API error 429 (rate_limit)', 291501, 300000, 1000).retry).toBe('none')
+  })
+
+  test('a refusal with less than half the lead left, or with no expiry to give, ends the run with its reason and the window\'s end', () => {
+    const k = on(15000, 3, { remaining: 2 })
+    expect(refused(k, 15000, 'API error 429 (rate_limit)', 292000, 300000, 1000)).toEqual({ state: { ...k, remaining: 3, stop: LIMIT }, retry: 'none' })
+    expect(refused(k, 15000, 'API error 429 (rate_limit)', 286500, null, 1000)).toEqual({ state: { ...k, remaining: 3, stop: LIMIT }, retry: 'none' })
+    expect(refused(k, 15000, 'API error, no response (rate_limit)', 292000, 300000, 1000).state.stop).toBe(
+      "API error, no response (rate_limit), no retry left before the cache's expiry",
+    )
+  })
+
+  test('a ping line\'s retry field says whether a rate-limited refusal let a retry through or wrote the ending stop, and is null on every other line', () => {
+    const line = (retry: 'allowed' | 'none' | null) =>
+      pingLine({ decidedMs: 0, seq: 1, generation: 1, leadMs: 15000, ttlMs: 300000, roundTripMs: 1500, usage: null, outcome: 'API error 429 (rate_limit)', stale: false, retry })
+    expect(line('allowed').retry).toBe('allowed')
+    expect(line('none').retry).toBe('none')
+    expect(line(null).retry).toBeNull()
+  })
+})
+
 describe('the debug lines and the tallies', () => {
   test('a ping line carries time, lead, TTL, generation, round trip, usage, and outcome', () => {
     const r = pingLine({
@@ -603,6 +649,7 @@ describe('the debug lines and the tallies', () => {
       usage: { ...zero, input_tokens: 8, output_tokens: 18, cache_read_input_tokens: 14361, cache_creation_input_tokens: 18523 },
       outcome: 'answered',
       stale: false,
+      retry: null,
     })
     expect(r).toEqual({
       time: '2026-10-18T10:00:00.000Z',
@@ -614,11 +661,12 @@ describe('the debug lines and the tallies', () => {
       usage: { read: 14361, write: 18523, input: 8, output: 18 },
       outcome: 'answered',
       stale: false,
+      retry: null,
     })
   })
 
   test('a ping with no usage logs null usage, and a stale one is marked', () => {
-    const r = pingLine({ decidedMs: 0, seq: 1, generation: 1, leadMs: 1000, ttlMs: 300000, roundTripMs: 5, usage: null, outcome: 'aborted', stale: true })
+    const r = pingLine({ decidedMs: 0, seq: 1, generation: 1, leadMs: 1000, ttlMs: 300000, roundTripMs: 5, usage: null, outcome: 'aborted', stale: true, retry: null })
     expect(r.usage).toBeNull()
     expect(r.stale).toBe(true)
   })

@@ -24,7 +24,7 @@ const PRICING_PAGE = [
 
 // The engine's answers beneath the plugin: the transcript (its text read from `doc`, so a test can grow it), the status
 // line, the debug log, and each host read the reader makes. `runs` counts the reads.
-const world = (on: any, doc: { text: string; broken?: boolean; exists?: boolean; hold?: Promise<void>; deny?: string; pricing?: string; pricingStatus?: number; pricingHold?: Promise<void>; fork?: unknown; forkHold?: Promise<void>; switchHold?: Promise<void>; compactHold?: Promise<void>; forkThrows?: boolean; dropPrompt?: boolean; promptThrows?: boolean; store?: Record<string, unknown>; auditor?: boolean; markdown?: boolean; engineNode?: boolean; openThrows?: boolean; openUnplaced?: boolean; closeKeeps?: boolean; closeThrows?: boolean; panesThrow?: boolean; listUnplaced?: boolean; keysThrows?: boolean; keysHold?: Promise<void>; getHold?: { key: string; hold: Promise<void>; nth?: number }; getHeldDenied?: { key: string; hold: Promise<void>; deny: string }; setHold?: { key: string; hold: Promise<void> }; getDenied?: Set<string>; setDenied?: Set<string>; deleteDenied?: Set<string>; getGate?: (key: string, nth: number) => Promise<string | undefined> | undefined }) => {
+const world = (on: any, doc: { text: string; broken?: boolean; exists?: boolean; hold?: Promise<void>; deny?: string; pricing?: string; pricingStatus?: number; pricingHold?: Promise<void>; fork?: unknown; forkSends?: { reply: unknown; delayMs: number }[]; clock?: { sleep: (ms: number) => Promise<void> }; forkHold?: Promise<void>; switchHold?: Promise<void>; compactHold?: Promise<void>; forkThrows?: boolean; dropPrompt?: boolean; promptThrows?: boolean; store?: Record<string, unknown>; auditor?: boolean; markdown?: boolean; engineNode?: boolean; openThrows?: boolean; openUnplaced?: boolean; closeKeeps?: boolean; closeThrows?: boolean; panesThrow?: boolean; listUnplaced?: boolean; keysThrows?: boolean; keysHold?: Promise<void>; getHold?: { key: string; hold: Promise<void>; nth?: number }; getHeldDenied?: { key: string; hold: Promise<void>; deny: string }; setHold?: { key: string; hold: Promise<void> }; getDenied?: Set<string>; setDenied?: Set<string>; deleteDenied?: Set<string>; getGate?: (key: string, nth: number) => Promise<string | undefined> | undefined }) => {
   const rec = {
     status: [] as (string | undefined)[],
     logs: [] as string[],
@@ -166,11 +166,17 @@ const world = (on: any, doc: { text: string; broken?: boolean; exists?: boolean;
     if (doc.hold !== undefined) await doc.hold
     return { value: fakeFiles(doc.text).run(e.argv) }
   })
-  // A keepalive ping's fork: what the test set as `doc.fork`, else nothing to fork.
+  // A keepalive ping's fork: the next reply the test queues in `forkSends`, which comes its own delay after the send on the test's clock
+  // (the engine refuses a test hook's own `$.clock` wait); else what the test set as `doc.fork`, else nothing to fork.
   on('model.fork', async (_$: any, e: any) => {
     rec.forks.push(e.prompt)
     if (doc.forkHold !== undefined) await doc.forkHold
     if (doc.forkThrows === true) throw new Error('fork broke')
+    const send = doc.forkSends?.shift()
+    if (send !== undefined) {
+      await doc.clock?.sleep(send.delayMs)
+      return { value: send.reply }
+    }
     return { value: doc.fork ?? { isAnswered: false, reason: 'nothing-to-fork' } }
   })
   on('ui.status', (_$: any, e: any) => {
@@ -1500,6 +1506,204 @@ describe('keepalive', () => {
     expect(rec.forks).toEqual([])
     expect(await toggle($, '')).toContain('Keepalive  off')
     expect(await hint($)).toBe('')
+  })
+})
+
+// A refusal the engine reports as a rate limit: the status it carries (null for no response) and the kind it classifies it with.
+const LIMITED = (status: number | null = 429) => ({ isAnswered: false, reason: 'api-error', status, error: 'rate_limit', usage: ZERO })
+// The last value each state key was written with, read by key: the count left, the stop, the lead and the touch.
+const watchState = (on: any) => {
+  const written = new Map<string, unknown>()
+  on('state.set', async (_$: any, e: any, next: any) => {
+    const result = await next(e)
+    written.set(e.key, e.value === undefined ? undefined : JSON.parse(JSON.stringify(e.value)))
+    return result
+  })
+  return (key: string): any => written.get(key)
+}
+// A keepalive run on the cache the main thread's request wrote at T0 (expiry 5 min on), turned on by `command`, whose sends get the queued
+// replies in turn, each after its own delay from the send.
+const armedRun = async ($: any, on: any, command: string, sends: { reply: unknown; delayMs: number }[]) => {
+  const doc: any = cached()
+  doc.forkSends = sends
+  const rec = kaWorld(on, doc)
+  const clock = mock.clock(on, { now: T0 })
+  doc.clock = clock
+  const state = watchState(on)
+  await $.classic.SessionStart({ source: 'startup', transcript_path: PATH })
+  await clock.settle()
+  await toggle($, command)
+  await mainStep($)
+  await turnEnd($)
+  return { rec, clock, state }
+}
+
+// Keepalive's refresh is due at the expiry less the lead: at T0 + 285 s for the 15 s lead of these tests, sent on the tick at that moment.
+describe('keepalive: a refresh refused as a rate limit is retried until shortly before the cache expires', () => {
+  test('the retry goes at the first tick after the refusal\'s reply; the refusal writes no stop; an answered retry moves the touch and leaves the count one less', async ($, on) => {
+    const { rec, clock, state } = await armedRun($, on, 'on 15 2', [{ reply: LIMITED(), delayMs: 1500 }, { reply: ANSWERED, delayMs: 1500 }])
+    await clock.advance(285000)
+    expect(rec.forks.length).toBe(1)
+    await clock.advance(1000)
+    expect(rec.forks.length).toBe(1)
+    await clock.advance(500)
+    // At the reply (286.5 s) the count is given back, no stop is written, and the status line is still empty.
+    expect(state('keepalive')).toMatchObject({ remaining: 2, stop: null })
+    expect(lastStatus(rec)).toBeUndefined()
+    await clock.advance(500)
+    expect(rec.forks.length).toBe(2)
+    await clock.advance(2000)
+    expect(lastStatus(rec)).toBeUndefined()
+    expect(state('touch')).toBe(T0 + 287000)
+    expect(state('keepalive')).toMatchObject({ remaining: 1, stop: null })
+    expect(await toggle($, '')).toContain('next refresh in 4:43, 1 left')
+    expect(debugOf(rec, 'cachier ping').map((l) => l.retry)).toEqual(['allowed', null])
+    // The next refresh is due at the expiry from the new touch less the lead (572 s), and none is sent before it.
+    await clock.advance(282000)
+    expect(rec.forks.length).toBe(2)
+    await clock.advance(1000)
+    expect(rec.forks.length).toBe(3)
+  })
+
+  test('with every attempt refused, the run ends at the window\'s close with its stop, its count given back, and no send later than half the lead before the expiry', async ($, on) => {
+    const { rec, clock, state } = await armedRun($, on, 'on 15 2', [1, 2, 3, 4].map(() => ({ reply: LIMITED(), delayMs: 1500 })))
+    await clock.advance(300000)
+    expect(rec.forks.length).toBe(4)
+    const sent = debugOf(rec, 'cachier ping')
+    expect(sent.map((l) => l.retry)).toEqual(['allowed', 'allowed', 'allowed', 'none'])
+    // The first refresh at 285 s, then three retries 2 s apart; the last send is no later than the 292.5 s that is half the lead before the expiry.
+    expect(sent.map((l) => Date.parse(l.time) - T0)).toEqual([285000, 287000, 289000, 291000])
+    expect(Math.max(...sent.map((l) => Date.parse(l.time)))).toBeLessThanOrEqual(T0 + 292500)
+    expect(state('keepalive')).toMatchObject({ remaining: 2, stop: "API error 429 (rate_limit), no retry left before the cache's expiry" })
+    expect(lastStatus(rec)).toContain("keepalive stopped: API error 429 (rate_limit), no retry left before the cache's expiry")
+    const text = await toggle($, '')
+    expect(text).toContain('Keepalive  stopped')
+    expect(text).toContain("API error 429 (rate_limit), no retry left before the cache's expiry; your next prompt restarts it")
+    expect(text).toContain('This pause: 4 refreshes costing')
+    expect(text).toContain('This session: 4 refreshes costing')
+  })
+
+  test('at a 60 s lead the same refusals are retried 14 times, and the fifteenth ends the run', async ($, on) => {
+    const { rec, clock } = await armedRun($, on, 'on 60 2', Array.from({ length: 15 }, () => ({ reply: LIMITED(), delayMs: 1500 })))
+    await clock.advance(300000)
+    expect(rec.forks.length).toBe(15)
+    const sent = debugOf(rec, 'cachier ping')
+    expect(sent.filter((l) => l.retry === 'allowed').length).toBe(14)
+    expect(sent.at(-1).retry).toBe('none')
+    expect(lastStatus(rec)).toContain("keepalive stopped: API error 429 (rate_limit), no retry left before the cache's expiry")
+  })
+
+  test('a refusal with no response is retried as one with status 429', async ($, on) => {
+    const { rec, clock, state } = await armedRun($, on, 'on 15 2', [{ reply: LIMITED(null), delayMs: 1500 }, { reply: ANSWERED, delayMs: 1500 }])
+    await clock.advance(290000)
+    expect(rec.forks.length).toBe(2)
+    expect(state('keepalive')).toMatchObject({ stop: null })
+    expect(lastStatus(rec)).toBeUndefined()
+  })
+
+  test('a refusal with no response and no retry left stops with that reason, with no response named', async ($, on) => {
+    const { rec, clock, state } = await armedRun($, on, 'on 15 2', [{ reply: LIMITED(null), delayMs: 8000 }])
+    // The reply lands at 293 s, 8 s after the send; the stop is written then, with the count given back.
+    await clock.advance(293000)
+    expect(state('keepalive')).toMatchObject({ remaining: 2, stop: "API error, no response (rate_limit), no retry left before the cache's expiry" })
+    expect(await toggle($, '')).toContain('Keepalive  stopped')
+    await clock.advance(7000)
+    expect(rec.forks.length).toBe(1)
+    expect(lastStatus(rec)).toContain("keepalive stopped: API error, no response (rate_limit), no retry left before the cache's expiry")
+  })
+
+  test('a refusal does not raise the lead, whatever its round trip: one past half the TTL ends the run with its own stop', async ($, on) => {
+    const { rec, clock, state } = await armedRun($, on, 'on 15 2', [{ reply: LIMITED(), delayMs: 160000 }])
+    await clock.advance(450000)
+    expect(rec.forks.length).toBe(1)
+    expect(state('keepalive')).toMatchObject({ config: { leadMs: 15000, count: 2 }, stop: "API error 429 (rate_limit), no retry left before the cache's expiry" })
+    expect(debugOf(rec, 'cachier lead')).toEqual([])
+    expect(debugOf(rec, 'cachier ping')[0].retry).toBe('none')
+  })
+
+  test('a refusal leaves the last refresh\'s read and the count where they were', async ($, on) => {
+    const { rec, clock, state } = await armedRun($, on, 'on 15 3', [{ reply: ANSWERED, delayMs: 1500 }, { reply: LIMITED(), delayMs: 1500 }])
+    await clock.advance(286500)
+    expect(state('keepalive')).toMatchObject({ remaining: 2, last: { read: 18551, write: 0 } })
+    // The next refresh is due at 570 s: the expiry from the answered refresh's touch at 285 s, less the lead.
+    await clock.advance(283500)
+    expect(rec.forks.length).toBe(2)
+    await clock.advance(1500)
+    expect(state('keepalive')).toMatchObject({ remaining: 2, stop: null, last: { read: 18551, write: 0 } })
+    expect(await toggle($, '')).toContain('last refresh read 18551, wrote 0')
+  })
+
+  test('with the last count pinned, between attempts the heading reads on, refreshing', async ($, on) => {
+    const { rec, clock } = await armedRun($, on, 'on 15 1', [{ reply: LIMITED(), delayMs: 1500 }, { reply: ANSWERED, delayMs: 1500 }])
+    await clock.advance(286500)
+    expect(rec.forks.length).toBe(1)
+    expect(await toggle($, '')).toContain('Keepalive  on, refreshing')
+  })
+
+  test('after a refusal that allowed a retry, /keepalive off sends no fork', async ($, on) => {
+    const { rec, clock, state } = await armedRun($, on, 'on 15 2', [{ reply: LIMITED(), delayMs: 1500 }])
+    await clock.advance(286500)
+    expect(state('keepalive')).toMatchObject({ stop: null, remaining: 2 })
+    await toggle($, 'off')
+    await clock.advance(10000)
+    expect(rec.forks.length).toBe(1)
+  })
+
+  test('after a refusal that allowed a retry, a session start other than a compaction sends no fork', async ($, on) => {
+    const { rec, clock, state } = await armedRun($, on, 'on 15 2', [{ reply: LIMITED(), delayMs: 1500 }])
+    await clock.advance(286500)
+    expect(state('keepalive')).toMatchObject({ stop: null, remaining: 2 })
+    await $.classic.SessionStart({ source: 'resume', transcript_path: PATH })
+    await clock.advance(10000)
+    expect(rec.forks.length).toBe(1)
+  })
+
+  test('after a refusal that allowed a retry, a compaction sends no fork', async ($, on) => {
+    const { rec, clock, state } = await armedRun($, on, 'on 15 2', [{ reply: LIMITED(), delayMs: 1500 }])
+    await clock.advance(286500)
+    expect(state('keepalive')).toMatchObject({ stop: null, remaining: 2 })
+    await $.classic.PostCompact({ trigger: 'manual', compact_summary: 's' } as any)
+    await clock.advance(10000)
+    expect(rec.forks.length).toBe(1)
+  })
+
+  test('a user prompt and its turn send no retry: the run waits for its own schedule from the turn\'s touch', async ($, on) => {
+    const { rec, clock, state } = await armedRun($, on, 'on 15 2', [{ reply: LIMITED(), delayMs: 1500 }])
+    await clock.advance(286500)
+    expect(state('keepalive')).toMatchObject({ stop: null, remaining: 2 })
+    await userPrompt($)
+    await mainStep($)
+    await turnEnd($)
+    await clock.advance(4000)
+    expect(rec.forks.length).toBe(1)
+    // The turn's request touched the cache at 286.5 s, so the next refresh is due at 571.5 s.
+    await clock.advance(280500)
+    expect(rec.forks.length).toBe(1)
+    await clock.advance(1000)
+    expect(rec.forks.length).toBe(2)
+  })
+
+  test('a refusal whose reply comes after a user prompt moved the generation gives no count back, writes no stop and leaves the state as it was', async ($, on) => {
+    const { rec, clock, state } = await armedRun($, on, 'on 15 2', [{ reply: LIMITED(), delayMs: 3000 }])
+    await clock.advance(286000)
+    await userPrompt($)
+    await mainStep($)
+    await turnEnd($)
+    const before = JSON.stringify(state('keepalive'))
+    await clock.advance(2000)
+    expect(JSON.stringify(state('keepalive'))).toBe(before)
+    expect(rec.forks.length).toBe(1)
+    expect(debugOf(rec, 'cachier ping')).toMatchObject([{ stale: true, retry: null }])
+  })
+
+  test('a refusal of any other kind stops keepalive at once, whatever its status', async ($, on) => {
+    const reply = { isAnswered: false, reason: 'api-error', status: null, error: 'server_error', usage: ZERO }
+    const { rec, clock, state } = await armedRun($, on, 'on 15 2', [{ reply, delayMs: 1500 }])
+    await clock.advance(286500)
+    expect(state('keepalive')).toMatchObject({ stop: 'API error, no response (server_error)' })
+    await clock.advance(20000)
+    expect(rec.forks.length).toBe(1)
+    expect(lastStatus(rec)).toContain('keepalive stopped: API error, no response (server_error)')
   })
 })
 

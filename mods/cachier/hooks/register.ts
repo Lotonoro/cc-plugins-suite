@@ -1,7 +1,7 @@
 import type { EngineInterface, Register, RenderElement } from 'claude-code'
 import type { ModelForkResult, ModelUsage } from 'claude-code'
 import type { CacheView, ColdMark, HintCost, HintState, Judged, KeepaliveState, PriceCue, Spend, StatsState, TallyState, Unit } from '../types'
-import { expiredAt, pieOf, readingOf, rebuildDrawnOf, settleCold, touchedAt, warmthOf } from './countdown'
+import { expiredAt, expiryOf, pieOf, readingOf, rebuildDrawnOf, settleCold, touchedAt, warmthOf } from './countdown'
 import {
   coldBegun,
   coldLanded,
@@ -30,7 +30,9 @@ import {
   raisedLeadOf,
   rearm,
   outcomeOf,
+  refused,
   restored,
+  retriedOf,
   reset,
   restartPause,
   step,
@@ -46,6 +48,7 @@ import {
   type Figure,
   type Mode,
   type Pair,
+  type Retry,
 } from './keepalive'
 import { singleFlight } from './guard'
 import { footerLine, paneOf, paneSizeOf } from './hint'
@@ -635,22 +638,32 @@ const endOf = ($: Dollar, p: Ping, ended: Ended): { outcome: string; usage: Mode
 
 // A ping's end. The state changes only while its generation is current, and never for a `late` reply, which came after the TTL
 // lapsed and so changes nothing. A reply slower than half the lead raises the lead to twice its round trip, unless that lead
-// would exceed half the TTL: then keepalive stops. Every fork is logged and counted, stale ones included.
+// would exceed half the TTL: then keepalive stops. A rate-limited refusal is decided by `refused` instead: it raises no lead, and
+// stops keepalive only when no retry fits. Every fork is logged and counted, stale ones included.
 const applyPing = async ($: Dollar, p: Ping, ended: Ended, late: boolean): Promise<void> => {
   const { outcome, usage, stop: outcomeStop } = endOf($, p, ended)
-  const roundTripMs = (await $.clock.now()) - p.decidedMs
-  let decided: { stop: string | null; raisedMs: number | null; fromMs: number } = { stop: null, raisedMs: null, fromMs: p.leadMs }
+  const nowMs = await $.clock.now()
+  const roundTripMs = nowMs - p.decidedMs
+  // The expiry the state reads now, before the guarded change: that change is synchronous, so it cannot read the state itself.
+  const retried = ended.kind === 'reply' && retriedOf(ended.reply)
+  const expiryMs = retried ? expiryOf(p.view, (await $.state.get(TOUCH)).value ?? null) : null
+  let decided: { raisedMs: number | null; fromMs: number; retry: Retry | null } = { raisedMs: null, fromMs: p.leadMs, retry: null }
   const servedFromCache = outcomeStop === null
   const applied = late
     ? false
     : await editKeepalive($, (cur) => {
         if (cur.generation !== p.generation || cur.config === null) return undefined
+        if (retried) {
+          const refusal = refused(cur, cur.config.leadMs, outcome, nowMs, expiryMs, TICK_MS)
+          decided = { raisedMs: null, fromMs: cur.config.leadMs, retry: refusal.retry }
+          return refusal.state
+        }
         const raised = raisedLeadOf(cur.config.leadMs, roundTripMs)
         const isRaise = raised > cur.config.leadMs
         const past = isRaise && pastHalfTtl(raised, p.ttlMs)
         const raisedMs = isRaise && !past ? raised : null
         const stop = outcomeStop ?? (past ? pastHalfTtlStop(roundTripMs, raised, p.ttlMs) : null)
-        decided = { stop, raisedMs, fromMs: cur.config.leadMs }
+        decided = { raisedMs, fromMs: cur.config.leadMs, retry: null }
         return {
           ...cur,
           config: raisedMs === null ? cur.config : { ...cur.config, leadMs: raisedMs },
@@ -689,6 +702,7 @@ const applyPing = async ($: Dollar, p: Ping, ended: Ended, late: boolean): Promi
       usage,
       outcome,
       stale: !applied,
+      retry: applied ? decided.retry : null,
     }),
   )
 }

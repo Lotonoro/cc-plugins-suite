@@ -90,9 +90,12 @@ a short terminal the lower sections are scrolled to with the wheel.
   (see [How many refreshes](#how-many-refreshes)). Then keepalive is paused until your next prompt. It is paused too if
   you turn it on after the cache has expired. A message from another session or a finished background task doesn't
   resume it.
-- A refresh that fails stops keepalive, and the Keepalive heading reads `stopped` and the first line beneath it says what broke in one clause, such as
-  `API error 529 (overloaded); your next prompt restarts it`.
-- The lead (how long before expiry a refresh is sent) starts at 15 s. A refresh slower than half the lead raises it to
+- A refresh that fails stops keepalive, except a rate limit, which is retried: at most once a second (one attempt per round trip,
+  rounded up to a tick) until shortly before the cache would expire, none being let through in the last half of the lead. The
+  Keepalive heading reads `stopped` and the first line beneath it says what broke in one clause, such as
+  `API error 529 (overloaded); your next prompt restarts it`, or, once no retry is left, `API error 429 (rate_limit), no retry
+  left before the cache's expiry; your next prompt restarts it`.
+- The lead (how long before expiry a refresh is sent) starts at 15 s. An answered refresh slower than half the lead raises it to
   twice that round trip for the session. It is never lowered, and keepalive stops instead of raising it past half the
   TTL.
 
