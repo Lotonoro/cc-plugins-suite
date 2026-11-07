@@ -20,11 +20,13 @@ lifetime is left, and next to it the time left, or a word where there is no time
 - The pie's shape is the time left in quarters of the cache's lifetime, rounded up: `●` above three quarters, then `◕`,
   `◑`, `◔`, and `○` once the cache is gone. The lifetime is 5 minutes or 1 hour, as the transcript records it: on a subscription the
   main conversation defaults to 1 hour and on an API key to 5 minutes, and the `promptCacheTtl` setting changes it.
-- The pie's colour: green while keepalive refreshes, and with keepalive on and nothing to count. While keepalive has a recorded
+- The pie's colour: green while keepalive refreshes, and only with keepalive on and no recorded stop, nothing to count or a cache reset
+  after a model switch or compaction. While keepalive has a recorded
   stop (its refreshes used up, the cache expired, or a failure), the pie beside `reset` or `no count` is red until your next
   prompt; a pending cold mark alone leaves it green. Otherwise (keepalive off, or on but paused or spent) it is the normal text
   colour, then amber in the cache's last quarter, and red in its last tenth (1:15 and 0:30 on a 5-minute cache, 15 and 6
-  minutes on an hour's). An expired cache is red with keepalive on and dim with it off.
+  minutes on an hour's). An expired cache is red with keepalive on and dim with it off, and a cache reset after a model switch or
+  compaction is dim with it off.
 - The price cue: after the words (not after a footer that is not drawn), `⟳` (dim) shows while this session reads Anthropic's pricing
   page, whoever started the read (the weekly schedule, a switch to dollars). When the read lands a `✓` takes its place, and when it
   fails an amber `!` does, each for about 3 seconds; then the footer is as before. Only the session that ran the read shows it, a
@@ -39,8 +41,9 @@ lifetime is left, and next to it the time left, or a word where there is no time
   refresh (a lead at or above the TTL, or a learned count of 0), a warm cache shows the rebuild price alone, as
   `if cold ~$0.21 rebuild`
   and keepalive on shows nothing there.
-- Hovering the pie shows keepalive's state in a popup just above it: `cache keepalive is on`, `cache keepalive is paused`
-  (on, but sending no more), or `cache keepalive is off`. It moves nothing on the line either.
+- Hovering the pie shows what its colour stands for, in a popup just above it: `cache keepalive is on` on the green pie,
+  `cache keepalive is paused` on a pie that is not green while keepalive is on (normal, amber or red), or `cache keepalive is off`
+  with keepalive off, in any colour. It moves nothing on the line either.
 - On the phone cachier draws no mod UI, so the footer and the pane don't show there. Keepalive keeps running on the Mac.
 
 ## The details pane

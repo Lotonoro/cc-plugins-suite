@@ -93,15 +93,24 @@ export const refreshingOf = (on: boolean, reading: Reading | null, refresh: stri
 // What the pie's colours warn of where no refresh is coming, worded in the Keepalive section while the pie is amber or red.
 export const COLOUR_SENTENCE = "The pie turns amber in the cache's last quarter and red in its last tenth: the cache is about to lapse."
 
+// The keepalive state the pie's hover names: off with keepalive off, else on for the green tone and paused for any other.
+export type PieState = 'on' | 'paused' | 'off'
+// The state with keepalive on, by tone. Read only once off is decided from `on`, and typed over every Tone, so a tone added later is a decision here.
+const STATE_OF_TONE: Record<Tone, 'on' | 'paused'> = { on: 'on', quiet: 'paused', warning: 'paused', alarm: 'paused', gone: 'paused' }
+
 // The pie's whole judgement from its inputs: the reading, whether keepalive is on, the label of the refresh figure (null when none holds),
-// and whether a recorded stop stands. `footer` is what the pie draws, tone included, null exactly where `footerOf` gives none. `colour` is
-// the sentence wording where no refresh is coming: not refreshing, and either keepalive is off or a reading is held, whatever the pie's
-// tone. So it is absent only while keepalive refreshes, and with keepalive on and nothing to count.
-export type Pie = { footer: Footer | null; colour: string | null }
+// and whether a recorded stop stands. `footer` is what the pie draws, tone included, null exactly where `footerOf` gives none, and `state` is
+// the keepalive state its hover names, null exactly then. `colour` is the sentence wording where no refresh is coming: not refreshing, and
+// either keepalive is off or a reading is held, whatever the pie's tone. So it is absent only while keepalive refreshes, and with keepalive
+// on and nothing to count.
+export type Pie = { footer: null; state: null; colour: string | null } | { footer: Footer; state: PieState; colour: string | null }
 export const pieOf = (reading: Reading | null, on: boolean, refresh: string | null, stopped: boolean): Pie => {
   const refreshing = refreshingOf(on, reading, refresh)
   const warns = !refreshing && (!on || reading !== null)
-  return { footer: footerOf(reading, on, refreshing, stopped), colour: warns ? COLOUR_SENTENCE : null }
+  const colour = warns ? COLOUR_SENTENCE : null
+  const footer = footerOf(reading, on, refreshing, stopped)
+  if (footer === null) return { footer, state: null, colour }
+  return { footer, state: on ? STATE_OF_TONE[footer.tone] : 'off', colour }
 }
 
 // Whether the warmth line draws the rebuild figure: a reading that is not warm, with a figure to draw. The bare command gives the figure's

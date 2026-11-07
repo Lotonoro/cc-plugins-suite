@@ -1,6 +1,6 @@
 import type { ButtonProps, BoxProps, ElementConstructor, RenderElement, TextProps } from 'claude-code'
 import type { HintState, PriceCue } from '../types'
-import { cueOf, pieOf, refreshingOf, type CueMark, type Tone } from './countdown'
+import { cueOf, pieOf, type CueMark, type PieState, type Tone } from './countdown'
 import type { PaneSize } from './pane'
 import type { AnswerRow } from './sections'
 
@@ -29,12 +29,8 @@ const CUE_PROPS: Record<CueMark['tone'], Partial<TextProps>> = {
   warning: { color: 'warning' },
 }
 
-// The pie's hover popup: keepalive's state. Off is off; on with a refresh coming, or with no cache yet, is on; on and sending no more is paused.
-export const pieHoverOf = (state: HintState | null, on: boolean): string => {
-  if (!on) return 'cache keepalive is off'
-  const refreshing = refreshingOf(on, state?.reading ?? null, state?.cost?.label ?? null)
-  return refreshing || state?.reading == null ? 'cache keepalive is on' : 'cache keepalive is paused'
-}
+// The pie's hover popup words, by the keepalive state `pieOf` judges from the pie's tone.
+const STATE_WORDS: Record<PieState, string> = { on: 'cache keepalive is on', paused: 'cache keepalive is paused', off: 'cache keepalive is off' }
 
 // A hover popup: dim text one row above its anchor, out of the flow, its right edge on the anchor's, shown only while the anchor is hovered.
 const popup = (t: Table, text: string): RenderElement =>
@@ -50,11 +46,13 @@ const popup = (t: Table, text: string): RenderElement =>
 
 // The footer line: the pie, which a click switches keepalive with, and beside it the time, the rebuild figure, `reset` or `no count`, which a click
 // opens the details with. After them, the price read's cue when one stands (`cue`): `⟳` while it runs, `✓` once it landed, an amber `!` once it
-// failed; none without a line. The refresh cost shows on hover, in a popup above the time, for reference at any time. `on` is whether keepalive is
-// on, and `stopped` whether a recorded stop stands, which the pie's tone reads (`footerOf`). Null when there is no line to show.
+// failed; none without a line. The refresh cost shows on hover, in a popup above the time, for reference at any time, and the pie's hover names its
+// keepalive state, as `pieOf` judges it. `on` is whether keepalive is on, and `stopped` whether a recorded stop stands, which the pie's tone reads
+// (`footerOf`). Null when there is no line to show.
 export const footerLine = (t: Table, state: HintState | null, on: boolean, onToggle: () => void, onDetails: () => void, cue: PriceCue | null = null, stopped = false): RenderElement | null => {
-  const { footer } = pieOf(state?.reading ?? null, on, state?.cost?.label ?? null, stopped)
-  if (footer === null) return null
+  const judged = pieOf(state?.reading ?? null, on, state?.cost?.label ?? null, stopped)
+  if (judged.footer === null) return null
+  const { footer } = judged
   const pie = t.Button({
     key: 'pie',
     plain: true,
@@ -62,7 +60,7 @@ export const footerLine = (t: Table, state: HintState | null, on: boolean, onTog
     children: [t.Text({ ...TONE_PROPS[footer.tone], children: [GLYPHS[footer.quarter]] })],
   })
   // The pie's box is its popup's anchor.
-  const pieBox = t.Box({ key: 'pie-box', flexDirection: 'row', children: [pie, popup(t, pieHoverOf(state, on))] })
+  const pieBox = t.Box({ key: 'pie-box', flexDirection: 'row', children: [pie, popup(t, STATE_WORDS[judged.state])] })
   const cost = state?.cost ?? state?.offer ?? null
   const time = t.Box({
     key: 'time',

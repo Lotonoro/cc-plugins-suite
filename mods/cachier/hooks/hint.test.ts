@@ -225,6 +225,37 @@ describe('footerLine: a recorded stop standing with keepalive on draws the pie r
   })
 })
 
+describe('footerLine: the pie\'s hover names the keepalive state its colour stands for', () => {
+  const COLD_READING: Reading = { words: '', state: 'cold', quarter: 0, warn: 'calm' }
+  const EXPIRED: Reading = { words: '~$0.42 to rebuild', state: 'expired', quarter: 0, warn: 'calm' }
+  const QUARTER: Reading = { words: '1:00', state: 'warm', quarter: 1, warn: 'quarter' }
+  const TENTH: Reading = { words: '0:20', state: 'warm', quarter: 1, warn: 'tenth' }
+  // The word the pie's hover reads, on a line that draws a pie.
+  const hoverOf = (line: any): string => pieBoxOf(line).children[1].children[0].children[0]
+
+  test('a green pie reads on: a warm cache keepalive refreshes, and a cold cache or nothing to count does with keepalive on and no stop', () => {
+    expect(hoverOf(footerLine(t, state({ cost: COST }), true, noop, noop))).toBe('cache keepalive is on')
+    expect(hoverOf(footerLine(t, state({ reading: COLD_READING }), true, noop, noop))).toBe('cache keepalive is on')
+    expect(hoverOf(footerLine(t, state({ reading: null }), true, noop, noop))).toBe('cache keepalive is on')
+  })
+
+  test('a red pie reads paused: an expired cache with keepalive on, and a recorded stop over nothing to count or a cold cache', () => {
+    expect(hoverOf(footerLine(t, state({ reading: EXPIRED }), true, noop, noop))).toBe('cache keepalive is paused')
+    expect(hoverOf(footerLine(t, state({ reading: null }), true, noop, noop, null, true))).toBe('cache keepalive is paused')
+    expect(hoverOf(footerLine(t, state({ reading: COLD_READING }), true, noop, noop, null, true))).toBe('cache keepalive is paused')
+  })
+
+  test('with keepalive on and no refresh coming, the pie in its normal colour, amber or red reads paused', () => {
+    for (const reading of [WARM, QUARTER, TENTH]) expect(hoverOf(footerLine(t, state({ reading }), true, noop, noop))).toBe('cache keepalive is paused')
+  })
+
+  test('with keepalive off, the pie in its normal colour, amber, red or dim reads off, with or without a refresh figure', () => {
+    for (const reading of [WARM, QUARTER, TENTH, EXPIRED, COLD_READING]) {
+      for (const cost of [null, COST]) expect(hoverOf(footerLine(t, state({ reading, cost }), false, noop, noop))).toBe('cache keepalive is off')
+    }
+  })
+})
+
 const SNAPSHOT: Snapshot = {
   cache: ['Prompt cache warm, 3:12 left (5-minute cache)'],
   keepalive: { state: 'off', lines: ['The pie turns amber in the cache\'s last quarter and red in its last tenth: the cache is about to lapse.'] },

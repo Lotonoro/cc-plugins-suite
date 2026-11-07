@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'claude-code/testing'
-import { COLOUR_SENTENCE, clockOf, cueOf, expiredAt, expiryOf, footerOf, pieOf, readingOf, refreshingOf, settleCold, touchedAt, touchOf, warmthOf, type Tone } from './countdown'
+import { COLOUR_SENTENCE, clockOf, cueOf, expiredAt, expiryOf, footerOf, pieOf, readingOf, refreshingOf, settleCold, touchedAt, touchOf, warmthOf, type PieState, type Tone } from './countdown'
 
 const T = 1_000_000
 const known = { kind: 'known' as const, touchMs: T, ttlMs: 300000, ttlLabel: '5m' as const, promptTokens: 1, outputTokens: 0, model: null, speed: null }
@@ -205,9 +205,9 @@ describe('the reading and a live request start', () => {
 })
 
 // The pie's whole judgement from its three inputs. Each reading is taken through readingOf from a view, a touch, a clock and a cold mark, so
-// the quarter and tenth boundaries are readingOf's own. The expected tone and whether the sentence shows are literals, not derived from
+// the quarter and tenth boundaries are readingOf's own. The expected tone, state and whether the sentence shows are literals, not derived from
 // footerOf or from the entry. Each case lists, in order: keepalive off with no refresh figure, off with a figure, on with none, on with one.
-describe('pieOf: the pie\'s tone and the colour sentence, from the reading, keepalive, and the refresh figure', () => {
+describe('pieOf: the pie\'s tone, its keepalive state and the colour sentence, from the reading, keepalive, and the refresh figure', () => {
   const FIGURE = '$0.004/refresh'
   const COMBOS = [
     { on: false, refresh: null },
@@ -215,24 +215,24 @@ describe('pieOf: the pie\'s tone and the colour sentence, from the reading, keep
     { on: true, refresh: null },
     { on: true, refresh: FIGURE },
   ]
-  type Expected = [tone: Tone | null, sentence: boolean]
+  type Expected = [tone: Tone | null, state: PieState | null, sentence: boolean]
   const cases: { name: string; reading: ReturnType<typeof readingOf>; expected: [Expected, Expected, Expected, Expected] }[] = [
-    { name: 'no cache', reading: readingOf({ kind: 'no-cache' }, null, null, T, UPON), expected: [[null, true], [null, true], ['on', false], ['on', false]] },
-    { name: 'cold', reading: readingOf(known, null, COLD, T + 1000, UPON), expected: [['gone', true], ['gone', true], ['on', true], ['on', true]] },
-    { name: 'expired', reading: readingOf(known, null, null, T + 300000, UPON), expected: [['gone', true], ['gone', true], ['alarm', true], ['alarm', true]] },
-    { name: 'warm, calm', reading: readingOf(known, null, null, T + 100000, UPON), expected: [['quiet', true], ['quiet', true], ['quiet', true], ['on', false]] },
-    { name: 'warm, just above a quarter left', reading: readingOf(known, null, null, T + 224999, UPON), expected: [['quiet', true], ['quiet', true], ['quiet', true], ['on', false]] },
-    { name: 'warm, exactly a quarter left', reading: readingOf(known, null, null, T + 225000, UPON), expected: [['warning', true], ['warning', true], ['warning', true], ['on', false]] },
-    { name: 'warm, inside the last quarter', reading: readingOf(known, null, null, T + 250000, UPON), expected: [['warning', true], ['warning', true], ['warning', true], ['on', false]] },
-    { name: 'warm, just above a tenth left', reading: readingOf(known, null, null, T + 269999, UPON), expected: [['warning', true], ['warning', true], ['warning', true], ['on', false]] },
-    { name: 'warm, exactly a tenth left', reading: readingOf(known, null, null, T + 270000, UPON), expected: [['alarm', true], ['alarm', true], ['alarm', true], ['on', false]] },
-    { name: 'warm, inside the last tenth', reading: readingOf(known, null, null, T + 290000, UPON), expected: [['alarm', true], ['alarm', true], ['alarm', true], ['on', false]] },
+    { name: 'no cache', reading: readingOf({ kind: 'no-cache' }, null, null, T, UPON), expected: [[null, null, true], [null, null, true], ['on', 'on', false], ['on', 'on', false]] },
+    { name: 'cold', reading: readingOf(known, null, COLD, T + 1000, UPON), expected: [['gone', 'off', true], ['gone', 'off', true], ['on', 'on', true], ['on', 'on', true]] },
+    { name: 'expired', reading: readingOf(known, null, null, T + 300000, UPON), expected: [['gone', 'off', true], ['gone', 'off', true], ['alarm', 'paused', true], ['alarm', 'paused', true]] },
+    { name: 'warm, calm', reading: readingOf(known, null, null, T + 100000, UPON), expected: [['quiet', 'off', true], ['quiet', 'off', true], ['quiet', 'paused', true], ['on', 'on', false]] },
+    { name: 'warm, just above a quarter left', reading: readingOf(known, null, null, T + 224999, UPON), expected: [['quiet', 'off', true], ['quiet', 'off', true], ['quiet', 'paused', true], ['on', 'on', false]] },
+    { name: 'warm, exactly a quarter left', reading: readingOf(known, null, null, T + 225000, UPON), expected: [['warning', 'off', true], ['warning', 'off', true], ['warning', 'paused', true], ['on', 'on', false]] },
+    { name: 'warm, inside the last quarter', reading: readingOf(known, null, null, T + 250000, UPON), expected: [['warning', 'off', true], ['warning', 'off', true], ['warning', 'paused', true], ['on', 'on', false]] },
+    { name: 'warm, just above a tenth left', reading: readingOf(known, null, null, T + 269999, UPON), expected: [['warning', 'off', true], ['warning', 'off', true], ['warning', 'paused', true], ['on', 'on', false]] },
+    { name: 'warm, exactly a tenth left', reading: readingOf(known, null, null, T + 270000, UPON), expected: [['alarm', 'off', true], ['alarm', 'off', true], ['alarm', 'paused', true], ['on', 'on', false]] },
+    { name: 'warm, inside the last tenth', reading: readingOf(known, null, null, T + 290000, UPON), expected: [['alarm', 'off', true], ['alarm', 'off', true], ['alarm', 'paused', true], ['on', 'on', false]] },
   ]
   for (const { name, reading, expected } of cases) {
-    test(`${name}: the tone and the sentence for keepalive off and on, with and without a refresh figure`, () => {
+    test(`${name}: the tone, the state and the sentence for keepalive off and on, with and without a refresh figure`, () => {
       const drawn = COMBOS.map(({ on, refresh }) => {
         const pie = pieOf(reading, on, refresh, false)
-        return [pie.footer?.tone ?? null, pie.colour !== null]
+        return [pie.footer?.tone ?? null, pie.state, pie.colour !== null]
       })
       expect(drawn).toEqual(expected)
     })
@@ -242,11 +242,11 @@ describe('pieOf: the pie\'s tone and the colour sentence, from the reading, keep
     const quarter = readingOf(known, null, null, T + 250000, UPON)
     expect(pieOf(quarter, false, null, false).colour).toBe("The pie turns amber in the cache's last quarter and red in its last tenth: the cache is about to lapse.")
     expect(pieOf(quarter, true, FIGURE, false).footer).toEqual(footerOf(quarter, true, refreshingOf(true, quarter, FIGURE), false))
-    expect(pieOf(null, false, null, false)).toEqual({ footer: null, colour: COLOUR_SENTENCE })
+    expect(pieOf(null, false, null, false)).toEqual({ footer: null, state: null, colour: COLOUR_SENTENCE })
   })
 })
 
-describe('pieOf with a recorded stop standing: red beside reset or no count with keepalive on, and the colour sentence as it was', () => {
+describe('pieOf with a recorded stop standing: red beside reset or no count with keepalive on, and the state and colour sentence as it was', () => {
   const FIGURE = '$0.004/refresh'
   const COMBOS = [
     { on: false, refresh: null },
@@ -254,18 +254,18 @@ describe('pieOf with a recorded stop standing: red beside reset or no count with
     { on: true, refresh: null },
     { on: true, refresh: FIGURE },
   ]
-  type Expected = [tone: Tone | null, sentence: boolean]
+  type Expected = [tone: Tone | null, state: PieState | null, sentence: boolean]
   const cases: { name: string; reading: ReturnType<typeof readingOf>; expected: [Expected, Expected, Expected, Expected] }[] = [
-    { name: 'no cache', reading: readingOf({ kind: 'no-cache' }, null, null, T, UPON), expected: [[null, true], [null, true], ['alarm', false], ['alarm', false]] },
-    { name: 'cold', reading: readingOf(known, null, COLD, T + 1000, UPON), expected: [['gone', true], ['gone', true], ['alarm', true], ['alarm', true]] },
-    { name: 'expired', reading: readingOf(known, null, null, T + 300000, UPON), expected: [['gone', true], ['gone', true], ['alarm', true], ['alarm', true]] },
-    { name: 'warm, calm', reading: readingOf(known, null, null, T + 100000, UPON), expected: [['quiet', true], ['quiet', true], ['quiet', true], ['on', false]] },
+    { name: 'no cache', reading: readingOf({ kind: 'no-cache' }, null, null, T, UPON), expected: [[null, null, true], [null, null, true], ['alarm', 'paused', false], ['alarm', 'paused', false]] },
+    { name: 'cold', reading: readingOf(known, null, COLD, T + 1000, UPON), expected: [['gone', 'off', true], ['gone', 'off', true], ['alarm', 'paused', true], ['alarm', 'paused', true]] },
+    { name: 'expired', reading: readingOf(known, null, null, T + 300000, UPON), expected: [['gone', 'off', true], ['gone', 'off', true], ['alarm', 'paused', true], ['alarm', 'paused', true]] },
+    { name: 'warm, calm', reading: readingOf(known, null, null, T + 100000, UPON), expected: [['quiet', 'off', true], ['quiet', 'off', true], ['quiet', 'paused', true], ['on', 'on', false]] },
   ]
   for (const { name, reading, expected } of cases) {
-    test(`${name}: the tone and the sentence for keepalive off and on, with and without a refresh figure, under a stop`, () => {
+    test(`${name}: the tone, the state and the sentence for keepalive off and on, with and without a refresh figure, under a stop`, () => {
       const drawn = COMBOS.map(({ on, refresh }) => {
         const pie = pieOf(reading, on, refresh, true)
-        return [pie.footer?.tone ?? null, pie.colour !== null]
+        return [pie.footer?.tone ?? null, pie.state, pie.colour !== null]
       })
       expect(drawn).toEqual(expected)
     })
