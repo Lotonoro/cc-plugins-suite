@@ -20,10 +20,10 @@ lifetime is left, and next to it the time left, or a word where there is no time
 - The pie's shape is the time left in quarters of the cache's lifetime, rounded up: `●` above three quarters, then `◕`,
   `◑`, `◔`, and `○` once the cache is gone. The lifetime is 5 minutes or 1 hour, as the transcript records it: on a subscription the
   main conversation defaults to 1 hour and on an API key to 5 minutes, and the `promptCacheTtl` setting changes it.
-- The pie's colour: green while keepalive refreshes, and only with keepalive on and no recorded stop, nothing to count or a cache reset
-  after a model switch or compaction. While keepalive has a recorded
-  stop (its refreshes used up, the cache expired, or a failure), the pie beside `reset` or `no count` is red until your next
-  prompt; a pending cold mark alone leaves it green. Otherwise (keepalive off, or on but paused or spent) it is the normal text
+- The pie's colour: green while keepalive is refreshing, and also beside `reset` (after a model switch or compaction) or `no count`
+  while keepalive is on and no stop is recorded. While keepalive has a recorded stop (its refreshes used up, the cache expired,
+  or a failure), the pie beside `reset` or `no count` is red until your next prompt; a pending cold mark alone leaves it green.
+  Otherwise (keepalive off, or on but paused or spent) it is the normal text
   colour, then amber in the cache's last quarter, and red in its last tenth (1:15 and 0:30 on a 5-minute cache, 15 and 6
   minutes on an hour's). An expired cache is red with keepalive on and dim with it off, and a cache reset after a model switch or
   compaction is dim with it off.
