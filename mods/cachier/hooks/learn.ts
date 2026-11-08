@@ -10,15 +10,17 @@
 import type { TtlLabel } from '../types'
 import type { PauseRecord } from './history'
 import { TTL_MS, TTL_WORDS } from './prices'
+import { refreshIntervalMs } from './setup'
 
 // The cache's timing and price that a count is learned for: those of the cache the next pause would ping.
 export type Pricing = { ttlMs: number; leadMs: number; ratio: number }
 
 // What one pause of `pausedMs` would have cost with a run of `count` pings, in pings.
 export const pauseCost = (count: number, pausedMs: number, p: Pricing): number => {
-  const step = p.ttlMs - p.leadMs
-  const fired = Math.min(count, Math.max(0, Math.ceil(pausedMs / step) - 1))
-  const alive = pausedMs < count * step + p.ttlMs
+  // Where the run sends none, the count handed in is none, so no ping fires and the pause holds only within the TTL.
+  const interval = refreshIntervalMs(p.leadMs, p.ttlMs)
+  const fired = interval === null ? 0 : Math.min(count, Math.max(0, Math.ceil(pausedMs / interval) - 1))
+  const alive = pausedMs < count * (interval ?? 0) + p.ttlMs
   return fired + (alive ? 0 : p.ratio)
 }
 
@@ -88,7 +90,8 @@ const looCostsOnce = (history: readonly PauseRecord[], maxCount: number, p: Pric
 // every count costs break-even's pings and the rewrite too, where no pings would cost the rewrite alone. Ties between rules go to
 // break-even first, then to all pauses over the hour's.
 export const learnedOf = (history: readonly PauseRecord[], hour: number, maxCount: number, p: Pricing): Learned | null => {
-  if (history.length === 0 || p.ttlMs <= p.leadMs) return null
+  const interval = refreshIntervalMs(p.leadMs, p.ttlMs)
+  if (history.length === 0 || interval === null) return null
   const loo = looCostsOnce(history, maxCount, p)
   const rule: Rule = loo.all < loo['break-even'] - 1e-9 && loo.all <= loo.hour + 1e-9 ? 'all' : loo.hour < loo['break-even'] - 1e-9 ? 'hour' : 'break-even'
   if (rule === 'break-even') return null
@@ -97,7 +100,7 @@ export const learnedOf = (history: readonly PauseRecord[], hour: number, maxCoun
   const lengths = scope.map((r) => r.pausedMs)
   const count = cheapest(totalsOf(lengths, maxCount, p))
   if (count === maxCount) return null
-  const coverMs = count * (p.ttlMs - p.leadMs) + p.ttlMs
+  const coverMs = count * interval + p.ttlMs
   return { count, rule, within: lengths.filter((l) => l < coverMs).length, of: lengths.length, coverMs }
 }
 
@@ -153,7 +156,7 @@ export const pausesCost = (
   const maxCount = cap === null ? even : Math.min(cap, even)
   const pinned = keepalive.pinned
   const countAt: (hour: number) => number =
-    !keepalive.on || p.ttlMs <= leadMs ? () => 0 : pinned !== null ? () => pinned : learnedCountsAt(history, maxCount, p)
+    !keepalive.on || refreshIntervalMs(leadMs, p.ttlMs) === null ? () => 0 : pinned !== null ? () => pinned : learnedCountsAt(history, maxCount, p)
   return pauses.reduce((sum, r) => sum + r.grownTokens! * write + pauseCost(countAt(r.hour), r.pausedMs, p) * rates.read * r.contextTokens!, 0)
 }
 

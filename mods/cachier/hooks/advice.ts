@@ -7,12 +7,12 @@
 // whole history (learn.ts), else break-even. An "on" setup at the current TTL runs at this session's lead and pin; one at the other TTL
 // needs a new session, so it runs at the lead and pin a new session starts with (`fresh`). That new session starts keepalive on or off as
 // `fresh.on` says, so a change of TTL says to click the pie only where the setup it names differs from that start.
-import type { CacheView, TtlLabel, Unit } from '../types'
+import type { CacheView, Unit } from '../types'
 import type { PauseRecord } from './history'
 import { pausesCost, priceable, ttlSwitchOf, type TtlRates } from './learn'
 import { dollars, pricedSpeed, ratesFor, tierOf, TTL_WORDS, type Money } from './prices'
+import type { Setup } from './setup'
 
-export type Setup = { ttl: TtlLabel; keepalive: boolean }
 // Whether the pauses priced are this session's, or the newest recent ones across sessions.
 export type Source = 'session' | 'recent'
 export type Inputs = {

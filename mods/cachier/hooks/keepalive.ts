@@ -5,6 +5,7 @@ import type { ModelApiError, ModelForkResult, ModelUsage, PluginOptions } from '
 import type { CacheView, HintCost, KeepaliveState, Spend, Tally, TallyState, Unit } from '../types'
 import { expiredAt, expiryOf } from './countdown'
 import { addSpend, dollars, figureOf, kTokens, NO_KINDS, NO_SPEND, spendOf, uponOf, type Money } from './prices'
+import { notBelowTtl, refreshIntervalMs, secs } from './setup'
 
 // Everything off: no config, no pings, nothing shown, no turn bookkeeping. A session's start and end reset to this.
 export const INITIAL: KeepaliveState = {
@@ -107,7 +108,6 @@ export const parseRequest = (args: string): Request => {
   return { kind: 'usage' }
 }
 
-const secs = (ms: number) => `${ms / 1000} s`
 // A round trip to one decimal, rounded up: never shorter than it was measured.
 const secsUp = (ms: number) => `${(Math.ceil(ms / 100) / 10).toFixed(1)} s`
 
@@ -192,7 +192,7 @@ type Readiness =
 
 const readiness = (view: CacheView, leadMs: number, liveMs: number | null, nowMs: number): Readiness => {
   const expiryMs = expiryOf(view, liveMs)
-  if (view.kind !== 'known' || expiryMs === null || leadMs >= view.ttlMs) return { kind: 'not-ready' }
+  if (view.kind !== 'known' || expiryMs === null || refreshIntervalMs(leadMs, view.ttlMs) === null) return { kind: 'not-ready' }
   return { kind: 'ready', dueMs: expiryMs - leadMs, expired: expiredAt(view, liveMs, nowMs) }
 }
 
@@ -254,8 +254,10 @@ const intervalOf = (ms: number): string => {
 // The running lines the bare command's Keepalive section names: the context each ping reads, how often, and while the cache is warm
 // what its rebuild would cost. Null where there is no known TTL with a lead below it, so no figure is real.
 const figuresOf = (view: CacheView, leadMs: number, money: Money, pair: Pair): string[] | null => {
-  if (view.kind !== 'known' || leadMs >= view.ttlMs) return null
-  const every = `every ${intervalOf(view.ttlMs - leadMs)}`
+  if (view.kind !== 'known') return null
+  const interval = refreshIntervalMs(leadMs, view.ttlMs)
+  if (interval === null) return null
+  const every = `every ${intervalOf(interval)}`
   const stated = pairing(view, money, pair)
   return stated === null ? [`${nextPing(view, money)}, ${every}`] : [`${stated.phrase}, ${every}`, ...stated.rebuild]
 }
@@ -303,8 +305,8 @@ const settledOf = (k: KeepaliveState, leadMs: number, view: CacheView, liveMs: n
   if (k.stop !== null) return { kind: 'wait', heading: 'stopped', why: failureSentence(k.stop), figure: running }
   const r = readiness(view, leadMs, liveMs, nowMs)
   if (r.kind === 'not-ready' || figures === null) {
-    if (view.kind === 'known' && leadMs >= view.ttlMs) {
-      return { kind: 'wait', heading: 'paused', why: `lead ${secs(leadMs)} is not below the ${secs(view.ttlMs)} TTL`, figure: pairing(view, money, pair)?.rebuild ?? [] }
+    if (view.kind === 'known' && refreshIntervalMs(leadMs, view.ttlMs) === null) {
+      return { kind: 'wait', heading: 'paused', why: notBelowTtl(leadMs, view.ttlMs), figure: pairing(view, money, pair)?.rebuild ?? [] }
     }
     // A no-cache view's next reply is what writes a cache, so its line says so; a TTL-unknown or unread view may hold one unseen, so it says nothing of replies.
     const reply = view.kind === 'no-cache' ? '; there is no cache until the next reply' : ''
@@ -379,8 +381,10 @@ const pairing = (view: CacheView, money: Money, pair: Pair): { label: string; ba
 }
 
 // The interval between refreshes at a lead as its own row of the section: null where the lead sends no refresh.
-const intervalRow = (view: CacheView, leadMs: number): string | null =>
-  view.kind === 'known' && leadMs < view.ttlMs ? `One refresh every ${intervalOf(view.ttlMs - leadMs)}.` : null
+const intervalRow = (view: CacheView, leadMs: number): string | null => {
+  const interval = view.kind === 'known' ? refreshIntervalMs(leadMs, view.ttlMs) : null
+  return interval === null ? null : `One refresh every ${intervalOf(interval)}.`
+}
 
 // The figure of one refresh at a lead, worked out where it is stated: its label, which the footer and the hover keep, and the lines the
 // Keepalive section states: the refresh's price, the interval row, and while the cache is warm the rebuild's price.
@@ -425,7 +429,7 @@ const ENDED_BY_DESIGN: readonly string[] = ['count used', 'cache expired']
 export const failureOf = (k: KeepaliveState, view: CacheView): string | null => {
   if (k.config === null) return null
   if (k.stop !== null) return ENDED_BY_DESIGN.includes(k.stop) ? null : `keepalive stopped: ${k.stop}`
-  return view.kind === 'known' && k.config.leadMs >= view.ttlMs ? `keepalive paused: lead ${secs(k.config.leadMs)} is not below the ${secs(view.ttlMs)} TTL` : null
+  return view.kind === 'known' && refreshIntervalMs(k.config.leadMs, view.ttlMs) === null ? `keepalive paused: ${notBelowTtl(k.config.leadMs, view.ttlMs)}` : null
 }
 
 // The pie's click: keepalive on turns it off, as `/keepalive off` does; off turns it on with the lead and count last used this
@@ -542,7 +546,8 @@ export const costText = (view: KnownView, leadMs: number, count: number, money: 
   const stated = pairing(view, money, pair)
   const price = stated === null ? nextPing(view, money) : capital(stated.phrase)
   const rebuild = stated === null ? '' : stated.rebuild.map((line) => `; ${line}`).join('')
-  return `${price}, every ${intervalOf(view.ttlMs - leadMs)} (${view.ttlLabel} TTL less the ${secs(leadMs)} lead)${rebuild}. The first refresh after a turn can also write that turn's new tokens. ${refreshesOf(count)}, then it stops until a prompt.`
+  // Reached only from enableText's sending branch, where the lead is below the TTL, so the interval is not none.
+  return `${price}, every ${intervalOf(refreshIntervalMs(leadMs, view.ttlMs)!)} (${view.ttlLabel} TTL less the ${secs(leadMs)} lead)${rebuild}. The first refresh after a turn can also write that turn's new tokens. ${refreshesOf(count)}, then it stops until a prompt.`
 }
 
 // What the toggle says when it turns keepalive on: the cost with its figures when the view allows it, else what it is waiting for, and
@@ -553,9 +558,9 @@ export const enableText = (view: CacheView, leadMs: number, count: number, stop:
   const armed = stop !== null && ENDED_BY_DESIGN.includes(stop)
   const tail = stop === null ? '' : armed ? ` Paused: ${byDesignSentence(stop)}.` : ` Stopped: ${failureSentence(stop)}.`
   if (view.kind !== 'known') return `${head} No live cache to count from yet, so nothing is scheduled until there is one.${tail}`
-  if (leadMs >= view.ttlMs) {
+  if (refreshIntervalMs(leadMs, view.ttlMs) === null) {
     const rebuild = (pairing(view, money, pair)?.rebuild ?? []).map((line) => ` ${capital(line)}.`).join('')
-    return `${head} Paused: lead ${secs(leadMs)} is not below the ${secs(view.ttlMs)} TTL.${rebuild}${tail}`
+    return `${head} Paused: ${notBelowTtl(leadMs, view.ttlMs)}.${rebuild}${tail}`
   }
   return `${head} ${armed ? `${capital(rereadFigure(view, money) ?? '')}.` : costText(view, leadMs, count, money, pair)}${tail}`
 }

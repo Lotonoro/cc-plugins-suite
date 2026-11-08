@@ -9,6 +9,7 @@ import type { CacheView, Judged, KeepaliveState, Spend, Unit, Verdict } from '..
 import { clockOf, expiredAt } from './countdown'
 import type { Defaults } from './keepalive'
 import { dollars, NO_KINDS, spendOf, type Money } from './prices'
+import { refreshIntervalMs } from './setup'
 
 export type Pause = {
   // Whether keepalive is on: the reality the session is in.
@@ -33,8 +34,8 @@ const offCost = (p: Pause): number => (p.pausedMs >= p.ttlMs ? p.lapseUsd : 0)
 // What a pause would have cost with keepalive on, for a session that has it off: the pings that would have fired by now,
 // and a rewrite once they could no longer hold the cache.
 const wouldOnCost = (p: Pause): number => {
-  if (p.leadMs >= p.ttlMs) return offCost(p)
-  const step = p.ttlMs - p.leadMs
+  const step = refreshIntervalMs(p.leadMs, p.ttlMs)
+  if (step === null) return offCost(p)
   const pings = Math.min(p.count, Math.floor(p.pausedMs / step))
   const alive = p.pausedMs < pings * step + p.ttlMs
   return pings * p.pingUsd + (alive ? 0 : p.lapseUsd)
@@ -149,10 +150,10 @@ export const breakEvenLine = (k: KeepaliveState, view: CacheView, money: Money, 
   const run = runOf(k, view, money, defaults)
   // A learned count of no pings pays off in no pause; the learned line says why.
   if (run.count === 0) return ''
-  const step = view.ttlMs - run.leadMs
+  const step = refreshIntervalMs(run.leadMs, view.ttlMs)
   // The first ping whose sum reaches the rewrite, by the margin verdictOf counts as par.
   const even = Math.max(1, Math.ceil((rates.lapseUsd - EPSILON_USD) / rates.pingUsd))
-  const untilMs = step <= 0 ? 0 : even <= run.count ? even * step : run.count * step + view.ttlMs
+  const untilMs = step === null ? 0 : even <= run.count ? even * step : run.count * step + view.ttlMs
   if (untilMs <= view.ttlMs) return "Keepalive doesn't pay off on this context"
   return `Keepalive pays off if you're back between ${clockOf(view.ttlMs)} and ${clockOf(untilMs)}`
 }
