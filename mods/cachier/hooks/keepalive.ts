@@ -542,12 +542,11 @@ const refreshesOf = (count: number): string => (count === 1 ? '1 refresh' : `${c
 
 // The cost `/keepalive on` answers with: the context each refresh reads, how often, while the cache is warm what its rebuild would cost,
 // and that the first refresh after a turn can write.
-export const costText = (view: KnownView, leadMs: number, count: number, money: Money, pair: Pair): string => {
+export const costText = (view: KnownView, leadMs: number, intervalMs: number, count: number, money: Money, pair: Pair): string => {
   const stated = pairing(view, money, pair)
   const price = stated === null ? nextPing(view, money) : capital(stated.phrase)
   const rebuild = stated === null ? '' : stated.rebuild.map((line) => `; ${line}`).join('')
-  // Reached only from enableText's sending branch, where the lead is below the TTL, so the interval is not none.
-  return `${price}, every ${intervalOf(refreshIntervalMs(leadMs, view.ttlMs)!)} (${view.ttlLabel} TTL less the ${secs(leadMs)} lead)${rebuild}. The first refresh after a turn can also write that turn's new tokens. ${refreshesOf(count)}, then it stops until a prompt.`
+  return `${price}, every ${intervalOf(intervalMs)} (${view.ttlLabel} TTL less the ${secs(leadMs)} lead)${rebuild}. The first refresh after a turn can also write that turn's new tokens. ${refreshesOf(count)}, then it stops until a prompt.`
 }
 
 // What the toggle says when it turns keepalive on: the cost with its figures when the view allows it, else what it is waiting for, and
@@ -558,11 +557,12 @@ export const enableText = (view: CacheView, leadMs: number, count: number, stop:
   const armed = stop !== null && ENDED_BY_DESIGN.includes(stop)
   const tail = stop === null ? '' : armed ? ` Paused: ${byDesignSentence(stop)}.` : ` Stopped: ${failureSentence(stop)}.`
   if (view.kind !== 'known') return `${head} No live cache to count from yet, so nothing is scheduled until there is one.${tail}`
-  if (refreshIntervalMs(leadMs, view.ttlMs) === null) {
+  const interval = refreshIntervalMs(leadMs, view.ttlMs)
+  if (interval === null) {
     const rebuild = (pairing(view, money, pair)?.rebuild ?? []).map((line) => ` ${capital(line)}.`).join('')
     return `${head} Paused: ${notBelowTtl(leadMs, view.ttlMs)}.${rebuild}${tail}`
   }
-  return `${head} ${armed ? `${capital(rereadFigure(view, money) ?? '')}.` : costText(view, leadMs, count, money, pair)}${tail}`
+  return `${head} ${armed ? `${capital(rereadFigure(view, money) ?? '')}.` : costText(view, leadMs, interval, count, money, pair)}${tail}`
 }
 
 // The debug line of one ping, written once its outcome is known. `stale` marks a result from a generation the state has since

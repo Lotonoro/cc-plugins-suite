@@ -48,6 +48,7 @@ import { expiredAt } from './countdown'
 import { sessionLineOf } from './stats'
 import { PRICES, TOKENS, type Money } from './prices'
 import { rebuildSpendOf } from './verdict'
+import { refreshIntervalMs } from './setup'
 
 const T = 1_000_000
 const F = 'a refresh reads the warm cache: ~33k cached tokens, every 4 min'
@@ -64,7 +65,7 @@ const rebuildOf = (v: CacheView, money: Money) => (v.kind === 'known' ? rebuildS
 const step = (k: KeepaliveState, v: CacheView, live: number | null, gap: boolean, now: number) => stepWith(k, v, live, gap, now, TOKENS, rebuildOf(v, TOKENS))
 const pairOf = (v: CacheView, money: Money, warm = true) => ({ warm, rebuild: rebuildOf(v, money) })
 const costOf = (k: KeepaliveState, v: CacheView, warm = true) => costWith(k, v, TOKENS, pairOf(v, TOKENS, warm))
-const costText = (v: typeof known, lead: number, count: number) => costTextWith(v, lead, count, TOKENS, pairOf(v, TOKENS))
+const costText = (v: typeof known, lead: number, count: number) => costTextWith(v, lead, refreshIntervalMs(lead, v.ttlMs)!, count, TOKENS, pairOf(v, TOKENS))
 const enableText = (v: CacheView, lead: number, count: number, stop: string | null, warm = true) => enableTextWith(v, lead, count, stop, TOKENS, pairOf(v, TOKENS, warm))
 // Opus 5.5 rates per token: input $4, 5 m write $5, 1 h write $8, read $0.20 per million.
 const OPUS = PRICES
@@ -731,7 +732,7 @@ describe('the debug lines and the tallies', () => {
     const unpriced = pairOf(fable, DOLLARS)
     expect(costWith(on(60000, 3), fable, DOLLARS, unpriced)?.label).toBe('keep warm ~33k read/refresh · if cold ~33k tokens rebuild')
     expect(costWith(on(60000, 3), fable, DOLLARS, unpriced)?.lines.at(-1)).toBe('if it goes cold, your next prompt rebuilds it: ~33k tokens written')
-    expect(costTextWith(fable, 60000, 3, DOLLARS, unpriced)).toContain('A refresh reads the warm cache: ~33k cached tokens, every 4 min')
+    expect(costTextWith(fable, 60000, refreshIntervalMs(60000, fable.ttlMs)!, 3, DOLLARS, unpriced)).toContain('A refresh reads the warm cache: ~33k cached tokens, every 4 min')
   })
 
   test('the pair reads <$0.001 with no tilde and ~$0.00 at exactly zero, on the hover and in the section', () => {
