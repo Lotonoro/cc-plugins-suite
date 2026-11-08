@@ -251,21 +251,29 @@ pinned count, else the count learned from your whole history, else break-even. A
 session, so it uses the lead and count a new session's click starts with: the `keepalive_lead_s` lead and no pinned count.
 A change of TTL says to click the pie only when the new session would start keepalive (per `keepalive_default`) other
 than the change wants, and when it does, the click is made in the new session, e.g.
-`A 1-hour cache with keepalive off would have saved $1.20 over 10 recent pauses: set "promptCacheTtl": "1h" in
-settings.json and, in the new session, click the pie off.` The sentence is added beside the figures above and the TTL line,
-which stay. It says one thing:
+`You're on a 5-minute cache with keepalive on. A 1-hour cache with keepalive off would have saved $1.20 over 10 recent
+pauses: set "promptCacheTtl": "1h" in settings.json and, in the new session, click the pie off.` The sentence is added beside the figures above and the TTL line,
+which stay. Every sentence opens by naming your TTL and keepalive state, `You're on a 5-minute cache with keepalive off.`, and
+the setup a saving is stated against is named in full. Keepalive on at a lead not below the TTL is named paused, sending
+nothing, with the reason the Keepalive section gives (`You're on a 5-minute cache with keepalive paused, sending nothing
+(lead 300 s is not below the 300 s TTL).`), since such a run sends no refresh and is priced as keepalive off. The
+sentence says one thing:
 
 - a change, when the cheapest setup differs from yours and saves at least $0.01 and at least 5% of what your setup cost
   over those pauses: the TTL and keepalive settings that change, and the saving. A TTL change names
   the `promptCacheTtl` setting and applies to new sessions; a keepalive change says to click the pie;
 - or that you're on the cheapest setup, and what it saves against the other: keepalive on against keepalive off at the
-  same TTL, or the other TTL when keepalive is off. Priced from the pause records at today's setting, not money
-  already saved;
-- or that you're on the cheapest setup, and the baseline costs about the same.
+  same TTL, or the other TTL with keepalive off when keepalive is off (`You're on a 5-minute cache with keepalive on, the
+  cheapest setup: it saves about $4.40 over 10 recent pauses against a 5-minute cache with keepalive off.`). Priced from the
+  pause records at today's setting, not money already saved;
+- or that you're on the cheapest setup, and the baseline costs about the same
+  (`You're on a 1-hour cache with keepalive off, the cheapest setup; a 5-minute cache with keepalive off would have cost
+  about the same over 10 recent pauses.`).
 
-When a cheaper setup exists but would not clear the threshold, the sentence opens by naming it and its saving ("No
-other setup would have saved enough to change (a 1-hour cache with keepalive off would have saved $0.02)"), and never
-calls your setup the cheapest. Where no change is worth making and the baseline costs no more, the sentence says the
+When a cheaper setup exists but would not clear the threshold, the sentence names it and its saving after your setup ("You're on a
+5-minute cache with keepalive on. No other setup would have saved enough to change (a 1-hour cache with keepalive off would
+have saved $0.02): your setup saves about $4.60 over 10 recent pauses against a 5-minute cache with keepalive off."), and
+never calls your setup the cheapest. Where no change is worth making and the baseline costs no more, the sentence says the
 baseline would have cost about the same when the two are within half a cent, else that it would have cost a little less,
 too little to change, with no figure; when the setup it opens with is the baseline, the opening names the pauses and
 nothing follows it.

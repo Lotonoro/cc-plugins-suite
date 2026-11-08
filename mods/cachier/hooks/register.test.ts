@@ -6919,7 +6919,19 @@ describe('the best setup: one sentence, in the pane and in the bare command, pri
     const clock = mock.clock(on, { now: T0 })
     await $.classic.SessionStart({ source: 'startup', transcript_path: PATH })
     await clock.advance(1000)
-    expect((await commandText($, '')).replace(/\n\s*/g, ' ')).toContain(`Advice ${CHANGE}`)
+    expect((await commandText($, '')).replace(/\n\s*/g, ' ')).toContain(`Advice You're on a 5-minute cache with keepalive off. ${CHANGE}`)
+  })
+
+  test('keepalive on at a lead not below the TTL: the sentence names the setup paused, with the reason the Keepalive section gives', async ($, on) => {
+    kaWorld(on, { ...opusCached(), store: { 'pauses/old': Array.from({ length: 10 }, (_, i) => pauseOf(i)) } })
+    const clock = mock.clock(on, { now: T0 })
+    await $.classic.SessionStart({ source: 'startup', transcript_path: PATH })
+    await clock.advance(1000)
+    await commandText($, 'on 300')
+    await clock.advance(1000)
+    expect((await commandText($, '')).replace(/\n\s*/g, ' ')).toContain(
+      "Advice You're on a 5-minute cache with keepalive paused, sending nothing (lead 300 s is not below the 300 s TTL)",
+    )
   })
 
   test('the details pane carries the sentence, wrapped, in its Advice section', async ($, on) => {
@@ -6929,7 +6941,7 @@ describe('the best setup: one sentence, in the pane and in the bare command, pri
     await clock.advance(1000)
     const rows = await paneRows($)
     const advice = rows.indexOf('Advice')
-    const sentence = rows.findIndex((row) => row.startsWith('  A 5-minute cache with keepalive on'))
+    const sentence = rows.findIndex((row) => row.startsWith('  You\'re on a 5-minute cache with keepalive off.'))
     expect(advice).toBeGreaterThanOrEqual(0)
     expect(sentence).toBe(advice + 1)
     expect(rows.every((row) => row.length <= 48)).toBe(true)
@@ -6962,7 +6974,7 @@ describe('the best setup: one sentence, in the pane and in the bare command, pri
     await clock.advance(1000)
     const text = (await commandText($, '')).replace(/\n\s*/g, ' ')
     expect(text).not.toContain('1-hour cache with keepalive on')
-    expect(text).toContain("You're on the cheapest setup: with keepalive off, the 5-minute cache saves about $3.00 over 10 recent pauses against the 1-hour one.")
+    expect(text).toContain("You're on a 5-minute cache with keepalive off, the cheapest setup: it saves about $3.00 over 10 recent pauses against a 1-hour cache with keepalive off.")
   })
 
   test('every session\'s pauses are read with at most eight store reads running, and all of them are priced', async ($, on) => {

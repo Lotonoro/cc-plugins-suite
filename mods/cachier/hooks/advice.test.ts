@@ -160,7 +160,7 @@ describe('bestSetupOf: the cheapest of the four setups, against the current one'
 describe('adviceLine and adviceOf: the one sentence, in the unit shown', () => {
   test('a change names the setting that changes, the saving, the pauses, and how to make it', () => {
     expect(adviceOf(inputs({ history: pauses(10, 30 * MIN) }), 'dollars')).toBe(
-      'A 1-hour cache with keepalive off would have saved $1.20 over 10 recent pauses: set "promptCacheTtl": "1h" in settings.json (new sessions).',
+      'You\'re on a 5-minute cache with keepalive on. A 1-hour cache with keepalive off would have saved $1.20 over 10 recent pauses: set "promptCacheTtl": "1h" in settings.json (new sessions).',
     )
   })
 
@@ -169,14 +169,14 @@ describe('adviceLine and adviceOf: the one sentence, in the unit shown', () => {
     const history = pauses(10, 30 * MIN)
     expect(bestSetupOf(inputs({ history, fresh: { on: true, leadMs: 15 * S, pinned: null } }))).toMatchObject({ kind: 'change', to: { ttl: '1h', keepalive: false }, startsOn: true })
     expect(adviceOf(inputs({ history, fresh: { on: true, leadMs: 15 * S, pinned: null } }), 'dollars')).toBe(
-      'A 1-hour cache with keepalive off would have saved $1.20 over 10 recent pauses: set "promptCacheTtl": "1h" in settings.json and, in the new session, click the pie off.',
+      'You\'re on a 5-minute cache with keepalive on. A 1-hour cache with keepalive off would have saved $1.20 over 10 recent pauses: set "promptCacheTtl": "1h" in settings.json and, in the new session, click the pie off.',
     )
     // On 5 m with keepalive on and new sessions starting off, a change to 1 h with keepalive on needs the click though keepalive is on now.
     const to1hOn = { kind: 'change' as const, from: { ttl: '5m' as const, keepalive: true }, to: { ttl: '1h' as const, keepalive: true }, savedUsd: 0.5, of: 10, source: 'recent' as const }
-    expect(adviceLine({ ...to1hOn, startsOn: false }, 'dollars')).toBe(
-      'A 1-hour cache with keepalive on would have saved $0.50 over 10 recent pauses: set "promptCacheTtl": "1h" in settings.json and, in the new session, click the pie on.',
+    expect(adviceLine({ ...to1hOn, startsOn: false }, 'dollars', 15 * S)).toBe(
+      'You\'re on a 5-minute cache with keepalive on. A 1-hour cache with keepalive on would have saved $0.50 over 10 recent pauses: set "promptCacheTtl": "1h" in settings.json and, in the new session, click the pie on.',
     )
-    expect(adviceLine({ ...to1hOn, startsOn: true }, 'dollars')).toBe('A 1-hour cache with keepalive on would have saved $0.50 over 10 recent pauses: set "promptCacheTtl": "1h" in settings.json (new sessions).')
+    expect(adviceLine({ ...to1hOn, startsOn: true }, 'dollars', 15 * S)).toBe('You\'re on a 5-minute cache with keepalive on. A 1-hour cache with keepalive on would have saved $0.50 over 10 recent pauses: set "promptCacheTtl": "1h" in settings.json (new sessions).')
   })
 
   test('a change over this session\'s pauses says so', () => {
@@ -185,39 +185,39 @@ describe('adviceLine and adviceOf: the one sentence, in the unit shown', () => {
 
   test('a change of the TTL alone names only the promptCacheTtl setting, and going back to 5 m sets it to "5m"', () => {
     expect(adviceOf(inputs({ rates: UNIT, current: { ttl: '1h', keepalive: false }, history: pauses(10, 6 * MIN, 50000) }), 'dollars')).toBe(
-      'A 5-minute cache with keepalive off would have saved $1.25 over 10 recent pauses: set "promptCacheTtl": "5m" in settings.json (new sessions).',
+      'You\'re on a 1-hour cache with keepalive off. A 5-minute cache with keepalive off would have saved $1.25 over 10 recent pauses: set "promptCacheTtl": "5m" in settings.json (new sessions).',
     )
   })
 
   test('a change of keepalive alone names the pie', () => {
-    const result = adviceLine({ kind: 'change', from: { ttl: '5m', keepalive: false }, to: { ttl: '5m', keepalive: true }, savedUsd: 0.5, of: 3, source: 'recent', startsOn: false }, 'dollars')
-    expect(result).toBe('A 5-minute cache with keepalive on would have saved $0.50 over 3 recent pauses: click the pie on.')
+    const result = adviceLine({ kind: 'change', from: { ttl: '5m', keepalive: false }, to: { ttl: '5m', keepalive: true }, savedUsd: 0.5, of: 3, source: 'recent', startsOn: false }, 'dollars', 15 * S)
+    expect(result).toBe('You\'re on a 5-minute cache with keepalive off. A 5-minute cache with keepalive on would have saved $0.50 over 3 recent pauses: click the pie on.')
   })
 
   test('the on-best sentence with keepalive on says what keepalive saves against having it off', () => {
     expect(adviceOf(inputs({ history: pauses(10, 10 * MIN, 1000000) }), 'dollars')).toBe(
-      "You're on the cheapest setup: at your current setting, keepalive saves about $4.40 over 10 recent pauses against having it off.",
+      "You're on a 5-minute cache with keepalive on, the cheapest setup: it saves about $4.40 over 10 recent pauses against a 5-minute cache with keepalive off.",
     )
   })
 
   test('the on-best sentence with keepalive off says what the current TTL saves against the other', () => {
     expect(adviceOf(inputs({ current: { ttl: '1h', keepalive: false }, history: pauses(10, 20 * MIN, 2000) }), 'dollars')).toBe(
-      "You're on the cheapest setup: with keepalive off, the 1-hour cache saves about $4.74 over 10 recent pauses against the 5-minute one.",
+      "You're on a 1-hour cache with keepalive off, the cheapest setup: it saves about $4.74 over 10 recent pauses against a 5-minute cache with keepalive off.",
     )
   })
 
   test('a saving under a tenth of a cent is shown as "<$0.001", with no "about" before it', () => {
-    expect(adviceLine({ kind: 'best', setup: { ttl: '5m', keepalive: true }, savedUsd: 0.0001, of: 10, source: 'recent', near: null }, 'dollars')).toBe(
-      "You're on the cheapest setup: at your current setting, keepalive saves <$0.001 over 10 recent pauses against having it off.",
+    expect(adviceLine({ kind: 'best', setup: { ttl: '5m', keepalive: true }, savedUsd: 0.0001, of: 10, source: 'recent', near: null }, 'dollars', 15 * S)).toBe(
+      "You're on a 5-minute cache with keepalive on, the cheapest setup: it saves <$0.001 over 10 recent pauses against a 5-minute cache with keepalive off.",
     )
   })
 
   test('about even, with no cheaper setup, says the cheapest and the other TTL or keepalive off cost about the same, with no figure', () => {
     expect(adviceOf(inputs({ current: { ttl: '1h', keepalive: false }, history: pauses(10, 2 * MIN) }), 'dollars')).toBe(
-      "You're on the cheapest setup; the 5-minute cache would have cost about the same over 10 recent pauses.",
+      "You're on a 1-hour cache with keepalive off, the cheapest setup; a 5-minute cache with keepalive off would have cost about the same over 10 recent pauses.",
     )
     expect(adviceOf(inputs({ history: pauses(10, 2 * MIN) }), 'dollars')).toBe(
-      "You're on the cheapest setup; keepalive off would have cost about the same over 10 recent pauses.",
+      "You're on a 5-minute cache with keepalive on, the cheapest setup; a 5-minute cache with keepalive off would have cost about the same over 10 recent pauses.",
     )
   })
 
@@ -228,7 +228,7 @@ describe('adviceLine and adviceOf: the one sentence, in the unit shown', () => {
     expect(result).toMatchObject({ kind: 'best', setup: { ttl: '5m', keepalive: true }, near: { setup: { ttl: '1h', keepalive: false } } })
     expect(result?.kind === 'best' && Math.abs(result.near!.savedUsd - 0.02)).toBeLessThan(1e-9)
     expect(adviceOf(near, 'dollars')).toBe(
-      'No other setup would have saved enough to change (a 1-hour cache with keepalive off would have saved $0.02): at your current setting, keepalive saves about $4.60 over 10 recent pauses against having it off.',
+      'You\'re on a 5-minute cache with keepalive on. No other setup would have saved enough to change (a 1-hour cache with keepalive off would have saved $0.02): your setup saves about $4.60 over 10 recent pauses against a 5-minute cache with keepalive off.',
     )
   })
 
@@ -236,51 +236,108 @@ describe('adviceLine and adviceOf: the one sentence, in the unit shown', () => {
     // 6-minute pauses on 1 h off: 5 m off costs $0.70 a pause against $0.72, a 2.8 % saving, so no change; the baseline is that setup.
     const cheaper = inputs({ rates: UNIT, current: { ttl: '1h', keepalive: false }, history: pauses(10, 6 * MIN, 36000) })
     expect(bestSetupOf(cheaper)).toMatchObject({ kind: 'even', setup: { ttl: '1h', keepalive: false }, near: { setup: { ttl: '5m', keepalive: false } } })
-    expect(adviceOf(cheaper, 'dollars')).toBe('No other setup would have saved enough to change (a 5-minute cache with keepalive off would have saved $0.20 over 10 recent pauses).')
+    expect(adviceOf(cheaper, 'dollars')).toBe('You\'re on a 1-hour cache with keepalive off. No other setup would have saved enough to change (a 5-minute cache with keepalive off would have saved $0.20 over 10 recent pauses).')
   })
 
   test('a baseline cheaper by a cent or more, under the threshold, says it cost a little less, with no figure, never "about the same"', () => {
     const near = { setup: { ttl: '1h' as const, keepalive: false }, savedUsd: 5 }
-    const on = adviceLine({ kind: 'even', setup: { ttl: '5m', keepalive: true }, near, baselineSavedUsd: 4, of: 10, source: 'recent' }, 'dollars')
+    const on = adviceLine({ kind: 'even', setup: { ttl: '5m', keepalive: true }, near, baselineSavedUsd: 4, of: 10, source: 'recent' }, 'dollars', 15 * S)
     expect(on).toBe(
-      'No other setup would have saved enough to change (a 1-hour cache with keepalive off would have saved $5.00): keepalive off would have cost a little less over 10 recent pauses, too little to change.',
+      'You\'re on a 5-minute cache with keepalive on. No other setup would have saved enough to change (a 1-hour cache with keepalive off would have saved $5.00): a 5-minute cache with keepalive off would have cost a little less over 10 recent pauses, too little to change.',
     )
-    const off = adviceLine({ kind: 'even', setup: { ttl: '1h', keepalive: false }, near: { setup: { ttl: '5m', keepalive: true }, savedUsd: 5 }, baselineSavedUsd: 4, of: 5, source: 'session' }, 'dollars')
+    const off = adviceLine({ kind: 'even', setup: { ttl: '1h', keepalive: false }, near: { setup: { ttl: '5m', keepalive: true }, savedUsd: 5 }, baselineSavedUsd: 4, of: 5, source: 'session' }, 'dollars', 15 * S)
     expect(off).toBe(
-      'No other setup would have saved enough to change (a 5-minute cache with keepalive on would have saved $5.00): the 5-minute cache would have cost a little less over 5 pauses this session, too little to change.',
+      'You\'re on a 1-hour cache with keepalive off. No other setup would have saved enough to change (a 5-minute cache with keepalive on would have saved $5.00): a 5-minute cache with keepalive off would have cost a little less over 5 pauses this session, too little to change.',
     )
-    expect(adviceLine({ kind: 'even', setup: { ttl: '5m', keepalive: true }, near, baselineSavedUsd: 4, of: 10, source: 'recent' }, 'tokens')).toBe(
-      'No other setup would have saved enough to change (a 1-hour cache with keepalive off would have saved money; the saving is in dollars, see /keepalive unit dollars): keepalive off would have cost a little less over 10 recent pauses, too little to change.',
+    expect(adviceLine({ kind: 'even', setup: { ttl: '5m', keepalive: true }, near, baselineSavedUsd: 4, of: 10, source: 'recent' }, 'tokens', 15 * S)).toBe(
+      'You\'re on a 5-minute cache with keepalive on. No other setup would have saved enough to change (a 1-hour cache with keepalive off would have saved money; the saving is in dollars, see /keepalive unit dollars): a 5-minute cache with keepalive off would have cost a little less over 10 recent pauses, too little to change.',
     )
   })
 
   test('in tokens a cheaper setup under the threshold that is the baseline holds the dollar note in its one parenthesis', () => {
     const near = { setup: { ttl: '5m' as const, keepalive: false }, savedUsd: 0.2 }
-    expect(adviceLine({ kind: 'even', setup: { ttl: '1h', keepalive: false }, near, baselineSavedUsd: 0.2, of: 10, source: 'recent' }, 'tokens')).toBe(
-      'No other setup would have saved enough to change (a 5-minute cache with keepalive off would have saved money over 10 recent pauses; the saving is in dollars, see /keepalive unit dollars).',
+    expect(adviceLine({ kind: 'even', setup: { ttl: '1h', keepalive: false }, near, baselineSavedUsd: 0.2, of: 10, source: 'recent' }, 'tokens', 15 * S)).toBe(
+      'You\'re on a 1-hour cache with keepalive off. No other setup would have saved enough to change (a 5-minute cache with keepalive off would have saved money over 10 recent pauses; the saving is in dollars, see /keepalive unit dollars).',
     )
   })
 
   test('a baseline cheaper by less than half a cent reads as about the same, in either unit, since both compare dollars', () => {
     const near = { setup: { ttl: '1h' as const, keepalive: false }, savedUsd: 0.5 }
-    expect(adviceLine({ kind: 'even', setup: { ttl: '5m', keepalive: true }, near, baselineSavedUsd: 0.004, of: 10, source: 'recent' }, 'dollars')).toBe(
-      'No other setup would have saved enough to change (a 1-hour cache with keepalive off would have saved $0.50): keepalive off would have cost about the same over 10 recent pauses.',
+    expect(adviceLine({ kind: 'even', setup: { ttl: '5m', keepalive: true }, near, baselineSavedUsd: 0.004, of: 10, source: 'recent' }, 'dollars', 15 * S)).toBe(
+      'You\'re on a 5-minute cache with keepalive on. No other setup would have saved enough to change (a 1-hour cache with keepalive off would have saved $0.50): a 5-minute cache with keepalive off would have cost about the same over 10 recent pauses.',
     )
-    expect(adviceLine({ kind: 'even', setup: { ttl: '5m', keepalive: true }, near, baselineSavedUsd: 0.004, of: 10, source: 'recent' }, 'tokens')).toContain('keepalive off would have cost about the same')
-    expect(adviceLine({ kind: 'even', setup: { ttl: '5m', keepalive: true }, near, baselineSavedUsd: 0.005, of: 10, source: 'recent' }, 'tokens')).toContain('keepalive off would have cost a little less over 10 recent pauses, too little to change')
+    expect(adviceLine({ kind: 'even', setup: { ttl: '5m', keepalive: true }, near, baselineSavedUsd: 0.004, of: 10, source: 'recent' }, 'tokens', 15 * S)).toContain('a 5-minute cache with keepalive off would have cost about the same')
+    expect(adviceLine({ kind: 'even', setup: { ttl: '5m', keepalive: true }, near, baselineSavedUsd: 0.005, of: 10, source: 'recent' }, 'tokens', 15 * S)).toContain('a 5-minute cache with keepalive off would have cost a little less over 10 recent pauses, too little to change')
   })
 
   test('in tokens a sentence with a saving names the setup and points to the dollar unit, and states no dollars', () => {
     const change = adviceOf(inputs({ history: pauses(10, 30 * MIN) }), 'tokens')
     expect(change).toContain('A 1-hour cache with keepalive off would have saved money over 10 recent pauses')
     expect(change).toBe(
-      'A 1-hour cache with keepalive off would have saved money over 10 recent pauses (the saving is in dollars; see /keepalive unit dollars): set "promptCacheTtl": "1h" in settings.json (new sessions).',
+      'You\'re on a 5-minute cache with keepalive on. A 1-hour cache with keepalive off would have saved money over 10 recent pauses (the saving is in dollars; see /keepalive unit dollars): set "promptCacheTtl": "1h" in settings.json (new sessions).',
     )
     expect(adviceOf(inputs({ history: pauses(10, 10 * MIN, 1000000) }), 'tokens')).not.toContain('$')
   })
 
   test('with no result the sentence is empty', () => {
     expect(adviceOf(inputs({ rates: { read: 0, write5m: 0, write1h: 0 }, history: pauses(10, 30 * MIN) }), 'dollars')).toBe('')
+  })
+})
+
+describe('adviceOf: the sentence names the setup you are on, paused where keepalive sends nothing, over every point of the grid', () => {
+  const WORD = { '5m': '5-minute', '1h': '1-hour' }
+  const TTL_MS = { '5m': 300 * S, '1h': 3600 * S }
+  // The setup as the sentence names it: keepalive on at a lead not below its TTL is paused, with the reason the Keepalive section gives.
+  const phraseOf = (setup: { ttl: '5m' | '1h'; keepalive: boolean }, leadMs: number): string => {
+    const ttl = TTL_MS[setup.ttl]
+    const state = setup.keepalive ? (leadMs < ttl ? 'on' : `paused, sending nothing (lead ${leadMs / S} s is not below the ${ttl / S} s TTL)`) : 'off'
+    return `a ${WORD[setup.ttl]} cache with keepalive ${state}`
+  }
+  const SPANS = [2, 6, 30, 150].map((minutes) => pauses(10, minutes * MIN))
+  const currents = [
+    { ttl: '5m' as const, keepalive: false },
+    { ttl: '5m' as const, keepalive: true },
+    { ttl: '1h' as const, keepalive: false },
+    { ttl: '1h' as const, keepalive: true },
+  ]
+
+  test('the current setup is named first, paused exactly when keepalive is on at a lead not below its TTL; no other setup is named paused, and no change or near setup is an "on" that sends nothing', () => {
+    let points = 0
+    for (const current of currents)
+      for (const leadMs of [15 * S, TTL_MS[current.ttl], TTL_MS[current.ttl] + 100 * S])
+        for (const freshLead of [15 * S, 300 * S])
+          for (const history of SPANS) {
+            const run = { current, leadMs, history, fresh: { on: false, leadMs: freshLead, pinned: null } }
+            const sentence = adviceOf(inputs(run), 'dollars')
+            const result = bestSetupOf(inputs(run))
+            if (result === null) {
+              expect(sentence).toBe('')
+              continue
+            }
+            points++
+            const naming = `You're on ${phraseOf(current, leadMs)}`
+            expect(sentence.startsWith(naming)).toBe(true)
+            expect(sentence.replace(naming, '')).not.toContain('keepalive paused')
+            const runLeadOf = (setup: { ttl: '5m' | '1h' }) => (setup.ttl === current.ttl ? leadMs : freshLead)
+            const others = result.kind === 'change' ? [result.to] : result.kind === 'best' || result.kind === 'even' ? (result.near ? [result.near.setup] : []) : []
+            for (const setup of others) expect(setup.keepalive && runLeadOf(setup) >= TTL_MS[setup.ttl]).toBe(false)
+          }
+    // Every point of the grid gives a sentence, so none is skipped by the null guard.
+    expect(points).toBe(currents.length * 3 * 2 * SPANS.length)
+  })
+})
+
+describe('adviceOf: a current setup paused at a lead not below its TTL', () => {
+  test('a change names the paused setup it leaves, with the Keepalive section\'s reason', () => {
+    expect(adviceOf(inputs({ leadMs: 300 * S, current: { ttl: '5m', keepalive: true }, history: pauses(10, 30 * MIN) }), 'dollars')).toBe(
+      'You\'re on a 5-minute cache with keepalive paused, sending nothing (lead 300 s is not below the 300 s TTL). A 1-hour cache with keepalive off would have saved $4.80 over 10 recent pauses: set "promptCacheTtl": "1h" in settings.json (new sessions).',
+    )
+  })
+
+  test('the cheapest-setup sentence names it paused, and states the baseline in full', () => {
+    expect(adviceOf(inputs({ leadMs: 300 * S, current: { ttl: '5m', keepalive: true }, history: pauses(10, 2 * MIN) }), 'dollars')).toBe(
+      'You\'re on a 5-minute cache with keepalive paused, sending nothing (lead 300 s is not below the 300 s TTL), the cheapest setup; a 5-minute cache with keepalive off would have cost about the same over 10 recent pauses.',
+    )
   })
 })
 

@@ -10,8 +10,8 @@
 import type { CacheView, Unit } from '../types'
 import type { PauseRecord } from './history'
 import { pausesCost, priceable, ttlSwitchOf, type TtlRates } from './learn'
-import { dollars, pricedSpeed, ratesFor, tierOf, TTL_WORDS, type Money } from './prices'
-import type { Setup } from './setup'
+import { dollars, pricedSpeed, ratesFor, tierOf, type Money } from './prices'
+import { setupPhrase, type Setup } from './setup'
 
 // Whether the pauses priced are this session's, or the newest recent ones across sessions.
 export type Source = 'session' | 'recent'
@@ -119,49 +119,57 @@ const pausesOf = (of: number, source: Source): string => {
   return source === 'session' ? `${of} ${noun} this session` : `${of} recent ${noun}`
 }
 
+// A target, near or baseline setup is never an "on" that sends nothing: bestSetupOf prices such a setup as its "off" twin and a tie puts
+// that first. So it is named at a lead no TTL reaches, and reads on or off as it is priced. Only the current setup is named at this
+// session's lead, which can pause it.
+const NO_PAUSE_LEAD_MS = 0
+const otherSetup = (setup: Setup): string => setupPhrase(setup, NO_PAUSE_LEAD_MS)
+const capital = (text: string): string => text.charAt(0).toUpperCase() + text.slice(1)
+
 // The opening that names the cheapest setup that is not worth changing to, and its saving in the unit shown: over `span` when no tail names
 // the pauses. `noted` puts the tokens note inside its parenthesis, where no later clause carries one.
 const nearOpening = (near: Near, unit: Unit, span?: string, noted = false): string => {
   const amount = unit === 'dollars' ? dollars(near.savedUsd) : 'money'
   const over = span === undefined ? '' : ` over ${span}`
   const note = noted && unit === 'tokens' ? TOKENS_NOTE_INSIDE : ''
-  return `No other setup would have saved enough to change (a ${TTL_WORDS[near.setup.ttl]} cache with keepalive ${near.setup.keepalive ? 'on' : 'off'} would have saved ${amount}${over}${note})`
+  return `No other setup would have saved enough to change (${otherSetup(near.setup)} would have saved ${amount}${over}${note})`
 }
 
-// The one sentence on a result. In tokens a saving is a sum of prices, so it is named as money and the sentence points to the dollar unit.
-export const adviceLine = (result: Result, unit: Unit): string => {
+// The one sentence on a result, which opens by naming the setup you are on, at this session's lead `leadMs`. In tokens a saving is a sum of
+// prices, so it is named as money and the sentence points to the dollar unit.
+export const adviceLine = (result: Result, unit: Unit, leadMs: number): string => {
   const note = unit === 'tokens' ? TOKENS_NOTE : ''
+  const current = result.kind === 'change' ? result.from : result.setup
+  const opening = `You're on ${setupPhrase(current, leadMs)}`
   if (result.kind === 'even') {
     const { setup, near, baselineSavedUsd, of, source } = result
     const baseline = baselineOf(setup)
     const span = pausesOf(of, source)
     // The opening already names the baseline and its saving: a tail would only repeat it.
-    if (near !== null && setupKey(near.setup) === setupKey(baseline)) return `${nearOpening(near, unit, span, true)}.`
-    const words = setup.keepalive ? 'keepalive off' : `the ${TTL_WORDS[baseline.ttl]} cache`
+    if (near !== null && setupKey(near.setup) === setupKey(baseline)) return `${opening}. ${nearOpening(near, unit, span, true)}.`
     const tail =
       baselineSavedUsd < HALF_CENT_USD
-        ? `${words} would have cost about the same over ${span}`
-        : `${words} would have cost a little less over ${span}, too little to change`
+        ? `${otherSetup(baseline)} would have cost about the same over ${span}`
+        : `${otherSetup(baseline)} would have cost a little less over ${span}, too little to change`
     // The opening's figure is the one the note is on: the tail states none.
-    return near === null ? `You're on the cheapest setup; ${tail}.` : `${nearOpening(near, unit, undefined, true)}: ${tail}.`
+    return near === null ? `${opening}, the cheapest setup; ${tail}.` : `${opening}. ${nearOpening(near, unit, undefined, true)}: ${tail}.`
   }
   if (result.kind === 'best') {
     const { setup, savedUsd, of, source, near } = result
     const shown = dollars(savedUsd)
     // "<$0.001" already says the saving is small: "about" before it would blur the bound.
     const amount = unit === 'dollars' ? (shown.startsWith('<') ? shown : `about ${shown}`) : 'money'
+    const against = otherSetup(baselineOf(setup))
     const span = pausesOf(of, source)
-    const tail = setup.keepalive
-      ? `at your current setting, keepalive saves ${amount} over ${span} against having it off`
-      : `with keepalive off, the ${TTL_WORDS[setup.ttl]} cache saves ${amount} over ${span} against the ${TTL_WORDS[baselineOf(setup).ttl]} one`
-    return `${near === null ? "You're on the cheapest setup" : nearOpening(near, unit)}: ${tail}${note}.`
+    if (near === null) return `${opening}, the cheapest setup: it saves ${amount} over ${span} against ${against}${note}.`
+    return `${opening}. ${nearOpening(near, unit)}: your setup saves ${amount} over ${span} against ${against}${note}.`
   }
   const { from, to, savedUsd, of, source, startsOn } = result
   const amount = unit === 'dollars' ? dollars(savedUsd) : 'money'
   // The click is in the new session when the TTL switch starts one: it is the session the click is made in.
   const click = startsOn === to.keepalive ? '' : `click the pie ${to.keepalive ? 'on' : 'off'}`
   const how = from.ttl === to.ttl ? click : click === '' ? `${ttlSwitchOf(to.ttl)} (new sessions)` : `${ttlSwitchOf(to.ttl)} and, in the new session, ${click}`
-  return `A ${TTL_WORDS[to.ttl]} cache with keepalive ${to.keepalive ? 'on' : 'off'} would have saved ${amount} over ${pausesOf(of, source)}${note}: ${how}.`
+  return `${opening}. ${capital(otherSetup(to))} would have saved ${amount} over ${pausesOf(of, source)}${note}: ${how}.`
 }
 
 // The rates a view's cached context pays: the model's, at the tier its prompt is priced at; null where its spends have no price
@@ -174,5 +182,5 @@ export const ratesOfView = (view: Extract<CacheView, { kind: 'known' }>, money: 
 // The sentence for these inputs, or '' when there is no result to give.
 export const adviceOf = (inputs: Inputs, unit: Unit): string => {
   const result = bestSetupOf(inputs)
-  return result === null ? '' : adviceLine(result, unit)
+  return result === null ? '' : adviceLine(result, unit, inputs.leadMs)
 }
