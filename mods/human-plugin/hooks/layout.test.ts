@@ -120,29 +120,55 @@ const flying = (n: number): TodoItem[] => Array.from({ length: n }, (_, k) => to
 const waiting = (n: number): TodoItem[] => Array.from({ length: n }, (_, k) => todoItem(`q${k + 1}`, 'queued'))
 const titles = (rows: ClaudeRow[]): string[] => rows.map(r => (r.kind === 'item' ? r.item.title : `+${r.count} queued`))
 
-test('the width rule gives the column a third of the band, rounded down, never under 32, and the human list the rest', () => {
-  expect(bandWidths(96, 2, waiting(1))).toEqual({ human: 64, claude: 32 })
-  expect(bandWidths(120, 2, waiting(1))).toEqual({ human: 80, claude: 40 })
-  expect(bandWidths(155, 2, waiting(1))).toEqual({ human: 104, claude: 51 })
+test('the width rule gives the column a third of the band, rounded down, never under 32, and the human list the rest; each list\'s layout width is one column short of its box while both draw', () => {
+  expect(bandWidths(96, 2, waiting(1))).toEqual({ human: { box: 64, layout: 63 }, claude: { box: 32, layout: 31 } })
+  expect(bandWidths(120, 2, waiting(1))).toEqual({ human: { box: 80, layout: 79 }, claude: { box: 40, layout: 39 } })
+  expect(bandWidths(155, 2, waiting(1))).toEqual({ human: { box: 104, layout: 103 }, claude: { box: 51, layout: 50 } })
 })
 
-test('under 96 columns the column hides and the human list keeps the full width', () => {
-  expect(bandWidths(95, 2, waiting(1))).toEqual({ human: 95, claude: null })
-  expect(bandWidths(40, 2, flying(1))).toEqual({ human: 40, claude: null })
+test('under 96 columns the column hides and the human list keeps the full width, laid out in all of it', () => {
+  expect(bandWidths(95, 2, waiting(1))).toEqual({ human: { box: 95, layout: 95 }, claude: null })
+  expect(bandWidths(40, 2, flying(1))).toEqual({ human: { box: 40, layout: 40 }, claude: null })
 })
 
-test('human items and no Claude items: the human list alone at full width, at any width', () => {
-  expect(bandWidths(120, 2, [])).toEqual({ human: 120, claude: null })
-  expect(bandWidths(90, 2, [])).toEqual({ human: 90, claude: null })
-  expect(bandWidths(300, 2, [])).toEqual({ human: 300, claude: null })
+test('human items and no Claude items: the human list alone at full width, at any width, laid out in all of it', () => {
+  expect(bandWidths(120, 2, [])).toEqual({ human: { box: 120, layout: 120 }, claude: null })
+  expect(bandWidths(90, 2, [])).toEqual({ human: { box: 90, layout: 90 }, claude: null })
+  expect(bandWidths(300, 2, [])).toEqual({ human: { box: 300, layout: 300 }, claude: null })
 })
 
-test('no human items: an item in flight draws the column alone at its width, however narrow the band, and queued items alone draw nothing', () => {
-  expect(bandWidths(40, 0, flying(1))).toEqual({ human: null, claude: 32 })
-  expect(bandWidths(120, 0, [...waiting(2), ...flying(1)])).toEqual({ human: null, claude: 40 })
-  expect(bandWidths(20, 0, flying(1))).toEqual({ human: null, claude: 20 })
+test('no human items: an item in flight draws the column alone at its width, however narrow the band, laid out in all of it, and queued items alone draw nothing', () => {
+  expect(bandWidths(40, 0, flying(1))).toEqual({ human: null, claude: { box: 32, layout: 32 } })
+  expect(bandWidths(120, 0, [...waiting(2), ...flying(1)])).toEqual({ human: null, claude: { box: 40, layout: 40 } })
+  expect(bandWidths(20, 0, flying(1))).toEqual({ human: null, claude: { box: 20, layout: 20 } })
   expect(bandWidths(120, 0, waiting(2))).toEqual({ human: null, claude: null })
   expect(bandWidths(120, 0, [])).toEqual({ human: null, claude: null })
+})
+
+test('the margin is one column off each box while both lists draw and none otherwise; the box widths, the 96 two-list width, the 32 floor and the 64 the human list keeps are unchanged', () => {
+  const todos: [string, TodoItem[]][] = [['none', []], ['queued', waiting(2)], ['in flight', flying(2)], ['both', [...flying(1), ...waiting(1)]]]
+  for (const [name, todo] of todos) {
+    for (const humans of [0, 2]) {
+      for (let columns = 1; columns <= 300; columns++) {
+        const { human, claude } = bandWidths(columns, humans, todo)
+        const where = `${name}, ${humans} human, ${columns} columns`
+        if (human !== null && claude !== null) {
+          // Both lists: the box widths sum to the band, the column is a third rounded down and at least 32, and the human list keeps at least 64.
+          expect(human.box + claude.box, where).toBe(columns)
+          expect(claude.box, where).toBe(Math.max(32, Math.floor(columns / 3)))
+          expect(human.box, where).toBeGreaterThanOrEqual(64)
+          expect(columns, where).toBeGreaterThanOrEqual(96)
+          expect([human.layout, claude.layout], where).toEqual([human.box - 1, claude.box - 1])
+        } else {
+          // One list or none: laid out in its whole box.
+          for (const list of [human, claude]) expect(list === null || list.layout === list.box, where).toBe(true)
+        }
+      }
+    }
+  }
+  // Both lists draw from 96 and not from 95.
+  expect(bandWidths(96, 2, waiting(1)).claude).not.toBeNull()
+  expect(bandWidths(95, 2, waiting(1)).claude).toBeNull()
 })
 
 test('the band draws when a human item exists or a Claude item is in flight, and hands on otherwise', () => {

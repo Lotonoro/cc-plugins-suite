@@ -892,12 +892,12 @@ test('with no Claude items the human list draws as it does today, at a wide band
   for (const columns of [120, 90, 300]) sameTree(drawn(humans(2), [], columns), today)
 })
 
-test('at 120 columns the band is two boxes, the human list 80 wide and the Claude column 40 wide at the right', () => {
+test('at 120 columns the band is two boxes, the human list 80 wide and the Claude column 40 wide at the right, each with its empty column inside', () => {
   const tree = drawn(humans(2), queue(1), 120)
   const [left, right] = columnsOf(tree)
   expect(tree).toMatchObject({ type: 'Box', flexDirection: 'row', width: 120 })
-  expect(left).toMatchObject({ type: 'Box', flexDirection: 'column', width: 80 })
-  expect(right).toMatchObject({ type: 'Box', flexDirection: 'column', width: 40 })
+  expect(left).toMatchObject({ type: 'Box', flexDirection: 'column', width: 80, paddingRight: 1 })
+  expect(right).toMatchObject({ type: 'Box', flexDirection: 'column', width: 40, paddingLeft: 1 })
   expect(columnsOf(tree).length).toBe(2)
   expect(texts(left).join('')).toContain('To do for you')
   expect(texts(left).join('')).not.toContain('Claude TODO')
@@ -921,13 +921,25 @@ test('the Claude header counts the list in the short form, in flight as active',
   expect(lineTexts(right)[0]).toBe('Claude TODO 2 active, 3 queued')
 })
 
-test('the header is one line cut at the column\'s edge: whole at 12 active and 13 queued in 32 columns, set to cut with 120 active', () => {
-  const header = (todo: TodoItem[]) => (columnsOf(drawn(humans(2), todo, 96))[1] as Node).children?.[0] as Node
-  const fits = header([...flight(12), ...queue(13)])
-  expect(texts(fits).join('')).toBe('Claude TODO 12 active, 13 queued')
-  expect(texts(fits).join('').length).toBe(32)
-  expect(fits.wrap).toBe('truncate-end')
-  const over = header([...flight(120), ...queue(13)])
+test('the header is one line set to cut at the column\'s layout width: 31 beside the human list, which cuts the two-digit counts\' 32 columns; alone the column is laid out in its 32 and holds them whole', () => {
+  const header = (store: Store, todo: TodoItem[]) => (columnsOf(drawn(store, todo, 96))[store.items.length === 0 ? 0 : 1] as Node).children?.[0] as Node
+  const twoDigits = [...flight(12), ...queue(13)]
+  const beside = header(humans(2), twoDigits)
+  expect(texts(beside).join('')).toBe('Claude TODO 12 active, 13 queued')
+  expect(texts(beside).join('').length).toBe(32)
+  expect(beside.wrap).toBe('truncate-end')
+  const box = columnsOf(drawn(humans(2), twoDigits, 96))[1] as Node
+  // The box is 32 wide and keeps its first column empty: the Text is cut at the 31 after it.
+  expect(Number(box.width) - Number(box.paddingLeft)).toBe(31)
+  expect(texts(beside).join('').length).toBeGreaterThan(31)
+  // One-digit counts, 30 columns, are whole in the 31.
+  expect(texts(header(humans(2), [...flight(1), ...queue(1)])).join('').length).toBe(30)
+  // Alone, the column is 32 wide with no empty column: the same header is whole.
+  const alone = columnsOf(drawn(humans(0), twoDigits, 96))[0] as Node
+  expect(alone).toMatchObject({ width: 32 })
+  expect(alone.paddingLeft).toBeUndefined()
+  expect(texts(header(humans(0), twoDigits)).join('').length).toBeLessThanOrEqual(Number(alone.width))
+  const over = header(humans(2), [...flight(120), ...queue(13)])
   expect(texts(over).join('')).toBe('Claude TODO 120 active, 13 queued')
   expect(over.wrap).toBe('truncate-end')
 })
@@ -972,6 +984,41 @@ test('the column alone never hides on a narrow band, and keeps 32 columns', () =
   const tree = drawn(humans(0), flight(1), 60)
   expect(columnsOf(tree)).toHaveLength(1)
   expect(columnsOf(tree)[0]).toMatchObject({ width: 32 })
+})
+
+test('at a bodyColumns of 96, 120 and 155 with both lists drawn, the boxes keep the widths the width rule rules, the human box padded one column on its right and the Claude box one on its left, so the Claude column\'s lines are cut at 31, 39 and 50 columns', () => {
+  for (const [columns, human, claude, cut] of [[96, 64, 32, 31], [120, 80, 40, 39], [155, 104, 51, 50]] as const) {
+    const tree = drawn(humans(2), [...flight(1), ...queue(1)], columns)
+    const [left, right] = columnsOf(tree) as [Node, Node]
+    const where = `${columns}`
+    expect(columnsOf(tree), where).toHaveLength(2)
+    expect(tree, where).toMatchObject({ type: 'Box', flexDirection: 'row', justifyContent: 'flex-end', width: columns })
+    expect(left, where).toMatchObject({ type: 'Box', flexDirection: 'column', width: human, paddingRight: 1 })
+    expect(right, where).toMatchObject({ type: 'Box', flexDirection: 'column', width: claude, paddingLeft: 1 })
+    expect(left.paddingLeft, where).toBeUndefined()
+    expect(right.paddingRight, where).toBeUndefined()
+    // The Claude column\'s lines are Texts set to cut at the end of the box inside its padding, none with a width of its own.
+    expect(Number(right.width) - Number(right.paddingLeft), where).toBe(cut)
+    for (const line of right.children as Node[]) expect([line.type, line.wrap, line.width], where).toEqual(['Text', 'truncate-end', undefined])
+  }
+})
+
+// The trees the band drew before the margin, captured from it: a human list alone (its rows fit a line), and the Claude column alone at 120 and at 40.
+const TODAY_HUMAN = '{"type":"Box","flexDirection":"column","children":[{"type":"Box","children":[{"type":"Box","flexShrink":0,"children":[{"type":"Text","bold":true,"color":"inverseText","backgroundColor":"permission","children":[" To do for you "]}]},{"type":"Text","children":[" 2 open "]}]},{"type":"Box","key":"item-1","children":[{"type":"Box","flexShrink":0,"children":[{"type":"Text","bold":false,"dimColor":true,"children":["  #1 "]}]},{"type":"Button","key":"title-1","plain":true,"label":"Pick a db"},{"type":"Box","flexShrink":0,"children":[{"type":"Text","children":[" "]},{"type":"Button","key":"done-1","plain":true,"label":"[✓]"}]}]},{"type":"Box","key":"item-2","children":[{"type":"Box","flexShrink":0,"children":[{"type":"Text","bold":false,"dimColor":true,"children":["  #2 "]}]},{"type":"Button","key":"title-2","plain":true,"label":"Pick a db"},{"type":"Box","flexShrink":0,"children":[{"type":"Text","children":[" "]},{"type":"Button","key":"done-2","plain":true,"label":"[✓]"}]}]}]}'
+const TODAY_CLAUDE_120 = '{"type":"Box","flexDirection":"row","justifyContent":"flex-end","width":120,"children":[{"type":"Box","flexDirection":"column","width":40,"children":[{"type":"Text","wrap":"truncate-end","children":["Claude TODO 1 active, 0 queued"]},{"type":"Text","wrap":"truncate-end","children":["◐ f1"]}]}]}'
+const TODAY_CLAUDE_40 = '{"type":"Box","flexDirection":"row","justifyContent":"flex-end","width":40,"children":[{"type":"Box","flexDirection":"column","width":32,"children":[{"type":"Text","wrap":"truncate-end","children":["Claude TODO 1 active, 0 queued"]},{"type":"Text","wrap":"truncate-end","children":["◐ f1"]}]}]}'
+
+test('a list drawn alone is the tree the band drew before the margin, with no padding on any box: the human list at 120 and 90 columns with no Claude items, the Claude column at 120 and 40 with no human items', () => {
+  const alone: [string, Node, string][] = [
+    ['human at 120', drawn(humans(2), [], 120), TODAY_HUMAN],
+    ['human at 90', drawn(humans(2), [], 90), TODAY_HUMAN],
+    ['Claude at 120', drawn(humans(0), flight(1), 120), TODAY_CLAUDE_120],
+    ['Claude at 40', drawn(humans(0), flight(1), 40), TODAY_CLAUDE_40],
+  ]
+  for (const [name, tree, golden] of alone) {
+    sameTree(tree, JSON.parse(golden), name)
+    expect(JSON.stringify(tree), name).not.toContain('padding')
+  }
 })
 
 test('the state table: each row, at 120 columns and at 90', () => {

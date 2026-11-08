@@ -782,3 +782,47 @@ test('a band mounted at 120 columns draws the Claude column beside the human lis
   await $.tool.call({ tool: TODO_TOOL, entries: [] })
   expect(JSON.stringify(await ui.drawn())).not.toContain('Claude TODO')
 })
+
+// A drawn tree, as `drawn()` gives it, and the boxes a band lays side by side: the human list's, then the Claude column's.
+type Drawn = { type: string; props?: { key?: string; width?: number; flexShrink?: number; paddingLeft?: number; paddingRight?: number; flexDirection?: string; label?: string }; children?: Drawn[] }
+const boxes = (tree: unknown): { human: Drawn | undefined; column: Drawn | undefined } => {
+  const [human, column] = (tree as Drawn).children ?? []
+  return { human, column }
+}
+
+test('a band mounted at 96, 120 and 155 columns sets the human list\'s box and the Claude column\'s at the width rule\'s widths, the human box padded one column on its right and the Claude box one on its left; a list drawn alone has no padding', async ($, on) => {
+  mock.clock(on)
+  mock.store(on)
+  on('ui.panes', () => ({ value: [] }))
+  await $.tool.call({ tool: TOOL, action: 'add', title: 'Pick a db' })
+  await $.tool.call({ tool: TODO_TOOL, entries: [{ title: 'Build it', state: 'in_flight' }, { title: 'Test it', state: 'queued' }] })
+  const band = await $.ui.mount({ plugin: 'human-plugin', surface: 'terminal', component: 'AbovePrompt', props: { ...BAND_PROPS, bodyColumns: 96 } })
+  for (const [columns, human, claude] of [[96, 64, 32], [120, 80, 40], [155, 104, 51]] as const) {
+    await band.redraw({ ...BAND_PROPS, bodyColumns: columns })
+    const tree = await band.drawn()
+    expect((tree as Drawn).props?.width, `${columns}`).toBe(columns)
+    const { human: left, column } = boxes(tree)
+    expect(left?.props, `${columns}`).toMatchObject({ width: human, paddingRight: 1 })
+    expect(left?.props?.paddingLeft, `${columns}`).toBeUndefined()
+    expect(column?.props, `${columns}`).toMatchObject({ width: claude, paddingLeft: 1 })
+    expect(column?.props?.paddingRight, `${columns}`).toBeUndefined()
+  }
+  // Under 96 columns the Claude column hides and the human list is drawn alone: no padding on any box.
+  await band.redraw({ ...BAND_PROPS, bodyColumns: 90 })
+  expect(JSON.stringify(await band.drawn())).not.toContain('padding')
+})
+
+test('the Claude column drawn alone, with no human items, keeps its whole box: 40 wide at 120 columns and 32 at 40, with no padding', async ($, on) => {
+  mock.clock(on)
+  mock.store(on)
+  on('ui.panes', () => ({ value: [] }))
+  await $.tool.call({ tool: TODO_TOOL, entries: [{ title: 'Build it', state: 'in_flight' }] })
+  const band = await $.ui.mount({ plugin: 'human-plugin', surface: 'terminal', component: 'AbovePrompt', props: { ...BAND_PROPS, bodyColumns: 120 } })
+  for (const [columns, claude] of [[120, 40], [40, 32]] as const) {
+    await band.redraw({ ...BAND_PROPS, bodyColumns: columns })
+    const tree = await band.drawn()
+    expect((tree as Drawn).children, `${columns}`).toHaveLength(1)
+    expect((tree as Drawn).children?.[0]?.props, `${columns}`).toMatchObject({ width: claude })
+    expect(JSON.stringify(tree), `${columns}`).not.toContain('padding')
+  }
+})

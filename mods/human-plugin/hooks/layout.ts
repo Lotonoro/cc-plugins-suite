@@ -43,23 +43,35 @@ export const columnHeight = (todo: readonly TodoItem[]): number => 1 + todo.filt
 // its top at first draw, so the list folds to that and its summary row is in view; a band that fits folds to `maxRows`.
 export const humanFoldRows = (maxRows: number, columnLines: number): number => (columnLines > maxRows ? maxRows - 1 : maxRows)
 
-// The columns the band's tree is laid out in, per list: null for a list that does not draw.
-export type BandWidths = { human: number | null; claude: number | null }
+// The columns the band's tree is laid out in, per list: null for a list that does not draw. `box`: the width of the list's box. `layout`: the
+// columns its text is laid out and cut in, which the box's padding leaves it. While both lists draw each box keeps one column empty, the human
+// list's its last and the Claude column's its first, so two blank columns separate their text; a list drawn alone is laid out in all of its box.
+export type ListWidth = { box: number; layout: number }
+export type BandWidths = { human: ListWidth | null; claude: ListWidth | null }
 
 // The band's smallest width for both lists to draw (the human list keeps 64 of it), and the Claude column's narrowest width.
 const TWO_LIST_WIDTH = 96
 const CLAUDE_MIN_WIDTH = 32
+// The empty column each box keeps while both lists draw.
+const MARGIN = 1
+
+const whole = (box: number): ListWidth => ({ box, layout: box })
 
 // Whether the band draws anything: the human list when it has items, the Claude column alone when something is in flight.
 export const bandDraws = (humanCount: number, todo: readonly TodoItem[]): boolean => humanCount > 0 || todo.some(isInFlight)
 
 // The widths of the band's lists at `columns`. Beside a human list the Claude column draws when it has any item and the band is wide enough
 // for both; alone it draws when an item is in flight, at any width. It is a third of the band, rounded down, never under 32 columns or wider
-// than the band; the human list takes the rest, or all of the band when the column does not draw.
+// than the band; the human list takes the rest, or all of the band when the column does not draw. Both lists keep their boxes' empty column
+// (`layout` one less than `box`) only while both draw.
 export const bandWidths = (columns: number, humanCount: number, todo: readonly TodoItem[]): BandWidths => {
   const column = Math.min(columns, Math.max(CLAUDE_MIN_WIDTH, Math.floor(columns / 3)))
-  if (humanCount === 0) return { human: null, claude: todo.some(isInFlight) ? column : null }
-  return todo.length > 0 && columns >= TWO_LIST_WIDTH ? { human: columns - column, claude: column } : { human: columns, claude: null }
+  if (humanCount === 0) return { human: null, claude: todo.some(isInFlight) ? whole(column) : null }
+  if (todo.length > 0 && columns >= TWO_LIST_WIDTH) {
+    const human = columns - column
+    return { human: { box: human, layout: human - MARGIN }, claude: { box: column, layout: column - MARGIN } }
+  }
+  return { human: whole(columns), claude: null }
 }
 
 export type ClaudeRow = { kind: 'item'; item: TodoItem } | { kind: 'queued'; count: number }

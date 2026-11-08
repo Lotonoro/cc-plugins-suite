@@ -3,7 +3,7 @@ import type { Item, Store, TodoItem, Turn } from '../types'
 import { labelOf, oneLine, orderedOptions, replyText, turnsOf } from './done'
 import { briefParts } from './fences'
 import { outcomeOf, parseInput, selectedItem, type ToolInput } from './items'
-import { bandRows, bandWidths, claudeRows, columnHeight, humanFoldRows, rowsHeight, type ClaudeRow } from './layout'
+import { bandRows, bandWidths, claudeRows, columnHeight, humanFoldRows, rowsHeight, type BandWidths, type ClaudeRow, type ListWidth } from './layout'
 import { tablesAsLists } from './tables'
 import { GLYPH, HEADING, bandCountsText } from './todo'
 
@@ -191,12 +191,16 @@ const claudeRow = (t: Table, row: ClaudeRow): RenderElement =>
     ? t.Text({ wrap: 'truncate-end', children: [`${GLYPH[row.item.state]} ${row.item.title}`] })
     : t.Text({ dimColor: true, wrap: 'truncate-end', children: [`+${row.count} queued`] })
 
-// The Claude column: its header with the counts in the short form, then its rows (see claudeRows), each cut at `width`. `height`: the
-// human list's lines, which the queued rows fill down to.
-const claudeColumn = (t: Table, todo: readonly TodoItem[], width: number, height: number): RenderElement =>
+// The columns a list's box keeps empty inside its width: its box less its layout width (layout.ts).
+const marginOf = (width: ListWidth): number => width.box - width.layout
+
+// The Claude column: its header with the counts in the short form, then its rows (see claudeRows), each cut at the column's layout width, inside
+// the box's padding. `height`: the human list's lines, which the queued rows fill down to.
+const claudeColumn = (t: Table, todo: readonly TodoItem[], width: ListWidth, height: number): RenderElement =>
   t.Box({
     flexDirection: 'column',
-    width,
+    width: width.box,
+    ...(marginOf(width) > 0 ? { paddingLeft: marginOf(width) } : {}),
     children: [t.Text({ wrap: 'truncate-end', children: [`${HEADING} ${bandCountsText(todo)}`] }), ...claudeRows(todo, height).map(row => claudeRow(t, row))],
   })
 
@@ -207,7 +211,7 @@ export const band = (t: Table, h: Handlers, store: Store, view: View): RenderEle
   const open = store.items.filter(it => it.state === 'open')
   const pending = store.items.filter(it => it.state === 'done-pending').length
   const todo = view.claude?.items ?? []
-  const widths = view.claude === undefined ? { human: null, claude: null } : bandWidths(view.claude.columns, store.items.length, todo)
+  const widths: BandWidths = view.claude === undefined ? { human: null, claude: null } : bandWidths(view.claude.columns, store.items.length, todo)
   // The column's fixed lines (its header and every in-flight row) can make the band taller than `maxRows` beside the human list.
   const columnLines = widths.human !== null && widths.claude !== null ? columnHeight(todo) : 0
   const rows = bandRows(store.items, Math.max(0, humanFoldRows(view.maxRows, columnLines) - 1))
@@ -222,13 +226,23 @@ export const band = (t: Table, h: Handlers, store: Store, view: View): RenderEle
   })
   const body = rows.map(row => (row.kind === 'item' ? itemRow(t, h, row.item, view, row.item.id === shownId) : summaryRow(t, h, row)))
   if (view.claude === undefined || widths.claude === null) return t.Box({ flexDirection: 'column', children: [header, ...body] })
-  const humanList = t.Box({ flexDirection: 'column', width: widths.human ?? undefined, children: [header, ...body] })
   // Two boxes at the band's width, the Claude column last: alone it keeps its width and stays at the right edge, with nothing drawn to its left.
+  const humanList =
+    widths.human === null
+      ? []
+      : [
+          t.Box({
+            flexDirection: 'column',
+            width: widths.human.box,
+            ...(marginOf(widths.human) > 0 ? { paddingRight: marginOf(widths.human) } : {}),
+            children: [header, ...body],
+          }),
+        ]
   return t.Box({
     flexDirection: 'row',
     justifyContent: 'flex-end',
     width: view.claude.columns,
-    children: [...(widths.human === null ? [] : [humanList]), claudeColumn(t, todo, widths.claude, widths.human === null ? 0 : 1 + rowsHeight(rows))],
+    children: [...humanList, claudeColumn(t, todo, widths.claude, widths.human === null ? 0 : 1 + rowsHeight(rows))],
   })
 }
 
