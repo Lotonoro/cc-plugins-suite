@@ -13,6 +13,8 @@ import type { CacheView, TtlLabel, Unit } from '../types'
 import type { PauseRecord } from './history'
 import { pausesCost, priceable, ttlAdviceOf, ttlSwitchOf, type TtlRates } from './learn'
 import { dollars, pricedSpeed, ratesFor, tierOf, type Money } from './prices'
+import { printRequest } from './keepalive'
+import { SPAN_SPACE } from './sections'
 import { setupPhrase, type Setup } from './setup'
 
 // Whether the pauses priced are this session's, or the newest recent ones across sessions.
@@ -29,6 +31,8 @@ export type Inputs = {
   // first click on the pie, runs at: the options' defaults.
   fresh: { on: boolean; leadMs: number; pinned: number | null }
 }
+// A run's lead and the count it pins, or null for none.
+export type Run = { leadMs: number; pinned: number | null }
 // The cheapest setup that is not worth changing to, and its saving over the current setup: the one that came closest.
 export type Near = { setup: Setup; savedUsd: number }
 // `change`: the cheapest setup differs from the current one, by a saving worth recommending. `best`: no change is worth making, and the
@@ -39,7 +43,7 @@ export type Near = { setup: Setup; savedUsd: number }
 // `startsOn` is whether keepalive is on where `to` would start: this session at the same TTL, the new session a switch starts (`fresh.on`)
 // at the other.
 export type Result =
-  | { kind: 'change'; from: Setup; to: Setup; savedUsd: number; of: number; source: Source; startsOn: boolean }
+  | { kind: 'change'; from: Setup; to: Setup; savedUsd: number; of: number; source: Source; startsOn: boolean; run: Run }
   | { kind: 'best'; setup: Setup; savedUsd: number; of: number; source: Source; near: Near | null }
   | { kind: 'even'; setup: Setup; near: Near | null; baselineSavedUsd: number; of: number; source: Source }
 
@@ -74,9 +78,14 @@ export const pricedOf = (session: readonly PauseRecord[], history: readonly Paus
   return { pauses: all.slice(-RECENT_MAX), source: 'recent' }
 }
 
+// Where a setup of this TTL starts: this session's keepalive state, lead and pin at the current TTL, the new session's at the other. One
+// choice, so the run a setup is priced at, the start its change step words and the run that step names cannot drift.
+const startOf = (ttl: TtlLabel, inputs: Inputs): { on: boolean } & Run =>
+  ttl === inputs.current.ttl ? { on: inputs.current.keepalive, leadMs: inputs.leadMs, pinned: inputs.pinned } : inputs.fresh
+
 // What the pauses cost under a setup, in dollars, as the TTL line prices them (pausesCost); null where that setup cannot be priced.
 const costOf = (pauses: readonly PauseRecord[], setup: Setup, inputs: Inputs): number | null => {
-  const run = setup.ttl === inputs.current.ttl ? { leadMs: inputs.leadMs, pinned: inputs.pinned } : inputs.fresh
+  const run = startOf(setup.ttl, inputs)
   return pausesCost(pauses, inputs.history, setup.ttl, inputs.rates, run.leadMs, inputs.cap, { on: setup.keepalive, pinned: run.pinned })
 }
 
@@ -106,8 +115,8 @@ export const bestSetupOf = (inputs: Inputs): Result | null => {
   const source = priced.source
   const saved = now - cost(best)
   if (setupKey(best) !== setupKey(current) && saved >= CHANGE_MIN_USD && saved >= CHANGE_MIN_SHARE * now) {
-    const startsOn = best.ttl === current.ttl ? current.keepalive : inputs.fresh.on
-    return { kind: 'change', from: current, to: best, savedUsd: saved, of, source, startsOn }
+    const { on: startsOn, leadMs, pinned } = startOf(best.ttl, inputs)
+    return { kind: 'change', from: current, to: best, savedUsd: saved, of, source, startsOn, run: { leadMs, pinned } }
   }
   const near = setupKey(best) === setupKey(current) ? null : { setup: best, savedUsd: saved }
   const against = cost(baselineOf(current)) - now
@@ -172,10 +181,13 @@ export const adviceLine = (result: Result, unit: Unit, leadMs: number): string =
     if (near === null) return `${opening}, the cheapest setup: it saves ${amount} over ${span} against ${against}${note}.`
     return `${opening}. ${nearOpening(near, unit)}: your setup saves ${amount} over ${span} against ${against}${note}.`
   }
-  const { from, to, savedUsd, of, source, startsOn } = result
+  const { from, to, savedUsd, of, source, startsOn, run } = result
   const amount = unit === 'dollars' ? dollars(savedUsd) : 'money'
-  // The click is in the new session when the TTL switch starts one: it is the session the click is made in.
-  const click = startsOn === to.keepalive ? '' : `click the pie ${to.keepalive ? 'on' : 'off'}`
+  // The click is in the new session when the TTL switch starts one: it is the session the click is made in. It comes with the command that
+  // does the same, at the run the target was priced at, as one span the wrap keeps on a row; the command comes first, so no punctuation
+  // follows it.
+  const command = printRequest(to.keepalive ? { kind: 'on', leadMs: run.leadMs, count: run.pinned } : { kind: 'off' })
+  const click = startsOn === to.keepalive ? '' : `run ${command.split(' ').join(SPAN_SPACE)} or click the pie ${to.keepalive ? 'on' : 'off'}`
   const how = from.ttl === to.ttl ? click : click === '' ? `${ttlSwitchOf(to.ttl)} (new sessions)` : `${ttlSwitchOf(to.ttl)} and, in the new session, ${click}`
   return `${opening}. ${capital(otherSetup(to))} would have saved ${amount} over ${pausesOf(of, source)}${note}: ${how}.`
 }

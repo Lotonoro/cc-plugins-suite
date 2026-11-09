@@ -1,9 +1,20 @@
 import { describe, expect, test } from 'claude-code/testing'
 import type { PauseRecord } from './history'
 import { adviceLine, adviceOf, bestSetupOf, newSessionClause, pricedOf, ratesOfView, ttlLine, ttlLineOf, type Inputs } from './advice'
+import { parseRequest } from './keepalive'
 import { PRICES } from './prices'
+import { SPAN_SPACE } from './sections'
 
 const S = 1000
+// A sentence as the pane and the answer print it: the spans of a command joined by plain spaces.
+const plain = (text: string): string => text.split(SPAN_SPACE).join(' ')
+// The step of a change sentence, after its colon.
+const stepOf = (text: string): string => plain(text).split(/ pauses?(?: this session)?: /)[1] ?? ''
+// The /keepalive command of a step, up to the ` or ` that follows it.
+const commandOf = (step: string): string => {
+  const from = step.indexOf('/keepalive')
+  return step.slice(from, step.indexOf(' or ', from))
+}
 const MIN = 60 * S
 // Opus 5.5 rates per token, as learn.test.ts prices them: a 100k context reads at $0.02, and a 5 m rewrite costs 24 reads.
 const OPUS = { read: 2e-7, write5m: 5e-6, write1h: 8e-6 }
@@ -81,6 +92,7 @@ describe('bestSetupOf: the cheapest of the four setups, against the current one'
       of: 10,
       source: 'recent',
       startsOn: false,
+      run: { leadMs: 15 * S, pinned: null },
     })
     const change = bestSetupOf(inputs({ history: pauses(10, 30 * MIN) }))
     expect(change?.kind === 'change' && Math.abs(change.savedUsd - 1.2)).toBeLessThan(1e-9)
@@ -168,13 +180,13 @@ describe('adviceLine and adviceOf: the one sentence, in the unit shown', () => {
     // The new session a TTL switch needs starts keepalive as keepalive_default says, not as this session runs it.
     const history = pauses(10, 30 * MIN)
     expect(bestSetupOf(inputs({ history, fresh: { on: true, leadMs: 15 * S, pinned: null } }))).toMatchObject({ kind: 'change', to: { ttl: '1h', keepalive: false }, startsOn: true })
-    expect(adviceOf(inputs({ history, fresh: { on: true, leadMs: 15 * S, pinned: null } }), 'dollars')).toBe(
-      'You\'re on a 5-minute cache with keepalive on. A 1-hour cache with keepalive off would have saved $1.20 over 10 recent pauses: set "promptCacheTtl": "1h" in settings.json and, in the new session, click the pie off.',
+    expect(plain(adviceOf(inputs({ history, fresh: { on: true, leadMs: 15 * S, pinned: null } }), 'dollars'))).toBe(
+      'You\'re on a 5-minute cache with keepalive on. A 1-hour cache with keepalive off would have saved $1.20 over 10 recent pauses: set "promptCacheTtl": "1h" in settings.json and, in the new session, run /keepalive off or click the pie off.',
     )
     // On 5 m with keepalive on and new sessions starting off, a change to 1 h with keepalive on needs the click though keepalive is on now.
-    const to1hOn = { kind: 'change' as const, from: { ttl: '5m' as const, keepalive: true }, to: { ttl: '1h' as const, keepalive: true }, savedUsd: 0.5, of: 10, source: 'recent' as const }
-    expect(adviceLine({ ...to1hOn, startsOn: false }, 'dollars', 15 * S)).toBe(
-      'You\'re on a 5-minute cache with keepalive on. A 1-hour cache with keepalive on would have saved $0.50 over 10 recent pauses: set "promptCacheTtl": "1h" in settings.json and, in the new session, click the pie on.',
+    const to1hOn = { kind: 'change' as const, from: { ttl: '5m' as const, keepalive: true }, to: { ttl: '1h' as const, keepalive: true }, savedUsd: 0.5, of: 10, source: 'recent' as const, run: { leadMs: 15 * S, pinned: null } }
+    expect(plain(adviceLine({ ...to1hOn, startsOn: false }, 'dollars', 15 * S))).toBe(
+      'You\'re on a 5-minute cache with keepalive on. A 1-hour cache with keepalive on would have saved $0.50 over 10 recent pauses: set "promptCacheTtl": "1h" in settings.json and, in the new session, run /keepalive on 15 or click the pie on.',
     )
     expect(adviceLine({ ...to1hOn, startsOn: true }, 'dollars', 15 * S)).toBe('You\'re on a 5-minute cache with keepalive on. A 1-hour cache with keepalive on would have saved $0.50 over 10 recent pauses: set "promptCacheTtl": "1h" in settings.json (new sessions).')
   })
@@ -189,9 +201,14 @@ describe('adviceLine and adviceOf: the one sentence, in the unit shown', () => {
     )
   })
 
-  test('a change of keepalive alone names the pie', () => {
-    const result = adviceLine({ kind: 'change', from: { ttl: '5m', keepalive: false }, to: { ttl: '5m', keepalive: true }, savedUsd: 0.5, of: 3, source: 'recent', startsOn: false }, 'dollars', 15 * S)
-    expect(result).toBe('You\'re on a 5-minute cache with keepalive off. A 5-minute cache with keepalive on would have saved $0.50 over 3 recent pauses: click the pie on.')
+  test('a change of keepalive alone gives the command beside the click', () => {
+    const result = adviceLine({ kind: 'change', from: { ttl: '5m', keepalive: false }, to: { ttl: '5m', keepalive: true }, savedUsd: 0.5, of: 3, source: 'recent', startsOn: false, run: { leadMs: 15 * S, pinned: null } }, 'dollars', 15 * S)
+    expect(plain(result)).toBe('You\'re on a 5-minute cache with keepalive off. A 5-minute cache with keepalive on would have saved $0.50 over 3 recent pauses: run /keepalive on 15 or click the pie on.')
+  })
+
+  test('a same-TTL change from keepalive on to off ends with the off command and the click', () => {
+    const result = adviceLine({ kind: 'change', from: { ttl: '5m', keepalive: true }, to: { ttl: '5m', keepalive: false }, savedUsd: 0.5, of: 3, source: 'recent', startsOn: true, run: { leadMs: 20 * S, pinned: 3 } }, 'dollars', 20 * S)
+    expect(plain(result)).toMatch(/run \/keepalive off or click the pie off\.$/)
   })
 
   test('the on-best sentence with keepalive on says what keepalive saves against having it off', () => {
@@ -464,5 +481,58 @@ describe('ttlLineOf: the TTL line names the setup you are on, the setup it is pr
     expect(ttlLine({ better: '1h', savedUsd: 4.74, of: 10 }, inputs({ history: pauses(10, 20 * MIN, 2000), current: { ttl: '5m', keepalive: false } }))).toBe(
       'You\'re on a 5-minute cache with keepalive off. A 1-hour cache with keepalive off would have saved $4.74 over 10 priced pauses across sessions: set "promptCacheTtl": "1h" in settings.json for new sessions, which start with keepalive off (keepalive_default).',
     )
+  })
+})
+
+describe('a change step gives the /keepalive command beside each click, at the run the target was priced at', () => {
+  const SLOW = pauses(10, 10 * MIN, 1000000)
+  const LONG = pauses(10, 90 * MIN)
+  const asked = (text: string) => {
+    const command = commandOf(stepOf(text))
+    return parseRequest(command.slice('/keepalive'.length))
+  }
+
+  test('at the same TTL, keepalive on names this session\'s lead, and its pinned count when there is one', () => {
+    const base = { leadMs: 20 * S, current: { ttl: '5m' as const, keepalive: false }, history: SLOW }
+    expect(bestSetupOf(inputs(base))).toMatchObject({ kind: 'change', to: { ttl: '5m', keepalive: true }, run: { leadMs: 20 * S, pinned: null } })
+    expect(stepOf(adviceOf(inputs(base), 'dollars'))).toBe('run /keepalive on 20 or click the pie on.')
+    expect(stepOf(adviceOf(inputs({ ...base, pinned: 3 }), 'dollars'))).toBe('run /keepalive on 20 3 or click the pie on.')
+    expect(asked(adviceOf(inputs({ ...base, pinned: 3 }), 'dollars'))).toEqual({ kind: 'on', leadMs: 20 * S, count: 3 })
+  })
+
+  test('at the other TTL where the new session starts keepalive otherwise, the command is the new session\'s run, not this session\'s', () => {
+    const base = { leadMs: 20 * S, pinned: 3, current: { ttl: '5m' as const, keepalive: true }, history: LONG, fresh: { on: false, leadMs: 15 * S, pinned: null } }
+    expect(bestSetupOf(inputs(base))).toMatchObject({ kind: 'change', to: { ttl: '1h', keepalive: true }, startsOn: false, run: { leadMs: 15 * S, pinned: null } })
+    const text = adviceOf(inputs(base), 'dollars')
+    expect(stepOf(text)).toBe('set "promptCacheTtl": "1h" in settings.json and, in the new session, run /keepalive on 15 or click the pie on.')
+    expect(asked(text)).toEqual({ kind: 'on', leadMs: 15 * S, count: null })
+  })
+
+  test('a mismatch change of TTL to keepalive off gives the off command', () => {
+    const text = adviceOf(inputs({ history: pauses(10, 30 * MIN), fresh: { on: true, leadMs: 15 * S, pinned: null } }), 'dollars')
+    expect(plain(text)).toBe(
+      'You\'re on a 5-minute cache with keepalive on. A 1-hour cache with keepalive off would have saved $1.20 over 10 recent pauses: set "promptCacheTtl": "1h" in settings.json and, in the new session, run /keepalive off or click the pie off.',
+    )
+    expect(asked(text)).toEqual({ kind: 'off' })
+    expect(adviceOf(inputs({ history: pauses(10, 30 * MIN) }), 'dollars')).toMatch(/in settings\.json \(new sessions\)\.$/)
+  })
+
+  test('the command is followed by " or ", never by punctuation, and the span is joined by the span space', () => {
+    const text = adviceOf(inputs({ leadMs: 20 * S, pinned: 3, current: { ttl: '5m', keepalive: false }, history: SLOW }), 'dollars')
+    expect(text).toContain(['/keepalive', 'on', '20', '3'].join(SPAN_SPACE) + ' or click the pie on.')
+  })
+
+  test('in tokens the sentence states no dollar figure, carries one dollar note, and its step is as in dollars', () => {
+    const base = inputs({ leadMs: 20 * S, current: { ttl: '5m', keepalive: false }, history: SLOW })
+    const tokens = plain(adviceOf(base, 'tokens'))
+    expect(tokens).not.toContain('$')
+    expect(tokens.match(/see \/keepalive unit dollars/g)).toHaveLength(1)
+    expect(tokens.endsWith(': run /keepalive on 20 or click the pie on.')).toBe(true)
+  })
+
+  test('a pin on the new session\'s run is named in the command', () => {
+    const text = adviceOf(inputs({ current: { ttl: '5m', keepalive: false }, history: LONG, fresh: { on: false, leadMs: 15 * S, pinned: 2 } }), 'dollars')
+    expect(bestSetupOf(inputs({ current: { ttl: '5m', keepalive: false }, history: LONG, fresh: { on: false, leadMs: 15 * S, pinned: 2 } }))).toMatchObject({ kind: 'change', to: { ttl: '1h', keepalive: true } })
+    expect(stepOf(text).endsWith('run /keepalive on 15 2 or click the pie on.')).toBe(true)
   })
 })

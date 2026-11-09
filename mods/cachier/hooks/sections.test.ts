@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'claude-code/testing'
-import { answerOf, layoutOf, sectionsOf, wrapLine, WRAP, type Setting, type Snapshot } from './sections'
+import { answerOf, layoutOf, sectionsOf, SPAN_SPACE, wrapLine, WRAP, type Setting, type Snapshot } from './sections'
 
 // The builder takes the figures and sentences as plain values: no engine, no `$`.
 const SETTINGS: Setting[] = [
@@ -55,6 +55,19 @@ describe('wrapLine: at the wrap width, continuation lines indented, no word lost
     expect(lines[0]?.startsWith('   ')).toBe(false)
     for (const line of lines.slice(1)) expect(line.startsWith('    ')).toBe(true)
     expect(lines.map((line) => line.trim()).join(' ')).toBe(text)
+  })
+
+  test('a span joined by the span space stays whole on one row, moves whole to the next row, and prints with plain spaces', () => {
+    const command = ['/keepalive', 'on', '15'].join(SPAN_SPACE)
+    const text = `Over ten pauses this session, keepalive run ${command} or click the pie on.`
+    const lines = wrapLine(text)
+    expect(lines).toEqual(['  Over ten pauses this session, keepalive run', '    /keepalive on 15 or click the pie on.'])
+    for (const line of lines) expect(line).not.toContain(SPAN_SPACE)
+  })
+
+  test('a line with no span wraps as before, and a span that fits stays where it is', () => {
+    expect(wrapLine('one two three', 10)).toEqual(['  one two', '    three'])
+    expect(wrapLine(`run ${['/keepalive', 'off'].join(SPAN_SPACE)} now`)).toEqual(['  run /keepalive off now'])
   })
 
   test('a short line is one line, indented two', () => {

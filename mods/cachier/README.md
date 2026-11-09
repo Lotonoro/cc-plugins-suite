@@ -256,7 +256,7 @@ session, so it uses the lead and count a new session's click starts with: the `k
 A change of TTL says to click the pie only when the new session would start keepalive (per `keepalive_default`) other
 than the change wants, and when it does, the click is made in the new session, e.g.
 `You're on a 5-minute cache with keepalive on. A 1-hour cache with keepalive off would have saved $1.20 over 10 recent
-pauses: set "promptCacheTtl": "1h" in settings.json and, in the new session, click the pie off.` The sentence is added beside the figures above and the TTL line,
+pauses: set "promptCacheTtl": "1h" in settings.json and, in the new session, run /keepalive off or click the pie off.` Each click is also given as the /keepalive command that does the same, at the lead and pinned count the setup was priced at, so it can be sent from the phone. The sentence is added beside the figures above and the TTL line,
 which stay. Every sentence opens by naming your TTL and keepalive state, `You're on a 5-minute cache with keepalive off.`, and
 the setup a saving is stated against is named in full. Keepalive on at a lead not below the TTL is named paused, sending
 nothing, with the reason the Keepalive section gives (`You're on a 5-minute cache with keepalive paused, sending nothing

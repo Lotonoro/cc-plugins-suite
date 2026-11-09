@@ -6965,7 +6965,7 @@ describe('the Keepalive section: the colour sentence wherever no refresh is comi
 describe('the best setup: one sentence, in the pane and in the bare command, priced over this session or recent pauses', () => {
   // Ten ten-minute pauses, each with a million tokens written: on 5 m keepalive costs $5.04 a pause, off $5.48, 1 h $8.00.
   const pauseOf = (i: number, startMs = 1000 + i) => ({ startMs, pausedMs: 10 * MIN, hour: 10, weekday: 2, ratio: 24, ttlMs: 300000, contextTokens: 100000, grownTokens: 1000000 })
-  const CHANGE = 'A 5-minute cache with keepalive on would have saved $4.40 over 10 recent pauses: click the pie on.'
+  const CHANGE = 'A 5-minute cache with keepalive on would have saved $4.40 over 10 recent pauses: run /keepalive on 15 or click the pie on.'
 
   test('the bare command opens its Advice section with the sentence, as one line of the section', async ($, on) => {
     kaWorld(on, { ...opusCached(), store: { 'pauses/old': Array.from({ length: 10 }, (_, i) => pauseOf(i)) } })
@@ -6973,6 +6973,7 @@ describe('the best setup: one sentence, in the pane and in the bare command, pri
     await $.classic.SessionStart({ source: 'startup', transcript_path: PATH })
     await clock.advance(1000)
     expect((await commandText($, '')).replace(/\n\s*/g, ' ')).toContain(`Advice You're on a 5-minute cache with keepalive off. ${CHANGE}`)
+    expect(await drawnPane($)).toContain(`You're on a 5-minute cache with keepalive off. ${CHANGE}`)
   })
 
   test('keepalive on at a lead not below the TTL: the sentence names the setup paused, with the reason the Keepalive section gives', async ($, on) => {
@@ -7049,7 +7050,7 @@ describe('the best setup: one sentence, in the pane and in the bare command, pri
     await $.classic.SessionStart({ source: 'startup', transcript_path: PATH })
     await clock.advance(1000)
     expect(most).toBe(8)
-    expect((await commandText($, '')).replace(/\n\s*/g, ' ')).toContain('A 5-minute cache with keepalive on would have saved $8.80 over 20 recent pauses: click the pie on.')
+    expect((await commandText($, '')).replace(/\n\s*/g, ' ')).toContain('A 5-minute cache with keepalive on would have saved $8.80 over 20 recent pauses: run /keepalive on 15 or click the pie on.')
   })
 
   test('a pause another session\'s key has since dropped is not brought back by a later load', async ($, on) => {
@@ -7091,7 +7092,12 @@ describe('the best setup: one sentence, in the pane and in the bare command, pri
     await clock.advance(1000)
     const text = (await commandText($, '')).replace(/\n\s*/g, ' ')
     expect(text).toContain('Keepalive  paused')
-    expect(text).toContain('A 1-hour cache with keepalive on would have saved $4.40 over 10 recent pauses: set "promptCacheTtl": "1h" in settings.json and, in the new session, click the pie on.')
+    expect(text).toContain('A 1-hour cache with keepalive on would have saved $4.40 over 10 recent pauses: set "promptCacheTtl": "1h" in settings.json and, in the new session, run /keepalive on 15 or click the pie on.')
+    expect(await drawnPane($)).toContain('and, in the new session, run /keepalive on 15 or click the pie on.')
+    const rows = (await commandText($, '')).split('\n')
+    expect(rows.every((row) => row.length <= 48)).toBe(true)
+    expect(rows.some((row) => row.includes('/keepalive on 15'))).toBe(true)
+    expect((await paneRows($)).every((row) => row.length <= 48)).toBe(true)
   })
 
   test('a change of TTL needs no click when new sessions start keepalive as the change wants', { options: { keepalive_default: 'on' } }, async ($, on) => {
@@ -7127,11 +7133,11 @@ describe('the best setup: one sentence, in the pane and in the bare command, pri
     const clock = mock.clock(on, { now: T0 })
     await $.classic.SessionStart({ source: 'startup', transcript_path: PATH })
     await clock.advance(1000)
-    expect((await commandText($, '')).replace(/\n\s*/g, ' ')).toContain('A 5-minute cache with keepalive on would have saved $2.20 over 5 pauses this session: click the pie on.')
+    expect((await commandText($, '')).replace(/\n\s*/g, ' ')).toContain('A 5-minute cache with keepalive on would have saved $2.20 over 5 pauses this session: run /keepalive on 15 or click the pie on.')
     // A resume onto another transcript: a new session with no pauses under its key, and no cold mark as a clear would leave.
     await $.classic.SessionStart({ source: 'resume', transcript_path: '/home/test/.claude/projects/p/s3.jsonl' })
     await clock.advance(1000)
-    expect((await commandText($, '')).replace(/\n\s*/g, ' ')).toContain('A 5-minute cache with keepalive on would have saved $2.20 over 5 recent pauses: click the pie on.')
+    expect((await commandText($, '')).replace(/\n\s*/g, ' ')).toContain('A 5-minute cache with keepalive on would have saved $2.20 over 5 recent pauses: run /keepalive on 15 or click the pie on.')
   })
 
   test("a pause the last transcript's prompt ended is not counted in the pauses of a transcript learned while it was written", async ($, on) => {
@@ -7941,7 +7947,7 @@ const noStateRun = (args: string): Scenario['run'] => async ($, on) => {
 }
 const SCENARIOS: Scenario[] = [
   { name: 'keepalive off with an offer', old: { warmth: 'Prompt cache warm, 4:59 left (5-minute cache)', status: `Keepalive is off. ${COLOUR}`, explain: 'Next refresh: $0.004 (~19k cached tokens read).', figures: 'One refresh every 4:45.', breakEven: "Keepalive pays off if you're back between 5:00 and 1:54:00" }, figure: 'literal', run: async ($, on) => (await startedWorld($, on), paneRows($)) },
-  { name: 'keepalive off with the best setup advised over ten recent pauses', old: { advice: 'A 5-minute cache with keepalive on would have saved $4.40 over 10 recent pauses: click the pie on.', warmth: 'Prompt cache warm, 4:59 left (5-minute cache)', status: `Keepalive is off. ${COLOUR}`, explain: 'Next refresh: $0.004 (~19k cached tokens read).', figures: 'One refresh every 4:45.', breakEven: "Keepalive pays off if you're back between 5:00 and 1:54:00" }, figure: 'literal', run: async ($, on) => {
+  { name: 'keepalive off with the best setup advised over ten recent pauses', old: { advice: 'A 5-minute cache with keepalive on would have saved $4.40 over 10 recent pauses: run /keepalive on 15 or click the pie on.', warmth: 'Prompt cache warm, 4:59 left (5-minute cache)', status: `Keepalive is off. ${COLOUR}`, explain: 'Next refresh: $0.004 (~19k cached tokens read).', figures: 'One refresh every 4:45.', breakEven: "Keepalive pays off if you're back between 5:00 and 1:54:00" }, figure: 'literal', run: async ($, on) => {
     const pauses = Array.from({ length: 10 }, (_, i) => ({ startMs: 1000 + i, pausedMs: 10 * MIN, hour: 10, weekday: 2, ratio: 24, ttlMs: 300000, contextTokens: 100000, grownTokens: 1000000 }))
     await startedWorld($, on, { ...opusCached(), store: { 'pauses/old': pauses } })
     return paneRows($)

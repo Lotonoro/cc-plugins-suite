@@ -38,11 +38,16 @@ export const sectionsOf = (snap: Snapshot): Section[] =>
     { title: 'Settings' as const, state: null, lines: snap.settings.map(settingLine) },
   ].filter((section) => section.state !== null || section.lines.length > 0)
 
-// A sentence wrapped at the width: the first line indented two, each continuation four, no word broken.
+// The space a sentence joins the words of an unbreakable span with, such as a command: the wrap keeps the span on one row and prints each
+// as a plain space, so the answer's text carries none.
+export const SPAN_SPACE = '\u00a0'
+
+// A sentence wrapped at the width: the first line indented two, each continuation four, no word broken and no span broken.
 export const wrapLine = (text: string, width = WRAP, first = '  ', rest = '    '): string[] => {
   const lines: string[] = []
   let line = first
-  for (const word of text.split(' ')) {
+  for (const span of text.split(' ')) {
+    const word = span.split(SPAN_SPACE).join(' ')
     const empty = line.trim() === ''
     if (!empty && line.length + 1 + word.length > width) {
       lines.push(line)

@@ -23,6 +23,7 @@ import {
   restartPause,
   off,
   parseRequest,
+  printRequest,
   pingLine,
   pressOf,
   promptDropped,
@@ -78,6 +79,26 @@ const on = (leadMs: number, count: number, extra: Partial<KeepaliveState> = {}):
   ...extra,
 })
 const zero = { input_tokens: 0, output_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 }
+
+describe('printRequest: the request the best-setup sentence names, as the parser reads it', () => {
+  test('off, and on with and without a count', () => {
+    expect(printRequest({ kind: 'off' })).toBe('/keepalive off')
+    expect(printRequest({ kind: 'on', leadMs: 15000, count: null })).toBe('/keepalive on 15')
+    expect(printRequest({ kind: 'on', leadMs: 15000, count: 2 })).toBe('/keepalive on 15 2')
+  })
+
+  test('the parser given a printed request returns it unchanged', () => {
+    const args = (text: string) => text.slice('/keepalive'.length)
+    for (const lead of ['15', '300', '15.5', '1.005']) {
+      for (const count of ['', ' 2']) {
+        const request = parseRequest(`on ${lead}${count}`)
+        if (request.kind !== 'on') throw new Error(`not an on request: ${lead}${count}`)
+        expect(parseRequest(args(printRequest(request)))).toEqual(request)
+      }
+    }
+    expect(parseRequest(args(printRequest({ kind: 'off' })))).toEqual({ kind: 'off' })
+  })
+})
 
 describe('parseRequest', () => {
   test('a bare command reads the status; off and on are the two toggles', () => {

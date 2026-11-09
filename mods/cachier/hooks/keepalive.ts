@@ -108,6 +108,11 @@ export const parseRequest = (args: string): Request => {
   return { kind: 'usage' }
 }
 
+// The text of an `on` or `off` request, as parseRequest reads it back: the lead is the milliseconds over the parser's 1000, printed as
+// JavaScript prints the number, which reads back to the same milliseconds for any lead that is a number of seconds times 1000.
+export const printRequest = (request: Extract<Request, { kind: 'on' | 'off' }>): string =>
+  request.kind === 'off' ? '/keepalive off' : `/keepalive on ${request.leadMs / 1000}${request.count === null ? '' : ` ${request.count}`}`
+
 // A round trip to one decimal, rounded up: never shorter than it was measured.
 const secsUp = (ms: number) => `${(Math.ceil(ms / 100) / 10).toFixed(1)} s`
 
