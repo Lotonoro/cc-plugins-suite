@@ -192,9 +192,20 @@ export type RowTexts = { prefix: string; title: string; marker: string; open: Co
 export type Answer = { box: number; text: string }
 
 // How a row is laid out. `rung`: 1 for the full controls, 2 with the answer texts cut, 3 with the pressed controls squeezed. `answer`: the columns an answer's
-// text may take. `control`: the width of the control column, the widest state's control and the space before it. `room`: the columns the title keeps. `title`:
-// the title cut to the room, with its marker. `open` and `pressed`: the answer of the open control and of each pressed control, in the order of `RowTexts`.
-export type RowLayout = { rung: 1 | 2 | 3; answer: number; control: number; room: number; title: string; open: Answer; pressed: Answer[] }
+// text may take. `control`: the width of the control column, the widest state's control and the space before it, 0 for a row that draws none. `room`: the columns the
+// title keeps. `title`: the title cut to the room, with its marker. `open` and `pressed`: the answer of the open control and of each pressed control, in the order of
+// `RowTexts`. `drawsControl` and `drawsPrefix`: whether the row draws its control column and its prefix, which a row too narrow for them leaves out.
+export type RowLayout = {
+  rung: 1 | 2 | 3
+  answer: number
+  control: number
+  room: number
+  title: string
+  open: Answer
+  pressed: Answer[]
+  drawsControl: boolean
+  drawsPrefix: boolean
+}
 
 // The columns the title keeps before the control is given less.
 const TITLE_MIN = 10
@@ -216,8 +227,10 @@ export const backlogTail = (head: string, tail: string, body: number): string =>
 // row's states, so the title's room is the same in every state and a press, an undo or a window's end moves nothing. The ladder, from the first rung that leaves
 // the title ten columns: the full controls, with answer texts up to DONE_MAX columns; the answer texts cut a column at a time from there down to one; then the
 // same again with every pressed control squeezed to its mark and undo button, the open control keeping its (cut) label. Where no rung does, the first with the
-// narrowest control, and the title takes what is left, down to one column. The reply's `✓ replied [↶ 3s]` is never cut. A row of a squeezed list (`startSqueezed`,
-// isSqueezed) starts the ladder at its last stage, with every pressed control its mark and undo button.
+// narrowest control, and the title takes what is left, down to one column. Where even that leaves the title no column, the row draws no control and its title takes what
+// the prefix leaves; where the prefix leaves it no column, the row draws the title alone, in the whole width. The row's title still opens the item in the pane, which holds
+// its controls. The reply's `✓ replied [↶ 3s]` is never cut. A row of a squeezed list (`startSqueezed`, isSqueezed) starts the ladder at its last stage, with every
+// pressed control its mark and undo button.
 export const rowLayout = (row: RowTexts, width: number, startSqueezed = false): RowLayout => {
   const prefix = displayColumns(row.prefix)
   const measured = (one: Control): { before: number; answer: number; after: number } => ({
@@ -235,18 +248,27 @@ export const rowLayout = (row: RowTexts, width: number, startSqueezed = false): 
   }
   const forms = (startSqueezed ? [true] : [false, true]).flatMap(marked => Array.from({ length: DONE_MAX }, (_, k) => ({ isSqueezed: marked, answer: DONE_MAX - k, control: controlFor(DONE_MAX - k, marked) })))
   const form = forms.find(one => width - prefix - one.control >= TITLE_MIN) ?? forms.reduce((best, one) => (one.control < best.control ? one : best))
-  const room = Math.max(1, width - prefix - form.control)
+  const drawsControl = width - prefix - form.control >= 1
+  const drawsPrefix = drawsControl || width - prefix >= 1
+  const control = drawsControl ? form.control : 0
+  const room = Math.max(1, width - (drawsPrefix ? prefix : 0) - control)
   const fit = (text: string): Answer => ({ box: Math.min(displayColumns(text), form.answer), text: cutToColumns(text, form.answer) })
   return {
     rung: form.isSqueezed ? 3 : form.answer === DONE_MAX ? 1 : 2,
     answer: form.answer,
-    control: form.control,
+    control,
     room,
     title: cutTitle(row.title, row.marker, room),
     open: fit(row.open.answer),
     pressed: row.pressed.map(one => fit(one.answer)),
+    drawsControl,
+    drawsPrefix,
   }
 }
+
+// Whether a list that is not squeezed is narrower than its chip and one column, so its header takes the squeezed header's shape (the chip on a line of its own and the
+// count under it, each cut at the list's edge) and its fold the squeezed list's (squeezedFold). `chip` is the chip's text.
+export const isChipShort = (widths: BandWidths, chip: string): boolean => widths.human !== null && !isSqueezed(widths) && widths.human.layout <= displayColumns(chip)
 
 // The lines the header takes in a list of `width` columns: one at least, more when the count, which wraps word by word in the columns the chip leaves,
 // does not fit them. The chip never shrinks.

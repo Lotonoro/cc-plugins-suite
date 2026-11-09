@@ -24,6 +24,7 @@ To do for you 3 open
   to leave room for the control at the widest it gets, and a line break in a title reads as a space; a choice keeps its `[…]` after the cut title. That room is reserved at the control's
   widest state, so a press, an undo and the end of the three seconds move nothing: the control starts on the same column through all of them. A pressed answer's text shows up to 24 columns;
   where the title would keep under ten columns it is cut further with `…`, and where cutting it is not enough the pressed control shrinks to `✓ [↶ 3s]` (`✗` for a no) and the answer is in the pane.
+  Under 15 to 18 columns (by the id's digits) a row shows its number and title only, its controls in the pane, which its title opens; under 6 to 9 columns it shows its title alone.
   A list beside the Claude column and one that has the whole band do the same, except that a list under 64 columns beside the column, which happens only while this plugin's pane is open and docked (see The Claude TODO column), is squeezed:
   every pressed control, a reply included, is `✓ [↶ 3s]` from the start, and its header is the chip on one line with the count under it, each cut at the list's edge. When the band is too short for
   both lines and a row, the header is the chip alone, and a band too short for any row draws its header alone. The summary row is one line too, cut at the list's width with `…`.
@@ -109,9 +110,8 @@ Then start a new session and let the agent do the asking.
   running turn, which has not been observed live; if it differs, a done press that lands as a turn starts is read one
   model request later, never lost.
 - Tested on the terminal only: the desktop app is untested, though it draws the reply field too. A Remote Control phone draws no band or pane, so there the list is read through `/asks`, and the Claude TODO list through `/claude-todo`. The chime plays on macOS only.
-- In a very narrow terminal, a full-width list under 15 to 18 columns (the id, one column of title and the squeezed `✓ [↶ 3s]`, for ids of one to four digits) cannot hold a row on one line, and the row runs past the list.
-- The band's `To do for <term>` chip never shrinks, and a term of up to 20 columns makes it up to 32 columns wide with its spaces, so in a list narrower than that the header can overflow. The count
-  beside the chip wraps in the columns the chip leaves, and the header takes as many lines as that needs. In a squeezed list (under 64 columns beside the Claude column) the chip is cut at the list's edge instead, so a long term loses its end,
+- The band's `To do for <term>` chip never shrinks while it fits, and a term of up to 20 columns makes it up to 32 columns wide with its spaces. The count beside the chip wraps in the columns the chip leaves, and the header takes as many lines as that needs.
+  In a squeezed list (under 64 columns beside the Claude column), and in any list narrower than its chip and one column, the chip is cut at the list's edge instead, so a long term loses its end,
   and its count is on the line below, cut the same way; when the band is too short for both lines and a row, the header is the chip alone and the count is left out.
 - A term read back from stored state is not re-checked against the 20-column and one-line limits that the tool applies to
   live input, so a hand-edited or corrupt stored list can show a longer or multi-line term.

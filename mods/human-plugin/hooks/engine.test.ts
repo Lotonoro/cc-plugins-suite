@@ -1445,3 +1445,97 @@ test('with the pane on the Claude list, a write that adds items asks again for t
   expect(closes).toEqual(['human-items'])
   expect([...shown]).toEqual([])
 })
+
+// Every line of a human list drawn alone at 1 to 25 columns and at 32, 33 and 40, in the band's tree: each item row is one row of cells whose prefix, title and control add up to the width at most, a row
+// too narrow for its control draws none and its title's label fits its room, and the header is one row of the chip and the count from the chip's width plus one and the chip and the
+// count on rows of their own below it. The presses are made at 120 columns, where every control is drawn, and the rows drawn again narrow.
+for (const [name, term, chip] of [['the default term', undefined, ' To do for you '], ['a 20-column term', 'abcdefghij'.repeat(2), ` To do for ${'abcdefghij'.repeat(2)} `]] as const) {
+ for (const first of [2, 1000]) {
+  test(`the band drawn alone with ${name} at 1 to 25 columns and at 32, 33 and 40, open, pressed and sent, draws no row or header line wider than the list, at an id of ${first === 2 ? 'one digit' : 'four digits'}`, { timeoutMs: 60000 }, async ($, on) => {
+    on('prompt.submit', (_$, e) => ({ text: e.text }))
+    const clock = mock.clock(on)
+    mock.store(on)
+    on('ui.panes', () => ({ value: [] }))
+    // An item that stays open, so the band draws before the sweep's items are added, then the ids up to the sweep's.
+    await $.tool.call({ tool: TOOL, action: 'add', title: 'Anchor', ...(term === undefined ? {} : { term }) })
+    await skipIds($, 2, first)
+    const tall = { ...BAND_PROPS, maxRows: 400, scroll: { offset: 0, bodyRows: 400 } }
+    const band = await $.ui.mount({ plugin: 'human-plugin', surface: 'terminal', component: 'AbovePrompt', props: { ...tall, bodyColumns: 120 } })
+    let bare = 0
+    const ids = Object.fromEntries(SWEEP_KINDS.map((kind, k) => [kind.name, first + k]))
+    const [, plain, labelled, yesno, broken] = SWEEP_KINDS.map(kind => ids[kind.name] as number) as [number, number, number, number, number]
+    await $.tool.call({ tool: TOOL, action: 'add', title: SWEEP_TITLE, options: [{ label: SWEEP_OPTION, recommended: true }, { label: 'Use postgres' }] })
+    await $.tool.call({ tool: TOOL, action: 'add', title: SWEEP_TITLE })
+    await $.tool.call({ tool: TOOL, action: 'add', title: SWEEP_TITLE, done: SWEEP_LABEL })
+    await $.tool.call({ tool: TOOL, action: 'add', title: SWEEP_TITLE, yesno: true })
+    await $.tool.call({ tool: TOOL, action: 'add', title: SWEEP_BROKEN })
+    const check = async (phase: Phase): Promise<void> => {
+      for (const columns of [...Array.from({ length: 25 }, (_, k) => k + 1), 32, 33, 40]) {
+        await band.redraw({ ...tall, bodyColumns: columns })
+        const tree = await band.drawn()
+        const where = `${phase}, ids from ${first}, band of ${columns}`
+        const header = (tree as El).children?.[0]
+        if (columns > displayColumns(chip)) {
+          expect(header?.props?.flexDirection, where).toBeUndefined()
+          expect(header?.children, where).toHaveLength(2)
+        } else {
+          expect(header?.props?.flexDirection, where).toBe('column')
+          expect(header?.children, where).toHaveLength(2)
+          for (const line of header?.children ?? []) {
+            expect(JSON.stringify(line), where).toContain('"wrap":"truncate-end"')
+            expect(elementsOf(line, 'Text'), where).toHaveLength(1)
+          }
+        }
+        for (const kind of SWEEP_KINDS) {
+          const id = ids[kind.name] as number
+          const name = `${where}, ${kind.name} #${id}`
+          const row = rowElement(tree, id)
+          expect(row, name).toBeDefined()
+          const cells = cellsOf(row as El)
+          const laid = rowLayout(textsOf(kind, id), columns)
+          const titleCell = cells.find(cell => elementsOf(cell, 'Button').some(button => button.props?.key === `title-${id}`)) as El
+          const [prefix, control] = [cells.find(cell => cell !== titleCell && cell.props?.width === undefined), cells.find(cell => cell.props?.width !== undefined)]
+          expect(cells, name).toHaveLength(1 + Number(laid.drawsPrefix) + Number(laid.drawsControl))
+          expect(prefix !== undefined, name).toBe(laid.drawsPrefix)
+          expect(control !== undefined, name).toBe(laid.drawsControl)
+          if (!laid.drawsControl) bare++
+          const label = shownOf(titleCell)
+          expect(displayColumns(label), name).toBeLessThanOrEqual(laid.room)
+          expect(displayColumns(shownOf(prefix)) + displayColumns(label) + Number(control?.props?.width ?? 0), name).toBeLessThanOrEqual(columns)
+          if (control !== undefined) expect(displayColumns(shownOf(control)), name).toBeLessThanOrEqual(Number(control.props?.width))
+        }
+      }
+      await band.redraw({ ...tall, bodyColumns: 120 })
+    }
+    await check('open')
+    await band.press({ key: `done-${plain}` })
+    await band.press({ key: `done-${labelled}` })
+    await band.press({ key: `yes-${yesno}` })
+    await band.press({ key: `done-${broken}` })
+    await check('pressed')
+    await clock.advance(3000)
+    await check('sent')
+    for (let id = first; id < first + SWEEP_KINDS.length; id++) await $.tool.call({ tool: TOOL, action: 'remove', id })
+    // Rows without a control were drawn.
+    expect(bare).toBeGreaterThan(0)
+  })
+ }
+}
+
+test('a press on a row\'s title opens the pane on the item where the row draws no control, and where it draws no prefix either', async ($, on) => {
+  mock.clock(on)
+  mock.store(on)
+  const shown = paneRecord(on)
+  await $.tool.call({ tool: TOOL, action: 'add', title: 'Pick a database for the cache' })
+  await $.tool.call({ tool: TOOL, action: 'add', title: 'Pick a queue for the jobs' })
+  const band = await $.ui.mount({ plugin: 'human-plugin', surface: 'terminal', component: 'AbovePrompt', props: { ...BAND_PROPS, bodyColumns: 80 } })
+  // An id of one digit has a prefix of 5: a row of 8 draws it and no control, a row of 4 draws the title alone.
+  for (const [id, columns] of [[1, 8], [2, 4]] as const) {
+    await band.redraw({ ...BAND_PROPS, bodyColumns: columns })
+    const row = rowElement(await band.drawn(), id)
+    expect(cellsOf(row as El), `band of ${columns}`).toHaveLength(columns === 8 ? 2 : 1)
+    shown.delete('human-items')
+    await band.press({ key: `title-${id}` })
+    expect(shown.has('human-items'), `band of ${columns}`).toBe(true)
+  }
+})

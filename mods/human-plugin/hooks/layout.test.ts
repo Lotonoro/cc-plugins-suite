@@ -1,5 +1,5 @@
 import { expect, test } from 'claude-code/testing'
-import { backlogTail, bandDraws, bandRows, bandWidths, claudeRows, columnHeight, cutTitle, cutToColumns, headerLines, humanFoldRows, isSqueezed, rowLayout, squeezedFold, wrapText, type ClaudeRow, type Control, type RowTexts } from './layout'
+import { backlogTail, bandDraws, bandRows, bandWidths, claudeRows, columnHeight, cutTitle, cutToColumns, headerLines, humanFoldRows, isChipShort, isSqueezed, rowLayout, squeezedFold, wrapText, type BandWidths, type ClaudeRow, type Control, type RowTexts } from './layout'
 import { displayColumns } from './items'
 import type { Item, TodoItem } from '../types'
 
@@ -704,14 +704,49 @@ test('a title is cut by columns at its room, with its decision\'s marker, the li
   expect(displayColumns(tight.title)).toBe(tight.room)
 })
 
-test('below the narrowest width the row cannot be one line within the list: the control takes its squeezed 9 columns and the title keeps one, whatever the list', () => {
+test('at the prefix and 10 the row draws its control at the third rung and the title keeps one column, for every kind', () => {
   for (const kind of KINDS) {
-    for (const width of [1, 8, 12, 15]) {
-      const got = rowLayout(rowFor(kind), width)
-      expect([got.rung, got.control, got.room], `${kind.name} at ${width}`).toEqual([3, 9, 1])
+    const got = rowLayout(rowFor(kind), 16)
+    expect([got.rung, got.control, got.room, got.drawsControl, got.drawsPrefix], kind.name).toEqual([3, 9, 1, true, true])
+  }
+})
+
+test('below the prefix and 10 the row draws no control, its prefix whole while that leaves the title a column, and under that its title alone in the whole width; the id 12 (prefix 6) gives 15 -> room 9, 7 -> 1, 6 and 1 -> the width', () => {
+  for (const kind of KINDS) {
+    const row = rowFor(kind)
+    for (const [width, room, drawsPrefix] of [[15, 9, true], [7, 1, true], [6, 6, false], [1, 1, false]] as const) {
+      const got = rowLayout(row, width)
+      expect({ rung: got.rung, control: got.control, room: got.room, drawsControl: got.drawsControl, drawsPrefix: got.drawsPrefix }, `${kind.name} at ${width}`).toEqual({
+        rung: 3,
+        control: 0,
+        room,
+        drawsControl: false,
+        drawsPrefix,
+      })
     }
-    // At the prefix and 10 the title keeps exactly one column.
-    expect(rowLayout(rowFor(kind), 16).room, kind.name).toBe(1)
+  }
+})
+
+test('for an id of one to four digits, a row draws its control and prefix from the prefix and 10, its prefix alone from the prefix and 1 to the prefix and 9, and its title alone under that; no row is wider than its list, squeezed or not, at any width from 1', () => {
+  for (const kind of KINDS) {
+    for (const digits of [1, 2, 3, 4]) {
+      const row = rowFor(kind, digits, 'A title longer than the list, with a pneumonoultramicroscopic word in it')
+      const prefix = displayColumns(row.prefix)
+      for (const squeezed of [false, true]) {
+        for (let width = 1; width <= 120; width++) {
+          const where = `${kind.name}, ${digits} digits at ${width}${squeezed ? ', squeezed' : ''}`
+          const got = rowLayout(row, width, squeezed)
+          const stage = width >= prefix + 10 ? 'control' : width >= prefix + 1 ? 'prefix' : 'title'
+          expect([got.drawsControl, got.drawsPrefix], where).toEqual([stage === 'control', stage !== 'title'])
+          expect(got.drawsControl ? got.control : 0, where).toBe(got.control)
+          expect((got.drawsPrefix ? prefix : 0) + got.room + got.control, where).toBeLessThanOrEqual(width)
+          expect(got.room, where).toBeGreaterThanOrEqual(1)
+          expect(displayColumns(got.title), where).toBeLessThanOrEqual(got.room)
+          if (stage !== 'control') expect(got.room, where).toBe(stage === 'prefix' ? width - prefix : width)
+          if (stage === 'control') expect(got.drawsControl && got.control > 0, where).toBe(true)
+        }
+      }
+    }
   }
 })
 
@@ -885,4 +920,18 @@ test('a backlog tail measures at most the room (body less the smaller of the hea
       }
     }
   }
+})
+
+test('a list that is not squeezed takes the stacked header only when it is narrower than its chip and one column, for the chip of the default term and of a 20-column term', () => {
+  const chipOf = (term: string): string => ` To do for ${term} `
+  const alone = (width: number): BandWidths => ({ human: { box: width, layout: width }, claude: null })
+  for (const [chip, columns] of [[chipOf('you'), 15], [chipOf('x'.repeat(20)), 32]] as const) {
+    expect(displayColumns(chip)).toBe(columns)
+    for (let width = 1; width <= 120; width++) expect(isChipShort(alone(width), chip), `${columns}-column chip at ${width}`).toBe(width < columns + 1)
+  }
+  // A squeezed list has the stacked header already, and a band with no human list has none.
+  const squeezed: BandWidths = { human: { box: 30, layout: 29 }, claude: { box: 32, layout: 31 } }
+  expect(isSqueezed(squeezed)).toBe(true)
+  expect(isChipShort(squeezed, chipOf('x'.repeat(20)))).toBe(false)
+  expect(isChipShort({ human: null, claude: { box: 32, layout: 32 } }, chipOf('you'))).toBe(false)
 })

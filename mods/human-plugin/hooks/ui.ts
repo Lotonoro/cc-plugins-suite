@@ -12,6 +12,7 @@ import {
   cutToColumns,
   headerLines,
   humanFoldRows,
+  isChipShort,
   isSqueezed,
   rowLayout,
   squeezedFold,
@@ -212,7 +213,7 @@ const hasBrief = (item: Item): boolean => item.detail.trim() !== ''
 // A band row. `width`: the columns the row is laid out in (layout.ts), null for a
 // band with no width. `squeezed`: whether its list is a squeezed one (isSqueezed), whose rows start the ladder at its last stage. A laid-out row is one line of three
 // cells: its prefix, its title's button in a box that shrinks, its label the title cut to the room, and the control's cell, as wide as the row's widest state needs and
-// never shrunk, with the state's control at its start. The titles and the answers are the strings the layout cut, drawn bare, so the terminal never wraps them.
+// never shrunk, with the state's control at its start. A row too narrow for them leaves out the control's cell, then the prefix (rowLayout). The titles and the answers are the strings the layout cut, drawn bare, so the terminal never wraps them.
 const itemRow = (t: Table, h: Handlers, item: Item, view: View, width: number | null, squeezed: boolean): RenderElement => {
   const texts = rowTexts(item, view.windowMs)
   const prefix = t.Box({ flexShrink: 0, children: [t.Text({ bold: item.blocking, dimColor: !item.blocking, children: [texts.prefix] })] })
@@ -231,9 +232,9 @@ const itemRow = (t: Table, h: Handlers, item: Item, view: View, width: number | 
   return t.Box({
     key: `item-${item.id}`,
     children: [
-      prefix,
+      ...(laid.drawsPrefix ? [prefix] : []),
       t.Box({ flexShrink: 1, children: [title(laid.title)] }),
-      t.Box({ width: laid.control, flexShrink: 0, children: control === null ? [] : [t.Text({ children: [' '] }), control] }),
+      ...(laid.drawsControl ? [t.Box({ width: laid.control, flexShrink: 0, children: control === null ? [] : [t.Text({ children: [' '] }), control] })] : []),
     ],
   })
 }
@@ -338,7 +339,7 @@ const headerTexts = (store: Store): { chip: string; count: string } => {
   return { chip: ` ${chipText(store.term)} `, count: ` ${store.items.filter(it => it.state === 'open').length} open${pending > 0 ? `, ${pending} sent` : ''} ` }
 }
 
-// The header of a list that is not squeezed: the chip, which never shrinks, then the count, which wraps word by word in the columns the chip leaves (headerLines).
+// The header of a list that is not squeezed and holds its chip: the chip, then the count, which wraps word by word in the columns the chip leaves (headerLines).
 type Fill = 'warning' | 'permission'
 const plainHeader = (t: Table, chip: string, count: string, fill: Fill): RenderElement =>
   t.Box({
@@ -348,7 +349,7 @@ const plainHeader = (t: Table, chip: string, count: string, fill: Fill): RenderE
     ],
   })
 
-// The squeezed list's header: the chip on a line of its own and the count under it, which the fold gives up when it has no line for it (`lines` 1). Each line is set to
+// The stacked header, of a squeezed list or one narrower than its chip (isChipShort): the chip on a line of its own and the count under it, which the fold gives up when it has no line for it (`lines` 1). Each line is set to
 // cut at its end at the list's layout width, so neither wraps into a line the fold has not counted.
 const squeezedHeader = (t: Table, chip: string, count: string, fill: Fill, lines: number): RenderElement =>
   t.Box({
@@ -374,12 +375,14 @@ export const band = (t: Table, h: Handlers, store: Store, view: View): RenderEle
   const columnLines = widths.human !== null && widths.claude !== null ? columnHeight(todo) : 0
   const { chip, count } = headerTexts(store)
   const squeezed = isSqueezed(widths)
+  const stacked = squeezed || isChipShort(widths, chip)
   const room = humanFoldRows(view.maxRows, columnLines)
-  // The header's lines, and the rows that fit under it. A squeezed list folds both together; any other list's header takes the lines its count wraps to.
+  // The header's lines, and the rows that fit under it. A list with the stacked header (a squeezed one, or one narrower than its chip) folds both together; any other
+  // list's header takes the lines its count wraps to.
   const wrapped = fit === null ? 1 : headerLines(chip, count, fit)
-  const { top, rows } = squeezed ? squeezedFold(store.items, room) : { top: wrapped, rows: bandRows(store.items, Math.max(0, room - wrapped)) }
+  const { top, rows } = stacked ? squeezedFold(store.items, room) : { top: wrapped, rows: bandRows(store.items, Math.max(0, room - wrapped)) }
   const fill = open.some(it => it.blocking) ? 'warning' : 'permission'
-  const header = squeezed ? squeezedHeader(t, chip, count, fill, top) : plainHeader(t, chip, count, fill)
+  const header = stacked ? squeezedHeader(t, chip, count, fill, top) : plainHeader(t, chip, count, fill)
   const body = rows.map(row => (row.kind === 'item' ? itemRow(t, h, row.item, view, fit, squeezed) : summaryRow(t, h, row, fit)))
   if (view.claude === undefined || widths.claude === null) return t.Box({ flexDirection: 'column', children: [header, ...body] })
   // Two boxes at the band's width, the Claude column last: alone it keeps its width and stays at the right edge, with nothing drawn to its left.
