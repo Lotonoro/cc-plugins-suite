@@ -3797,6 +3797,73 @@ test('with the pane on item 3, a press on the Claude column and then one on item
   expect(flat(await paneTree(hooks, $))).toContain('#3 non-blocking, open: Item 3')
 })
 
+// A press opens the pane from the Claude list the band drew last, within the press. A write made since, with the pane not showing the list, asked the pane nothing, so the press looks at the
+// stored list once its open has settled.
+const THREE = [RUNNING, entry('Next', 'queued'), entry('Then', 'queued')]
+
+test('a press on the Claude column made after a write changed the number of items and before the band draws again opens the pane within the press from the list drawn last, and then asks again for the rows of the list now', async () => {
+  reset()
+  const { hooks } = wire()
+  const { $, opens } = backlogEnv([made(1), made(2)], [], null, THREE)
+  await endSession(hooks, $)
+  const tree = await bandAt(hooks, $, 120)
+  await runTodo(hooks, $, { entries: SIX })
+  pressKey(tree, 'claude-header')
+  expect(opens.map(o => o.rows)).toEqual([4])
+  await settle()
+  expect(opens.map(o => o.rows)).toEqual([4, 7])
+  expect(linesOf(await paneTree(hooks, $))).toHaveLength(7)
+})
+
+test('the same press from a pane on a human item switches it within the press from the list drawn last, and then asks again for the rows of the list now', async () => {
+  reset()
+  const { hooks } = wire()
+  const { $, opens } = backlogEnv([made(1), made(2)], [], null, THREE)
+  await endSession(hooks, $)
+  pressKey(await bandAt(hooks, $, 120), 'title-1')
+  await settle()
+  const tree = await bandAt(hooks, $, 120)
+  await runTodo(hooks, $, { entries: SIX })
+  pressKey(tree, 'claude-header')
+  expect(opens.map(o => o.title)).toEqual(['Items for you', 'Claude TODO'])
+  expect(opens.map(o => o.rows).slice(1)).toEqual([4])
+  await settle()
+  expect(opens.map(o => o.rows).slice(1)).toEqual([4, 7])
+})
+
+test('a press on the Claude column made after a write emptied the list and before the band draws again does not leave the pane open on its header line alone, from a closed pane or from a pane on a human item', async () => {
+  for (const onItem of [false, true]) {
+    reset()
+    const { hooks } = wire()
+    const { $, open } = backlogEnv([made(1), made(2)], [], null, THREE)
+    await endSession(hooks, $)
+    if (onItem) {
+      pressKey(await bandAt(hooks, $, 120), 'title-1')
+      await settle()
+    }
+    const tree = await bandAt(hooks, $, 120)
+    await runTodo(hooks, $, { entries: [] })
+    pressKey(tree, 'claude-header')
+    await settle()
+    expect(open, onItem ? 'on an item' : 'closed').toEqual([])
+  }
+})
+
+test('a second press on the Claude column before the first has looked at the stored list closes the pane, and the first press then asks it nothing more', async () => {
+  reset()
+  const { hooks } = wire()
+  const { $, opens, closes, open } = backlogEnv([made(1), made(2)], [], null, THREE)
+  await endSession(hooks, $)
+  const tree = await bandAt(hooks, $, 120)
+  await runTodo(hooks, $, { entries: SIX })
+  pressKey(tree, 'claude-header')
+  pressKey(tree, 'claude-row-0')
+  await settle()
+  expect(opens.map(o => o.rows)).toEqual([4])
+  expect(closes).toEqual(['human-items'])
+  expect(open).toEqual([])
+})
+
 test('with the pane on a human item a press on the Claude column shows the Claude list in the same pane; with it on the Claude list a press on a human title, on the Claude column\'s other rows and on the summary row each switch it again: the engine lists one pane after each', async () => {
   reset()
   const { hooks } = wire()

@@ -2,7 +2,7 @@ import { atom, read, update, type EngineInterface, type PaneCloseOrigin, type Pa
 import type { Item, Selection, TodoItem } from '../types'
 import { successorOf, type Outcome } from './items'
 import { inBackground, readList, updateList } from './shared'
-import { HEADING } from './todo'
+import { HEADING, readTodo } from './todo'
 import { backlogRows, paneRows } from './ui'
 
 export const PANE = 'human-items'
@@ -219,10 +219,14 @@ export function showItem($: EngineInterface, id: number): Promise<unknown> {
 }
 
 // Shows the Claude list in the pane, from the list last drawn: opened from closed, or the open pane switched to it. It shows no human item, so it reads none.
-export function showBacklog($: EngineInterface): Promise<unknown> {
+// The list drawn last is at most one draw behind, and a write made since asked the pane nothing while it did not show the list. So once the open has settled, the pane follows
+// the stored list as it follows a write (followTodo): it asks for the rows again when the count has changed since, and closes on a list a write has emptied, where it would stay
+// open on its header line alone.
+function showBacklog($: EngineInterface): Promise<unknown> {
   const todo = drawnTodo
   const opening = paneOpen ? $.ui.open(backlogRequest(todo)) : openPane($, backlogRequest(todo))
-  return Promise.all([countAsked(todo, opening), select($, CLAUDE_VIEW)])
+  const followed = countAsked(todo, opening).then(async () => followTodo($, await readTodo($)))
+  return Promise.all([followed, select($, CLAUDE_VIEW)])
 }
 
 // The item as printed, against the item now: the same content, the unread mark aside (a clear changes that, and a print does not show it).
