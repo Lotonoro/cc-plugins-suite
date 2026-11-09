@@ -23,7 +23,8 @@ type Shown = Exclude<Selection, null>
 
 // Whether the pane is open, as the mod last knows it. Set when its open is made; cleared by its own close when that is made
 // (closePane), by a close it hears that it did not make (personClosed), and by a session's end (endPane). A band draw resyncs it from the engine's record of the pane
-// (syncPane). The press decides on it synchronously, because the open must be made inside the press: an open made after an await is not counted as asked, and below 144 columns the pane then waits undrawn.
+// (syncPane). The press decides on it synchronously, because the open must be made inside the press: an open made after an await is
+// not counted as asked, and below 144 columns the pane then waits undrawn.
 let paneOpen = false
 // The open the mod has made and the engine has not settled yet: the engine's record does not list the pane until it settles.
 let pendingOpen = false
