@@ -54,7 +54,7 @@ const codePointsOf = (text: string): number[] => {
 // (sequences.ts) that starts there, counted at the wider of what tmux drew and what the engine lays out; else a code point, with the columns tmux drew for it
 // alone. Two pairings that tmux draws one glyph wider than the parts stay together as one unit and add one: a U+FE0F after a code point, which tmux draws two wide
 // where the code point alone is drawn one, and a U+20E3 directly after a code point drawn one column wide.
-const PACKED = 16
+export const PACKED = 16
 const unitAt = (codes: readonly number[], at: number): number => {
   const sequences = SEQUENCES_BY_FIRST.get(codes[at] as number)
   if (sequences !== undefined) {

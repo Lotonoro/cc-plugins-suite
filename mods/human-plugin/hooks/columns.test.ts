@@ -1,5 +1,6 @@
 import { expect, test } from 'claude-code/testing'
-import { displayColumns, unitsOf } from './columns'
+import { PACKED, displayColumns, unitsOf } from './columns'
+import { SEQUENCES } from './sequences'
 
 // Code points written as numbers, so no editor or encoding changes a joiner or a variation selector that draws as nothing.
 const cps = (...codes: number[]): string => String.fromCodePoint(...codes)
@@ -170,4 +171,8 @@ test('the units of a text: each whole code point, a surrogate pair one, the sele
     expect(unitsOf(text).reduce((sum, { columns }) => sum + columns, 0), text).toBe(displayColumns(text))
     expect(unitsOf(text).map(({ text: unit }) => unit).join(''), text).toBe(text)
   }
+})
+
+test('every measured sequence holds fewer code points than the packing of a unit\'s columns and length leaves room for, so a regenerated list cannot corrupt a width', () => {
+  for (const [hex] of SEQUENCES) expect(hex.split(' ').length, hex).toBeLessThan(PACKED)
 })
