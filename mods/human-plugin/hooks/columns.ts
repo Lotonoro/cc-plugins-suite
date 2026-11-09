@@ -49,26 +49,25 @@ const codePointsOf = (text: string): number[] => {
   return codes
 }
 
-// The columns of the unit that starts at `at` in `codes`, left in `unitColumns`, and the code points it holds. The unit is the longest measured sequence
+// The columns and the code points of the unit that starts at `at` in `codes`, packed in one number so a count allocates nothing: the columns times `PACKED` plus
+// the code points, which a measured sequence keeps under `PACKED` (the longest holds 10). The unit is the longest measured sequence
 // (sequences.ts) that starts there, counted at the wider of what tmux drew and what the engine lays out; else a code point, with the columns tmux drew for it
 // alone. Two pairings that tmux draws one glyph wider than the parts stay together as one unit and add one: a U+FE0F after a code point, which tmux draws two wide
 // where the code point alone is drawn one, and a U+20E3 directly after a code point drawn one column wide.
-let unitColumns = 0
+const PACKED = 16
 const unitAt = (codes: readonly number[], at: number): number => {
   const sequences = SEQUENCES_BY_FIRST.get(codes[at] as number)
   if (sequences !== undefined) {
     for (const { codes: wanted, columns } of sequences) {
       if (wanted.every((code, k) => codes[at + k] === code)) {
-        unitColumns = columns
-        return wanted.length
+        return columns * PACKED + wanted.length
       }
     }
   }
   const alone = columnsAlone(codes[at] as number)
   const next = codes[at + 1]
   const joined = alone === 1 && next === COMBINING_KEYCAP ? 1 : next === VARIATION_SELECTOR_16 ? 1 : 0
-  unitColumns = alone === 1 && joined === 1 ? 2 : alone
-  return 1 + joined
+  return (alone === 1 && joined === 1 ? 2 : alone) * PACKED + 1 + joined
 }
 
 // A text as the units it is measured in, in order; a code point is whole, a surrogate pair one. An unmeasured sequence is counted as its parts, so never
@@ -77,8 +76,9 @@ export const unitsOf = (text: string): Unit[] => {
   const codes = codePointsOf(text)
   const units: Unit[] = []
   for (let at = 0; at < codes.length; ) {
-    const length = unitAt(codes, at)
-    units.push({ text: String.fromCodePoint(...codes.slice(at, at + length)), columns: unitColumns })
+    const packed = unitAt(codes, at)
+    const length = packed % PACKED
+    units.push({ text: String.fromCodePoint(...codes.slice(at, at + length)), columns: (packed - length) / PACKED })
     at += length
   }
   return units
@@ -89,8 +89,9 @@ export const displayColumns = (text: string): number => {
   const codes = codePointsOf(text)
   let total = 0
   for (let at = 0; at < codes.length; ) {
-    at += unitAt(codes, at)
-    total += unitColumns
+    const packed = unitAt(codes, at)
+    at += packed % PACKED
+    total += Math.floor(packed / PACKED)
   }
   return total
 }
