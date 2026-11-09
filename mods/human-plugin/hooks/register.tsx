@@ -11,11 +11,11 @@ import {
   answerLine, answerTo, claudeTodoText, hasArgument, parseAsk, phoneBlock,
 } from './commands'
 import { carried, carryHeld, endTurn, giveBack, handOver, notEntered, offer, pending, reset, setOnChange, startTurn } from './turns'
-import { band, pane, toolLine, type Handlers, type View } from './ui'
+import { backlogPane, band, pane, toolLine, type Handlers, type View } from './ui'
 import { bandDraws } from './layout'
 import { correctionText, newlyRestated, restatedIds } from './restatement'
 import { enter } from './deliver'
-import { PANE, endPane, followShown, markRead, paneDocked, personClosed, pickItem, seated, setDrawn, shownSelection, showItem, syncPane } from './pane'
+import { CLAUDE_VIEW, PANE, endPane, followShown, followTodo, markRead, paneDocked, personClosed, pickBacklog, pickItem, seated, setDrawn, setDrawnTodo, shownSelection, showItem, syncPane } from './pane'
 import { endPushes, pushAnswer } from './push'
 import { pressAnswer, pressDone, pressReply, rearmWindows, stopTicker } from './windows'
 import { restored, resetRebuild, setForkedTranscript, startForkRestore, startRestore } from './rebuild'
@@ -138,7 +138,8 @@ const copyText = async ($: EngineInterface, text: string, surface: UiCopyArgs['s
 }
 
 const handlers = ($: EngineInterface, windowMs: number): Handlers => ({
-  pick: (id, isSelected) => inBackground($, pickItem($, id, isSelected)),
+  pick: id => inBackground($, pickItem($, id)),
+  backlog: () => inBackground($, pickBacklog($)),
   done: (id, answer) => inBackground($, pressDone($, id, answer, windowMs)),
   reply: (id, text) => inBackground($, pressReply($, id, text, windowMs)),
   more: id => inBackground($, showItem($, id)),
@@ -205,7 +206,8 @@ let todoTurn: Promise<void> = Promise.resolve()
 
 // The Claude list tool's answer: a write replaces the list whole, a call with no list reads it. Only the main agent keeps the list, so a
 // subagent's call is refused. Like the human tool's, a call waits for a rebuild in progress, so it never reads or replaces a list the rebuild
-// has not filled in. A refused call changes nothing and takes no turn.
+// has not filled in. A refused call changes nothing and takes no turn. A write is followed up before the call answers, inside its place in the call order (todoTurn),
+// so the pane that shows the list follows each write in order.
 const todoAnswer = async ($: EngineInterface, e: unknown) => {
   const parsed = parseTodo(e)
   if (!parsed.ok) return { deny: `${TODO_NAME}: ${parsed.reason}` }
@@ -216,7 +218,10 @@ const todoAnswer = async ($: EngineInterface, e: unknown) => {
   try {
     await before
     if (!(await restored($))) return { deny: `${TODO_NAME}: the list is still being rebuilt from the transcript; call again in a moment` }
-    if (parsed.value !== null) await writeTodo($, parsed.value)
+    if (parsed.value !== null) {
+      await writeTodo($, parsed.value)
+      await followTodo($, parsed.value)
+    }
     return { result: todoReply(parsed.value ?? (await readTodo($))) }
   } finally {
     turn.done()
@@ -439,6 +444,7 @@ export const wireHooks = (on: On, windowMs: number): void => {
     const store = await readList($)
     setDrawn(store.items)
     const todo = await readTodo($)
+    setDrawnTodo(todo)
     if (!bandDraws(store.items.length, todo)) return next(e)
     const selected = await shownSelection($)
     const view: View = { maxRows: e.props.maxRows, now: await $.clock.now(), windowMs, selected, claude: { items: todo, columns: e.props.bodyColumns, isDocked: paneDocked(e.surface) } }
@@ -448,7 +454,14 @@ export const wireHooks = (on: On, windowMs: number): void => {
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
     // First, before anything this draw reads: the band's width rule turns on whether this surface has seated the pane as a dock.
     seated($, e.surface, e.props.placement)
-    const view: View = { maxRows: 0, now: await $.clock.now(), windowMs, selected: await shownSelection($) }
+    const selected = await shownSelection($)
+    // The pane shows the Claude list or a human item, by what the selection says.
+    if (selected === CLAUDE_VIEW) {
+      const todo = await readTodo($)
+      setDrawnTodo(todo)
+      return backlogPane($.ui.resolve(e), todo)
+    }
+    const view: View = { maxRows: 0, now: await $.clock.now(), windowMs, selected }
     const store = await readList($)
     setDrawn(store.items)
     return pane($.ui.resolve(e), handlers($, windowMs), store, view)

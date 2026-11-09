@@ -61,10 +61,13 @@ export type OwedNotices = { held: Notice[]; waiting: Notice[] }
 export type TodoState = 'queued' | 'in_flight'
 export type TodoItem = { title: string; state: TodoState; eta: string }
 
+// What the pane shows: a human item (its number), the Claude list (`claude-todo`), or null, which shows the first human item.
+export type Selection = number | 'claude-todo' | null
+
 declare module 'claude-code' {
   interface PluginState {
     // `todo` is null until the Claude list is first written in a session, so a rebuild can tell a list not written yet from an emptied one.
     // `reminder` counts the main agent's tool calls since the Claude list was last stored (reminder.ts).
-    'human-plugin': { list: Store; selection: number | null; corrected: number[]; notices: OwedNotices; todo: TodoItem[] | null; reminder: number }
+    'human-plugin': { list: Store; selection: Selection; corrected: number[]; notices: OwedNotices; todo: TodoItem[] | null; reminder: number }
   }
 }
