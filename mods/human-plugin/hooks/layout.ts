@@ -23,6 +23,17 @@ export const bandRows = (items: readonly Item[], maxRows: number): BandRow[] => 
   return [...asRows(sorted.slice(0, maxRows - 1)), summaryOf(sorted.slice(maxRows - 1))]
 }
 
+// The lines of the squeezed list's header, the chip and the count under it.
+const SQUEEZED_HEADER = 2
+
+// The squeezed list's header and rows within `room` lines, header included (`humanFoldRows`): the header's lines, `top`, and the rows (`bandRows`) that fit under them.
+// The header is two lines. When the room leaves no row beside both, the header gives up its count and is the chip alone on one line, so that the summary of what is folded,
+// the only sign of the asks the band left out, draws in the line that frees; with no room for a row even then, the chip alone draws and no row.
+export const squeezedFold = (items: readonly Item[], room: number): { top: number; rows: BandRow[] } => {
+  const full = bandRows(items, Math.max(0, room - SQUEEZED_HEADER))
+  return full.length > 0 ? { top: SQUEEZED_HEADER, rows: full } : { top: 1, rows: bandRows(items, Math.max(0, room - 1)) }
+}
+
 const isInFlight = (item: TodoItem): boolean => item.state === 'in_flight'
 
 // The Claude column's lines that never fold: its header and every in-flight row.
@@ -65,6 +76,14 @@ export const bandWidths = (columns: number, humanCount: number, todo: readonly T
   }
   return { human: whole(columns), claude: null }
 }
+
+// The human list's width at the undocked two-list floor, under which a human list drawn beside the Claude column is squeezed.
+const SQUEEZE_UNDER = TWO_LIST_WIDTH - CLAUDE_MIN_WIDTH
+
+// Whether the human list is squeezed: it draws beside the Claude column in a box under 64 columns, which only a band of 52 to 95 beside this plugin's docked pane has.
+// A human list drawn alone is never squeezed, at any width, nor is any list from a band of 96, docked or not. A squeezed list's rows start the ladder at its third rung
+// (rowLayout) and its header is two lines (squeezedFold).
+export const isSqueezed = (widths: BandWidths): boolean => widths.human !== null && widths.claude !== null && widths.human.box < SQUEEZE_UNDER
 
 export type ClaudeRow = { kind: 'item'; item: TodoItem } | { kind: 'queued'; count: number }
 
@@ -184,8 +203,9 @@ const TITLE_MIN = 10
 // row's states, so the title's room is the same in every state and a press, an undo or a window's end moves nothing. The ladder, from the first rung that leaves
 // the title ten columns: the full controls, with answer texts up to DONE_MAX columns; the answer texts cut a column at a time from there down to one; then the
 // same again with every pressed control squeezed to its mark and undo button, the open control keeping its (cut) label. Where no rung does, the first with the
-// narrowest control, and the title takes what is left, down to one column. The reply's `✓ replied [↶ 3s]` is never cut.
-export const rowLayout = (row: RowTexts, width: number): RowLayout => {
+// narrowest control, and the title takes what is left, down to one column. The reply's `✓ replied [↶ 3s]` is never cut. A row of a squeezed list (`startSqueezed`,
+// isSqueezed) starts the ladder at its last stage, with every pressed control its mark and undo button.
+export const rowLayout = (row: RowTexts, width: number, startSqueezed = false): RowLayout => {
   const prefix = displayColumns(row.prefix)
   const measured = (one: Control): { before: number; answer: number; after: number } => ({
     before: displayColumns(one.before),
@@ -196,11 +216,11 @@ export const rowLayout = (row: RowTexts, width: number): RowLayout => {
   const pressed = row.pressed.map(measured)
   const squeezed = displayColumns(row.squeezed)
   const sent = displayColumns(row.sent)
-  const controlFor = (answer: number, isSqueezed: boolean): number => {
+  const controlFor = (answer: number, marked: boolean): number => {
     const taken = (one: { before: number; answer: number; after: number }): number => one.before + Math.min(one.answer, answer) + one.after
-    return 1 + Math.max(taken(open), ...(isSqueezed ? [squeezed] : pressed.map(taken)), sent)
+    return 1 + Math.max(taken(open), ...(marked ? [squeezed] : pressed.map(taken)), sent)
   }
-  const forms = [false, true].flatMap(isSqueezed => Array.from({ length: DONE_MAX }, (_, k) => ({ isSqueezed, answer: DONE_MAX - k, control: controlFor(DONE_MAX - k, isSqueezed) })))
+  const forms = (startSqueezed ? [true] : [false, true]).flatMap(marked => Array.from({ length: DONE_MAX }, (_, k) => ({ isSqueezed: marked, answer: DONE_MAX - k, control: controlFor(DONE_MAX - k, marked) })))
   const form = forms.find(one => width - prefix - one.control >= TITLE_MIN) ?? forms.reduce((best, one) => (one.control < best.control ? one : best))
   const room = Math.max(1, width - prefix - form.control)
   const fit = (text: string): Answer => ({ box: Math.min(displayColumns(text), form.answer), text: cutToColumns(text, form.answer) })

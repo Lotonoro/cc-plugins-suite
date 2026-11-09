@@ -11,7 +11,9 @@ import {
   cutToColumns,
   headerLines,
   humanFoldRows,
+  isSqueezed,
   rowLayout,
+  squeezedFold,
   type Answer,
   type BandWidths,
   type ClaudeRow,
@@ -205,10 +207,10 @@ const doneControl = (t: Table, h: Handlers, item: Item, view: View, inPane: bool
 const hasBrief = (item: Item): boolean => item.detail.trim() !== ''
 
 // A band row. `isShown`: whether the pane shows this item, so a press on it closes the pane. `width`: the columns the row is laid out in (layout.ts), null for a
-// band with no width. A laid-out row is one line of three cells: its prefix, its title's button in a box that shrinks, its label the title cut to the room, and the
-// control's cell, as wide as the row's widest state needs and never shrunk, with the state's control at its start. The titles and the answers are the strings the
-// layout cut, drawn bare, so the terminal never wraps them.
-const itemRow = (t: Table, h: Handlers, item: Item, view: View, isShown: boolean, width: number | null): RenderElement => {
+// band with no width. `squeezed`: whether its list is a squeezed one (isSqueezed), whose rows start the ladder at its last stage. A laid-out row is one line of three
+// cells: its prefix, its title's button in a box that shrinks, its label the title cut to the room, and the control's cell, as wide as the row's widest state needs and
+// never shrunk, with the state's control at its start. The titles and the answers are the strings the layout cut, drawn bare, so the terminal never wraps them.
+const itemRow = (t: Table, h: Handlers, item: Item, view: View, isShown: boolean, width: number | null, squeezed: boolean): RenderElement => {
   const texts = rowTexts(item, view.windowMs)
   const prefix = t.Box({ flexShrink: 0, children: [t.Text({ bold: item.blocking, dimColor: !item.blocking, children: [texts.prefix] })] })
   const title = (label: string): RenderElement => t.Button({ key: `title-${item.id}`, plain: true, label, onPress: () => h.pick(item.id, isShown) })
@@ -219,7 +221,7 @@ const itemRow = (t: Table, h: Handlers, item: Item, view: View, isShown: boolean
       children: [prefix, title(`${texts.title}${texts.marker}`), ...(control === null ? [] : [t.Box({ flexShrink: 0, children: [t.Text({ children: [' '] }), control] })])],
     })
   }
-  const laid = rowLayout(texts, width)
+  const laid = rowLayout(texts, width, squeezed)
   // The item's own pressed control is one of those the layout measured (pressedControls lists it).
   const own = laid.pressed[texts.pressed.findIndex(one => sameSaying(one, pressedControl(item, '')))] as Answer
   const control = doneControl(t, h, item, view, false, { squeezed: laid.rung === 3, open: laid.open, pressed: own })
@@ -329,10 +331,32 @@ const headerTexts = (store: Store): { chip: string; count: string } => {
   return { chip: ` ${chipText(store.term)} `, count: ` ${store.items.filter(it => it.state === 'open').length} open${pending > 0 ? `, ${pending} sent` : ''} ` }
 }
 
+// The header of a list that is not squeezed: the chip, which never shrinks, then the count, which wraps word by word in the columns the chip leaves (headerLines).
+type Fill = 'warning' | 'permission'
+const plainHeader = (t: Table, chip: string, count: string, fill: Fill): RenderElement =>
+  t.Box({
+    children: [
+      t.Box({ flexShrink: 0, children: [t.Text({ bold: true, color: 'inverseText', backgroundColor: fill, children: [chip] })] }),
+      t.Text({ children: [count] }),
+    ],
+  })
+
+// The squeezed list's header: the chip on a line of its own and the count under it, which the fold gives up when it has no line for it (`lines` 1). Each line is set to
+// cut at its end at the list's layout width, so neither wraps into a line the fold has not counted.
+const squeezedHeader = (t: Table, chip: string, count: string, fill: Fill, lines: number): RenderElement =>
+  t.Box({
+    flexDirection: 'column',
+    children: [
+      t.Box({ children: [t.Text({ bold: true, color: 'inverseText', backgroundColor: fill, wrap: 'truncate-end', children: [chip] })] }),
+      ...(lines > 1 ? [t.Box({ children: [t.Text({ wrap: 'truncate-end', children: [count] })] })] : []),
+    ],
+  })
+
 // The band above the prompt: a header with the count, then the rows that fit. When items are folded, the summary row is the way into
 // the pane for them. The pane is also opened by a title, and closed by its own close or a press on the item it shows. On a band wide
 // enough, and with a Claude list to show, the Claude column is drawn beside the human list at the band's right edge (layout.ts). The human list's
 // rows are laid out and cut in its layout width, each one line, so the fold counts a line a row and the header's lines; the Claude column fills down to the same count.
+// A squeezed human list (isSqueezed) has the two-line header of squeezedHeader, which squeezedFold counts, and its rows start the ladder at its last stage.
 export const band = (t: Table, h: Handlers, store: Store, view: View): RenderElement => {
   const open = store.items.filter(it => it.state === 'open')
   const todo = view.claude?.items ?? []
@@ -342,18 +366,15 @@ export const band = (t: Table, h: Handlers, store: Store, view: View): RenderEle
   // The column's fixed lines (its header and every in-flight row) can make the band taller than `maxRows` beside the human list.
   const columnLines = widths.human !== null && widths.claude !== null ? columnHeight(todo) : 0
   const { chip, count } = headerTexts(store)
-  const top = fit === null ? 1 : headerLines(chip, count, fit)
-  const rows = bandRows(store.items, Math.max(0, humanFoldRows(view.maxRows, columnLines) - top))
+  const squeezed = isSqueezed(widths)
+  const room = humanFoldRows(view.maxRows, columnLines)
+  // The header's lines, and the rows that fit under it. A squeezed list folds both together; any other list's header takes the lines its count wraps to.
+  const wrapped = fit === null ? 1 : headerLines(chip, count, fit)
+  const { top, rows } = squeezed ? squeezedFold(store.items, room) : { top: wrapped, rows: bandRows(store.items, Math.max(0, room - wrapped)) }
   const shownId = selectedItem(store.items, view.selected ?? null)?.id
-  // The header is a filled chip, the line that asks for the person's attention: `warning` while the agent is stuck on an open blocking
-  // item, `permission` otherwise. The count after it is plain text.
-  const header = t.Box({
-    children: [
-      t.Box({ flexShrink: 0, children: [t.Text({ bold: true, color: 'inverseText', backgroundColor: open.some(it => it.blocking) ? 'warning' : 'permission', children: [chip] })] }),
-      t.Text({ children: [count] }),
-    ],
-  })
-  const body = rows.map(row => (row.kind === 'item' ? itemRow(t, h, row.item, view, row.item.id === shownId, fit) : summaryRow(t, h, row, fit)))
+  const fill = open.some(it => it.blocking) ? 'warning' : 'permission'
+  const header = squeezed ? squeezedHeader(t, chip, count, fill, top) : plainHeader(t, chip, count, fill)
+  const body = rows.map(row => (row.kind === 'item' ? itemRow(t, h, row.item, view, row.item.id === shownId, fit, squeezed) : summaryRow(t, h, row, fit)))
   if (view.claude === undefined || widths.claude === null) return t.Box({ flexDirection: 'column', children: [header, ...body] })
   // Two boxes at the band's width, the Claude column last: alone it keeps its width and stays at the right edge, with nothing drawn to its left.
   const humanList =

@@ -993,7 +993,8 @@ type Drawing = Map<string, { label: string; control: number }>
 
 // Each row of a band drawn through the terminal's table at `layout` columns of room, as one line of three cells: the prefix, the title's button in a box that
 // shrinks, and the control's cell of the layout's width at its start; and the pieces add up to the layout. `rungs` collects the rung of the ladder each row drew at.
-const checkSweepRows = (tree: unknown, layout: number, ids: Record<string, number>, phase: Phase, drawing: string, first: Drawing, rungs: Set<number>): void => {
+// `squeezed`: the list is a squeezed one, whose rows start the ladder at its third rung.
+const checkSweepRows = (tree: unknown, layout: number, ids: Record<string, number>, phase: Phase, drawing: string, first: Drawing, rungs: Set<number>, squeezed = false): void => {
   const where = `${phase}, ${drawing}`
   for (const button of elementsOf(tree as El, 'Button')) expect(elementsOf(button, 'Text'), `${where}: a button holding a text`).toEqual([])
   for (const kind of SWEEP_KINDS) {
@@ -1009,7 +1010,7 @@ const checkSweepRows = (tree: unknown, layout: number, ids: Record<string, numbe
     expect(prefix.props, name).toMatchObject({ flexShrink: 0 })
     expect(prefixColumns, name).toBe(String(id).length + 4)
     const texts = textsOf(kind, id)
-    const laid = rowLayout(texts, layout)
+    const laid = rowLayout(texts, layout, squeezed)
     rungs.add(laid.rung)
     // The title: its button in a box that shrinks, the button's label the one-line title cut to the room the prefix and the control cell leave it.
     expect(titleCell.props, name).toMatchObject({ flexShrink: 1 })
@@ -1189,4 +1190,108 @@ test('a band mounted at 105 columns draws each row as one line in the 69 columns
   expect(shownOf(pressed[1])).toBe('Second to-do with a labelled …')
   expect(pressed[2].props?.width).toBe(34)
   expect(shownOf(pressed[2])).toBe(' ✓ Approve the migration ok [↶ 3s]')
+})
+
+test('beside the docked pane the band drawn through the terminal\'s table in bands of 52 to 95 columns squeezes the human list: every kind of control at an id of one to three digits, open, pressed, replied and sent, draws each row as one line of its prefix, its title cut to its room and a control cell of one width in every state, every pressed control its mark and undo button, under a header of two lines; at 96 the same rows are not squeezed', async ($, on) => {
+  on('prompt.submit', (_$, e) => ({ text: e.text }))
+  const clock = mock.clock(on)
+  mock.store(on)
+  paneRecord(on)
+  // An item that stays open, so the pane has an item to move on to as the sweep's windows end and its items are removed, and so stays open in the dock.
+  await $.tool.call({ tool: TOOL, action: 'add', title: 'Anchor' })
+  await $.tool.call({ tool: TODO_TOOL, entries: [{ title: 'Build it', state: 'in_flight' }, { title: 'Test it', state: 'queued' }] })
+  const tall = { ...BAND_PROPS, maxRows: 400, scroll: { offset: 0, bodyRows: 400 } }
+  const band = await $.ui.mount({ plugin: 'human-plugin', surface: 'terminal', component: 'AbovePrompt', props: { ...tall, bodyColumns: 52 } })
+  // The press opens the pane, and the pane's drawing as a dock is what lets the band draw both lists at 52.
+  await band.press({ key: 'title-1' })
+  const pane = await $.ui.mount({ plugin: 'human-plugin', surface: 'terminal', component: 'Pane', requestId: 'human-items', props: PANE_PROPS })
+  const widths = [52, 53, 56, 63, 64, 70, 95, 96]
+  const firstDrawn: Drawing = new Map()
+  const squeezedRungs = new Set<number>()
+  const otherRungs = new Set<number>()
+  let next = 2
+  for (const first of [2, 10, 100]) {
+    await skipIds($, next, first)
+    const ids = Object.fromEntries(SWEEP_KINDS.map((kind, k) => [kind.name, first + k]))
+    const [decision, plain, labelled, yesno, broken] = SWEEP_KINDS.map(kind => ids[kind.name] as number) as [number, number, number, number, number]
+    await $.tool.call({ tool: TOOL, action: 'add', title: SWEEP_TITLE, options: [{ label: SWEEP_OPTION, recommended: true }, { label: 'Use postgres' }] })
+    await $.tool.call({ tool: TOOL, action: 'add', title: SWEEP_TITLE })
+    await $.tool.call({ tool: TOOL, action: 'add', title: SWEEP_TITLE, done: SWEEP_LABEL })
+    await $.tool.call({ tool: TOOL, action: 'add', title: SWEEP_TITLE, yesno: true })
+    await $.tool.call({ tool: TOOL, action: 'add', title: SWEEP_BROKEN })
+    next = first + SWEEP_KINDS.length
+    const check = async (phase: Phase): Promise<void> => {
+      for (const columns of widths) {
+        await band.redraw({ ...tall, bodyColumns: columns })
+        const tree = await band.drawn()
+        const drawing = `ids from ${first}, band of ${columns}`
+        const where = `${phase}, ${drawing}`
+        // Both lists at every width here, the pane being docked: each box at the width rule's, the human one padded on its right and the Claude one on its left.
+        const column = Math.max(32, Math.floor(columns / 3))
+        const { human, column: claude } = boxes(tree)
+        expect((tree as Drawn).props?.width, where).toBe(columns)
+        expect(human?.props, where).toMatchObject({ width: columns - column, paddingRight: 1 })
+        expect(claude?.props, where).toMatchObject({ width: column, paddingLeft: 1 })
+        // Under 96 the human list is squeezed, and its header is the chip on one line and the count under it, each set to cut at its end.
+        const squeezed = columns < 96
+        const header = human?.children?.[0]
+        if (squeezed) {
+          expect(header?.props?.flexDirection, where).toBe('column')
+          expect(header?.children, where).toHaveLength(2)
+          expect(shownOf(header?.children?.[0]), where).toBe(' To do for you ')
+          expect(shownOf(header?.children?.[1]), where).toMatch(/^ \d+ open/)
+          for (const line of header?.children ?? []) expect(JSON.stringify(line), where).toContain('"wrap":"truncate-end"')
+        } else {
+          expect(header?.props?.flexDirection, where).toBeUndefined()
+          expect(JSON.stringify(header), where).not.toContain('"wrap"')
+        }
+        checkSweepRows(tree, columns - column - 1, ids, phase, drawing, firstDrawn, squeezed ? squeezedRungs : otherRungs, squeezed)
+      }
+    }
+    await check('open')
+    // Pressed, the decision's option in the pane (the band's title opens the decision there first), and replied, as the sweep above does.
+    await band.press({ key: `title-${decision}` })
+    await band.press({ key: `done-${plain}` })
+    await band.press({ key: `done-${labelled}` })
+    await band.press({ key: `yes-${yesno}` })
+    await band.press({ key: `done-${broken}` })
+    await pane.press({ key: `answer-${decision}-0` })
+    await check('pressed')
+    await band.press({ key: `done-${decision}` })
+    await pane.input({ key: `reply-${decision}`, text: 'Not yet' })
+    await check('replied')
+    await clock.advance(3000)
+    await check('sent')
+    for (let id = first; id < next; id++) await $.tool.call({ tool: TOOL, action: 'remove', id })
+  }
+  // Every row of a band under 96 is at the ladder's third rung, and the rows at 96 are not.
+  expect([...squeezedRungs]).toEqual([3])
+  expect(otherRungs.has(3)).toBe(false)
+})
+
+test('beside the docked pane a band the engine gives 3, 2 or 1 rows draws its header as two lines and the summary row, as the chip alone and the summary row on its warning fill, or as the chip alone', async ($, on) => {
+  mock.clock(on)
+  mock.store(on)
+  paneRecord(on)
+  await $.tool.call({ tool: TOOL, action: 'add', title: 'Ship the cache layer for everyone', blocking: true })
+  await $.tool.call({ tool: TOOL, action: 'add', title: 'Pick a db' })
+  await $.tool.call({ tool: TODO_TOOL, entries: [{ title: 'Build it', state: 'in_flight' }] })
+  const props = { ...BAND_PROPS, bodyColumns: 52 }
+  const band = await $.ui.mount({ plugin: 'human-plugin', surface: 'terminal', component: 'AbovePrompt', props })
+  await band.press({ key: 'title-1' })
+  await $.ui.mount({ plugin: 'human-plugin', surface: 'terminal', component: 'Pane', requestId: 'human-items', props: PANE_PROPS })
+  for (const [maxRows, lines, hasSummary] of [[3, 2, true], [2, 1, true], [1, 1, false]] as const) {
+    await band.redraw({ ...props, maxRows })
+    const tree = await band.drawn()
+    const where = `maxRows ${maxRows}`
+    const { human } = boxes(tree)
+    expect(human?.props?.width, where).toBe(20)
+    expect(human?.children?.[0]?.children, where).toHaveLength(lines)
+    expect(human?.children?.length, where).toBe(hasSummary ? 2 : 1)
+    expect(elementsOf(tree as El, 'Button').filter(button => String(button.props?.key).startsWith('title-')), where).toEqual([])
+    const more = elementsOf(tree as El, 'Button').find(button => button.props?.key === 'band-more')
+    expect(more?.props?.label, where).toBe(hasSummary ? '+1 blocking · +1 m…' : undefined)
+    const holder = elementsOf(tree as El, 'Box').find(box => (box.children ?? []).some(child => typeof child !== 'string' && child.props?.key === 'band-more'))
+    expect(holder?.props?.backgroundColor, where).toBe(hasSummary ? 'warning' : undefined)
+  }
 })

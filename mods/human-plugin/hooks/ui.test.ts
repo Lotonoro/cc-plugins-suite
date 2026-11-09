@@ -1131,14 +1131,18 @@ const bandFor = (box: number): number => {
 }
 
 // A human list as the band draws it, with the columns its rows are laid out in: beside the Claude column, in a box of `list` columns that keeps one
-// empty, or full width, laid out in all of its `list`. `maxRows` leaves room for every row.
+// empty, or full width, laid out in all of its `list`. `maxRows` leaves room for every row. A squeezed list is a box of 20 to 63 columns, which the band draws
+// only beside this plugin's docked pane, at `list` and the column's 32.
 const BESIDE = 'beside the column'
 const FULL = 'full width'
-type Where = typeof BESIDE | typeof FULL
+const SQUEEZED = 'squeezed beside the docked pane'
+type Where = typeof BESIDE | typeof FULL | typeof SQUEEZED
 const humanList = (store: Store, list: number, where: Where, maxRows = 1000): { left: Node; layout: number } =>
   where === BESIDE
     ? { left: columnsOf(drawn(store, queue(1), bandFor(list), maxRows))[0] as Node, layout: list - 1 }
-    : { left: drawn(store, [], list, maxRows), layout: list }
+    : where === SQUEEZED
+      ? { left: columnsOf(drawn(store, queue(1), list + 32, maxRows, true))[0] as Node, layout: list - 1 }
+      : { left: drawn(store, [], list, maxRows), layout: list }
 
 const U3 = '[↶ 3s]'
 const saidControl = (answer: string, mark = '✓') => ({ before: `${mark} `, answer, after: answer === '' ? U3 : ` ${U3}` })
@@ -1257,10 +1261,12 @@ const cellsOf = (left: Node, id: number): Node[] => rowOf(left, id).children as 
 // One kind of control in one state, drawn as a row of a list whose rows are laid out in `layoutWidth` columns: one row of three cells, none under another;
 // the prefix; the title's label in a box that shrinks, the title cut by hand to the room the prefix and the control cell leave it; the control cell of the
 // layout's width with the state's control at its start, a pressed answer in a box of the layout's answer width holding the answer cut by hand to it; and no
-// Button in the list holding a Text. It returns the title's label and the control cell's width, which every state of a kind shares.
-const checkRow = (left: Node, layoutWidth: number, row: Item, state: KindState, digits: number, where: string): { label: string; width: number } => {
+// Button in the list holding a Text. It returns the title's label and the control cell's width, which every state of a kind shares. `squeezed`: the row is in a
+// squeezed list, which starts its ladder at the third rung: every pressed control is its mark and undo button, with no box for an answer.
+const checkRow = (left: Node, layoutWidth: number, row: Item, state: KindState, digits: number, where: string, squeezed = false): { label: string; width: number } => {
   const id = row.id
-  const laid = rowLayout(rowTexts(row, view().windowMs), layoutWidth)
+  const laid = rowLayout(rowTexts(row, view().windowMs), layoutWidth, squeezed)
+  if (squeezed) expect(laid.rung, where).toBe(3)
   expect(rowOf(left, id).flexDirection, where).toBeUndefined()
   const cells = cellsOf(left, id)
   expect(
@@ -1295,12 +1301,16 @@ const checkRow = (left: Node, layoutWidth: number, row: Item, state: KindState, 
     expect(shown(controlCell), where).toBe(` ${want}`)
     expect(displayColumns(shown(controlCell)), where).toBeLessThanOrEqual(Number(controlCell.width))
   }
-  // A pressed answer sits in a box of the row's answer width, or its own width when that is smaller, and is cut to it.
+  // A pressed answer sits in a box of the row's answer width, or its own width when that is smaller, and is cut to it. A squeezed pressed control has no box
+  // and no answer text.
   if (state.answer !== null && laid.rung !== 3) {
     const boxes = nodes(controlCell, 'Box').filter(box => box !== controlCell && box.width !== undefined)
     expect(boxes, where).toHaveLength(1)
     expect(boxes[0], where).toMatchObject({ width: Math.min(state.answer.length, laid.answer), flexShrink: 0 })
     expect(shown(boxes[0]), where).toBe(cutA(state.answer, laid.answer))
+  } else if (state.answer !== null) {
+    expect(nodes(controlCell, 'Box').filter(box => box !== controlCell && box.width !== undefined), where).toEqual([])
+    expect(shown(controlCell), where).not.toContain(state.answer)
   }
   for (const button of nodes(left, 'Button')) expect(nodes(button, 'Text'), `${where}: a button holding a text`).toEqual([])
   return { label, width: Number(controlCell.width) }
@@ -1312,7 +1322,7 @@ const sweep = (where: Where, lists: number[], titles: string[], digits: number):
   for (const kind of KINDS) {
     for (const title of titles) {
       for (const list of lists) {
-        const layout = where === BESIDE ? list - 1 : list
+        const layout = where === FULL ? list : list - 1
         const labels = new Set<string>()
         const widths = new Set<number>()
         for (const state of kind.states) {
@@ -1320,9 +1330,9 @@ const sweep = (where: Where, lists: number[], titles: string[], digits: number):
           const row: Item = { ...at(id, false), title, ...kind.base, ...state.over }
           const drawnList = humanList({ items: [row], next: id + 1, term: TERM }, list, where)
           expect(drawnList.layout, name).toBe(layout)
-          if (where === BESIDE) expect(drawnList.left, name).toMatchObject({ type: 'Box', flexDirection: 'column', width: list, paddingRight: 1 })
+          if (where !== FULL) expect(drawnList.left, name).toMatchObject({ type: 'Box', flexDirection: 'column', width: list, paddingRight: 1 })
           else expect(drawnList.left.width, name).toBeUndefined()
-          const drawnRow = checkRow(drawnList.left, layout, row, state, digits, name)
+          const drawnRow = checkRow(drawnList.left, layout, row, state, digits, name, where === SQUEEZED)
           labels.add(drawnRow.label)
           widths.add(drawnRow.width)
         }
@@ -1340,6 +1350,10 @@ const range = (from: number, to: number): number[] => Array.from({ length: to - 
 for (const digits of [1, 2, 3, 4]) {
   test(`every kind of control in every state, at an id of ${digits} digit${digits === 1 ? '' : 's'} and a full-width list of 20 to 63, with a title longer than the list and one holding a line break: the row is one line of three cells, the title is cut to its room, and the control starts on the same column in every state`, () => {
     sweep(FULL, range(20, 63), [LONG, BROKEN], digits)
+  })
+
+  test(`every kind of control in every state, at an id of ${digits} digit${digits === 1 ? '' : 's'} and a squeezed list of 20 to 63 beside the Claude column, with a title longer than the list and one holding a line break: the row is one line of three cells, the title is cut to its room, the control starts on the same column in every state, and every pressed control is its mark and undo button with no answer text`, () => {
+    sweep(SQUEEZED, range(20, 63), [LONG, BROKEN], digits)
   })
 
   test(`every kind of control in every state, at an id of ${digits} digit${digits === 1 ? '' : 's'} and a list of 64 to 120 beside the Claude column and full width: the row is one line of three cells, the title is cut to its room, and the control starts on the same column in every state`, () => {
@@ -1589,10 +1603,10 @@ test('every row of the Claude list\'s state table, drawn at a band of 52 and of 
     sameTree(docked(humans(2), [], columns), drawn(humans(2), [], columns), where(3))
     expect(JSON.stringify(docked(humans(2), [], columns)), where(3)).not.toContain('Claude TODO')
     // Rows 4 and 5: both lists, the column's queued rows down to the human list's height, the last a `+N queued` row when they do not all fit. The human list of two
-    // items in 19 columns is a header of three lines (the chip never shrinks and ` 2 open ` wraps in the 4 columns it leaves) and two rows: 5 lines.
+    // items in 19 columns is a squeezed header of two lines and two rows: 4 lines.
     const wantRows: [number, TodoItem[], string[]][] = [
-      [4, queue(5), ['Claude TODO 0 active, 5 queued', '○ q1', '○ q2', '○ q3', '+2 queued']],
-      [5, [...flight(1), ...queue(5)], ['Claude TODO 1 active, 5 queued', '◐ f1', '○ q1', '○ q2', '+3 queued']],
+      [4, queue(5), ['Claude TODO 0 active, 5 queued', '○ q1', '○ q2', '+3 queued']],
+      [5, [...flight(1), ...queue(5)], ['Claude TODO 1 active, 5 queued', '◐ f1', '○ q1', '+4 queued']],
     ]
     for (const [row, todo, want] of wantRows) {
       const tree = docked(humans(2), todo, columns)
@@ -1614,6 +1628,158 @@ test('every row of the Claude list\'s state table, drawn at a band of 52 and of 
       const [left, right] = columnsOf(taller) as [Node, Node]
       expect(lineTexts(right), where(7)).toEqual(['Claude TODO 12 active, 2 queued', ...flight(12).map(it => `◐ ${it.title}`)])
       expect(isFolded(left), where(7)).toBe(true)
+      // The human list folds one row earlier, into the rows the band's window shows at its top: the header's two lines and the rows, the summary the last.
+      expect(2 + (left.children as Node[]).length - 1, where(7)).toBeLessThanOrEqual(9)
     } else sameTree(taller, drawn(humans(30), [...flight(12), ...queue(2)], columns, 10), where(7))
+  }
+})
+
+test('the squeezed header is two lines, the chip set to cut at its end and the count on the second line likewise: with the term `you` the chip and ` 8 open ` fit the 19 columns whole, and a 20-column term\'s chip is set to cut at its end', () => {
+  const header = (store: Store): Node[] => ((columnsOf(docked(store, flight(1)))[0] as Node).children as Node[])[0]?.children as Node[]
+  const lines = header(humans(8))
+  expect(lines).toHaveLength(2)
+  const [chip, count] = lines.map(line => nodes(line, 'Text')[0] as Node)
+  expect(chip).toMatchObject({ wrap: 'truncate-end', bold: true, backgroundColor: 'permission', children: [' To do for you '] })
+  expect(count).toMatchObject({ wrap: 'truncate-end', children: [' 8 open '] })
+  expect(displayColumns(' To do for you ')).toBeLessThanOrEqual(19)
+  expect(displayColumns(' 8 open ')).toBeLessThanOrEqual(19)
+  const termed = header({ ...humans(8, true), term: 'x'.repeat(20) })
+  expect(termed).toHaveLength(2)
+  expect(nodes(termed[0], 'Text')[0]).toMatchObject({ wrap: 'truncate-end', backgroundColor: 'warning', children: [` To do for ${'x'.repeat(20)} `] })
+  expect(nodes(termed[1], 'Text')[0]).toMatchObject({ wrap: 'truncate-end', children: [' 8 open '] })
+  // A sent item adds its count after the open one.
+  const sent: Store = { ...humans(3), items: humans(3).items.map(it => (it.id === 1 ? { ...it, state: 'done-pending' as const } : it)) }
+  expect(nodes(header(sent)[1], 'Text')[0]?.children).toEqual([' 2 open, 1 sent '])
+})
+
+test('beside the dock the fold counts the squeezed header as two lines and each row as one, whatever its title: at maxRows 10, twelve items fold into seven rows and the summary with one item in flight, and six rows and the summary with enough in flight to make the band taller, the summary row the last', () => {
+  const store: Store = { items: Array.from({ length: 12 }, (_, k) => ({ ...at(k + 1, false), title: k % 2 === 0 ? LONGER : 'Hi' })), next: 13, term: null }
+  for (const [todo, drawnRows, most] of [[flight(1), 7, 10], [flight(12), 6, 9]] as const) {
+    const left = columnsOf(docked(store, todo, 52, 10))[0] as Node
+    const kids = left.children as Node[]
+    const where = `${todo.length} in flight`
+    expect(kids[0]?.children, where).toHaveLength(2)
+    expect(kids.filter(row => String(row.key).startsWith('item-')), where).toHaveLength(drawnRows)
+    expect(nodes(kids[kids.length - 1], 'Button').map(b => b.key), where).toEqual(['band-more'])
+    // The header's two lines and every row one line each: the human list's counted lines, within maxRows or the rows the band's window shows at its top.
+    expect(2 + kids.length - 1, where).toBe(most)
+  }
+})
+
+test('beside the dock the header gives up its count line when the summary row would not draw: two lines at maxRows 3, the chip alone at 2 with the summary row on its warning fill, and the chip alone with no row at 1', () => {
+  const store: Store = { items: [{ ...at(1, true), title: LONG }, { ...at(2, false), title: LONG }], next: 3, term: null }
+  const summary = '+1 blocking · +1 more […]'
+  expect(displayColumns(summary)).toBe(25)
+  for (const [maxRows, headerRows, drawsSummary] of [[3, 2, true], [2, 1, true], [1, 1, false]] as const) {
+    const left = columnsOf(docked(store, flight(1), 52, maxRows))[0] as Node
+    const kids = left.children as Node[]
+    expect(kids[0]?.children, `${maxRows}`).toHaveLength(headerRows)
+    expect(nodes(left, 'Button').filter(b => String(b.key).startsWith('title-')), `${maxRows}`).toEqual([])
+    // The summary row is one line, its text cut to the 19 columns of the list.
+    expect(nodes(left, 'Button').find(b => b.key === 'band-more')?.label, `${maxRows}`).toBe(drawsSummary ? '+1 blocking · +1 m…' : undefined)
+    expect(kids.length, `${maxRows}`).toBe(drawsSummary ? 2 : 1)
+    if (drawsSummary) expect(kids[1], `${maxRows}`).toMatchObject({ backgroundColor: 'warning' })
+    // The human list's counted lines never pass maxRows.
+    expect(headerRows + kids.length - 1, `${maxRows}`).toBeLessThanOrEqual(maxRows)
+  }
+})
+
+test('beside the dock, pressing a plain to-do\'s control, undoing it and letting its window end each leave the same human rows folded and the same control cells, at every maxRows', () => {
+  const rowsFolded = (state: Partial<Item>, maxRows: number): string => {
+    const items = Array.from({ length: 8 }, (_, k) => ({ ...at(k + 1, false), title: 'A to-do whose title is longer than the list beside the column', ...(k === 2 ? state : {}) }))
+    const left = columnsOf(docked({ items, next: 9, term: null }, queue(1), 52, maxRows))[0] as Node
+    const cellWidths = nodes(left, 'Box').filter(b => String(b.key).startsWith('item-')).map(row => (row.children as Node[])[2]?.width)
+    return JSON.stringify([nodes(left, 'Button').map(b => b.key), nodes(left, 'Button').filter(b => b.key === 'band-more').map(b => b.label), cellWidths])
+  }
+  let folds = 0
+  for (let maxRows = 1; maxRows <= 40; maxRows++) {
+    const open = rowsFolded({}, maxRows)
+    expect(rowsFolded({ state: 'done-waiting', pressedAt: 0, answer: null }, maxRows), `pressed, maxRows ${maxRows}`).toBe(open)
+    expect(rowsFolded({ state: 'done-pending', answer: null }, maxRows), `sent, maxRows ${maxRows}`).toBe(open)
+    if (open.includes('band-more')) folds++
+  }
+  // The sweep crosses rows folded and rows whole: the squeezed header's two lines and the 8 rows fit from a maxRows of 10; from 2 to 9 they fold into the
+  // summary row, and at 1 the chip draws alone with no row at all, so no summary either.
+  expect(folds).toBe(8)
+})
+
+test('with the 3-second window and the id #12, beside the column a plain to-do and a decision pressed keep their title 4 columns in a squeezed list of 20 and 16 in one of 32, each title cut with an ellipsis, and the fold counts each row as one line', () => {
+  const three: View = { ...view(), windowMs: 3000 }
+  const rows: [string, Partial<Item>][] = [['a plain to-do', waiting(null)], ['a decision', { options: choicesOf(OPTION), ...waiting(OPTION) }]]
+  for (const [list, room] of [[20, 4], [32, 16]] as const) {
+    for (const [name, over] of rows) {
+      const store: Store = { items: [{ ...at(12, false), title: LONG, ...over }], next: 13, term: null }
+      const left = columnsOf(band(table, handlers, store, { ...three, maxRows: 1000, claude: { items: queue(1), columns: list + 32, isDocked: true } }))[0] as Node
+      const [, title, control] = cellsOf(left, 12) as [Node, Node, Node]
+      const where = `${name}, list of ${list}`
+      expect(displayColumns(shown(title)), where).toBe(room)
+      expect(shown(title), where).toContain('…')
+      // A decision's title keeps its marker whole after the cut once the room holds it.
+      expect(shown(title).endsWith(over.options === undefined || room < 5 ? '…' : '… […]'), where).toBe(true)
+      expect([control.width, shown(control)], where).toEqual([9, ' ✓ [↶ 3s]'])
+    }
+  }
+  // Twelve such rows at maxRows 10 are the header's two lines, seven rows and the summary, whatever their titles.
+  const many: Store = { items: Array.from({ length: 12 }, (_, k) => ({ ...at(k + 1, false), title: LONGER })), next: 13, term: null }
+  const left = columnsOf(docked(many, flight(1), 52, 10))[0] as Node
+  expect((left.children as Node[]).length - 1 + 2).toBe(10)
+})
+
+test('in a squeezed list of 20 a title with a word longer than the list, a title with wide characters, a labelled to-do and a decision pressed with a reply each draw on one line, and the summary row draws on one line cut to 19 ending in an ellipsis', () => {
+  const rows: [string, Item][] = [
+    ['a word longer than the list', { ...at(12, false), title: 'Fix abcdefghijklmnopqrstuvwxyz now' }],
+    ['wide characters', { ...at(12, false), title: '部署新版本到生产环境' }],
+    ['a labelled to-do', { ...at(12, false), title: 'Pick a db', doneLabel: 'Go with sqlite' }],
+    ['a decision pressed with a reply', { ...at(12, false), title: 'Pick a store', options: choicesOf('Use sqlite'), ...waiting('Not yet', true) }],
+  ]
+  for (const [name, row] of rows) {
+    const { left, layout } = humanList({ items: [row], next: 13, term: null }, 20, SQUEEZED)
+    const cells = cellsOf(left, 12)
+    expect(rowOf(left, 12).flexDirection, name).toBeUndefined()
+    expect(cells.map(cell => cell.type), name).toEqual(['Box', 'Box', 'Box'])
+    const [prefix, title, control] = cells as [Node, Node, Node]
+    expect(displayColumns(shown(prefix)) + displayColumns(shown(title)) + Number(control.width), name).toBeLessThanOrEqual(layout)
+    expect(nodes(left, 'Button').filter(b => nodes(b, 'Text').length > 0), name).toEqual([])
+  }
+  const store: Store = { items: [{ ...at(1, true), title: LONG }, { ...at(2, false), title: LONG }], next: 3, term: null }
+  const left = columnsOf(docked(store, flight(1), 52, 3))[0] as Node
+  const more = nodes(left, 'Button').find(b => b.key === 'band-more')
+  expect(more?.label).toBe('+1 blocking · +1 m…')
+  expect(displayColumns(String(more?.label))).toBe(19)
+  expect(nodes(more, 'Text')).toEqual([])
+})
+
+test('beside the dock, below 96 columns the human list is squeezed and from 96 it is not: a pressed labelled to-do\'s and yes/no\'s control shows its mark and undo at 95 and its answer text at 96, under a header that is the squeezed one at 95 and the usual one at 96', () => {
+  const labelled: Item = { ...at(1, false), doneLabel: LABEL, ...waiting(LABEL) }
+  const yes = yesNo({ id: 2, blocking: false, ...waiting('yes') })
+  const store: Store = { items: [labelled, yes], next: 3, term: null }
+  const left = (columns: number): Node => columnsOf(docked(store, queue(1), columns))[0] as Node
+  const control = (columns: number, id: number): string => shown(cellsOf(left(columns), id).slice(-1)[0])
+  expect(left(95)).toMatchObject({ width: 63 })
+  expect(control(95, 1)).toBe(` ✓ ${UNDO}`)
+  expect(control(95, 2)).toBe(` ✓ ${UNDO}`)
+  expect(((left(95).children as Node[])[0] as Node).flexDirection).toBe('column')
+  expect(left(96)).toMatchObject({ width: 64 })
+  expect(control(96, 1)).toBe(` ✓ ${LABEL} ${UNDO}`)
+  expect(control(96, 2)).toBe(` ✓ yes ${UNDO}`)
+  expect(((left(96).children as Node[])[0] as Node).flexDirection).toBeUndefined()
+})
+
+test('with the pane not docked a band of 120 draws a pressed labelled to-do\'s control and a yes/no\'s with their answer text', () => {
+  const labelled: Item = { ...at(1, false), doneLabel: LABEL, ...waiting(LABEL) }
+  const yes = yesNo({ id: 2, blocking: false, ...waiting('yes') })
+  const left = columnsOf(drawn({ items: [labelled, yes], next: 3, term: null }, queue(1), 120))[0] as Node
+  expect(shown(cellsOf(left, 1).slice(-1)[0])).toBe(` ✓ ${LABEL} ${UNDO}`)
+  expect(shown(cellsOf(left, 2).slice(-1)[0])).toBe(` ✓ yes ${UNDO}`)
+})
+
+test('a human list with no Claude items is never squeezed, docked or not, at any width: its rows keep the ladder from the first rung, and a reply reads `✓ replied`', () => {
+  const replied: Item = { ...at(1, false), ...waiting('Not yet', true) }
+  const store: Store = { items: [replied], next: 2, term: null }
+  for (const columns of [52, 56, 70, 95, 96]) {
+    for (const isDocked of [true, false]) {
+      expect(JSON.stringify(drawn(store, [], columns, 50, isDocked)), `${columns}, ${isDocked}`).toContain('✓ replied ')
+      sameTree(drawn(store, [], columns, 50, isDocked), drawn(store, [], columns))
+    }
   }
 })

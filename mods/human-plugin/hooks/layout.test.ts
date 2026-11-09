@@ -1,5 +1,5 @@
 import { expect, test } from 'claude-code/testing'
-import { bandDraws, bandRows, bandWidths, claudeRows, columnHeight, cutTitle, cutToColumns, headerLines, humanFoldRows, rowLayout, wrapText, type ClaudeRow, type Control, type RowTexts } from './layout'
+import { bandDraws, bandRows, bandWidths, claudeRows, columnHeight, cutTitle, cutToColumns, headerLines, humanFoldRows, isSqueezed, rowLayout, squeezedFold, wrapText, type ClaudeRow, type Control, type RowTexts } from './layout'
 import { displayColumns } from './items'
 import type { Item, TodoItem } from '../types'
 
@@ -214,6 +214,17 @@ test('beside the docked pane, at every width from 1 to 300, both lists draw from
 
 test('from 96 columns the docked width rule is the undocked one', () => {
   for (let columns = 96; columns <= 300; columns++) for (const todo of [[], waiting(1), flying(2)]) expect(bandWidths(columns, 2, todo, true), `${columns}`).toEqual(bandWidths(columns, 2, todo))
+})
+
+test('a human list is squeezed when it is drawn beside the Claude column under 64 columns wide, and never alone', () => {
+  for (let columns = 52; columns <= 95; columns++) expect(isSqueezed(bandWidths(columns, 2, waiting(1), true)), `${columns}`).toBe(true)
+  for (let columns = 96; columns <= 200; columns++) expect(isSqueezed(bandWidths(columns, 2, waiting(1), true)), `${columns}`).toBe(false)
+  for (let columns = 1; columns <= 200; columns++) {
+    expect(isSqueezed(bandWidths(columns, 2, [])), `${columns}, no column`).toBe(false)
+    expect(isSqueezed(bandWidths(columns, 2, [], true)), `${columns}, no column, docked`).toBe(false)
+    expect(isSqueezed(bandWidths(columns, 2, waiting(1))), `${columns}, undocked`).toBe(false)
+    expect(isSqueezed(bandWidths(columns, 0, flying(1), true)), `${columns}, column alone`).toBe(false)
+  }
 })
 
 test('the band draws when a human item exists or a Claude item is in flight, and hands on otherwise', () => {
@@ -537,16 +548,17 @@ test('the answer texts the sweeps use are the lengths their names say', () => {
 // The ladder worked on the strings the states draw, one rung at a time as the rule words it, apart from rowLayout: the row's rungs in order are the full
 // control with its answer texts up to 24 columns, then the answers cut a column at a time down to 1, then the same again with every pressed control
 // squeezed to its mark and undo button; the first that leaves the title ten columns is the row's, and where none does it is the narrowest, the first
-// such. A control's column is the widest of its states and the space before it. The answers here are ASCII, so a text's length is its columns.
+// such. A squeezed list (`fromSqueezed`) starts at the third rung. A control's column is the widest of its states and the space before it. The answers here
+// are ASCII, so a text's length is its columns.
 const cut = (text: string, columns: number): string => (text.length <= columns ? text : `${text.slice(0, columns - 1)}…`)
-const oracle = (row: RowTexts, width: number): { rung: number; answer: number; control: number; room: number } => {
+const oracle = (row: RowTexts, width: number, fromSqueezed = false): { rung: number; answer: number; control: number; room: number } => {
   const prefix = displayColumns(row.prefix)
   const control = (squeezed: boolean, answer: number): number => {
     const drawn = (one: Control): string => `${one.before}${cut(one.answer, answer)}${one.after}`
     const states = [drawn(row.open), ...(squeezed ? [row.squeezed] : row.pressed.map(drawn)), row.sent].filter(text => text !== '')
     return 1 + Math.max(...states.map(displayColumns))
   }
-  const rungs = [false, true].flatMap(squeezed => Array.from({ length: 24 }, (_, k) => ({ squeezed, answer: 24 - k })).map(rung => ({ ...rung, control: control(rung.squeezed, rung.answer) })))
+  const rungs = (fromSqueezed ? [true] : [false, true]).flatMap(squeezed => Array.from({ length: 24 }, (_, k) => ({ squeezed, answer: 24 - k })).map(rung => ({ ...rung, control: control(rung.squeezed, rung.answer) })))
   const picked = rungs.find(rung => width - prefix - rung.control >= 10) ?? rungs.reduce((best, rung) => (rung.control < best.control ? rung : best))
   return { rung: picked.squeezed ? 3 : picked.answer === 24 ? 1 : 2, answer: picked.answer, control: picked.control, room: Math.max(1, width - prefix - picked.control) }
 }
@@ -703,6 +715,71 @@ test('below the narrowest width the row cannot be one line within the list: the 
   }
 })
 
+// A squeezed list (layout.ts's isSqueezed) starts the ladder at its third rung. What hand work gives for the id 12 and the 3-second window: for each kind and layout
+// width, the answer width, the control column and the title's room, the rung always the third. The widths are the lists of 20, 32 and 42 columns beside the
+// Claude column, laid out in one column less (19, 31 and 41), and sub-plan 7's `oneline-output.txt` figures at 20, 32 and 42.
+const SQUEEZED_FIGURES: [Kind, [number, number, number, number][]][] = [
+  [PLAIN, [[19, 24, 9, 4], [20, 24, 9, 5], [31, 24, 9, 16], [32, 24, 9, 17], [41, 24, 9, 26], [42, 24, 9, 27]]],
+  [YES_NO, [[19, 24, 9, 4], [20, 24, 9, 5], [31, 24, 9, 16], [32, 24, 9, 17], [41, 24, 9, 26], [42, 24, 9, 27]]],
+  [LABELLED_24, [[19, 4, 9, 4], [20, 4, 9, 5], [24, 4, 9, 9], [25, 4, 9, 10], [31, 10, 15, 10], [32, 11, 16, 10], [41, 20, 25, 10], [42, 21, 26, 10]]],
+  [DECISION_56, [[19, 24, 9, 4], [20, 24, 9, 5], [31, 24, 9, 16], [32, 24, 9, 17], [41, 24, 9, 26], [42, 24, 9, 27]]],
+]
+
+test('a squeezed list starts the ladder at its third rung: the id 12 and the 3-second window give the answer width, the control column and the title\'s room worked by hand, a pressed control always its mark and undo button', () => {
+  for (const [kind, rows] of SQUEEZED_FIGURES) {
+    for (const [width, answer, control, room] of rows) {
+      const got = rowLayout(rowFor(kind, 2), width, true)
+      expect({ rung: got.rung, answer: got.answer, control: got.control, room: got.room }, `${kind.name} at ${width}`).toEqual({ rung: 3, answer, control, room })
+    }
+  }
+  // The title keeps 4, 16 and 26 columns in lists of 20, 32 and 42 for a plain to-do, a yes/no and a decision, and a labelled to-do's keeps 10 from a layout of 25.
+  for (const kind of [PLAIN, YES_NO, DECISION_56]) expect([19, 31, 41].map(width => rowLayout(rowFor(kind, 2), width, true).room), kind.name).toEqual([4, 16, 26])
+  expect([24, 25].map(width => rowLayout(rowFor(LABELLED_24, 2), width, true).room)).toEqual([9, 10])
+  // The label is cut to fit the control column: its open control, `[✓ Shi…]` with its brackets, is the 8 columns the column of 9 leaves after its space.
+  expect(rowLayout(rowFor(LABELLED_24, 2), 19, true).open).toEqual({ box: 4, text: 'Shi…' })
+  expect(rowLayout(rowFor(LABELLED_24, 2), 25, true).pressed[0]).toEqual({ box: 4, text: 'Shi…' })
+})
+
+test('at every layout width a list of 20 to 63 columns beside the column can have, 19 to 62, every kind at an id of one to four digits is at its third rung: the layout is the ladder worked on the strings from that rung, the pieces add up to the layout width, and the title keeps ten columns from the prefix and 19', () => {
+  for (const kind of KINDS) {
+    for (const digits of [1, 2, 3, 4]) {
+      const row = rowFor(kind, digits, 'A title longer than the list, with a pneumonoultramicroscopic word in it')
+      const prefix = displayColumns(row.prefix)
+      for (let width = 19; width <= 62; width++) {
+        const where = `${kind.name}, ${digits} digits at ${width}`
+        const got = rowLayout(row, width, true)
+        expect(got.rung, where).toBe(3)
+        expect({ rung: got.rung, answer: got.answer, control: got.control, room: got.room }, where).toEqual(oracle(row, width, true))
+        expect(prefix + got.room + got.control, where).toBe(width)
+        expect(got.room, where).toBeGreaterThanOrEqual(width >= prefix + 19 ? 10 : 1)
+        // The control column holds the squeezed pressed control, `✓ [↶ 3s]` and the space before it: 9 columns, more only for an open label.
+        expect(got.control, where).toBeGreaterThanOrEqual(9)
+        if (kind.open.answer === '') expect(got.control, where).toBe(9)
+        expect(displayColumns(got.title), where).toBeLessThanOrEqual(got.room)
+      }
+    }
+  }
+})
+
+test('a row the unsqueezed ladder already takes to its third rung is laid out the same in a squeezed list, and one it keeps at an earlier rung is squeezed', () => {
+  let squeezedHere = 0
+  for (const kind of KINDS) {
+    for (const digits of [1, 2, 3, 4]) {
+      const row = rowFor(kind, digits)
+      for (let width = 1; width <= 120; width++) {
+        const where = `${kind.name}, ${digits} digits at ${width}`
+        const open = rowLayout(row, width)
+        const squeezed = rowLayout(row, width, true)
+        expect(squeezed.rung, where).toBe(3)
+        if (open.rung === 3) expect(squeezed, where).toEqual(open)
+        else squeezedHere++
+      }
+    }
+  }
+  // The sweep crosses rows at rungs 1 and 2 in the plain list, which the squeezed list takes to the third.
+  expect(squeezedHere).toBeGreaterThan(0)
+})
+
 test('the header counts the count\'s wrapped lines in the columns the chip leaves, which never shrinks: ` To do for you ` and ` 8 open ` take 23 columns, so a list of 20 draws the count on two lines', () => {
   // ` To do for you ` is 15 columns and ` 8 open ` 8: in the 5 that a list of 20 leaves they wrap to ` 8 ` and `open `.
   expect(headerLines(' To do for you ', ' 8 open ', 23)).toBe(1)
@@ -728,4 +805,40 @@ test('a count wider than the columns the chip leaves wraps word by word there, a
   for (const width of [20, 31, 32, 33]) expect(headerLines(chip, ' 8 open ', width), `${width}`).toBe(8)
   // With the 8 columns a list of 40 leaves, the count fits on one line.
   expect(headerLines(chip, ' 8 open ', 40)).toBe(1)
+})
+
+test('the squeezed header takes two lines and the rows after it; with no room for a row it gives up its count and is the chip alone on one line, and with none even then the chip alone and no row', () => {
+  const items = [item(1, true), item(2)]
+  const fold = (room: number) => {
+    const { top, rows } = squeezedFold(items, room)
+    return [top, ids(rows)]
+  }
+  // Whole: the header's two lines and both rows.
+  expect(fold(10)).toEqual([2, [1, 2]])
+  expect(fold(4)).toEqual([2, [1, 2]])
+  // Folded into the summary row: the header's two lines and the summary.
+  expect(fold(3)).toEqual([2, [-1]])
+  // The two-line header would leave the summary no room: the chip alone, and the summary below it.
+  expect(fold(2)).toEqual([1, [-1]])
+  // Not even then: the chip alone and no row.
+  expect(fold(1)).toEqual([1, []])
+  expect(fold(0)).toEqual([1, []])
+  expect(fold(-3)).toEqual([1, []])
+  // A single item that fits beside the two-line header is a row of its own; where the second line would leave it no room, the chip alone gives it the line.
+  expect(squeezedFold([item(1)], 3)).toEqual({ top: 2, rows: [{ kind: 'item', item: item(1) }] })
+  expect(squeezedFold([item(1)], 2)).toEqual({ top: 1, rows: [{ kind: 'item', item: item(1) }] })
+})
+
+test('for any number of items and any room the squeezed fold draws the two-line header from a room of 3, the chip alone at 2 with a row and at 1 and 0 with none, and never more lines than the room but for the chip', () => {
+  for (let count = 1; count <= 14; count++) {
+    const items = Array.from({ length: count }, (_, k) => item(k + 1, k % 3 === 0))
+    for (let room = 0; room <= 18; room++) {
+      const where = `${count} items in ${room}`
+      const { top, rows } = squeezedFold(items, room)
+      expect(top, where).toBe(room >= 3 ? 2 : 1)
+      expect(rows, where).toEqual(bandRows(items, Math.max(0, room - top)))
+      expect(rows.length > 0, where).toBe(room >= 2)
+      expect(top + rows.length, where).toBeLessThanOrEqual(Math.max(room, 1))
+    }
+  }
 })
