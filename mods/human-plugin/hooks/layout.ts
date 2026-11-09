@@ -23,10 +23,10 @@ export const bandRows = (items: readonly Item[], maxRows: number): BandRow[] => 
   return [...asRows(sorted.slice(0, maxRows - 1)), summaryOf(sorted.slice(maxRows - 1))]
 }
 
-// The lines of the squeezed list's header, the chip and the count under it.
+// The lines of the stacked header, the chip and the count under it: a squeezed list's, and the header of a list narrower than its chip (isChipShort).
 const SQUEEZED_HEADER = 2
 
-// The squeezed list's header and rows within `room` lines, header included (`humanFoldRows`): the header's lines, `top`, and the rows (`bandRows`) that fit under them.
+// The stacked header and the rows within `room` lines, header included (`humanFoldRows`): the header's lines, `top`, and the rows (`bandRows`) that fit under them.
 // The header is two lines. When the room leaves no row beside both, the header gives up its count and is the chip alone on one line, so that the summary of what is folded,
 // the only sign of the asks the band left out, draws in the line that frees; with no room for a row even then, the chip alone draws and no row.
 export const squeezedFold = (items: readonly Item[], room: number): { top: number; rows: BandRow[] } => {
@@ -82,7 +82,7 @@ const SQUEEZE_UNDER = TWO_LIST_WIDTH - CLAUDE_MIN_WIDTH
 
 // Whether the human list is squeezed: it draws beside the Claude column in a box under 64 columns, which only a band of 52 to 95 beside this plugin's docked pane has.
 // A human list drawn alone is never squeezed, at any width, nor is any list from a band of 96, docked or not. A squeezed list's rows start the ladder at its third rung
-// (rowLayout) and its header is two lines (squeezedFold).
+// (rowLayout) and its header is stacked (squeezedFold).
 export const isSqueezed = (widths: BandWidths): boolean => widths.human !== null && widths.claude !== null && widths.human.box < SQUEEZE_UNDER
 
 export type ClaudeRow = { kind: 'item'; item: TodoItem } | { kind: 'queued'; count: number }
@@ -271,5 +271,5 @@ export const rowLayout = (row: RowTexts, width: number, startSqueezed = false): 
 export const isChipShort = (widths: BandWidths, chip: string): boolean => widths.human !== null && !isSqueezed(widths) && widths.human.layout <= displayColumns(chip)
 
 // The lines the header takes in a list of `width` columns: one at least, more when the count, which wraps word by word in the columns the chip leaves,
-// does not fit them. The chip never shrinks.
+// does not fit them. The chip holds its width here, which a list that fits it has; a narrower list stacks the chip over the count instead (isChipShort).
 export const headerLines = (chip: string, count: string, width: number): number => wrapText(count, width - displayColumns(chip)).length

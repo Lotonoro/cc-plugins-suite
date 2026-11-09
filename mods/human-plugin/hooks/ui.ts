@@ -364,7 +364,7 @@ const squeezedHeader = (t: Table, chip: string, count: string, fill: Fill, lines
 // the pane for them. The pane is also opened by a title, and closed by its own close or a press on the item it shows. On a band wide
 // enough, and with a Claude list to show, the Claude column is drawn beside the human list at the band's right edge (layout.ts). The human list's
 // rows are laid out and cut in its layout width, each one line, so the fold counts a line a row and the header's lines; the Claude column fills down to the same count.
-// A squeezed human list (isSqueezed) has the two-line header of squeezedHeader, which squeezedFold counts, and its rows start the ladder at its last stage.
+// A squeezed human list (isSqueezed) and one narrower than its chip (isChipShort) have the two-line header of squeezedHeader, which squeezedFold counts; a squeezed list's rows start the ladder at its last stage.
 export const band = (t: Table, h: Handlers, store: Store, view: View): RenderElement => {
   const open = store.items.filter(it => it.state === 'open')
   const todo = view.claude?.items ?? []

@@ -1662,6 +1662,18 @@ test('beside the dock the header gives up its count line when the summary row wo
   }
 })
 
+test('a list drawn alone that is narrower than its chip folds as the squeezed list does: at 12 columns and maxRows 2 the header is the chip alone and the summary row takes the line that frees, and at maxRows 3 the header is two lines and the summary row', () => {
+  const store: Store = { items: [at(1, false), at(2, false), at(3, false)], next: 4, term: null }
+  for (const [maxRows, headerRows] of [[2, 1], [3, 2]] as const) {
+    const tree = band(table, handlers, store, { ...view(), maxRows, claude: { items: [], columns: 12 } })
+    const kids = (tree as Node).children as Node[]
+    expect(kids[0]?.children, `${maxRows}`).toHaveLength(headerRows)
+    expect(kids.length, `${maxRows}`).toBe(2)
+    expect(nodes(tree, 'Button').map(b => b.key), `${maxRows}`).toEqual(['band-more'])
+    expect(headerRows + kids.length - 1, `${maxRows}`).toBeLessThanOrEqual(maxRows)
+  }
+})
+
 test('beside the dock, pressing a plain to-do\'s control, undoing it and letting its window end each leave the same human rows folded and the same control cells, at every maxRows', () => {
   const rowsFolded = (state: Partial<Item>, maxRows: number): string => {
     const items = Array.from({ length: 8 }, (_, k) => ({ ...at(k + 1, false), title: 'A to-do whose title is longer than the list beside the column', ...(k === 2 ? state : {}) }))

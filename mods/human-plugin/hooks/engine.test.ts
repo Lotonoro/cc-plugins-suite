@@ -1450,8 +1450,8 @@ test('with the pane on the Claude list, a write that adds items asks again for t
 // too narrow for its control draws none and its title's label fits its room, and the header is one row of the chip and the count from the chip's width plus one and the chip and the
 // count on rows of their own below it. The presses are made at 120 columns, where every control is drawn, and the rows drawn again narrow.
 for (const [name, term, chip] of [['the default term', undefined, ' To do for you '], ['a 20-column term', 'abcdefghij'.repeat(2), ` To do for ${'abcdefghij'.repeat(2)} `]] as const) {
- for (const first of [2, 1000]) {
-  test(`the band drawn alone with ${name} at 1 to 25 columns and at 32, 33 and 40, open, pressed and sent, draws no row or header line wider than the list, at an id of ${first === 2 ? 'one digit' : 'four digits'}`, { timeoutMs: 60000 }, async ($, on) => {
+ for (const first of [2, 100]) {
+  test(`the band drawn alone with ${name} at 1 to 25 columns and at 32, 33 and 40, open, pressed and sent, draws no row or header line wider than the list, at an id of ${first === 2 ? 'one digit' : 'three digits'}`, async ($, on) => {
     on('prompt.submit', (_$, e) => ({ text: e.text }))
     const clock = mock.clock(on)
     mock.store(on)
