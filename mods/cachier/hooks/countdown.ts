@@ -1,5 +1,4 @@
 import type { CacheView, ColdMark, PriceCue, Reading } from '../types'
-import { TTL_WORDS } from './prices'
 
 const pad = (n: number) => String(n).padStart(2, '0')
 
@@ -58,7 +57,7 @@ export const readingOf = (view: CacheView, liveMs: number | null, cold: ColdMark
 // quarter and red in its last tenth, where a prompt can still keep it warm. An expired cache is red with keepalive on (only a click or a
 // prompt resumes it) and dim off, where nothing is left to act on.
 export type Tone = 'on' | 'quiet' | 'warning' | 'alarm' | 'gone'
-// The word for a reset cache: the footer's cold word and the warmth line's `Prompt cache reset` read this one constant.
+// The word for a reset cache: the footer's cold word and the Cache line's `reset` read this one constant.
 const RESET = 'reset'
 // The footer's word with keepalive on and no reading: nothing is counted, which is true of every no-reading state.
 const NO_COUNT = 'no count'
@@ -117,14 +116,13 @@ export const pieOf = (reading: Reading | null, on: boolean, refresh: string | nu
 // reason only where this holds, so the two cannot disagree.
 export const rebuildDrawnOf = (reading: Reading | null, rebuild: string): boolean => reading !== null && reading.state !== 'warm' && rebuild !== ''
 
-// The Cache section's line: the cache's warmth, its time left in the lifetime `ttl` names, or cold or expired with the figure to rebuild
+// The Cache section's line: the cache's warmth, its time left and its TTL label `ttl`, or cold or expired with the figure to rebuild
 // it (`rebuild`, empty for none). Empty when there is no reading to count from.
 export const warmthOf = (reading: Reading | null, ttl: '1h' | '5m', rebuild: string): string => {
   if (reading === null) return ''
-  const life = `${TTL_WORDS[ttl]} cache`
-  if (reading.state === 'warm') return `Prompt cache warm, ${reading.words} left (${life})`
+  if (reading.state === 'warm') return `warm · ${reading.words} left · ${ttl} TTL`
   const state = reading.state === 'expired' ? 'expired' : RESET
-  return rebuildDrawnOf(reading, rebuild) ? `Prompt cache ${state}, ${rebuild} to rebuild.` : `Prompt cache ${state}.`
+  return rebuildDrawnOf(reading, rebuild) ? `${state} · rebuild ${rebuild}` : state
 }
 
 // A cold mark lifts when a touch after it is known: the reading's, or a live request start.

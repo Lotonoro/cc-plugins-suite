@@ -55,8 +55,8 @@ lists it: a pane closed some way cachier did not hear of (a reload, another plug
 and a close another plugin refuses leaves the pane open to be closed by the next click. The pane shows the five sections a bare
 `/keepalive` answers with, in the same order with the same words, each heading in bold. The pane's text wraps at the width the pane is drawn at, so dragging the dock wider gives wider lines and fewer rows; each sentence's rows share one indent:
 
-- **Cache**: the cache's warmth, `Prompt cache warm, 3:12 left (5-minute cache)`, or, once the cache has expired or been reset, the
-  figure to rebuild it (the context plus the last reply's output, which the next prompt writes with it). The figure is priced
+- **Cache**: the cache's warmth, `warm · 3:12 left · 5m TTL`, or, once the cache has expired or been reset, `expired · rebuild ~$0.13` or
+  `reset · rebuild ~$0.13` (the state alone where no figure is drawn). The rebuild figure is the context plus the last reply's output, which the next prompt writes with it, priced
   at the model that last wrote the cache, so after a model switch it is at the rates of the model switched from;
 - **Keepalive**: its state on the heading (`off`, `on, refreshing`, `paused`, `stopped`), and beneath it why it is paused or stopped and
   that it resumes after your next prompt, what the pie's colours warn of while it is amber or red, what a refresh costs and when the next is due (while
@@ -74,6 +74,14 @@ and a close another plugin refuses leaves the pane open to be closed by the next
 The pane draws these rows itself, from the same figures the command reads, and its countdown advances each second. A press on the pie
 changes what an open pane shows at once; the pane is re-sized to the new rows by the next second's tick. The rows run to about 30 to 45, so in
 a short terminal the lower sections are scrolled to with the wheel.
+
+## Glossary
+
+- **TTL**: how long the prompt cache lives after its last use, `5m` or `1h`. Cachier reads it from your last response.
+- **rebuild**: what the next prompt pays to write an expired or reset cache again, in dollars or in the tokens written
+  (`~26k tokens`). The footer words the same figure `to rebuild`.
+- **`·`**: separates the parts of a line, as in `warm · 3:12 left · 5m TTL`.
+- **`~`**: about; the figure is an estimate.
 
 ## Keepalive
 

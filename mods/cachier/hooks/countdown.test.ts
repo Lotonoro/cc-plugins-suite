@@ -140,18 +140,18 @@ describe('footerOf with a recorded stop standing: red over nothing to count and 
   })
 })
 
-describe('warmthOf: the details\' first line, the cache\'s warmth with its figure', () => {
-  test('a warm cache gives its time left and its lifetime', () => {
-    expect(warmthOf(readingOf(known, null, null, T + 1000, UPON), '5m', UPON)).toBe('Prompt cache warm, 4:59 left (5-minute cache)')
-    expect(warmthOf(readingOf(hour, null, null, T + 1000, UPON), '1h', UPON)).toBe('Prompt cache warm, 59:59 left (1-hour cache)')
+describe('warmthOf: the details\' first line, the cache\'s state with its figure when one is drawn', () => {
+  test('a warm cache gives its time left and its TTL label', () => {
+    expect(warmthOf(readingOf(known, null, null, T + 1000, UPON), '5m', UPON)).toBe('warm · 4:59 left · 5m TTL')
+    expect(warmthOf(readingOf(hour, null, null, T + 1000, UPON), '1h', UPON)).toBe('warm · 59:59 left · 1h TTL')
   })
 
   test('an expired or reset cache gives the figure to rebuild it, and with no figure just its state', () => {
     const expired = readingOf(known, null, null, T + 300000, UPON)
-    expect(warmthOf(expired, '5m', UPON)).toBe('Prompt cache expired, ~$0.42 to rebuild.')
-    expect(warmthOf(readingOf(known, null, COLD, T, UPON), '5m', UPON)).toBe('Prompt cache reset, ~$0.42 to rebuild.')
-    expect(warmthOf(readingOf(known, null, COLD, T, ''), '5m', '')).toBe('Prompt cache reset.')
-    expect(warmthOf(readingOf(known, null, null, T + 300000, ''), '5m', '')).toBe('Prompt cache expired.')
+    expect(warmthOf(expired, '5m', UPON)).toBe('expired · rebuild ~$0.42')
+    expect(warmthOf(readingOf(known, null, COLD, T, UPON), '5m', UPON)).toBe('reset · rebuild ~$0.42')
+    expect(warmthOf(readingOf(known, null, COLD, T, ''), '5m', '')).toBe('reset')
+    expect(warmthOf(readingOf(known, null, null, T + 300000, ''), '5m', '')).toBe('expired')
   })
 
   test('with nothing to count there is no line', () => {

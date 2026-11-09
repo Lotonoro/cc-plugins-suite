@@ -10,7 +10,7 @@ const SETTINGS: Setting[] = [
   { name: 'unit', value: 'dollars', source: 'cost_unit option', change: '/keepalive unit tokens|dollars' },
 ]
 const FULL: Snapshot = {
-  cache: ['Prompt cache warm, 3:12 left (5-minute cache)'],
+  cache: ['warm · 3:12 left · 5m TTL'],
   keepalive: { state: 'on, refreshing', lines: ['next refresh in 4:59, 3 left', 'Next refresh: $0.006 (~33k cached tokens read).'] },
   session: ['This session: 2 refreshes costing $0.007.', 'Cache misses: 1 (lapse 1), $0.10 rewritten'],
   advice: ['A 1-hour cache would have saved $4.74 over 10 pauses: set "promptCacheTtl": "1h" in settings.json.'],
