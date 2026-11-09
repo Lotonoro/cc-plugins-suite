@@ -1612,7 +1612,7 @@ test('a press whose selection write is still in flight holds the pane on the pre
   expect(JSON.stringify(await paneTree(hooks, env))).toContain('#3 non-blocking, open: Item 3')
 })
 
-test('while a press\'s selection write is still in flight, the band counts the pressed item as shown: a second press on its title closes the pane', async () => {
+test('while a press\'s selection write is still in flight, the pane\'s own record says the pressed item is shown: a second press on its title closes the pane', async () => {
   const open = ['human-items']
   const { hooks, env } = await reloaded(open, [made(1), made(2), made(3)], 1)
   const writes: Array<() => void> = []

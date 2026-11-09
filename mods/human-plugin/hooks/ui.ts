@@ -36,9 +36,9 @@ export type Table = {
 
 // What a press asks for; the handlers are the plugin's own and do the work.
 export type Handlers = {
-  // A band item's title: opens the pane on the item, or closes the pane when it shows it. `isSelected`: whether the band drew the item as the one the pane shows. The press itself is
-  // decided from pane.ts's own records of the pane (pickItem), since a second press can land before the band draws again.
-  pick: (id: number, isSelected: boolean) => void
+  // A band item's title: opens the pane on the item, or closes the pane when it shows it. The band tells the press nothing of what the pane shows: the press is decided from
+  // pane.ts's own records of the pane (pickItem), since a second press can land before the band draws again.
+  pick: (id: number) => void
   // A done press (`answer` null), a labelled to-do's press (`answer`: its label), the press of an option (`answer`: its label), or a yes or no (`answer`: `yes` or `no`).
   done: (id: number, answer: string | null) => void
   // The band's summary row: opens the pane on `id`, the first item the band folds.
@@ -52,7 +52,7 @@ export type Handlers = {
 }
 
 // What the band draws with: the rows the surface has, the time now, and the undo window's length. `selected`: what the pane shows, if anything (an item, the Claude list, or
-// none, which counts the first item as shown). `claude`: the Claude list and the columns the band is laid out in, which the Claude column is drawn from. It also gives the human
+// none, which counts the first item as shown), which the pane's draw alone reads. `claude`: the Claude list and the columns the band is laid out in, which the Claude column is drawn from. It also gives the human
 // list its width, which its rows are laid out and cut in; without it the band has no width to fit its rows to, and draws each whole, nothing cut.
 // `isDocked`: whether this plugin's pane is docked on the band's surface (pane.ts), which narrows the width the two lists need.
 export type View = { maxRows: number; now: number; windowMs: number; selected?: Selection; claude?: { items: readonly TodoItem[]; columns: number; isDocked?: boolean } }
@@ -208,14 +208,14 @@ const doneControl = (t: Table, h: Handlers, item: Item, view: View, inPane: bool
 // The one rule for a blank brief: whitespace alone is no brief, in the title, the pane's rows and the pane's draw.
 const hasBrief = (item: Item): boolean => item.detail.trim() !== ''
 
-// A band row. `isShown`: whether the pane shows this item, as the press reports it (Handlers.pick). `width`: the columns the row is laid out in (layout.ts), null for a
+// A band row. `width`: the columns the row is laid out in (layout.ts), null for a
 // band with no width. `squeezed`: whether its list is a squeezed one (isSqueezed), whose rows start the ladder at its last stage. A laid-out row is one line of three
 // cells: its prefix, its title's button in a box that shrinks, its label the title cut to the room, and the control's cell, as wide as the row's widest state needs and
 // never shrunk, with the state's control at its start. The titles and the answers are the strings the layout cut, drawn bare, so the terminal never wraps them.
-const itemRow = (t: Table, h: Handlers, item: Item, view: View, isShown: boolean, width: number | null, squeezed: boolean): RenderElement => {
+const itemRow = (t: Table, h: Handlers, item: Item, view: View, width: number | null, squeezed: boolean): RenderElement => {
   const texts = rowTexts(item, view.windowMs)
   const prefix = t.Box({ flexShrink: 0, children: [t.Text({ bold: item.blocking, dimColor: !item.blocking, children: [texts.prefix] })] })
-  const title = (label: string): RenderElement => t.Button({ key: `title-${item.id}`, plain: true, label, onPress: () => h.pick(item.id, isShown) })
+  const title = (label: string): RenderElement => t.Button({ key: `title-${item.id}`, plain: true, label, onPress: () => h.pick(item.id) })
   if (width === null) {
     const control = doneControl(t, h, item, view, false)
     return t.Box({
@@ -377,10 +377,9 @@ export const band = (t: Table, h: Handlers, store: Store, view: View): RenderEle
   // The header's lines, and the rows that fit under it. A squeezed list folds both together; any other list's header takes the lines its count wraps to.
   const wrapped = fit === null ? 1 : headerLines(chip, count, fit)
   const { top, rows } = squeezed ? squeezedFold(store.items, room) : { top: wrapped, rows: bandRows(store.items, Math.max(0, room - wrapped)) }
-  const shownId = selectedItem(store.items, view.selected ?? null)?.id
   const fill = open.some(it => it.blocking) ? 'warning' : 'permission'
   const header = squeezed ? squeezedHeader(t, chip, count, fill, top) : plainHeader(t, chip, count, fill)
-  const body = rows.map(row => (row.kind === 'item' ? itemRow(t, h, row.item, view, row.item.id === shownId, fit, squeezed) : summaryRow(t, h, row, fit)))
+  const body = rows.map(row => (row.kind === 'item' ? itemRow(t, h, row.item, view, fit, squeezed) : summaryRow(t, h, row, fit)))
   if (view.claude === undefined || widths.claude === null) return t.Box({ flexDirection: 'column', children: [header, ...body] })
   // Two boxes at the band's width, the Claude column last: alone it keeps its width and stays at the right edge, with nothing drawn to its left.
   const humanList =

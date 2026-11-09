@@ -451,28 +451,17 @@ test('an answer pressed draws its label with the countdown, and the band\'s chec
   expect(drawn).not.toContain('Use sqlite')
 })
 
-test('a decision\'s title press reaches the pane for that item', () => {
+test('a decision\'s title press reaches the pane for that item, with the item\'s number alone: the band tells the press nothing of what the pane shows', () => {
   const decision: Item = { ...item, detail: 'One line.', blocking: true, options: [
     { label: 'Use sqlite', description: '', recommended: false },
     { label: 'Use postgres', description: '', recommended: true },
   ] }
-  const picked: [number, boolean][] = []
-  const press: Handlers = { ...handlers, pick: (id, isSelected) => void picked.push([id, isSelected]) }
+  const picked: unknown[][] = []
+  const press: Handlers = { ...handlers, pick: (...args: unknown[]) => void picked.push(args) }
   const tree = band(table, press, { items: [decision], next: 2, term: null }, view())
   const titlePress = nodes(tree, 'Button').find(n => n.key === 'title-1')?.onPress as (() => void) | undefined
   titlePress?.()
-  expect(picked).toEqual([[1, true]])
-})
-
-test('a band title says whether the pane shows its item, so a press on the shown item closes the pane; with none chosen the first is shown', () => {
-  const picked: [number, boolean][] = []
-  const press: Handlers = { ...handlers, pick: (id, isSelected) => void picked.push([id, isSelected]) }
-  const two: Store = { items: [at(1, true), at(2, true)], next: 3, term: null }
-  const press2 = (tree: unknown, key: string) => (nodes(tree, 'Button').find(n => n.key === key)?.onPress as () => void)()
-  press2(band(table, press, two, { ...view(), selected: 2 }), 'title-1')
-  press2(band(table, press, two, { ...view(), selected: 2 }), 'title-2')
-  press2(band(table, press, two, { ...view(), selected: null }), 'title-1')
-  expect(picked).toEqual([[1, false], [2, true], [1, true]])
+  expect(picked).toEqual([[1]])
 })
 
 // The band's buttons in the order the focus ring walks them.
@@ -1908,17 +1897,6 @@ test('the backlog view draws no control: no button, field or markdown that could
   expect(nodes(tree, 'Input')).toEqual([])
   expect(nodes(backlogPane(withInput, [...flight(2), ...queue(2)]), 'Input')).toEqual([])
   expect(nodes(tree, 'Markdown')).toEqual([])
-})
-
-test('with the pane on the Claude list no band row of the human list is drawn as the shown item, and with no selection the first row is', () => {
-  const picked: [number, boolean][] = []
-  const press: Handlers = { ...handlers, pick: (id, isSelected) => void picked.push([id, isSelected]) }
-  const two: Store = { items: [at(1, true), at(2, true)], next: 3, term: null }
-  const pressTitle = (tree: unknown, key: string) => (nodes(tree, 'Button').find(n => n.key === key)?.onPress as () => void)()
-  pressTitle(band(table, press, two, { ...view(), selected: 'claude-todo' }), 'title-1')
-  pressTitle(band(table, press, two, { ...view(), selected: 'claude-todo' }), 'title-2')
-  pressTitle(band(table, press, two, { ...view(), selected: null }), 'title-1')
-  expect(picked).toEqual([[1, false], [2, false], [1, true]])
 })
 
 test('the item pane given the Claude list\'s selection draws no human item', () => {

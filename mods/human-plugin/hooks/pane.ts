@@ -142,8 +142,8 @@ function select($: EngineInterface, view: Shown): Promise<unknown> {
   })
 }
 
-// What the surfaces draw as shown: the view the mod last set, else the stored selection. The band and the pane read it, so they agree with the follow-ups before a selection
-// write lands. The stored selection is read either way, so a drawing stays subscribed to it, and what it read is kept for a press to look at (lastRead).
+// What the pane draws as shown: the view the mod last set, else the stored selection. The pane's draw reads it, so it agrees with the follow-ups before a selection write
+// lands; the band's draw reads it too, only for the record it keeps. The stored selection is read either way, so a drawing stays subscribed to it, and what it read is kept for a press to look at (lastRead).
 export async function shownSelection($: EngineInterface): Promise<Selection> {
   lastRead = await readSelection($)
   return shownPick ?? lastRead

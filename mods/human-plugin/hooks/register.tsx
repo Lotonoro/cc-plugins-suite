@@ -446,8 +446,10 @@ export const wireHooks = (on: On, windowMs: number): void => {
     const todo = await readTodo($)
     setDrawnTodo(todo)
     if (!bandDraws(store.items.length, todo)) return next(e)
-    const selected = await shownSelection($)
-    const view: View = { maxRows: e.props.maxRows, now: await $.clock.now(), windowMs, selected, claude: { items: todo, columns: e.props.bodyColumns, isDocked: paneDocked(e.surface) } }
+    // Read for the record it keeps (pane.ts, lastRead): the stored selection a press decides on after a reload with the pane open, before any press or move has set one. The band draws
+    // no row as the shown one, so it uses nothing the read returns.
+    await shownSelection($)
+    const view: View = { maxRows: e.props.maxRows, now: await $.clock.now(), windowMs, claude: { items: todo, columns: e.props.bodyColumns, isDocked: paneDocked(e.surface) } }
     return band($.ui.resolve(e), handlers($, windowMs), store, view)
   })
 
