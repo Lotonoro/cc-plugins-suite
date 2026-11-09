@@ -771,8 +771,8 @@ test('a write whose row carries no id is taken as live, as the human list\'s cal
   expect((await replay([sourceOf(text)])).todo).toEqual(entries(['Build', 'queued']))
 })
 
-// A batch's hidden context in the transcript: the shape is not recorded live yet (the master's unmeasured list), so both shapes a row of
-// context takes in this file are tried: a hook attachment, and a meta user row with no plugin origin.
+// A batch's hidden context in the transcript, as the engine wrote it (recorded live 2026-11-09, engine 2.1.311): an attachment row that names
+// the PostToolBatch hook and carries the text rendered as a system reminder, then an api-request-blob row with role system.
 test('a transcript holding the reminder rebuilds the same human list and Claude list as the transcript without it', async () => {
   const REMINDER = 'Reminder: your Claude TODO list has not been written for 50 or more tool calls. If your steps have moved since, bring it up to date with claude_todo, an ETA on every entry.'
   const body = (...extra: string[]) =>
@@ -785,11 +785,14 @@ test('a transcript holding the reminder rebuilds the same human list and Claude 
       ...extra,
     )
   const plain = await replay([sourceOf(body())])
-  const attachment = { type: 'attachment', attachment: { type: 'hook_additional_context', hookName: 'PostToolBatch', content: [REMINDER] } }
-  const meta = { type: 'user', isMeta: true, message: { role: 'user', content: [{ type: 'text', text: REMINDER }] } }
-  for (const shape of [attachment, meta]) {
-    const withReminder = await replay([sourceOf(body(link('n1', 'r2', at(5), shape)))])
-    expect(withReminder.store).toEqual(plain.store)
-    expect(withReminder.todo).toEqual(plain.todo)
+  const attachment = {
+    type: 'attachment',
+    attachment: { type: 'hook_additional_context', content: [REMINDER], hookName: 'PostToolBatch', toolUseID: 'hook-f704b20c', hookEvent: 'PostToolBatch', accountMemoryBatch: false },
+    rendered: [{ content: `<system-reminder>\nPostToolBatch hook additional context: ${REMINDER}\n</system-reminder>` }],
+    renderedRole: 'system',
   }
+  const blob = { type: 'api-request-blob', sessionId: 's1', hash: '1c6ad039', message: { role: 'system', content: [{ type: 'text', text: `PostToolBatch hook additional context: ${REMINDER}` }] } }
+  const withReminder = await replay([sourceOf(body(link('n1', 'r2', at(5), attachment), link('b1', 'n1', at(5), blob)))])
+  expect(withReminder.store).toEqual(plain.store)
+  expect(withReminder.todo).toEqual(plain.todo)
 })
