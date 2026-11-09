@@ -1,5 +1,6 @@
 import type { Item, ItemOption, ItemState, Store, Turn } from '../types'
 import { answered, archive, cancelWindow, labelOf, reopen, turnsOf, withSection } from './done'
+import { DRAWN, UNMEASURED } from './widths'
 
 export const PLUGIN = 'human-plugin'
 export const TOOL = 'mcp__human-plugin__human_items'
@@ -118,16 +119,49 @@ const parseOptions = (raw: unknown): { ok: true; value: ItemOption[] | undefined
 // The longest label a to-do's ✓ may carry, in display columns: a few words, so the drawn `[✓ label]` does not crowd the title out of a
 // narrow band. A wide character (CJK, emoji) takes two columns.
 const DONE_MAX = 24
-const WIDE: readonly (readonly [number, number])[] = [
-  [0x1100, 0x115f], [0x2e80, 0xa4cf], [0xac00, 0xd7a3], [0xf900, 0xfaff], [0xfe30, 0xfe4f], [0xff00, 0xff60], [0xffe0, 0xffe6], [0x1f300, 0x1faff],
-]
-// The columns a text takes on screen, a wide character counting two: the measure the label and term limits are checked in, and the one the band's
-// layout (layout.ts) wraps by.
-export const displayColumns = (text: string): number =>
-  [...text].reduce((sum, ch) => {
-    const cp = ch.codePointAt(0) ?? 0
-    return sum + (WIDE.some(([lo, hi]) => cp >= lo && cp <= hi) ? 2 : 1)
-  }, 0)
+
+// The range of `ranges` (sorted, none overlapping) that holds `code`, undefined when none does.
+const holding = <R extends readonly [number, number, ...unknown[]]>(ranges: readonly R[], code: number): R | undefined => {
+  let low = 0
+  let high = ranges.length - 1
+  while (low <= high) {
+    const mid = (low + high) >> 1
+    const range = ranges[mid] as R
+    if (code < range[0]) high = mid - 1
+    else if (code > range[1]) low = mid + 1
+    else return range
+  }
+  return undefined
+}
+
+// The columns tmux drew for a code point printed alone, as the scan in widths.ts recorded: 0 for a joiner, a variation selector or a combining mark, 2 for a
+// wide character, 1 for every other code point it measured. One it did not measure counts 2, the widest any measured one drew, so a cut lands early
+// rather than over its room.
+const columnsAlone = (code: number): number => {
+  const drawn = holding(DRAWN, code)
+  if (drawn !== undefined) return drawn[2]
+  return holding(UNMEASURED, code) === undefined ? 1 : 2
+}
+
+const VARIATION_SELECTOR_16 = 0xfe0f
+
+// The columns each code point of a text adds on screen, in order; a code point is whole, a surrogate pair one. It adds the columns tmux drew for it
+// alone, except a U+FE0F after a code point drawn one column wide, which adds one: tmux draws the pair two wide (`❤` and `a` with a U+FE0F, the keycap
+// `1` U+FE0F U+20E3). A sequence tmux draws as one glyph (a family joined by U+200D, an emoji with a skin tone) counts as its parts, so never fewer
+// columns than it is drawn in, and a cut or a count on it errs early, never over the room.
+const columnsByCodePoint = (text: string): { char: string; columns: number }[] => {
+  let before = 0
+  return [...text].map(char => {
+    const code = char.codePointAt(0) ?? 0
+    const alone = columnsAlone(code)
+    const columns = code === VARIATION_SELECTOR_16 && before === 1 ? 1 : alone
+    before = alone
+    return { char, columns }
+  })
+}
+
+// The columns a text takes on screen: the measure the label and term limits are checked in, and the one the band's layout (layout.ts) cuts and wraps by.
+export const displayColumns = (text: string): number => columnsByCodePoint(text).reduce((sum, { columns }) => sum + columns, 0)
 
 // The longest term the agent gives for the human, in display columns: the short word the band's chip names the human by.
 const TERM_MAX = 20
