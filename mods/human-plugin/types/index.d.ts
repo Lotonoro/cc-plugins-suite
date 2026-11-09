@@ -64,6 +64,7 @@ export type TodoItem = { title: string; state: TodoState; eta: string }
 declare module 'claude-code' {
   interface PluginState {
     // `todo` is null until the Claude list is first written in a session, so a rebuild can tell a list not written yet from an emptied one.
-    'human-plugin': { list: Store; selection: number | null; corrected: number[]; notices: OwedNotices; todo: TodoItem[] | null }
+    // `reminder` counts the main agent's tool calls since the Claude list was last stored (reminder.ts).
+    'human-plugin': { list: Store; selection: number | null; corrected: number[]; notices: OwedNotices; todo: TodoItem[] | null; reminder: number }
   }
 }

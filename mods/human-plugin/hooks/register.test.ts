@@ -3,6 +3,7 @@ import { register, wireHooks } from './register'
 import { offer, reset, setOnChange, startTurn, takeHeld, endTurn } from './turns'
 import { EMPTY, TOOL, act, normalizeStore } from './items'
 import { NO_ETA, TODO_TOOL } from './todo'
+import { REMINDER_TEXT } from './reminder'
 import { TODO_SPEC, TOOL_SPEC } from './steering'
 import { paneRows } from './ui'
 import { correctionText } from './restatement'
@@ -340,7 +341,7 @@ test('a session.end whose carry throws still empties the list, with the id count
   const e = { reason: 'clear' }
   const answered = await (catches['session.end'] as Handler)(broken(logs, [], stored, writes) as never, e as never, next(false) as never)
   expect(answered).toEqual({ passed: e })
-  expect(writes).toEqual([{ items: [], next: 7, term: null }, []])
+  expect(writes).toEqual([{ items: [], next: 7, term: null }, [], 0])
   expect(logs).toEqual(['human-plugin: the session.end hook throw: list unreadable'])
 })
 
@@ -3141,4 +3142,113 @@ test('a list the agent writes through the tool is drawn: the column follows the 
   expect(flat(wide)).toContain('◐ Build')
   await runTodo(hooks, env, { entries: [] })
   expect(flat(await bandAt(hooks, env, 120))).not.toContain('Claude TODO')
+})
+
+test('a write that is stored sets the reminder count to zero, and a refused write leaves it', async () => {
+  reset()
+  const { hooks } = wire()
+  const { env, values } = memEnv([], [], null)
+  values.reminder = 42
+  await runTodo(hooks, env, { entries: [entry('', 'queued')] })
+  await runTodo(hooks, env, {})
+  expect(values.reminder).toBe(42)
+  await runTodo(hooks, env, { entries: [entry('Build', 'in_flight')] })
+  expect(values.reminder).toBe(0)
+})
+
+test('a reminder count that cannot be reset is logged, and the write is stored and answered as without the failure', async () => {
+  reset()
+  const { hooks } = wire()
+  const { env, values } = memEnv([], [], null)
+  const logs: string[] = []
+  const set = env.state.set
+  const failing = {
+    ...env,
+    state: {
+      ...env.state,
+      set: async (ref: { key: string }, value: unknown) => {
+        if (ref.key === 'reminder') throw new Error('count unwritable')
+        return set(ref, value)
+      },
+    },
+    ui: { ...env.ui, log: (text: string) => void logs.push(text) },
+  }
+  expect(await runTodo(hooks, failing, { entries: [entry('Build', 'in_flight')] })).toEqual({ result: 'Claude TODO: 1 in flight, 0 queued\n- in_flight: Build (ETA: no ETA)' })
+  expect(values.todo).toEqual([entry('Build', 'in_flight')])
+  expect(logs.some(line => line.includes('count unwritable'))).toBe(true)
+})
+
+test('a /clear sets the reminder count to zero through session.end\'s hook and through its failure handler, the latter with emptying the human list throwing', async () => {
+  reset()
+  const { hooks, catches } = wire()
+  const { env, values } = memEnv([], [], null)
+  values.reminder = 42
+  await (hooks['session.end'] as Handler)(env as never, { reason: 'clear' } as never, next(false) as never)
+  expect(values.reminder).toBe(0)
+  values.reminder = 42
+  const set = env.state.set
+  const failing = {
+    ...env,
+    state: {
+      ...env.state,
+      set: async (ref: { key: string }, value: unknown) => {
+        if (ref.key === 'list') throw new Error('list unwritable')
+        return set(ref, value)
+      },
+    },
+  }
+  await Promise.resolve((catches['session.end'] as Handler)(failing as never, { reason: 'clear' } as never, next(false) as never)).catch(() => undefined)
+  expect(values.reminder).toBe(0)
+})
+
+test('a session end that is not a /clear leaves the reminder count', async () => {
+  reset()
+  const { hooks } = wire()
+  const { env, values } = memEnv([], [], null)
+  values.reminder = 42
+  await (hooks['session.end'] as Handler)(env as never, { reason: 'exit' } as never, next(false) as never)
+  expect(values.reminder).toBe(42)
+})
+
+// The batch end over a fake engine: one notice owed to the main turn, whose item is on the list, and the rows the mod appends for it.
+const batchEnd = async (env: Record<string, unknown>, tools: number, agent?: string) => {
+  reset()
+  const { hooks } = wire()
+  const rows: unknown[] = []
+  const e = { tool_calls: Array.from({ length: tools }, (_, i) => ({ tool_name: 'Read', tool_input: {}, tool_use_id: `r${i}` })), ...(agent === undefined ? {} : { agent_id: agent }) }
+  startTurn()
+  offer({ id: 1, text: '#1 is done: Live ask' })
+  const $ = { ...env, session: { append: async (row: unknown) => (rows.push(row), {}) } }
+  return { rows, out: await (hooks['classic.PostToolBatch'] as Handler)($ as never, e as never, next(false) as never), e }
+}
+
+test('a batch end that takes the count past 50 returns the rest of the chain\'s result with the reminder in its context, and a subagent\'s returns it unchanged', async () => {
+  const { env } = memEnv([made(1, { title: 'Live ask', detail: '' })], [], null)
+  const main = await batchEnd(env, 50)
+  expect(main.out).toEqual({ passed: main.e, additionalContext: [REMINDER_TEXT] })
+  expect(main.rows).toHaveLength(1)
+  const { env: other } = memEnv([made(1, { title: 'Live ask', detail: '' })], [], null)
+  const sub = await batchEnd(other, 60, 'sub-1')
+  expect(sub.out).toEqual({ passed: sub.e })
+})
+
+test('a batch end whose count cannot be read logs it, carries no reminder and still hands over the notice', async () => {
+  const { env } = memEnv([made(1, { title: 'Live ask', detail: '' })], [], null)
+  const logs: string[] = []
+  const get = env.state.get
+  const failing = {
+    ...env,
+    state: {
+      ...env.state,
+      get: async (ref: { key: string }) => {
+        if (ref.key === 'reminder') throw new Error('count unreadable')
+        return get(ref)
+      },
+    },
+    ui: { ...env.ui, log: (text: string) => void logs.push(text) },
+  }
+  const { out, rows, e } = await batchEnd(failing, 60)
+  expect(out).toEqual({ passed: e })
+  expect(rows).toHaveLength(1)
+  expect(logs.some(line => line.includes('count unreadable'))).toBe(true)
 })

@@ -2,6 +2,7 @@ import { atom, read, update, type EngineInterface } from 'claude-code'
 import type { TodoItem } from '../types'
 import { cutLine } from './done'
 import { LINE_BREAK } from './items'
+import { resetCount } from './reminder'
 import type { ToolCall } from './ui'
 
 export const TODO_NAME = 'claude_todo'
@@ -51,6 +52,7 @@ export async function readTodo($: EngineInterface): Promise<TodoItem[]> {
 
 export async function writeTodo($: EngineInterface, items: TodoItem[]): Promise<void> {
   await $.state.set(TODO, items)
+  await resetCount($)
 }
 
 // A rebuild fills the list only while nothing has written it in this session: a write made live is newer than any the transcript can hold.
@@ -58,9 +60,10 @@ export async function fillTodo($: EngineInterface, items: TodoItem[]): Promise<v
   await update($, todo, raw => normalizeTodo(raw) ?? items)
 }
 
-// A /clear: the list is written empty (session.end).
+// A /clear: the list is written empty (session.end). Both points that store the list start the reminder's count over (reminder.ts).
 export async function emptyTodo($: EngineInterface): Promise<void> {
   await $.state.set(TODO, [])
+  await resetCount($)
 }
 
 // What a call gives: the whole list to store (the done entries already gone, the rest in the order given), or null for a call that gives no

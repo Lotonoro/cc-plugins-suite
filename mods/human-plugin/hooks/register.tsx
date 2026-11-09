@@ -3,6 +3,7 @@ import type { HookFailure, On, Register, UiCopyArgs } from 'claude-code'
 import type { OwedNotices, Store } from '../types'
 import { TOOL, act, carryNext, clearAll, parseInput, type Outcome } from './items'
 import { STEERING, TODO_SPEC, TOOL_SPEC } from './steering'
+import { countBatch } from './reminder'
 import { SUBAGENT_REFUSAL, TODO_NAME, TODO_TOOL, emptyTodo, parseTodo, readTodo, todoLine, todoReply, writeTodo } from './todo'
 import { messageOf, oneLine, stateOf } from './done'
 import {
@@ -316,9 +317,14 @@ export const wireHooks = (on: On, windowMs: number): void => {
     return next(e)
   })
 
+  // The main agent's batch also counts its calls toward the Claude list's reminder (reminder.ts), which rides the result's context after any
+  // the rest of the chain gave. A subagent's batch is neither counted nor reminded.
   on('classic.PostToolBatch', async ($, e, next) => {
-    if (e.agent_id === undefined) await handOver(text => appendNotice($, text), () => liveNow($))
-    return next(e)
+    if (e.agent_id !== undefined) return next(e)
+    await handOver(text => appendNotice($, text), () => liveNow($))
+    const result = await next(e)
+    const reminder = await countBatch($, e.tool_calls, TODO_TOOL)
+    return reminder === null ? result : { ...result, additionalContext: [...(result.additionalContext ?? []), reminder] }
   }).catch(($, e, next) => next(e))
 
   on('turn.step', async function* ($, e, next) {
@@ -392,8 +398,12 @@ export const wireHooks = (on: On, windowMs: number): void => {
     failed($, 'session.end', next.error)
     // A /clear empties the list even when the carry failed, and the counter comes from the store, which every add saved.
     if (!next.called && e.reason === 'clear') {
-      await emptyList($, await $.store.get(NEXT_KEY))
-      await emptyTodo($)
+      // The Claude list is emptied even when emptying the human list throws.
+      try {
+        await emptyList($, await $.store.get(NEXT_KEY))
+      } finally {
+        await emptyTodo($)
+      }
     }
     return next(e)
   })

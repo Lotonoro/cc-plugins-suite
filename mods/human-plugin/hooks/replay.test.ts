@@ -770,3 +770,26 @@ test('a write whose row carries no id is taken as live, as the human list\'s cal
   ].join('\n') + '\n'
   expect((await replay([sourceOf(text)])).todo).toEqual(entries(['Build', 'queued']))
 })
+
+// A batch's hidden context in the transcript: the shape is not recorded live yet (the master's unmeasured list), so both shapes a row of
+// context takes in this file are tried: a hook attachment, and a meta user row with no plugin origin.
+test('a transcript holding the reminder rebuilds the same human list and Claude list as the transcript without it', async () => {
+  const REMINDER = 'Reminder: your Claude TODO list has not been written for 50 or more tool calls. If your steps have moved since, bring it up to date with claude_todo, an ETA on every entry.'
+  const body = (...extra: string[]) =>
+    lines(
+      link('u0', null, at(0), prompt('start')),
+      link('a1', 'u0', at(1), toolUse('t1', { action: 'add', title: 'Pick a db', blocking: true })),
+      link('r1', 'a1', at(2), toolResult('t1', 'added #1')),
+      link('a2', 'r1', at(3), todoUse('w1', { entries: entries(['Build', 'in_flight']) })),
+      link('r2', 'a2', at(4), toolResult('w1', 'Claude TODO: 1 in flight, 0 queued')),
+      ...extra,
+    )
+  const plain = await replay([sourceOf(body())])
+  const attachment = { type: 'attachment', attachment: { type: 'hook_additional_context', hookName: 'PostToolBatch', content: [REMINDER] } }
+  const meta = { type: 'user', isMeta: true, message: { role: 'user', content: [{ type: 'text', text: REMINDER }] } }
+  for (const shape of [attachment, meta]) {
+    const withReminder = await replay([sourceOf(body(link('n1', 'r2', at(5), shape)))])
+    expect(withReminder.store).toEqual(plain.store)
+    expect(withReminder.todo).toEqual(plain.todo)
+  }
+})
