@@ -1317,14 +1317,17 @@ const backlogRecord = (on: On) => {
   return { shown, opens, closes }
 }
 const CLAUDE_PANE = { ...PANE_PROPS, title: 'Claude TODO', bodyColumns: 48 }
+// A backlog item's row as the Pane draws it, part by part: whether the part shrinks, and its texts with their wrap and dim. The head gives way and is set to cut at its end; the ETA tail is dim and does not shrink.
+const partsOf = (row: El): unknown[] => (row.children as El[]).map(part => [part.props?.flexShrink, elementsOf(part, 'Text').map(text => [shownOf(text), text.props?.wrap, text.props?.dimColor])])
+const backlogRow = (head: string, tail: string): unknown[] => [[1, [[head, 'truncate-end', undefined]]], [0, [[tail, undefined, true]]]]
 
-test('a press on the band\'s Claude header, a Claude row and +N queued each opens the pane on the Claude list, titled Claude TODO, with a row for the header and one for each item, and the keyboard; the Pane drawn through the terminal\'s table is a header line and one text for each item, each set to cut at its end, and no control', async ($, on) => {
+test('a press on the band\'s Claude header, a Claude row and +N queued each opens the pane on the Claude list, titled Claude TODO, with a row for the header and one for each item, and the keyboard; the Pane drawn through the terminal\'s table is a header line and a row for each item, a head set to cut at its end and its dim ETA tail, and no control', async ($, on) => {
   mock.clock(on)
   mock.store(on)
   const { shown, opens } = backlogRecord(on)
   await $.tool.call({ tool: TOOL, action: 'add', title: 'Pick a db' })
   await $.tool.call({ tool: TOOL, action: 'add', title: 'Pick a cache' })
-  await $.tool.call({ tool: TODO_TOOL, entries: [{ title: 'Build it', state: 'in_flight' }, ...[1, 2, 3, 4, 5].map(k => ({ title: `Queued ${k}`, state: 'queued' }))] })
+  await $.tool.call({ tool: TODO_TOOL, entries: [{ title: 'Build it', state: 'in_flight', eta: '~10 min' }, ...[1, 2, 3, 4, 5].map(k => ({ title: `Queued ${k}`, state: 'queued' }))] })
   const band = await $.ui.mount({ plugin: 'human-plugin', surface: 'terminal', component: 'AbovePrompt', props: { ...BAND_PROPS, bodyColumns: 120 } })
   for (const key of ['claude-header', 'claude-row-0', 'claude-queued']) {
     await band.press({ key })
@@ -1337,17 +1340,29 @@ test('a press on the band\'s Claude header, a Claude row and +N queued each open
   await band.press({ key: 'claude-header' })
   const pane = await $.ui.mount({ plugin: 'human-plugin', surface: 'terminal', component: 'Pane', requestId: 'human-items', props: CLAUDE_PANE })
   const tree = (await pane.drawn()) as El
-  expect(elementsOf(tree, 'Text').map(text => [shownOf(text), text.props?.wrap])).toEqual([
-    ['Claude TODO 1 in flight, 5 queued', 'truncate-end'],
-    ['◐ Build it', 'truncate-end'],
-    ['○ Queued 1', 'truncate-end'],
-    ['○ Queued 2', 'truncate-end'],
-    ['○ Queued 3', 'truncate-end'],
-    ['○ Queued 4', 'truncate-end'],
-    ['○ Queued 5', 'truncate-end'],
-  ])
+  const [header, ...rows] = (tree.children ?? []) as El[]
+  expect([shownOf(header), header?.props?.wrap]).toEqual(['Claude TODO 1 in flight, 5 queued', 'truncate-end'])
+  expect(rows.map(partsOf)).toEqual([backlogRow('◐ Build it', ' · ~10 min'), ...[1, 2, 3, 4, 5].map(k => backlogRow(`○ Queued ${k}`, ' · no ETA'))])
   expect(elementsOf(tree, 'Button')).toEqual([])
   expect(elementsOf(tree, 'Input')).toEqual([])
+})
+
+test('with the pane open on the Claude list the Pane draws each ETA and the band\'s Claude column still draws each row as its glyph and title, and no ETA', async ($, on) => {
+  mock.clock(on)
+  mock.store(on)
+  backlogRecord(on)
+  await $.tool.call({ tool: TOOL, action: 'add', title: 'Pick a db' })
+  await $.tool.call({ tool: TODO_TOOL, entries: [{ title: 'Build it', state: 'in_flight', eta: '~10 min' }, { title: 'Test it', state: 'queued', eta: 'after tests' }] })
+  const band = await $.ui.mount({ plugin: 'human-plugin', surface: 'terminal', component: 'AbovePrompt', props: { ...BAND_PROPS, bodyColumns: 120 } })
+  await band.press({ key: 'claude-header' })
+  const pane = await $.ui.mount({ plugin: 'human-plugin', surface: 'terminal', component: 'Pane', requestId: 'human-items', props: CLAUDE_PANE })
+  const inPane = JSON.stringify(await pane.drawn())
+  expect(inPane).toContain('~10 min')
+  expect(inPane).toContain('after tests')
+  await band.redraw()
+  const column = JSON.stringify(boxes(await band.drawn()).column)
+  expect(column).toContain('◐ Build it')
+  for (const eta of ['ETA', '~10 min', 'after tests']) expect(column, eta).not.toContain(eta)
 })
 
 test('the band\'s Claude column is a button for its header and one for each row, addressed by its place in the column, so two rows with one title are two buttons; a long title is cut with an ellipsis within the column, and +N queued is dim', async ($, on) => {
@@ -1398,14 +1413,15 @@ test('with the pane on the Claude list, a write that adds items asks again for t
   const band = await $.ui.mount({ plugin: 'human-plugin', surface: 'terminal', component: 'AbovePrompt', props: { ...BAND_PROPS, bodyColumns: 120 } })
   await band.press({ key: 'claude-header' })
   const pane = await $.ui.mount({ plugin: 'human-plugin', surface: 'terminal', component: 'Pane', requestId: 'human-items', props: CLAUDE_PANE })
-  const lines = async (): Promise<string[]> => elementsOf((await pane.drawn()) as El, 'Text').map(text => shownOf(text))
+  // Each line is the text of a child of the pane's root: the header, or an item's head and its tail.
+  const lines = async (): Promise<string[]> => (((await pane.drawn()) as El).children ?? []).map(line => shownOf(line))
   expect(opens.map(o => o.rows)).toEqual([3])
-  await $.tool.call({ tool: TODO_TOOL, entries: [{ title: 'Build it', state: 'in_flight' }, { title: 'Test it', state: 'queued' }, { title: 'Ship it', state: 'queued' }, { title: 'Tell them', state: 'queued' }] })
+  await $.tool.call({ tool: TODO_TOOL, entries: [{ title: 'Build it', state: 'in_flight', eta: '~10 min' }, { title: 'Test it', state: 'queued' }, { title: 'Ship it', state: 'queued' }, { title: 'Tell them', state: 'queued' }] })
   expect(opens.map(o => o.rows)).toEqual([3, 5])
-  expect(await lines()).toEqual(['Claude TODO 1 in flight, 3 queued', '◐ Build it', '○ Test it', '○ Ship it', '○ Tell them'])
-  await $.tool.call({ tool: TODO_TOOL, entries: [{ title: 'Build it', state: 'in_flight' }, { title: 'Test it', state: 'in_flight' }, { title: 'Ship it', state: 'queued' }, { title: 'Tell them', state: 'queued' }] })
+  expect(await lines()).toEqual(['Claude TODO 1 in flight, 3 queued', '◐ Build it · ~10 min', '○ Test it · no ETA', '○ Ship it · no ETA', '○ Tell them · no ETA'])
+  await $.tool.call({ tool: TODO_TOOL, entries: [{ title: 'Build it', state: 'in_flight', eta: '~10 min' }, { title: 'Test it', state: 'in_flight', eta: 'after tests' }, { title: 'Ship it', state: 'queued' }, { title: 'Tell them', state: 'queued' }] })
   expect(opens).toHaveLength(2)
-  expect(await lines()).toEqual(['Claude TODO 2 in flight, 2 queued', '◐ Build it', '◐ Test it', '○ Ship it', '○ Tell them'])
+  expect(await lines()).toEqual(['Claude TODO 2 in flight, 2 queued', '◐ Build it · ~10 min', '◐ Test it · after tests', '○ Ship it · no ETA', '○ Tell them · no ETA'])
   await $.tool.call({ tool: TODO_TOOL, entries: [] })
   expect(closes).toEqual(['human-items'])
   expect([...shown]).toEqual([])

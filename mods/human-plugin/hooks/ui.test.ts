@@ -3,6 +3,7 @@ import { act, displayColumns, listText, normalizeItem } from './items'
 import { answerOf, doneNotice, expire, press, reply, type Form } from './done'
 import { bandDraws, headerLines, rowLayout, wrapText } from './layout'
 import { backlogPane, backlogRows, band, claudeColumn, pane, paneRows, rowTexts, toolLine, type Handlers, type Table, type View } from './ui'
+import { etaTail } from './todo'
 import type { Item, Store, TodoItem, Turn } from '../types'
 
 // A table whose constructors return their props, so a test reads the tree the drawing built.
@@ -1845,22 +1846,40 @@ test('two Claude rows with the same title are two press targets with different a
   expect(lines.filter(line => line.label === '◐ Same title').map(line => line.key)).toEqual(['claude-row-0', 'claude-row-1'])
 })
 
-// The backlog pane: the Claude list whole, read-only. The header is one line, and each item is one line, cut at its end by the engine at the body's edge.
-test('the backlog view is a header line with the counts in the long form and then every item, in-flight first and each group in written order: one text each, its glyph, a space and its whole title, set to cut at its end', () => {
+// The backlog pane: the Claude list whole, read-only. The header is one line the engine cuts at its end. Each item is one row: a head that gives way, which the engine cuts at its end
+// in the room the tail leaves, and the item's ETA tail, dim and never shrunk.
+test('the backlog view is a header line with the counts in the long form and then every item, in-flight first and each group in written order: each a row of a head that gives way, holding its glyph, a space and its whole title, set to cut at its end, and a dim part that does not shrink, holding its tail', () => {
   const todo: TodoItem[] = [
     { title: 'Queued first', state: 'queued', eta: 'no ETA' },
     { title: 'x'.repeat(80), state: 'in_flight', eta: '~10 min' },
     { title: 'Queued second', state: 'queued', eta: 'no ETA' },
     { title: '漢'.repeat(40), state: 'in_flight', eta: 'no ETA' },
   ]
-  const tree = backlogPane(table, todo) as Node
-  expect((tree.children as Node[]).map(line => [line.type, line.wrap, shown(line)])).toEqual([
-    ['Text', 'truncate-end', 'Claude TODO 2 in flight, 2 queued'],
-    ['Text', 'truncate-end', `◐ ${'x'.repeat(80)}`],
-    ['Text', 'truncate-end', `◐ ${'漢'.repeat(40)}`],
-    ['Text', 'truncate-end', '○ Queued first'],
-    ['Text', 'truncate-end', '○ Queued second'],
+  const row = (head: string, tail: string) => ({
+    type: 'Box',
+    children: [
+      { type: 'Box', flexShrink: 1, children: [{ type: 'Text', wrap: 'truncate-end', children: [head] }] },
+      { type: 'Box', flexShrink: 0, children: [{ type: 'Text', dimColor: true, children: [tail] }] },
+    ],
+  })
+  expect((backlogPane(table, todo) as Node).children).toEqual([
+    { type: 'Text', wrap: 'truncate-end', children: ['Claude TODO 2 in flight, 2 queued'] },
+    row(`◐ ${'x'.repeat(80)}`, ' · ~10 min'),
+    row(`◐ ${'漢'.repeat(40)}`, ' · no ETA'),
+    row('○ Queued first', ' · no ETA'),
+    row('○ Queued second', ' · no ETA'),
   ])
+})
+
+test('the dim part of each backlog row is its entry\'s ETA tail, and an item stored with no ETA draws no ETA after its title', () => {
+  const todo: TodoItem[] = [
+    { title: 'Run the tests', state: 'in_flight', eta: '~10 min' },
+    { title: 'Ship it', state: 'queued', eta: 'z'.repeat(30) },
+    { title: 'Wait', state: 'queued', eta: 'no ETA' },
+  ]
+  const rows = (backlogPane(table, todo) as Node).children?.slice(1) as Node[]
+  expect(rows.map(row => nodes(row, 'Text').filter(text => text.dimColor === true).map(text => shown(text)))).toEqual(todo.map(it => [etaTail(it)]))
+  expect(rows.map(row => shown(row))).toEqual(['◐ Run the tests · ~10 min', `○ Ship it · ${'z'.repeat(30)}`, '○ Wait · no ETA'])
 })
 
 test('the backlog view asks for one row for its header and one for each item, as many as it draws: 2, 4 and 13 rows for lists of 1, 3 and 12 items', () => {

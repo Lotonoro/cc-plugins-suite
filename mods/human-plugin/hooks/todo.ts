@@ -102,8 +102,10 @@ export const inDisplayOrder = (items: readonly TodoItem[]): TodoItem[] => [
   ...items.filter(it => it.state === 'queued'),
 ]
 
-// What joins a title to its ETA where a person reads the list (`/claude-todo`, and the backlog pane).
-export const SEPARATOR = ' · '
+// What follows a title where a person reads the list (`/claude-todo`, and the backlog pane): a middle dot between spaces, then the entry's stored ETA. Both views take the tail from
+// here, so its format is set once. The agent's own answer labels the ETA instead (todoReply), so the model does not read the separator as part of a title it restates.
+const SEPARATOR = ' · '
+export const etaTail = (item: TodoItem): string => `${SEPARATOR}${item.eta}`
 
 // The glyph each state is drawn with, wherever the list is shown. A done entry is never stored, so done has none.
 export const GLYPH = { in_flight: '◐', queued: '○' } as const satisfies Record<TodoItem['state'], string>

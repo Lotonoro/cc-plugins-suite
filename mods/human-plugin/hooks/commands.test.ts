@@ -5,7 +5,7 @@ import {
 } from './commands'
 import { TOOL } from './items'
 import { replay, rowsOf, type Source } from './replay'
-import { GLYPH, NO_ETA } from './todo'
+import { GLYPH, NO_ETA, etaTail } from './todo'
 import type { Item, TodoItem, Turn } from '../types'
 
 // The `/asks` answers, parsed and worded. The expectations are the layouts the plan gives, so a change to a line shows here.
@@ -625,6 +625,13 @@ test('an entry prints its title cut to 80, then its ETA whole; an entry given no
   const eta = 'after the review lands, ok'
   expect(claudeTodoText([step(long, 'in_flight', eta)]).split('\n')[2]).toBe(`    ${FLIGHT} ${'x'.repeat(79)}… · ${eta}`)
   expect(claudeTodoText([step('Run the tests', 'in_flight', NO_ETA)]).split('\n')[2]).toBe(`    ${FLIGHT} Run the tests · no ETA`)
+})
+
+test('each entry\'s line ends with that entry\'s ETA tail: a stored ETA, one after a cut title, and no ETA', () => {
+  const items = [step('Run the tests', 'in_flight', '~10 min'), step('x'.repeat(100), 'queued', 'after the review lands'), step('Ship', 'queued', NO_ETA)]
+  const lines = claudeTodoText(items).split('\n').filter(line => line.startsWith('    '))
+  const tails = items.map(it => etaTail(it))
+  expect(lines.map((line, k) => line.slice(line.length - (tails[k] ?? '').length))).toEqual(tails)
 })
 
 test('an empty list prints the one empty line', () => {

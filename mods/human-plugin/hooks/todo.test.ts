@@ -1,5 +1,5 @@
 import { expect, test } from 'claude-code/testing'
-import { ETA_MAX, GLYPH, HEADING, NO_ETA, SEPARATOR, STATES, TITLE_MAX, TODO_NAME, TODO_TOOL, bandCountsText, countsText, inDisplayOrder, normalizeTodo, parseTodo, todoLine, todoReply } from './todo'
+import { ETA_MAX, GLYPH, HEADING, NO_ETA, STATES, TITLE_MAX, TODO_NAME, TODO_TOOL, bandCountsText, countsText, etaTail, inDisplayOrder, normalizeTodo, parseTodo, todoLine, todoReply } from './todo'
 import type { TodoItem } from '../types'
 
 const write = (entries: unknown): TodoItem[] | null => {
@@ -156,8 +156,8 @@ test('a stored entry with no ETA, or one that is not text, reads back as no ETA;
   ])
 })
 
-test('the separator that joins a title to its ETA where a person reads it is a middle dot between spaces', () => {
-  expect(SEPARATOR).toBe(' · ')
+test('an entry\'s ETA tail, what follows its title where a person reads the list, is a middle dot between spaces and then its stored ETA, no ETA included', () => {
+  expect(LIST.map(it => etaTail(it))).toEqual([' · after tests', ' · ~10 min', ' · no ETA'])
 })
 
 const call = (input: unknown, output: unknown, isRunning = false, isErrored = false) => todoLine({ input, output, isRunning, isErrored })

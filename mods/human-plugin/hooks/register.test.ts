@@ -3694,8 +3694,12 @@ const pressKey = (tree: unknown, key: string): void => {
 // One item in flight and five queued. A band of 120 columns beside two human items draws the column's header, the in-flight row and `+5 queued`.
 const RUNNING = entry('Build the pane', 'in_flight')
 const SIX = [RUNNING, ...[1, 2, 3, 4, 5].map(k => entry(`Queued ${k}`, 'queued'))]
-// A drawn backlog's lines: each child of its root is one text.
-const linesOf = (tree: unknown): string[] => ((tree as Tree).children ?? []).map(line => (line as unknown as { children: string[] }).children.join(''))
+// A drawn backlog's lines: each child of its root is a line, the header's text or an item's head and its ETA tail in drawing order.
+const textOf = (node: unknown): string => (typeof node === 'string' ? node : ((node as Tree).children ?? []).map(textOf).join(''))
+const linesOf = (tree: unknown): string[] => ((tree as Tree).children ?? []).map(textOf)
+// An item's row is a head that gives way, holding a text set to cut at its end, and an ETA tail that does not shrink, holding a dim text: each part's shrink, then its text's wrap and dim.
+const shapeOf = (row: Tree): unknown[] => (row.children ?? []).map(part => [part.flexShrink, (part.children?.[0] as Tree).wrap, (part.children?.[0] as Tree).dimColor])
+const ROW_SHAPE = [[1, 'truncate-end', undefined], [0, undefined, true]]
 const ITEM_ONE = '#1 non-blocking, open: Item 1'
 
 test('a press on the Claude header, on a Claude row and on +N queued each opens the pane on the Claude list within the press: one request, titled Claude TODO, with a row for the header and one for each item of the whole list, and the keyboard', async () => {
@@ -3713,14 +3717,16 @@ test('a press on the Claude header, on a Claude row and on +N queued each opens 
   }
 })
 
-test('the pane on the Claude list draws a header line with the counts in the long form, then every item, in-flight first and each group in written order, one text each set to cut at its end; no control, and no state written', async () => {
+test('the pane on the Claude list draws a header line with the counts in the long form, then every item, in-flight first and each group in written order, each a head set to cut at its end and its dim ETA tail; no control, and no state written', async () => {
   reset()
   const { hooks } = wire()
-  const { $ } = backlogEnv([made(1)], [], 'claude-todo', [entry('Queued first', 'queued'), entry('Build', 'in_flight'), entry('Queued second', 'queued')])
+  const { $ } = backlogEnv([made(1)], [], 'claude-todo', [entry('Queued first', 'queued', 'after tests'), entry('Build', 'in_flight', '~10 min'), entry('Queued second', 'queued')])
   await endSession(hooks, $)
   const tree = await paneTree(hooks, $)
-  expect(linesOf(tree)).toEqual(['Claude TODO 1 in flight, 2 queued', '◐ Build', '○ Queued first', '○ Queued second'])
-  expect(((tree as Tree).children ?? []).map(line => line.wrap)).toEqual(['truncate-end', 'truncate-end', 'truncate-end', 'truncate-end'])
+  expect(linesOf(tree)).toEqual(['Claude TODO 1 in flight, 2 queued', '◐ Build · ~10 min', '○ Queued first · after tests', '○ Queued second · no ETA'])
+  const [header, ...rows] = (tree as Tree).children ?? []
+  expect(header?.wrap).toBe('truncate-end')
+  expect(rows.map(shapeOf)).toEqual([ROW_SHAPE, ROW_SHAPE, ROW_SHAPE])
   expect(flat(tree)).not.toContain('"type":"Button"')
   expect(flat(tree)).not.toContain('"type":"Markdown"')
 })
@@ -3735,7 +3741,7 @@ test('with no human items the band draws only the Claude column\'s header and in
   pressKey(tree, 'claude-header')
   await settle()
   expect(opens).toEqual([{ id: 'human-items', title: 'Claude TODO', rows: 4, focus: true }])
-  expect(linesOf(await paneTree(hooks, $))).toEqual(['Claude TODO 1 in flight, 2 queued', '◐ Build the pane', '○ Later', '○ Latest'])
+  expect(linesOf(await paneTree(hooks, $))).toEqual(['Claude TODO 1 in flight, 2 queued', '◐ Build the pane · no ETA', '○ Later · no ETA', '○ Latest · no ETA'])
   pressKey(await bandAt(hooks, $, 120), 'claude-header')
   await settle()
   expect(closes).toEqual(['human-items'])
@@ -4022,7 +4028,7 @@ test('a write that adds two items to the Claude list redraws the pane on it with
     { id: 'human-items', title: 'Claude TODO', rows: 3, focus: true },
     { id: 'human-items', title: 'Claude TODO', rows: 5, focus: true },
   ])
-  expect(linesOf(await paneTree(hooks, $))).toEqual(['Claude TODO 1 in flight, 3 queued', '◐ Build the pane', '○ Next', '○ Then', '○ Last'])
+  expect(linesOf(await paneTree(hooks, $))).toEqual(['Claude TODO 1 in flight, 3 queued', '◐ Build the pane · no ETA', '○ Next · no ETA', '○ Then · no ETA', '○ Last · no ETA'])
 })
 
 test('a write that changes an item\'s state and keeps the number of items makes no new open request, and the pane draws the new state', async () => {
@@ -4033,11 +4039,11 @@ test('a write that changes an item\'s state and keeps the number of items makes 
   pressKey(await bandAt(hooks, $, 120), 'claude-header')
   await settle()
   await runTodo(hooks, $, { entries: [RUNNING, entry('Next', 'in_flight'), entry('Then', 'queued')] })
-  await runTodo(hooks, $, { entries: [RUNNING, entry('Renamed', 'in_flight'), entry('Then', 'queued')] })
+  await runTodo(hooks, $, { entries: [RUNNING, entry('Renamed', 'in_flight', '~5 min'), entry('Then', 'queued')] })
   await settle()
   expect(opens).toHaveLength(1)
   expect(closes).toEqual([])
-  expect(linesOf(await paneTree(hooks, $))).toEqual(['Claude TODO 2 in flight, 1 queued', '◐ Build the pane', '◐ Renamed', '○ Then'])
+  expect(linesOf(await paneTree(hooks, $))).toEqual(['Claude TODO 2 in flight, 1 queued', '◐ Build the pane · no ETA', '◐ Renamed · ~5 min', '○ Then · no ETA'])
 })
 
 test('after an open the pane refuses, the next write with the count that open asked for asks again, and the failure is logged; once an open is taken, a write that keeps the count asks for nothing', async () => {

@@ -21,7 +21,7 @@ import {
   type RowTexts,
 } from './layout'
 import { tablesAsLists } from './tables'
-import { GLYPH, HEADING, bandCountsText, countsText, inDisplayOrder } from './todo'
+import { GLYPH, HEADING, bandCountsText, countsText, etaTail, inDisplayOrder } from './todo'
 
 // The elements the band and the pane are built from, as the surface's table hands them out. The constructors take the
 // props with `children`, as JSX would pass them; the mod has no JSX factory in an imported module.
@@ -453,15 +453,26 @@ export const pane = (t: Table, h: Handlers, store: Store, view: View): RenderEle
 // The rows the backlog asks for: its header line and one for each item.
 export const backlogRows = (todo: readonly TodoItem[]): number => 1 + todo.length
 
+// One backlog item's row: its head, the glyph, a space and its whole title as one text set to cut at its end, in a box that shrinks, then its ETA tail, dim, in a box that does not.
+// When the row is wider than the body the title gives way: the engine cuts the head, by the measure it draws by, in the room the tail leaves, so the ETA stays whole and the row
+// stays one line. A body narrower than the tail itself leaves the head no room and the row wraps (measured: a 63-column tail in a 48-column body).
+const backlogItem = (t: Table, item: TodoItem): RenderElement =>
+  t.Box({
+    children: [
+      t.Box({ flexShrink: 1, children: [t.Text({ wrap: 'truncate-end', children: [`${GLYPH[item.state]} ${item.title}`] })] }),
+      t.Box({ flexShrink: 0, children: [t.Text({ dimColor: true, children: [etaTail(item)] })] }),
+    ],
+  })
+
 // The backlog: the whole Claude list, read-only, in the pane that shows a human item otherwise. A header line with the counts in the long form, then the in-flight items and the
-// queued ones, each in the agent's written order and each one line: its glyph, a space and its whole title. Each line is set to cut at its end and the engine cuts it, at the
-// body's edge by the measure it draws by, so a line never wraps whatever its title holds. It presses nothing: the human never changes this list.
+// queued ones, each in the agent's written order and each one row (backlogItem). The header is set to cut at its end and the engine cuts it, at the body's edge by the measure it
+// draws by, so it never wraps. It presses nothing: the human never changes this list.
 export const backlogPane = (t: Table, todo: readonly TodoItem[]): RenderElement =>
   t.Box({
     flexDirection: 'column',
     children: [
       t.Text({ wrap: 'truncate-end', children: [`${HEADING} ${countsText(todo)}`] }),
-      ...inDisplayOrder(todo).map(item => t.Text({ wrap: 'truncate-end', children: [`${GLYPH[item.state]} ${item.title}`] })),
+      ...inDisplayOrder(todo).map(item => backlogItem(t, item)),
     ],
   })
 
