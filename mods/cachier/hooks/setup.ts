@@ -11,8 +11,12 @@ export const refreshIntervalMs = (leadMs: number, ttlMs: number): number | null 
 
 export const secs = (ms: number) => `${ms / 1000} s`
 
+// The terse seconds the reworded texts write: no space before the suffix.
+export const SECONDS_SUFFIX = 's'
+export const secsTerse = (ms: number) => `${ms / 1000}${SECONDS_SUFFIX}`
+
 // Why a run sends nothing: its lead is not below the TTL.
-export const notBelowTtl = (leadMs: number, ttlMs: number): string => `lead ${secs(leadMs)} is not below the ${secs(ttlMs)} TTL`
+export const notBelowTtl = (leadMs: number, ttlMs: number): string => `lead ${secsTerse(leadMs)} ≥ ${secsTerse(ttlMs)} TTL`
 
 // A setup in the words a sentence names it by: its TTL, and its keepalive state, which is paused, with the reason, where its run at this
 // lead sends nothing.

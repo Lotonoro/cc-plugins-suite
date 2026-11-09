@@ -159,7 +159,7 @@ export const breakEvenLine = (k: KeepaliveState, view: CacheView, money: Money, 
 }
 
 // Why a running run sends a count the reasons no longer give: the count its pause started with, kept until the pause ends.
-export const KEPT_COUNT = 'the count this pause started with; your next prompt works it out again'
+export const KEPT_COUNT = 'kept from pause start; recounted next prompt'
 
 // The line on how many refreshes a pause sends when no learned count stands: the count pinned, the break-even count and the
 // cap on it, or with no price the cap or UNPRICED_COUNT, each with its reason. Empty with no warm cache, where there is no price to count from.

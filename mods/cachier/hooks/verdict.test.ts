@@ -207,7 +207,7 @@ describe("pauseOf: the pause from the session's state", () => {
   test("the count line gives its reason, or the count the pause kept when the caller passes that count", () => {
     expect(countLineOf(null, view, money, null)).toBe('Each pause sends at most 24 refreshes: the break-even count, the most refreshes that cost no more than the rewrite they avoid.')
     expect(countLineOf(2, view, money, null)).toBe('Each pause sends at most 2 refreshes: the count you pinned with /keepalive on.')
-    expect(countLineOf(null, view, money, null, 3)).toBe('Each pause sends at most 3 refreshes: the count this pause started with; your next prompt works it out again.')
+    expect(countLineOf(null, view, money, null, 3)).toBe('Each pause sends at most 3 refreshes: kept from pause start; recounted next prompt.')
   })
 
   test('a running turn, a closed gap, no warm cache, or an unpriced figure leaves nothing to judge', () => {

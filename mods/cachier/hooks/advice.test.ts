@@ -129,12 +129,12 @@ describe('bestSetupOf: the cheapest of the four setups, against the current one'
   })
 
   test('a change under a twentieth of what the current setup cost is not recommended: the baseline costs no more, so the result is even', () => {
-    // 6-minute pauses with 36k tokens written each: 1 h off costs $0.72 a pause, 5 m off $0.70, a $0.02 difference under 5 %.
+    // 6-minute pauses with 36k written each: 1 h off costs $0.72 a pause, 5 m off $0.70, a $0.02 difference under 5 %.
     expect(bestSetupOf(inputs({ rates: UNIT, current: { ttl: '1h', keepalive: false }, history: pauses(10, 6 * MIN, 36000) }))).toMatchObject({ kind: 'even', near: { setup: { ttl: '5m', keepalive: false } } })
   })
 
   test('the same pauses at a saving above a twentieth and above a cent are a change', () => {
-    // 50k tokens written each: 1 h off costs $1.00 a pause, 5 m off $0.875, a 12.5 % saving.
+    // 50k written each: 1 h off costs $1.00 a pause, 5 m off $0.875, a 12.5 % saving.
     const result = bestSetupOf(inputs({ rates: UNIT, current: { ttl: '1h', keepalive: false }, history: pauses(10, 6 * MIN, 50000) }))
     expect(result).toMatchObject({ kind: 'change', from: { ttl: '1h', keepalive: false }, to: { ttl: '5m', keepalive: false }, of: 10 })
     expect(result?.kind === 'change' && Math.abs(result.savedUsd - 1.25)).toBeLessThan(1e-9)
@@ -311,7 +311,7 @@ describe('adviceOf: the sentence names the setup you are on, paused where keepal
   // The setup as the sentence names it: keepalive on at a lead not below its TTL is paused, with the reason the Keepalive section gives.
   const phraseOf = (setup: { ttl: '5m' | '1h'; keepalive: boolean }, leadMs: number): string => {
     const ttl = TTL_MS[setup.ttl]
-    const state = setup.keepalive ? (leadMs < ttl ? 'on' : `paused, sending nothing (lead ${leadMs / S} s is not below the ${ttl / S} s TTL)`) : 'off'
+    const state = setup.keepalive ? (leadMs < ttl ? 'on' : `paused, sending nothing (lead ${leadMs / S}s ≥ ${ttl / S}s TTL)`) : 'off'
     return `a ${WORD[setup.ttl]} cache with keepalive ${state}`
   }
   const SPANS = [2, 6, 30, 150].map((minutes) => pauses(10, minutes * MIN))
@@ -351,13 +351,13 @@ describe('adviceOf: the sentence names the setup you are on, paused where keepal
 describe('adviceOf: a current setup paused at a lead not below its TTL', () => {
   test('a change names the paused setup it leaves, with the Keepalive section\'s reason', () => {
     expect(adviceOf(inputs({ leadMs: 300 * S, current: { ttl: '5m', keepalive: true }, history: pauses(10, 30 * MIN) }), 'dollars')).toBe(
-      'You\'re on a 5-minute cache with keepalive paused, sending nothing (lead 300 s is not below the 300 s TTL). A 1-hour cache with keepalive off would have saved $4.80 over 10 recent pauses: set "promptCacheTtl": "1h" in settings.json for new sessions, which start with keepalive off (keepalive_default).',
+      'You\'re on a 5-minute cache with keepalive paused, sending nothing (lead 300s ≥ 300s TTL). A 1-hour cache with keepalive off would have saved $4.80 over 10 recent pauses: set "promptCacheTtl": "1h" in settings.json for new sessions, which start with keepalive off (keepalive_default).',
     )
   })
 
   test('the cheapest-setup sentence names it paused, and states the baseline in full', () => {
     expect(adviceOf(inputs({ leadMs: 300 * S, current: { ttl: '5m', keepalive: true }, history: pauses(10, 2 * MIN) }), 'dollars')).toBe(
-      'You\'re on a 5-minute cache with keepalive paused, sending nothing (lead 300 s is not below the 300 s TTL), the cheapest setup; a 5-minute cache with keepalive off would have cost about the same over 10 recent pauses.',
+      'You\'re on a 5-minute cache with keepalive paused, sending nothing (lead 300s ≥ 300s TTL), the cheapest setup; a 5-minute cache with keepalive off would have cost about the same over 10 recent pauses.',
     )
   })
 })
@@ -396,7 +396,7 @@ describe('ttlLineOf: the TTL line names the setup you are on, the setup it is pr
 
   test('the target is a setup that sends nothing, named paused at the new session\'s lead, and the clause still says on', () => {
     expect(ttlLineOf(back)).toBe(
-      'You\'re on a 1-hour cache with keepalive off. A 5-minute cache with keepalive paused, sending nothing (lead 300 s is not below the 300 s TTL) would have saved $1.50 over 10 priced pauses across sessions: set "promptCacheTtl": "5m" in settings.json for new sessions, which start with keepalive on (keepalive_default).',
+      'You\'re on a 1-hour cache with keepalive off. A 5-minute cache with keepalive paused, sending nothing (lead 300s ≥ 300s TTL) would have saved $1.50 over 10 priced pauses across sessions: set "promptCacheTtl": "5m" in settings.json for new sessions, which start with keepalive on (keepalive_default).',
     )
   })
 
@@ -408,7 +408,7 @@ describe('ttlLineOf: the TTL line names the setup you are on, the setup it is pr
     const slow = inputs({ history: pauses(10, 20 * MIN, 2000), current: { ttl: '5m', keepalive: false } })
     // This session at a 15 s lead, new sessions on at 300 s, switching back from 1 h: the 5-minute target reads paused.
     const line = ttlLineOf({ ...back, leadMs: 15 * S, current: { ttl: '1h', keepalive: true } })
-    expect(line).toContain('You\'re on a 1-hour cache with keepalive on. A 5-minute cache with keepalive paused, sending nothing (lead 300 s is not below the 300 s TTL) would have saved')
+    expect(line).toContain('You\'re on a 1-hour cache with keepalive on. A 5-minute cache with keepalive paused, sending nothing (lead 300s ≥ 300s TTL) would have saved')
     // And at a 15 s new-session lead the same target reads on.
     expect(ttlLineOf({ ...back, fresh: { ...back.fresh, leadMs: 15 * S } })).toContain('A 5-minute cache with keepalive on would have saved')
     expect(ttlLineOf(slow)).toContain('A 1-hour cache with keepalive off would have saved $4.74')
@@ -417,7 +417,7 @@ describe('ttlLineOf: the TTL line names the setup you are on, the setup it is pr
   test('it names a paused current setup with the reason, and the figure is dollars in either unit', () => {
     const line = ttlLineOf({ ...inputs({ history: pauses(10, 20 * MIN, 2000), current: { ttl: '5m', keepalive: true } }), leadMs: 300 * S })
     expect(line).toBe(
-      'You\'re on a 5-minute cache with keepalive paused, sending nothing (lead 300 s is not below the 300 s TTL). A 1-hour cache with keepalive off would have saved $4.74 over 10 priced pauses across sessions: set "promptCacheTtl": "1h" in settings.json for new sessions, which start with keepalive off (keepalive_default).',
+      'You\'re on a 5-minute cache with keepalive paused, sending nothing (lead 300s ≥ 300s TTL). A 1-hour cache with keepalive off would have saved $4.74 over 10 priced pauses across sessions: set "promptCacheTtl": "1h" in settings.json for new sessions, which start with keepalive off (keepalive_default).',
     )
   })
 
@@ -544,7 +544,7 @@ describe('a change step gives the /keepalive command beside each click, at the r
 
 describe('a change of TTL where new sessions start keepalive on and the target has it off', () => {
   const PAUSED_START =
-    'You\'re on a 1-hour cache with keepalive off. A 5-minute cache with keepalive off would have saved $1.25 over 10 recent pauses: set "promptCacheTtl": "5m" in settings.json for new sessions, which start with keepalive on (keepalive_default) and so run a 5-minute cache with keepalive paused, sending nothing (lead 300 s is not below the 300 s TTL).'
+    'You\'re on a 1-hour cache with keepalive off. A 5-minute cache with keepalive off would have saved $1.25 over 10 recent pauses: set "promptCacheTtl": "5m" in settings.json for new sessions, which start with keepalive on (keepalive_default) and so run a 5-minute cache with keepalive paused, sending nothing (lead 300s ≥ 300s TTL).'
   const MISMATCH =
     'You\'re on a 5-minute cache with keepalive on. A 1-hour cache with keepalive off would have saved $1.20 over 10 recent pauses: set "promptCacheTtl": "1h" in settings.json for new sessions, which start with keepalive on (keepalive_default); either run /keepalive default off before starting the new session, or in the new session run /keepalive off or click the pie off.'
   const startsOn = { on: true, leadMs: 15 * S, pinned: null }

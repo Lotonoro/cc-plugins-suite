@@ -204,7 +204,7 @@ describe('the details pane\'s session line, and the bare command', () => {
 
   test('the session line states this session\'s refreshes and their cost, with no pause, raised lead or history in it', () => {
     const t: TallyState = { pause: { pings: 2, spend: r(30000) }, session: { pings: 3, spend: r(60000) }, raisedMs: 16000, epoch: 0 }
-    expect(sessionLineOf(t, TOKENS)).toBe('This session: 3 refreshes costing ~60k tokens read.')
+    expect(sessionLineOf(t, TOKENS)).toBe('This session: 3 refreshes costing ~60k read.')
   })
 
   test('the bare command names what each wasted pause was, with a hint for the larger kind', () => {
@@ -227,9 +227,9 @@ describe('the details pane\'s session line, and the bare command', () => {
       ranOut: { count: 2, spend: r(2000) },
       notNeeded: { count: 1, spend: r(1000) },
     }, TOKENS)
-    expect(carries(keepalive, '1 write avoided, ~41k tokens written')).toBe(true)
-    expect(carries(keepalive, 'Earlier pauses: 2 wasted, ran out (refreshes ~2k tokens read)')).toBe(true)
-    expect(carries(keepalive, 'Earlier pauses: 1 wasted, not needed (refreshes ~1k tokens read)')).toBe(true)
+    expect(carries(keepalive, '1 write avoided, ~41k written')).toBe(true)
+    expect(carries(keepalive, 'Earlier pauses: 2 wasted, ran out (refreshes ~2k read)')).toBe(true)
+    expect(carries(keepalive, 'Earlier pauses: 1 wasted, not needed (refreshes ~1k read)')).toBe(true)
   })
 
   test('in tokens, one avoided write is worth as many refreshes as a write costs reads at the current price; an overlap with a lapse miss is named', () => {

@@ -627,7 +627,7 @@ const endOf = ($: Dollar, p: Ping, ended: Ended): { outcome: string; usage: Mode
     }
     case 'threw': {
       report($, ended.err)
-      const outcome = 'the refresh threw; see the debug log'
+      const outcome = 'refresh threw · see debug log'
       return { outcome, usage: null, stop: outcome }
     }
     case 'lapsed': {

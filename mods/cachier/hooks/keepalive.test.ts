@@ -52,12 +52,12 @@ import { rebuildSpendOf } from './verdict'
 import { refreshIntervalMs } from './setup'
 
 const T = 1_000_000
-const F = 'a refresh reads the warm cache: ~33k cached tokens, every 4 min'
-const REREAD = 'a refresh reads the warm cache: ~33k cached tokens'
-const REBUILD = 'if it goes cold, your next prompt rebuilds it: ~33k tokens written'
+const F = 'a refresh reads the warm cache: ~33k cached, every 4 min'
+const REREAD = 'a refresh reads the warm cache: ~33k cached'
+const REBUILD = 'if it goes cold, your next prompt rebuilds it: ~33k written'
 // The wording an expired cache keeps.
-const EXPIRED_F = 'Next refresh: ~33k cached tokens read, every 4 min'
-const EXPIRED_REREAD = 'each refresh reads ~33k cached tokens'
+const EXPIRED_F = 'Next refresh: ~33k read, every 4 min'
+const EXPIRED_REREAD = 'each refresh reads ~33k cached'
 const INTERVAL = 'One refresh every 4 min.'
 const RESUMES = '; it resumes after your next prompt'
 const known = { kind: 'known' as const, touchMs: T, ttlMs: 300000, ttlLabel: '5m' as const, promptTokens: 32884, outputTokens: 0, model: 'claude-opus-5-5', speed: 'standard' }
@@ -205,10 +205,10 @@ describe('step', () => {
     expect(step(on(300000, 2), known, null, true, T)).toEqual({
       kind: 'wait',
       heading: 'paused',
-      why: 'lead 300 s is not below the 300 s TTL',
+      why: 'lead 300s ≥ 300s TTL',
       lines: [REBUILD],
     })
-    expect(step(on(400000, 2), known, null, true, T)).toMatchObject({ heading: 'paused', why: 'lead 400 s is not below the 300 s TTL', lines: [REBUILD] })
+    expect(step(on(400000, 2), known, null, true, T)).toMatchObject({ heading: 'paused', why: 'lead 400s ≥ 300s TTL', lines: [REBUILD] })
   })
 
   test('a due refresh is sent with no record of a cost shown: nothing holds it back once the lead has begun', () => {
@@ -277,7 +277,7 @@ describe('step', () => {
   test('while keepalive runs, its figures follow the cost as it changes, and a stop names what a refresh reads', () => {
     const k = on(60000, 2)
     const grown = { ...known, promptTokens: 40000 }
-    expect(step(k, grown, null, true, T + 100000).lines[0]).toBe('a refresh reads the warm cache: ~40k cached tokens, every 4 min')
+    expect(step(k, grown, null, true, T + 100000).lines[0]).toBe('a refresh reads the warm cache: ~40k cached, every 4 min')
     expect(step({ ...k, stop: 'count used' }, known, null, true, T).lines).toEqual([REREAD, INTERVAL, REBUILD])
     expect(step(k, { kind: 'no-cache' }, null, true, T).lines).toEqual(['no live cache to count from, nothing scheduled; there is no cache until the next reply'])
   })
@@ -318,7 +318,7 @@ describe('step', () => {
       [
         'a lead at or above the TTL',
         run({}, known, true, T, 300000),
-        { kind: 'wait', heading: 'paused', why: 'lead 300 s is not below the 300 s TTL', lines: [REBUILD, LAST] },
+        { kind: 'wait', heading: 'paused', why: 'lead 300s ≥ 300s TTL', lines: [REBUILD, LAST] },
       ],
       [
         'no live cache',
@@ -398,7 +398,7 @@ describe('a pending cold-mark write keeps the lines the settled verdict gives, a
     [
       'a lead at or above the TTL',
       run({}, known, true, T, 300000),
-      { kind: 'wait', heading: 'paused', why: PENDING, lines: ['lead 300 s is not below the 300 s TTL', REBUILD, LAST] },
+      { kind: 'wait', heading: 'paused', why: PENDING, lines: ['lead 300s ≥ 300s TTL', REBUILD, LAST] },
     ],
     [
       'an expired cache with its stop unrecorded',
@@ -519,8 +519,8 @@ describe('enable: a new run starts on, stopped only by its cache', () => {
 
   test('the cost line names the tokens each ping reads, how often, and that a first ping can write', () => {
     const text = costText(known, 60000, 3)
-    expect(text).toContain('warm cache: ~33k cached tokens')
-    expect(text).toContain('if it goes cold, your next prompt rebuilds it: ~33k tokens written')
+    expect(text).toContain('warm cache: ~33k cached')
+    expect(text).toContain('if it goes cold, your next prompt rebuilds it: ~33k written')
     expect(text).toContain('every 4 min')
     expect(text).toContain('5m TTL')
     expect(text).toContain("can also write that turn's new tokens")
@@ -530,10 +530,10 @@ describe('enable: a new run starts on, stopped only by its cache', () => {
 
   test('the toggle text shows the cost when it is known, a waiting message when not, and any stop reached', () => {
     expect(enableText(known, 60000, 3, null)).toContain('every 4 min')
-    expect(enableText(known, 60000, 3, null)).toContain('warm cache: ~33k cached tokens')
-    expect(enableText(known, 60000, 3, null)).toContain('if it goes cold, your next prompt rebuilds it: ~33k tokens written')
+    expect(enableText(known, 60000, 3, null)).toContain('warm cache: ~33k cached')
+    expect(enableText(known, 60000, 3, null)).toContain('if it goes cold, your next prompt rebuilds it: ~33k written')
     expect(enableText(known, 60000, 3, null).startsWith('keepalive on: lead 60 s, 3 refreshes.')).toBe(true)
-    expect(enableText(known, 300000, 3, null)).toContain('Paused: lead 300 s is not below the 300 s TTL')
+    expect(enableText(known, 300000, 3, null)).toContain('Paused: lead 300s ≥ 300s TTL')
     expect(enableText({ kind: 'no-cache' }, 60000, 3, null)).toContain('nothing is scheduled until there is one')
     expect(enableText(known, 60000, 3, 'cache expired')).toContain('Paused: the cache expired; it resumes after your next prompt.')
   })
@@ -596,8 +596,8 @@ describe('reasonOf and stopFor: how a ping\'s outcome stops keepalive', () => {
   test('a raise past half the TTL is one past it: exactly half is still raised, and the stop names the round trip and the lead it needs', () => {
     expect(pastHalfTtl(150000, 300000)).toBe(false)
     expect(pastHalfTtl(150001, 300000)).toBe(true)
-    expect(pastHalfTtlStop(160000, 320000, 300000)).toBe('a 160.0 s round trip needs a 320 s lead, over half the 300 s TTL')
-    expect(pastHalfTtlStop(75001, 151000, 300000)).toBe('a 75.1 s round trip needs a 151 s lead, over half the 300 s TTL')
+    expect(pastHalfTtlStop(160000, 320000, 300000)).toBe('160.0s round trip needs 320s lead > ½ of 300s TTL')
+    expect(pastHalfTtlStop(75001, 151000, 300000)).toBe('75.1s round trip needs 151s lead > ½ of 300s TTL')
   })
 
   test('a raised lead rounds up to whole seconds, so the pane and the debug log show a clean figure', () => {
@@ -618,7 +618,7 @@ describe('reasonOf and stopFor: how a ping\'s outcome stops keepalive', () => {
   })
 
   test('a reply after the TTL lapses says so, and the details pane names a raised lead in seconds', () => {
-    expect(lapsedReason(300000)).toBe('round trip over 300 s TTL, no reply yet')
+    expect(lapsedReason(300000)).toBe('round trip over 300s TTL, no reply yet')
     expect(raiseNote(16000)).toBe('The lead was raised to 16 s after a slow refresh.')
   })
 })
@@ -626,7 +626,7 @@ describe('reasonOf and stopFor: how a ping\'s outcome stops keepalive', () => {
 describe('retriedOf and refused: a refusal the engine calls a rate limit is retried until half the lead is left before the expiry', () => {
   // A refusal of the given kind at the given status, null for no response, as the engine reports an API error.
   const refusedWith = (error: string, status: number | null = 429): any => ({ isAnswered: false, reason: 'api-error', status, error, usage: zero })
-  const LIMIT = "API error 429 (rate_limit), no retry left before the cache's expiry"
+  const LIMIT = "API error 429 (rate_limit), no retry before expiry"
 
   test('a rate limit is retried whatever its status, null included; no other kind of API error is', () => {
     expect(retriedOf(refusedWith('rate_limit'))).toBe(true)
@@ -654,7 +654,7 @@ describe('retriedOf and refused: a refusal the engine calls a rate limit is retr
     expect(refused(k, 15000, 'API error 429 (rate_limit)', 292000, 300000, 1000)).toEqual({ state: { ...k, remaining: 3, stop: LIMIT }, retry: 'none' })
     expect(refused(k, 15000, 'API error 429 (rate_limit)', 286500, null, 1000)).toEqual({ state: { ...k, remaining: 3, stop: LIMIT }, retry: 'none' })
     expect(refused(k, 15000, 'API error, no response (rate_limit)', 292000, 300000, 1000).state.stop).toBe(
-      "API error, no response (rate_limit), no retry left before the cache's expiry",
+      "API error, no response (rate_limit), no retry before expiry",
     )
   })
 
@@ -743,13 +743,13 @@ describe('the debug lines and the tallies', () => {
   test('the details pane names this session in the unit shown, and no pause or raise', () => {
     const sent = { late: false, pauseEpoch: 0 }
     const t = countPing(countPing(INITIAL_TALLY, spent(32884), 16000, sent), null, null, sent)
-    expect(sessionLineOf(t, TOKENS)).toBe('This session: 2 refreshes costing ~33k tokens read.')
+    expect(sessionLineOf(t, TOKENS)).toBe('This session: 2 refreshes costing ~33k read.')
     expect(sessionLineOf(t, DOLLARS)).toBe('This session: 2 refreshes costing $0.007.')
   })
 
   test('in dollars, the ping is priced on every surface; a model with no price is worded in tokens', () => {
-    const WARM = 'a refresh reads the warm cache: $0.007 (~33k cached tokens)'
-    const COLD = 'if it goes cold, your next prompt rebuilds it: ~$0.16 (~33k tokens written)'
+    const WARM = 'a refresh reads the warm cache: $0.007 (~33k cached)'
+    const COLD = 'if it goes cold, your next prompt rebuilds it: ~$0.16 (~33k written)'
     expect(costWith(on(60000, 3), known, DOLLARS, pairOf(known, DOLLARS))).toEqual({
       label: 'keep warm $0.007/refresh · if cold ~$0.16 rebuild',
       lines: [`A ${WARM.slice(2)}.`, 'One refresh every 4 min.', COLD],
@@ -760,24 +760,24 @@ describe('the debug lines and the tallies', () => {
     const fable = { ...known, model: 'claude-nonesuch-1' }
     const unpriced = pairOf(fable, DOLLARS)
     expect(costWith(on(60000, 3), fable, DOLLARS, unpriced)?.label).toBe('keep warm ~33k read/refresh · if cold ~33k tokens rebuild')
-    expect(costWith(on(60000, 3), fable, DOLLARS, unpriced)?.lines.at(-1)).toBe('if it goes cold, your next prompt rebuilds it: ~33k tokens written')
-    expect(costTextWith(fable, 60000, refreshIntervalMs(60000, fable.ttlMs)!, 3, DOLLARS, unpriced)).toContain('A refresh reads the warm cache: ~33k cached tokens, every 4 min')
+    expect(costWith(on(60000, 3), fable, DOLLARS, unpriced)?.lines.at(-1)).toBe('if it goes cold, your next prompt rebuilds it: ~33k written')
+    expect(costTextWith(fable, 60000, refreshIntervalMs(60000, fable.ttlMs)!, 3, DOLLARS, unpriced)).toContain('A refresh reads the warm cache: ~33k cached, every 4 min')
   })
 
   test('the pair reads <$0.001 with no tilde and ~$0.00 at exactly zero, on the hover and in the section', () => {
     const tiny = { ...known, promptTokens: 10 }
     const label = (v: typeof known) => costWith(on(60000, 3), v, DOLLARS, pairOf(v, DOLLARS))
     expect(label(tiny)?.label).toBe('keep warm <$0.001/refresh · if cold <$0.001 rebuild')
-    expect(label(tiny)?.lines.at(-1)).toBe('if it goes cold, your next prompt rebuilds it: <$0.001 (<1k tokens written)')
+    expect(label(tiny)?.lines.at(-1)).toBe('if it goes cold, your next prompt rebuilds it: <$0.001 (<1k written)')
     const zeroed = { ...known, promptTokens: 0 }
     expect(label(zeroed)?.label).toBe('keep warm $0.00/refresh · if cold ~$0.00 rebuild')
-    expect(label(zeroed)?.lines.at(-1)).toBe('if it goes cold, your next prompt rebuilds it: ~$0.00 (0 tokens written)')
+    expect(label(zeroed)?.lines.at(-1)).toBe('if it goes cold, your next prompt rebuilds it: ~$0.00 (0 written)')
   })
 
   test('the rebuild counts the last reply\'s output beside the context, in tokens and in dollars', () => {
     const replied = { ...known, promptTokens: 33000, outputTokens: 200 }
     expect(costWith(on(60000, 3), replied, TOKENS, pairOf(replied, TOKENS))?.label).toBe('keep warm ~33k read/refresh · if cold ~33k tokens rebuild')
-    expect(costWith(on(60000, 3), replied, DOLLARS, pairOf(replied, DOLLARS))?.lines.at(-1)).toBe('if it goes cold, your next prompt rebuilds it: ~$0.17 (~33k tokens written)')
+    expect(costWith(on(60000, 3), replied, DOLLARS, pairOf(replied, DOLLARS))?.lines.at(-1)).toBe('if it goes cold, your next prompt rebuilds it: ~$0.17 (~33k written)')
   })
 })
 
@@ -786,12 +786,12 @@ describe('the footer line and the status line: what each shows', () => {
     expect(costOf(INITIAL, known)).toBeNull()
     expect(costOf(on(60000, 3), known)).toEqual({
       label: 'keep warm ~33k read/refresh · if cold ~33k tokens rebuild',
-      lines: ['A refresh reads the warm cache: ~33k cached tokens.', 'One refresh every 4 min.', REBUILD],
+      lines: ['A refresh reads the warm cache: ~33k cached.', 'One refresh every 4 min.', REBUILD],
     })
     // An expired cache keeps the label and the two lines of the refresh alone.
     expect(costOf(on(60000, 3), known, false)).toEqual({
       label: '~33k read/refresh',
-      lines: ['Next refresh: ~33k cached tokens read.', 'One refresh every 4 min.'],
+      lines: ['Next refresh: ~33k read.', 'One refresh every 4 min.'],
     })
     // A run that learned no refreshes for this pause shows no figure: the line says it is paused.
     expect(costOf({ ...on(60000, 3), runCount: 0 }, known)).toBeNull()
@@ -806,10 +806,10 @@ describe('the footer line and the status line: what each shows', () => {
     const offer = (v: CacheView, money: Money, lead: number, count: number, warm = true) => offerWith(v, money, lead, count, pairOf(v, money, warm))
     expect(offer(known, TOKENS, 15000, 3)).toEqual({
       label: 'keep warm ~33k read/refresh · if cold ~33k tokens rebuild',
-      lines: ['A refresh reads the warm cache: ~33k cached tokens.', 'One refresh every 4:45.', REBUILD],
+      lines: ['A refresh reads the warm cache: ~33k cached.', 'One refresh every 4:45.', REBUILD],
     })
-    expect(offer(known, DOLLARS, 15000, 3)?.lines[0]).toMatch(/^A refresh reads the warm cache: \$[\d.]+ \(~33k cached tokens\)\.$/)
-    expect(offer(known, TOKENS, 15000, 3, false)).toEqual({ label: '~33k read/refresh', lines: ['Next refresh: ~33k cached tokens read.', 'One refresh every 4:45.'] })
+    expect(offer(known, DOLLARS, 15000, 3)?.lines[0]).toMatch(/^A refresh reads the warm cache: \$[\d.]+ \(~33k cached\)\.$/)
+    expect(offer(known, TOKENS, 15000, 3, false)).toEqual({ label: '~33k read/refresh', lines: ['Next refresh: ~33k read.', 'One refresh every 4:45.'] })
     expect(offer(known, TOKENS, 15000, 0)).toBeNull()
     expect(offer(known, TOKENS, 300000, 3)).toBeNull()
     expect(offer({ kind: 'no-cache' }, TOKENS, 15000, 3)).toBeNull()
@@ -842,10 +842,10 @@ describe('the footer line and the status line: what each shows', () => {
     expect(failureOf(on(60000, 3, { stop: 'count used' }), known)).toBeNull()
     expect(failureOf(on(60000, 3, { stop: 'cache expired' }), known)).toBeNull()
     expect(failureOf(on(60000, 3, { stop: 'API error 529 (overloaded)' }), known)).toBe('keepalive stopped: API error 529 (overloaded)')
-    expect(failureOf(on(60000, 3, { stop: 'a 160 s round trip needs a 320 s lead, over half the 300 s TTL' }), known)).toBe(
-      'keepalive stopped: a 160 s round trip needs a 320 s lead, over half the 300 s TTL',
+    expect(failureOf(on(60000, 3, { stop: '160s round trip needs 320s lead > ½ of 300s TTL' }), known)).toBe(
+      'keepalive stopped: 160s round trip needs 320s lead > ½ of 300s TTL',
     )
-    expect(failureOf(on(400000, 3), known)).toBe('keepalive paused: lead 400 s is not below the 300 s TTL')
+    expect(failureOf(on(400000, 3), known)).toBe('keepalive paused: lead 400s ≥ 300s TTL')
   })
 })
 
@@ -892,7 +892,7 @@ describe('defaultsOf: the click values from the plugin options', () => {
     const lapsed = { ...known, touchMs: T - 400000 }
     expect(step(on(60000, 2), lapsed, null, true, T)).toMatchObject({ heading: 'paused', why: `the cache expired${RESUMES}` })
     const reply = enableText(lapsed, 60000, 2, 'cache expired')
-    expect(reply).toContain('Each refresh reads ~33k cached tokens.')
+    expect(reply).toContain('Each refresh reads ~33k cached.')
     expect(reply).not.toMatch(/warm cache|if cold|if it goes cold/)
     expect(reply).toContain('Paused: the cache expired; it resumes after your next prompt.')
     expect(reply).not.toContain('every')
@@ -937,14 +937,14 @@ describe('the pair: the warm refresh price and the cold rebuild price, stated wh
     expect(lines(on(400000, 2), T)).toEqual([REBUILD])
     expect(lines(on(300000, 2), T).join('\n')).not.toMatch(/refresh|warm cache/)
     const alone = enableText(known, 300000, 3, null)
-    expect(alone).toBe('keepalive on: lead 300 s, 3 refreshes. Paused: lead 300 s is not below the 300 s TTL. If it goes cold, your next prompt rebuilds it: ~33k tokens written.')
+    expect(alone).toBe('keepalive on: lead 300 s, 3 refreshes. Paused: lead 300s ≥ 300s TTL. If it goes cold, your next prompt rebuilds it: ~33k written.')
     expect(alone).not.toMatch(/\/refresh|Next refresh|each refresh|warm cache/i)
-    expect(enableText(known, 400000, 3, null)).toContain('Paused: lead 400 s is not below the 300 s TTL. If it goes cold, ')
+    expect(enableText(known, 400000, 3, null)).toContain('Paused: lead 400s ≥ 300s TTL. If it goes cold, ')
   })
 
   test('the enable text at a lead at or above the TTL puts the rebuild sentence before any stop tail', () => {
     const text = enableText(known, 300000, 3, 'cache expired')
-    expect(text.indexOf('If it goes cold, your next prompt rebuilds it: ~33k tokens written.')).toBeGreaterThan(0)
+    expect(text.indexOf('If it goes cold, your next prompt rebuilds it: ~33k written.')).toBeGreaterThan(0)
     expect(text.indexOf('If it goes cold')).toBeLessThan(text.indexOf('Paused: the cache expired'))
     const failed = enableText(known, 300000, 3, 'API error 529 (overloaded)')
     expect(failed.indexOf('If it goes cold')).toBeLessThan(failed.indexOf('Stopped: API error 529'))
@@ -952,25 +952,25 @@ describe('the pair: the warm refresh price and the cold rebuild price, stated wh
 
   test('the enable text at a lead at or above the TTL words the rebuild in dollars with tokens written, in tokens for a view with output, and tokens only for a model with no price', () => {
     const priced = enableTextWith(known, 300000, 3, null, DOLLARS, pairOf(known, DOLLARS))
-    expect(priced).toMatch(/ If it goes cold, your next prompt rebuilds it: ~\$0\.\d\d \(~33k tokens written\)\.$/)
+    expect(priced).toMatch(/ If it goes cold, your next prompt rebuilds it: ~\$0\.\d\d \(~33k written\)\.$/)
     const output = { ...known, promptTokens: 33000, outputTokens: 200 }
-    expect(enableText(output, 300000, 3, null)).toMatch(/ If it goes cold, your next prompt rebuilds it: ~33k tokens written\.$/)
+    expect(enableText(output, 300000, 3, null)).toMatch(/ If it goes cold, your next prompt rebuilds it: ~33k written\.$/)
     const unpriced = { ...known, model: 'claude-nonesuch-1' }
     const none = enableTextWith(unpriced, 300000, 3, null, DOLLARS, pairOf(unpriced, DOLLARS))
-    expect(none).toMatch(/ If it goes cold, your next prompt rebuilds it: ~33k tokens written\.$/)
+    expect(none).toMatch(/ If it goes cold, your next prompt rebuilds it: ~33k written\.$/)
     expect(none).not.toContain('$')
   })
 
   test('the enable text handed an expired pair at a lead at or above the TTL states the head and the lead sentence alone', () => {
-    expect(enableText(known, 300000, 24, null, false)).toBe('keepalive on: lead 300 s, 24 refreshes. Paused: lead 300 s is not below the 300 s TTL.')
-    expect(enableText(known, 400000, 3, null, false)).toBe('keepalive on: lead 400 s, 3 refreshes. Paused: lead 400 s is not below the 300 s TTL.')
+    expect(enableText(known, 300000, 24, null, false)).toBe('keepalive on: lead 300 s, 24 refreshes. Paused: lead 300s ≥ 300s TTL.')
+    expect(enableText(known, 400000, 3, null, false)).toBe('keepalive on: lead 400 s, 3 refreshes. Paused: lead 400s ≥ 300s TTL.')
     expect(enableText({ kind: 'no-cache' }, 300000, 3, null, true)).not.toMatch(/If it goes cold/)
   })
 
   test('on an expired cache, at the tick, with no rebuild priced, or on an expired cache while a cold mark write is pending, a lead at or above the TTL adds no line', () => {
     expect(lines(on(300000, 2), T + 300000)).toEqual([])
     expect(stepWith(on(300000, 2), known, null, true, T, TOKENS, null)).toMatchObject({ kind: 'wait', heading: 'paused', lines: [] })
-    expect(step({ ...on(300000, 2), coldPending: true }, known, null, true, T + 300000)).toMatchObject({ why: 'until the cache reset is recorded', lines: ['lead 300 s is not below the 300 s TTL'] })
+    expect(step({ ...on(300000, 2), coldPending: true }, known, null, true, T + 300000)).toMatchObject({ why: 'until the cache reset is recorded', lines: ['lead 300s ≥ 300s TTL'] })
   })
 
   test('the rebuild line at a lead at or above the TTL is present one millisecond before the touch plus the TTL and absent exactly at it', () => {
@@ -997,7 +997,7 @@ describe('the pair: the warm refresh price and the cold rebuild price, stated wh
 
   test('a warm enable text states the warm figure after warm cache and the rebuild after if it goes cold, keeping its wrapping', () => {
     expect(enableText(known, 15000, 3, null)).toBe(
-      'keepalive on: lead 15 s, 3 refreshes. A refresh reads the warm cache: ~33k cached tokens, every 4:45 (5m TTL less the 15 s lead); if it goes cold, your next prompt rebuilds it: ~33k tokens written. The first refresh after a turn can also write that turn\'s new tokens. 3 refreshes, then it stops until a prompt.',
+      'keepalive on: lead 15 s, 3 refreshes. A refresh reads the warm cache: ~33k cached, every 4:45 (5m TTL less the 15 s lead); if it goes cold, your next prompt rebuilds it: ~33k written. The first refresh after a turn can also write that turn\'s new tokens. 3 refreshes, then it stops until a prompt.',
     )
   })
 

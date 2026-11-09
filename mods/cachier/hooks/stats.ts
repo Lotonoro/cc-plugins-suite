@@ -3,7 +3,7 @@
 // dollars at the price when it was counted, so the pane can show either unit.
 import type { CacheView, Cause, PendingPause, Spend, StatCount, StatsState, Tally, TallyState } from '../types'
 import { raiseNote, tallyOf } from './keepalive'
-import { addSpend, dollars, figureOf, kTokens, NO_SPEND, rewriteOf, spendOf, TTL_MS, writeReadRatio, type Money, type PriceList } from './prices'
+import { addSpend, dollars, figureOf, NO_SPEND, rewriteOf, spendOf, TTL_MS, writeReadRatio, writtenOf, type Money, type PriceList } from './prices'
 import type { History, Response } from './transcript'
 
 const NONE: StatCount = { count: 0, spend: NO_SPEND }
@@ -169,7 +169,7 @@ const savedOf = (s: StatsState, money: Money): string => {
   }
   const ratio = writeReadRatio(money.list, money.model, money.ttl)
   const worth = ratio === null ? '' : `, a write is worth about ${Math.floor(ratio)} refreshes`
-  return `Earlier pauses: ${s.saved.count} saved (refreshes ${figureOf(spend, 'tokens')}; ${writes} avoided, ${kTokens(avoided.write5m + avoided.write1h)} tokens written${worth})`
+  return `Earlier pauses: ${s.saved.count} saved (refreshes ${figureOf(spend, 'tokens')}; ${writes} avoided, ${writtenOf(avoided.write5m + avoided.write1h)}${worth})`
 }
 
 // The pauses' lines of the rundown: this pause, this session and any raise, then the earlier pauses by outcome.

@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'claude-code/testing'
-import { dollars, figureOf, kTokens, NO_KINDS, NO_SPEND, parsePricing, PRICES, ratesFor, rewriteOf, spendOf, uponOf, writeReadRatio } from './prices'
+import { dollars, figureOf, kTokens, NO_KINDS, NO_SPEND, parsePricing, PRICES, ratesFor, readOf, rewriteOf, spendOf, uponOf, writeReadRatio, writtenOf } from './prices'
 
 describe('the price table', () => {
   test('a 5 m write costs 1.25 inputs and a 1 h write 2, so on Opus 5.5 they are 25 and 40 reads', () => {
@@ -138,18 +138,25 @@ describe('parsePricing: the official pricing page', () => {
   })
 })
 
-describe('the figures in the unit shown: dollars, or tokens with the word tokens after each count', () => {
+describe('the figures in the unit shown: dollars, or tokens with read or written after each count', () => {
   const priced = { input: 0, read: 0, write5m: 0, write1h: 0, usd: 0.02, why: null }
 
   test('a spend in tokens names each kind it holds, with its count of tokens', () => {
-    expect(figureOf({ input: 5000, read: 33000, write5m: 0, write1h: 0, usd: null, why: 'no price' }, 'tokens')).toBe('~5k input tokens, ~33k tokens read')
-    expect(figureOf({ input: 0, read: 0, write5m: 50000, write1h: 0, usd: 0.3, why: null }, 'tokens')).toBe('~50k tokens written')
-    expect(figureOf(NO_SPEND, 'tokens')).toBe('0 tokens read')
+    expect(figureOf({ input: 5000, read: 33000, write5m: 0, write1h: 0, usd: null, why: 'no price' }, 'tokens')).toBe('~5k input tokens, ~33k read')
+    expect(figureOf({ input: 0, read: 0, write5m: 50000, write1h: 0, usd: 0.3, why: null }, 'tokens')).toBe('~50k written')
+    expect(figureOf(NO_SPEND, 'tokens')).toBe('0 read')
   })
 
   test('a priced spend reads as dollars in dollars, and an unpriced one falls back to tokens', () => {
     expect(figureOf(priced, 'dollars')).toBe('$0.02')
-    expect(figureOf({ ...priced, usd: null, read: 33000, why: 'no price for claude-nonesuch-1' }, 'dollars')).toBe('~33k tokens read')
+    expect(figureOf({ ...priced, usd: null, read: 33000, why: 'no price for claude-nonesuch-1' }, 'dollars')).toBe('~33k read')
+  })
+
+  test('a count of tokens read or written is the count and that word, with no word tokens', () => {
+    expect(readOf(33000)).toBe('~33k read')
+    expect(readOf(0)).toBe('0 read')
+    expect(writtenOf(500)).toBe('<1k written')
+    expect(writtenOf(50000)).toBe('~50k written')
   })
 
   test('a rewrite is its dollars, or the tokens written with the word tokens', () => {

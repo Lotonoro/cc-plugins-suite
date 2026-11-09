@@ -82,6 +82,10 @@ a short terminal the lower sections are scrolled to with the wheel.
   (`~26k tokens`). The footer words the same figure `to rebuild`.
 - **`·`**: separates the parts of a line, as in `warm · 3:12 left · 5m TTL`.
 - **`~`**: about; the figure is an estimate.
+- **`≥`**: at or above; `lead 300s ≥ 300s TTL` says the lead is not below the TTL, so no refresh is sent.
+- **`> ½ of 30s TTL`**: the lead a slow round trip needs, twice that round trip, is over half the whole TTL, here 30s, so keepalive stops instead of raising it.
+- **read** / **written**: a count of tokens read from or written to the cache, `~19k read`; `cached` after a count (`~19k cached`) is the context a refresh reads.
+- **kept**: a running pause keeps the count it started with until the next prompt recounts it (`kept from pause start; recounted next prompt`).
 
 ## Keepalive
 
@@ -102,7 +106,7 @@ a short terminal the lower sections are scrolled to with the wheel.
   rounded up to a tick) until shortly before the cache would expire, none being let through in the last half of the lead. The
   Keepalive heading reads `stopped` and the first line beneath it says what broke in one clause, such as
   `API error 529 (overloaded); your next prompt restarts it`, or, once no retry is left, `API error 429 (rate_limit), no retry
-  left before the cache's expiry; your next prompt restarts it`.
+  before expiry; your next prompt restarts it`.
 - The lead (how long before expiry a refresh is sent) starts at 15 s. An answered refresh slower than half the lead raises it to
   twice that round trip for the session. It is never lowered, and keepalive stops instead of raising it past half the
   TTL.
@@ -165,7 +169,7 @@ a short terminal the lower sections are scrolled to with the wheel.
   model neither the page nor the built-in table lists, fast mode, and a response that names no model. This holds for the figure to
   rebuild an expired or reset cache too, wherever the Cache section draws one. Both prices of the pair fall to tokens together: the
   rebuild figure reads `~33k tokens`, `<1k tokens` or `0 tokens`, the tokens of the context plus the last reply's output.
-- Tokens name what was done with them (`~19k tokens read`, `~20k tokens written`), since a write costs many reads. The
+- Tokens name what was done with them (`~19k read`, `~20k written`), since a write costs many reads. The
   bare `/keepalive` answer says how many reads a 5 m write costs on the current model.
 
 ## Message times
@@ -186,7 +190,7 @@ coming, the Keepalive section words the pie's warning (the pie turns amber in th
 tenth: the cache is about to lapse) just below the heading or that reason, whatever the pie's colour, with keepalive off or on
 with a reading and not refreshing, on a reset or expired cache too. With keepalive off, and where a press would send refreshes,
 the refresh's cost or the context it reads, and how often one is sent, come straight after the warning. While the cache is warm, each price
-of a refresh is followed by a line of its own for what the next prompt pays to rebuild the cache if it goes cold (`if it goes cold, your next prompt rebuilds it: ~$0.21 (~33k tokens written)`);
+of a refresh is followed by a line of its own for what the next prompt pays to rebuild the cache if it goes cold (`if it goes cold, your next prompt rebuilds it: ~$0.21 (~33k written)`);
 once it has expired the refresh's price stands alone. A run whose lead is not below the TTL sends no refresh, so on a warm cache it states the `if it goes cold` line alone. A keepalive paused by design
 (its count used, or its cache expired) names what a refresh reads or costs and, where the cache is known and the lead is below the TTL, how often one would
 be sent. With keepalive on and no stop held, the heading reads `paused` while a cache reset is being recorded, and the first line
@@ -271,13 +275,13 @@ either run /keepalive default off before starting the new session, or in the new
 pie off.` and, where new sessions start paused,
 `You're on a 1-hour cache with keepalive off. A 5-minute cache with keepalive off would have saved $1.25 over 10 recent
 pauses: set "promptCacheTtl": "5m" in settings.json for new sessions, which start with keepalive on (keepalive_default)
-and so run a 5-minute cache with keepalive paused, sending nothing (lead 300 s is not below the 300 s TTL).` Each click is
+and so run a 5-minute cache with keepalive paused, sending nothing (lead 300s ≥ 300s TTL).` Each click is
 also given as the /keepalive command that does the same, at the lead and pinned count the setup was priced at, so it can be
 sent from the phone. The sentence is added beside the figures above and the TTL line,
 which stay. Every sentence opens by naming your TTL and keepalive state, `You're on a 5-minute cache with keepalive off.`, and
 the setup a saving is stated against is named in full. Keepalive on at a lead not below the TTL is named paused, sending
 nothing, with the reason the Keepalive section gives (`You're on a 5-minute cache with keepalive paused, sending nothing
-(lead 300 s is not below the 300 s TTL).`), since such a run sends no refresh and is priced as keepalive off. The
+(lead 300s ≥ 300s TTL).`), since such a run sends no refresh and is priced as keepalive off. The
 sentence says one thing:
 
 - a change, when the cheapest setup differs from yours and saves at least $0.01 and at least 5% of what your setup cost

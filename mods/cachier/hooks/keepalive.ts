@@ -4,8 +4,8 @@
 import type { ModelApiError, ModelForkResult, ModelUsage, PluginOptions } from 'claude-code'
 import type { CacheView, HintCost, KeepaliveState, Spend, Tally, TallyState, Unit } from '../types'
 import { expiredAt, expiryOf } from './countdown'
-import { addSpend, dollars, figureOf, kTokens, NO_KINDS, NO_SPEND, spendOf, uponOf, type Money } from './prices'
-import { notBelowTtl, refreshIntervalMs, secs } from './setup'
+import { addSpend, dollars, figureOf, kTokens, NO_KINDS, NO_SPEND, readOf, spendOf, uponOf, writtenOf, type Money } from './prices'
+import { notBelowTtl, refreshIntervalMs, SECONDS_SUFFIX, secs, secsTerse } from './setup'
 
 // Everything off: no config, no pings, nothing shown, no turn bookkeeping. A session's start and end reset to this.
 export const INITIAL: KeepaliveState = {
@@ -118,7 +118,7 @@ export const printRequest = (request: Extract<Request, { kind: 'on' | 'off' | 'd
       : `/keepalive on ${request.leadMs / 1000}${request.count === null ? '' : ` ${request.count}`}`
 
 // A round trip to one decimal, rounded up: never shorter than it was measured.
-const secsUp = (ms: number) => `${(Math.ceil(ms / 100) / 10).toFixed(1)} s`
+const secsUp = (ms: number) => `${(Math.ceil(ms / 100) / 10).toFixed(1)}${SECONDS_SUFFIX}`
 
 const clock = (ms: number) => {
   const s = Math.ceil(ms / 1000)
@@ -286,7 +286,7 @@ const failureSentence = (stop: string): string => `${stop}; your next prompt res
 const rereadFigure = (view: CacheView, money: Money): string | null => {
   if (view.kind !== 'known') return null
   const usd = pingUsd(view, money)
-  const read = `${kTokens(view.promptTokens)} cached tokens`
+  const read = `${kTokens(view.promptTokens)} cached`
   return usd === null ? `each refresh reads ${read}` : `each refresh costs ${dollars(usd)} (reads ${read})`
 }
 
@@ -360,7 +360,7 @@ const pingUsd = (view: KnownView, money: Money): number | null => (money.unit ==
 // The next refresh's cost as an expired cache states it.
 const nextPing = (view: KnownView, money: Money): string => {
   const usd = pingUsd(view, money)
-  const read = `${kTokens(view.promptTokens)} cached tokens read`
+  const read = readOf(view.promptTokens)
   return usd === null ? `Next refresh: ${read}` : `Next refresh: ${dollars(usd)} (${read})`
 }
 
@@ -376,13 +376,13 @@ export type Pair = { warm: boolean; rebuild: Spend | null }
 const pairing = (view: CacheView, money: Money, pair: Pair): { label: string; bare: string | null; phrase: string; rebuild: string[] } | null => {
   if (view.kind !== 'known' || !pair.warm) return null
   const usd = pingUsd(view, money)
-  const tokens = `${kTokens(view.promptTokens)} cached tokens`
+  const tokens = `${kTokens(view.promptTokens)} cached`
   const spend = pair.rebuild
-  const written = spend === null ? '' : `${kTokens(spend.write5m + spend.write1h)} tokens written`
+  const written = spend === null ? '' : writtenOf(spend.write5m + spend.write1h)
   const rebuilt = spend !== null && money.unit === 'dollars' && spend.usd !== null ? `${uponOf(spend, money.unit)} (${written})` : written
   const bare = spend === null ? null : `if cold ${uponOf(spend, money.unit)} rebuild`
   return {
-    label: `keep warm ${usd === null ? `${kTokens(view.promptTokens)} read` : dollars(usd)}/refresh${bare === null ? '' : ` · ${bare}`}`,
+    label: `keep warm ${usd === null ? readOf(view.promptTokens) : dollars(usd)}/refresh${bare === null ? '' : ` · ${bare}`}`,
     bare,
     phrase: usd === null ? `a refresh reads the warm cache: ${tokens}` : `a refresh reads the warm cache: ${dollars(usd)} (${tokens})`,
     rebuild: spend === null ? [] : [`if it goes cold, your next prompt rebuilds it: ${rebuilt}`],
@@ -407,7 +407,7 @@ const figureAt = (view: CacheView, leadMs: number, money: Money, pair: Pair): Fi
   const stated = pairing(view, money, pair)
   if (stated !== null) return { label: stated.label, lines: [`${capital(stated.phrase)}.`, row, ...stated.rebuild] }
   const usd = pingUsd(view, money)
-  return { label: usd === null ? `${kTokens(view.promptTokens)} read/refresh` : `${dollars(usd)}/refresh`, lines: [`${nextPing(view, money)}.`, row] }
+  return { label: usd === null ? `${readOf(view.promptTokens)}/refresh` : `${dollars(usd)}/refresh`, lines: [`${nextPing(view, money)}.`, row] }
 }
 
 // The figure keepalive's refreshes show while it runs: what each refresh costs, or the context it reads, and how often. Shown
@@ -527,17 +527,17 @@ export const refused = (
 ): { state: KeepaliveState; retry: Retry } => {
   const given = { ...k, remaining: k.remaining + 1 }
   if (expiryMs !== null && expiryMs - (repliedMs + tickMs) >= leadMs / 2) return { state: given, retry: 'allowed' }
-  return { state: { ...given, stop: `${reason}, no retry left before the cache's expiry` }, retry: 'none' }
+  return { state: { ...given, stop: `${reason}, no retry before expiry` }, retry: 'none' }
 }
 
 // A ping whose reply has not come by the TTL: the cache may have lapsed while it was in flight, so keepalive stops with it.
-export const lapsedReason = (ttlMs: number): string => `round trip over ${secs(ttlMs)} TTL, no reply yet`
+export const lapsedReason = (ttlMs: number): string => `round trip over ${secsTerse(ttlMs)} TTL, no reply yet`
 
 // A raised lead past half the TTL stops keepalive: no lead above that keeps 2x headroom under the TTL. Exactly half still raises.
 export const pastHalfTtl = (raisedMs: number, ttlMs: number): boolean => raisedMs > ttlMs / 2
 // That stop's reason: the round trip measured, and the lead it would need.
 export const pastHalfTtlStop = (rtMs: number, raisedMs: number, ttlMs: number): string =>
-  `a ${secsUp(rtMs)} round trip needs a ${secs(raisedMs)} lead, over half the ${secs(ttlMs)} TTL`
+  `${secsUp(rtMs)} round trip needs ${secsTerse(raisedMs)} lead > ½ of ${secsTerse(ttlMs)} TTL`
 
 // The lead after a ping whose round trip was `rtMs`: a round trip over half the lead raises it to twice the round trip, rounded up
 // to whole seconds. A lead is never lowered, so without such a round trip the lead is `leadMs` unchanged.

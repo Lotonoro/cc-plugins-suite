@@ -166,14 +166,18 @@ export const dollars = (usd: number): string => {
 
 export const kTokens = (n: number): string => (n === 0 ? '0' : n < 1000 ? '<1k' : `~${Math.round(n / 1000)}k`)
 
+// A count of tokens read from the cache, or written to it, with the verb in place of the word tokens.
+export const readOf = (n: number): string => `${kTokens(n)} read`
+export const writtenOf = (n: number): string => `${kTokens(n)} written`
+
 // A spend in the unit shown: its dollars, or its tokens by what the cache did with them. A spend with no price is in tokens.
 export const figureOf = (spend: Spend, unit: Unit): string => {
   if (unit === 'dollars' && spend.usd !== null) return dollars(spend.usd)
   const written = spend.write5m + spend.write1h
   const parts = [
     ...(spend.input > 0 ? [`${kTokens(spend.input)} input tokens`] : []),
-    ...(spend.read > 0 || written === 0 ? [`${kTokens(spend.read)} tokens read`] : []),
-    ...(written > 0 ? [`${kTokens(written)} tokens written`] : []),
+    ...(spend.read > 0 || written === 0 ? [readOf(spend.read)] : []),
+    ...(written > 0 ? [writtenOf(written)] : []),
   ]
   return parts.join(', ')
 }
