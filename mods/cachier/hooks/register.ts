@@ -51,13 +51,13 @@ import {
   type Retry,
 } from './keepalive'
 import { singleFlight } from './guard'
-import { footerLine, paneOf, paneSizeOf } from './hint'
+import { footerLine, paneOf } from './hint'
 import { followDraw, isPaneOpen, lastRows, paneAlarm, PANE, pressSize, readPane, recordRows, recordSize, syncPane, togglePane } from './pane'
 import { appended, HISTORY_BOUND, keyOf, KEY_PREFIX, merged, recordOf, recordsOf, staleKeys, type PauseRecord } from './history'
 import { adviceOf, ratesOfView, ttlLineOf, type Inputs } from './advice'
 import { learnedLine, learnedOf, ttlSwitchOf, type Learned } from './learn'
 import { breakEvenLine, countLineOf, judge, KEPT_COUNT, ratioOf, rebuildSpendOf, runCountOf, sessionBalanceLine, NO_JUDGED, pauseOf, type Pause } from './verdict'
-import { answerOf, layoutOf, type AnswerRow, type Setting, type Snapshot } from './sections'
+import { answerOf, paneLayoutOf, type PaneRow, type PaneSize, type Setting, type Snapshot } from './sections'
 import { stampLabel, withStamp } from './stamp'
 import { foldStatsEvents, INITIAL_STATS, pendingFor, rundownSections, sessionLineOf, type MissEvent, type LongPauseEvent } from './stats'
 import { lookupRows, readCache, type History, type Host, type Row } from './transcript'
@@ -881,7 +881,7 @@ const settingsOf = (raw: CacheView, run: { leadMs: number; count: number | null 
 
 // The figures and sentences the bare command's sections state. The clock is read first, then each state key once, in sequence:
 // not an atomic snapshot, so a write that lands between two reads can leave figures from two moments. A surface that states the
-// sections calls it and lays them out with layoutOf: the bare command and the details pane's draw.
+// sections calls it: the bare command, which lays them out wrapped at 48 columns, and the details pane's draw, which lays them out for the engine to wrap.
 const snapshotNow = async ($: Dollar): Promise<Snapshot> => {
   const nowMs = await $.clock.now()
   const held = (await $.state.get(KEEPALIVE)).value ?? INITIAL
@@ -1656,7 +1656,8 @@ export const register: Register = (on, options) => {
     await restoring?.catch(() => null)
     // A throw while drawn draws the engine's own, so a failed state read in the draw is reported (once per run of failures) and the last rows
     // are drawn again; before the first draw there are none, and one row says so, since nothing else redraws a pane no countdown is running in. The size record stands as the last draw left it.
-    let rows: AnswerRow[]
+    let rows: PaneRow[]
+    let size: PaneSize
     try {
       // The reads sit after the restore wait, as the HINT read did, and are made here in the hook body as one batch: the keys snapshotNow
       // reads, plus CUE, which the price sink writes as the price list changes. The engine redraws the pane on a write of state it read
@@ -1674,15 +1675,15 @@ export const register: Register = (on, options) => {
         $.state.get(JUDGED),
         $.state.get(CUE),
       ])
-      rows = layoutOf(await snapshotNow($))
+      ;({ rows, size } = paneLayoutOf(await snapshotNow($)))
     } catch (err) {
       if (!paneDrawFailed) report($, err)
       paneDrawFailed = true
       const shown = lastRows()
-      return paneOf($.ui.resolve(e), shown.length === 0 ? [{ text: 'The details could not be read; see the debug log.' }] : shown)
+      return paneOf($.ui.resolve(e), shown.length === 0 ? [{ kind: 'line', text: 'The details could not be read; see the debug log.' }] : shown)
     }
     paneDrawFailed = false
-    recordSize(paneSizeOf(rows))
+    recordSize(size)
     recordRows(rows)
     return paneOf($.ui.resolve(e), rows)
   })

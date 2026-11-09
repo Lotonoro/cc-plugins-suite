@@ -1,6 +1,6 @@
 import type { EngineInterface } from 'claude-code'
 import { report } from './pricesync'
-import type { AnswerRow } from './sections'
+import { WRAP, type PaneRow, type PaneSize } from './sections'
 
 // The details pane: its flag, the open, close and re-open the footer's presses and the tick make, the size its draw recorded, and the note on an open that failed.
 // A press decides on the flag synchronously, because the open must be made inside the press: an open made after an await is not counted
@@ -10,11 +10,8 @@ export const PANE = 'cachier-details'
 const PANE_TITLE = 'Prompt cache'
 const PANE_FAILED = 'the details pane did not open; see the debug log'
 
-// The rows and columns the pane asks for: one row per laid-out row, and the columns of the longest.
-export type PaneSize = { rows: number; columns: number }
-
-// The size a press opens the pane at before any draw this session has recorded one.
-const PROVISIONAL: PaneSize = { rows: 12, columns: 48 }
+// The size a press opens the pane at before any draw this session has recorded one: 12 rows by the command's wrap width.
+const PROVISIONAL: PaneSize = { rows: 12, columns: WRAP }
 
 // Whether the pane is open and drawn, as the mod last knows it. The mod's own open sets it and its own close clears it; a read of the engine's
 // record of panes (`readPane`) puts it right after each event that can leave it wrong: the mod's own open or close settling, a close of the
@@ -26,8 +23,8 @@ let paneSize: PaneSize | null = null
 // The size the pane's last draw recorded; null before the first draw of the session. It survives a close and is cleared only by a session-start
 // sync. Only the draw writes it, and only the tick reads it to re-size: a press opens at it, and nothing builds the pane's rows to know it.
 let drawn: PaneSize | null = null
-// The rows of that draw, kept beside its size: what a draw whose state read fails shows again. Cleared with it.
-let drawnRows: AnswerRow[] | null = null
+// The pane's rows of that draw, kept beside its size: what a draw whose state read fails shows again. Cleared with it.
+let drawnRows: PaneRow[] | null = null
 // Why the last open failed, named on the status line until an open lands.
 let failure: string | null = null
 
@@ -42,10 +39,10 @@ export const recordSize = (size: PaneSize): void => {
 }
 
 // The rows the last draw produced, and the rows a draw whose state read failed shows again: none before the first draw of the session.
-export const recordRows = (rows: AnswerRow[]): void => {
+export const recordRows = (rows: PaneRow[]): void => {
   drawnRows = rows
 }
-export const lastRows = (): AnswerRow[] => drawnRows ?? []
+export const lastRows = (): PaneRow[] => drawnRows ?? []
 
 // The size a press opens a shut pane at: the last draw's, else 12 rows by 48 columns.
 export const pressSize = (): PaneSize => drawn ?? PROVISIONAL

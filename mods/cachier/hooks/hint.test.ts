@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'claude-code/testing'
 import type { HintState, Reading } from '../types'
-import { footerLine, paneOf, paneSizeOf } from './hint'
-import { layoutOf, type Snapshot } from './sections'
+import { footerLine, paneOf } from './hint'
+import { layoutOf, paneLayoutOf, type Snapshot } from './sections'
 
 // A table that builds the elements as plain data, the way a surface's table hands them out.
 const table = {
@@ -263,32 +263,49 @@ const SNAPSHOT: Snapshot = {
   advice: ['A 1-hour cache with keepalive off would have saved $1.20 over 10 recent pauses.'],
   settings: [{ name: 'unit', value: 'dollars', source: 'cost_unit option', change: '/keepalive unit tokens|dollars' }],
 }
-const ROWS = layoutOf(SNAPSHOT)
+const ROWS = paneLayoutOf(SNAPSHOT).rows
 
-describe('paneSizeOf: the rows and columns the pane asks for, the laid-out rows\' count and longest row', () => {
-  test('one row per row, blank rows included, and the columns of the longest row', () => {
-    expect(paneSizeOf([{ text: 'ab', heading: true }, { text: '' }, { text: 'abc' }])).toEqual({ rows: 3, columns: 3 })
-    expect(paneSizeOf(ROWS)).toEqual({ rows: ROWS.length, columns: Math.max(...ROWS.map((row) => row.text.length)) })
-  })
-})
-
-describe('paneOf: the answer\'s rows as text, one Text per row, headings bold and nothing coloured', () => {
-  test('one Text per row in the answer\'s order with its text, cut at the pane\'s width rather than wrapped', () => {
+describe('paneOf: the pane\'s rows, one element per row, wrapped by the engine, headings bold and nothing coloured', () => {
+  test('a heading and a blank are a Text at the left edge, a line a Text in a box indented two; every Text wraps', () => {
     const pane = paneOf(t, ROWS) as any
     expect(pane.children).toHaveLength(ROWS.length)
-    expect(pane.children.map((child: any) => child.children)).toEqual(ROWS.map((row) => [row.text === '' ? ' ' : row.text]))
-    for (const child of pane.children) expect(child).toMatchObject({ type: 'Text', props: { wrap: 'truncate-end' } })
+    const texts: any[] = []
+    pane.children.forEach((child: any, i: number) => {
+      if (ROWS[i]?.kind === 'line') {
+        expect(child).toMatchObject({ type: 'Box', props: { paddingLeft: 2 } })
+        expect(child.children).toHaveLength(1)
+        texts.push(child.children[0])
+      } else {
+        expect(child.type).toBe('Text')
+        texts.push(child)
+      }
+    })
+    expect(texts.map((x) => x.children)).toEqual(ROWS.map((row) => [row.kind === 'blank' ? ' ' : row.text]))
+    for (const x of texts) expect(x).toMatchObject({ type: 'Text', props: { wrap: 'wrap' } })
+    expect(JSON.stringify(pane)).not.toContain('truncate')
   })
 
   test('a heading row is bold and no other row is', () => {
     const pane = paneOf(t, ROWS) as any
-    const bold = pane.children.map((child: any) => child.props.bold === true)
-    expect(bold).toEqual(ROWS.map((row) => row.heading === true))
+    expect(JSON.stringify(pane).match(/"bold":true/g)).toHaveLength(5)
     expect(pane.children.filter((child: any) => child.props.bold === true).map((child: any) => child.children[0])).toEqual(['Cache', 'Keepalive  off', 'This session', 'Advice', 'Settings'])
+  })
+
+  test('the tree is the same whatever the width: it takes none', () => {
+    expect(JSON.stringify(paneOf(t, ROWS))).toBe(JSON.stringify(paneOf(t, ROWS)))
+    const long = 'x'.repeat(150)
+    const pane = paneOf(t, [{ kind: 'line', text: long }]) as any
+    expect(pane.children[0].children[0].children).toEqual([long])
   })
 
   test('no row is coloured, and no button, hover or absolute position is in it', () => {
     const drawn = JSON.stringify(paneOf(t, ROWS))
     expect(drawn).not.toMatch(/"color"|"dimColor"|"backgroundColor"|"type":"Button"|hover|absolute/)
+  })
+
+  test('the 48-column layout\'s rows are refused by the type', () => {
+    const answer = layoutOf(SNAPSHOT)
+    // @ts-expect-error 48-column rows are not pane rows
+    expect(paneOf(t, answer)).toBeDefined()
   })
 })

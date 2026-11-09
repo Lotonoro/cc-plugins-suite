@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'claude-code/testing'
-import { answerOf, layoutOf, sectionsOf, SPAN_SPACE, wrapLine, WRAP, type Setting, type Snapshot } from './sections'
+import { answerOf, layoutOf, paneLayoutOf, sectionsOf, SPAN_SPACE, wrapLine, WRAP, type AnswerRow, type PaneRow, type Setting, type Snapshot } from './sections'
 
 // The builder takes the figures and sentences as plain values: no engine, no `$`.
 const SETTINGS: Setting[] = [
@@ -126,13 +126,61 @@ describe('layoutOf: the rows the answer is joined from, a heading row marked and
 
   test('a heading row is the title alone, or the title, two spaces and the state, and is marked either way', () => {
     expect(layoutOf({ ...EMPTY, cache: ['warm'] }).filter((row) => row.heading)).toEqual([
-      { text: 'Cache', heading: true },
-      { text: 'Keepalive  off', heading: true },
+      { text: 'Cache', heading: true, wrapped: true },
+      { text: 'Keepalive  off', heading: true, wrapped: true },
     ])
   })
 
   test('a Snapshot with keepalive off and no line anywhere lays out the one marked row Keepalive  off', () => {
-    expect(layoutOf(EMPTY)).toEqual([{ text: 'Keepalive  off', heading: true }])
+    expect(layoutOf(EMPTY)).toEqual([{ text: 'Keepalive  off', heading: true, wrapped: true }])
     expect(answerOf(EMPTY)).toBe('Keepalive  off')
+  })
+})
+
+const CMD = `run /keepalive${SPAN_SPACE}on${SPAN_SPACE}15 or click the pie on, and /keepalive${SPAN_SPACE}default${SPAN_SPACE}on for new sessions`
+
+describe('paneLayoutOf: the pane\'s rows, kinded and unwrapped, with the size it asks for', () => {
+  test('a heading, each line whole, and one blank between sections, each with its kind and no indent', () => {
+    const { rows } = paneLayoutOf({ ...EMPTY, cache: ['warm'], keepalive: { state: 'paused', lines: [CMD] } })
+    expect(rows.map((row) => row.kind)).toEqual(['heading', 'line', 'blank', 'heading', 'line'])
+    expect(rows.map((row) => row.text)).toEqual(['Cache', 'warm', '', 'Keepalive  paused', CMD.split(SPAN_SPACE).join(' ')])
+  })
+
+  test('no row holds a no-break space, and a long line is one row', () => {
+    const long = `${'word '.repeat(60)}${CMD}`
+    const { rows } = paneLayoutOf({ ...FULL, advice: [long] })
+    expect(rows.some((row) => row.text.includes(SPAN_SPACE))).toBe(false)
+    expect(rows.filter((row) => row.kind === 'line' && row.text.startsWith('word word'))).toHaveLength(1)
+  })
+
+  test('the rows, joined on whitespace, are the answer joined on whitespace', () => {
+    for (const snap of [FULL, EMPTY, { ...FULL, advice: [CMD] }]) {
+      const flat = (texts: string[]) => texts.join(' ').split(/\s+/).filter(Boolean).join(' ')
+      expect(flat(paneLayoutOf(snap).rows.map((row) => row.text))).toBe(flat(answerOf(snap).split('\n')))
+    }
+  })
+
+  test('the size is the count and longest row of the 48-column layout of the same content', () => {
+    for (const snap of [FULL, EMPTY, { ...FULL, advice: [CMD] }]) {
+      const rows = layoutOf(snap)
+      expect(paneLayoutOf(snap).size).toEqual({ rows: rows.length, columns: Math.max(...rows.map((row) => row.text.length)) })
+    }
+  })
+
+  test('the 48-column layout is unchanged in text: indents, wrap and commands whole', () => {
+    const text = layoutOf({ ...EMPTY, cache: [CMD] }).map((row) => row.text)
+    expect(text.every((row) => row.length <= WRAP)).toBe(true)
+    expect(text.some((row) => row.includes('/keepalive on 15'))).toBe(true)
+    expect(text.some((row) => row.includes('/keepalive default on'))).toBe(true)
+  })
+
+  test('the two row types are not assignable to each other', () => {
+    const answer: AnswerRow = layoutOf(EMPTY)[0] as AnswerRow
+    const pane: PaneRow = paneLayoutOf(EMPTY).rows[0] as PaneRow
+    // @ts-expect-error a pane row is not a 48-column row
+    const asAnswer: AnswerRow = pane
+    // @ts-expect-error a 48-column row is not a pane row
+    const asPane: PaneRow = answer
+    expect([asAnswer, asPane]).toHaveLength(2)
   })
 })

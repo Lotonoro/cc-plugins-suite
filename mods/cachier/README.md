@@ -48,12 +48,12 @@ lifetime is left, and next to it the time left, or a word where there is no time
 
 ## The details pane
 
-A click on the time, the rebuild figure, `reset` or `no count` opens the pane, sized to what it last drew: one row per row, as wide as the longest. Before the
-pane has drawn this session it opens at 12 rows by 48 columns, and an open pane is re-sized to its drawing within a second. A terminal too short for the rows
+A click on the time, the rebuild figure, `reset` or `no count` opens the pane, sized to its text laid out as the `/keepalive` answer lays its text out: that answer's rows and longest row. Before the
+pane has drawn this session it opens at 12 rows by 48 columns, and an open pane is re-sized to its text within a second. A terminal too short for the rows
 scrolls them with the wheel. A click on that word while it is open closes it, as Esc or the person's close does. The click acts on the pane as the engine
 lists it: a pane closed some way cachier did not hear of (a reload, another plugin) is opened by the next click after a second,
 and a close another plugin refuses leaves the pane open to be closed by the next click. The pane shows the five sections a bare
-`/keepalive` answers with, in the same order with the same text, each heading in bold:
+`/keepalive` answers with, in the same order with the same words, each heading in bold. The pane's text wraps at the width the pane is drawn at, so dragging the dock wider gives wider lines and fewer rows; each sentence's rows share one indent:
 
 - **Cache**: the cache's warmth, `Prompt cache warm, 3:12 left (5-minute cache)`, or, once the cache has expired or been reset, the
   figure to rebuild it (the context plus the last reply's output, which the next prompt writes with it). The figure is priced
@@ -184,7 +184,7 @@ once it has expired the refresh's price stands alone. A run whose lead is not be
 be sent. With keepalive on and no stop held, the heading reads `paused` while a cache reset is being recorded, and the first line
 beneath it says so; the reason the section would give with no reset pending, when it has one, follows as a second reason row, after
 the colour sentence when that shows. The Keepalive section is always shown, as its heading alone when it has nothing else to say, and so is This session, which says `This session: no refreshes yet.` before the first refresh. Cache, Advice and Settings
-are left out when they have nothing to say. The text wraps at 48 columns. A count pins the refreshes per pause for the session;
+are left out when they have nothing to say. The `/keepalive` answer wraps at 48 columns. A count pins the refreshes per pause for the session;
 without one, each pause sends the learned count, else the break-even count.
 
 Options: `keepalive_lead_s` (default 15), the lead the pie uses until a command sets one; `keepalive_count` (unset by default), a cap on the

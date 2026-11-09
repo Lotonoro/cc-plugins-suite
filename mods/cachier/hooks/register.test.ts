@@ -3263,9 +3263,16 @@ const paneRows = async ($: any): Promise<string[]> => {
 }
 // The columns a pane asks for: its longest row.
 const widthOf = (rows: string[]) => Math.max(...rows.map((row) => row.length))
+// The rows and columns the pane asks for: the bare command's answer, its row count and longest row, for the same content.
+const answerSize = async ($: any) => {
+  const rows = (await commandText($, '')).split('\n')
+  return { rows: rows.length, columns: widthOf(rows) }
+}
+// Rows or lines as the words they hold: the pane draws whole sentences and the command wraps them, so the two are compared joined on whitespace.
+const wordsOf = (rows: string[]) => rows.join(' ').split(/\s+/).filter(Boolean).join(' ')
 // The details pane's drawing, as text, as the command's answer is read in these tests: a wrapped sentence joined into one line, a section's
-// lines after its heading.
-const flatOf = (rows: string[]) => rows.join('\n').replace(/\n\s*/g, ' ')
+// lines after its heading. The pane's rows are whole lines already, so they are joined as they are.
+const flatOf = (rows: string[]) => rows.join(' ')
 const drawnPane = async ($: any): Promise<string> => flatOf(await paneRows($))
 // A mounted pane whose state reads of `key` (the tally unless another is named) are refused while `failing.on` is set; `redraw` runs the
 // render chain again. `startFailing` refuses them from the mount's own draw on, so the first draw fails; the session start reads normally.
@@ -3419,8 +3426,8 @@ describe('the details pane: a click on the time opens it at its size, a second c
     await m.press({ key: 'details' })
     expect(rec.opens.map((o: any) => o.id)).toEqual([PANE_ID])
     expect(rec.opens[0]).toMatchObject({ title: 'Prompt cache', closeOnEscape: true })
-    expect(rec.opens[0].rows).toBe(rows.length)
-    expect(rec.opens[0].columns).toBe(widthOf(rows))
+    expect(rows.length).toBeGreaterThan(0)
+    expect(rec.opens[0]).toMatchObject(await answerSize($))
     expect(await toggle($, '')).toContain('Keepalive  off')
     await m.unmount()
   })
@@ -3521,8 +3528,8 @@ describe('the details pane: a click on the time opens it at its size, a second c
     await clock.advance(1000)
     const rows = await paneRows($)
     expect(rows[0]).toBe('Cache')
-    expect(rows[1]).toMatch(/^  Prompt cache warm, \d+:\d\d left \(5-minute cache\)$/)
-    expect(rows[3]).toBe('Keepalive  off')
+    expect(rows.find((row) => row.startsWith('Prompt cache '))).toMatch(/^Prompt cache warm, \d+:\d\d left \(5-minute cache\)$/)
+    expect(rows.indexOf('Keepalive  off')).toBeGreaterThan(1)
     expect(JSON.stringify(rows)).not.toMatch(/The pie is|Earlier pauses|Learned from|Longest pause|Cache misses/)
   })
 
@@ -3565,7 +3572,7 @@ describe('the details pane: a click on the time opens it at its size, a second c
     const rows = await paneRows($)
     await clock.advance(1000)
     expect(rec.opens.length).toBe(2)
-    expect(rec.opens[1]).toMatchObject({ id: PANE_ID, rows: rows.length, columns: widthOf(rows) })
+    expect(rec.opens[1]).toMatchObject({ id: PANE_ID, ...(await answerSize($)) })
     expect(rec.closes).toEqual([])
   })
 
@@ -3578,16 +3585,19 @@ describe('the details pane: a click on the time opens it at its size, a second c
     await m.press({ key: 'details' })
     await m.unmount()
     const off = await paneRows($)
+    const offSize = await answerSize($)
     await clock.advance(1000)
     expect(rec.opens.length).toBe(2)
-    expect(rec.opens[1]).toMatchObject({ id: PANE_ID, rows: off.length, columns: widthOf(off) })
+    expect(rec.opens[1]).toMatchObject({ id: PANE_ID, ...offSize })
     expect(await toggle($, 'on 15 3')).toContain('keepalive on')
     await clock.advance(1000)
     const on3 = await paneRows($)
+    const onSize = await answerSize($)
     expect(on3.length).not.toBe(off.length)
+    expect(onSize.rows).not.toBe(offSize.rows)
     await clock.advance(1000)
     expect(rec.opens.length).toBe(3)
-    expect(rec.opens[2]).toMatchObject({ id: PANE_ID, rows: on3.length, columns: widthOf(on3) })
+    expect(rec.opens[2]).toMatchObject({ id: PANE_ID, ...onSize })
   })
 
   test('with the pane shut, a pie press or a tick opens nothing', { options: { keepalive_lead_s: 15, keepalive_count: 3 } }, async ($, on) => {
@@ -3682,7 +3692,7 @@ const boldRows = async (pane: any): Promise<string[]> => ((await pane.drawn()) a
 describe('the details pane draws the sections /keepalive answers with, built by its draw alone', () => {
   const opts = { options: { keepalive_lead_s: 15, keepalive_count: 3 } }
 
-  test('open, it shows the rows /keepalive answers, in the same order with the same text, in each state keepalive is in', opts, async ($, on) => {
+  test('open, it shows the rows /keepalive answers, in the same order with the same words, in each state keepalive is in', opts, async ($, on) => {
     const doc: any = cached()
     kaWorld(on, doc)
     const clock = mock.clock(on, { now: T0 })
@@ -3693,13 +3703,13 @@ describe('the details pane draws the sections /keepalive answers with, built by 
       await toggle($, args)
       await clock.settle()
       const answer = (await commandText($, '')).split('\n')
-      expect(await rowsOf(pane)).toEqual(answer)
+      expect(wordsOf(await rowsOf(pane))).toBe(wordsOf(answer))
       expect(answer[0]).toBe('Cache')
     }
     await clock.advance(400000)
     await toggle($, 'on 15 3')
     await clock.settle()
-    expect(await rowsOf(pane)).toEqual((await commandText($, '')).split('\n'))
+    expect(wordsOf(await rowsOf(pane))).toBe(wordsOf((await commandText($, '')).split('\n')))
     await pane.unmount()
   })
 
@@ -3710,7 +3720,7 @@ describe('the details pane draws the sections /keepalive answers with, built by 
     await clock.advance(1000)
     const pane = await mountPane($)
     const rows = await rowsOf(pane)
-    const headings = rows.filter((row) => /^(Cache|Keepalive|This session|Advice|Settings)\b/.test(row))
+    const headings = rows.filter((row) => /^(Cache|Keepalive(  .+)?|This session|Advice|Settings)$/.test(row))
     expect(headings.length).toBeGreaterThanOrEqual(3)
     expect(await boldRows(pane)).toEqual(headings)
     expect(JSON.stringify(await pane.drawn())).not.toMatch(/"color"|"dimColor"|"backgroundColor"/)
@@ -3723,7 +3733,7 @@ describe('the details pane draws the sections /keepalive answers with, built by 
     await $.classic.SessionStart({ source: 'startup', transcript_path: PATH })
     await clock.advance(1000)
     const rows = await paneRows($)
-    expect(rows.join('\n')).toBe(await commandText($, ''))
+    expect(wordsOf(rows)).toBe(wordsOf((await commandText($, '')).split('\n')))
   })
 
   test('with the pane shut, a footer draw, a tick and a pie press build no section text; the pane\'s draw does', opts, async ($, on) => {
@@ -3819,7 +3829,7 @@ describe('the details pane draws the sections /keepalive answers with, built by 
     const rows = await paneRows($)
     await m.press({ key: 'details' })
     expect(rec.opens).toHaveLength(2)
-    expect(rec.opens[1]).toMatchObject({ id: PANE_ID, rows: rows.length, columns: widthOf(rows) })
+    expect(rec.opens[1]).toMatchObject({ id: PANE_ID, ...(await answerSize($)) })
     await m.unmount()
   })
 
@@ -3835,10 +3845,10 @@ describe('the details pane draws the sections /keepalive answers with, built by 
     await clock.advance(2000)
     expect(rec.opens).toHaveLength(1)
     const rows = await paneRows($)
-    expect(rows.length).not.toBe(12)
+    expect((await answerSize($)).rows).not.toBe(12)
     await clock.advance(1000)
     expect(rec.opens).toHaveLength(2)
-    expect(rec.opens[1]).toMatchObject({ id: PANE_ID, rows: rows.length, columns: widthOf(rows) })
+    expect(rec.opens[1]).toMatchObject({ id: PANE_ID, ...(await answerSize($)) })
     await clock.advance(2000)
     expect(rec.opens).toHaveLength(2)
     expect(rec.closes).toEqual([])
@@ -3862,7 +3872,7 @@ describe('the details pane draws the sections /keepalive answers with, built by 
     const rows = await paneRows($)
     await clock.advance(1000)
     expect(rec.opens.length).toBe(before + 1)
-    expect(rec.opens[before]).toMatchObject({ id: PANE_ID, rows: rows.length, columns: widthOf(rows) })
+    expect(rec.opens[before]).toMatchObject({ id: PANE_ID, ...(await answerSize($)) })
     await clock.advance(3000)
     expect(rec.opens.length).toBe(before + 1)
   })
@@ -3880,7 +3890,7 @@ describe('the details pane draws the sections /keepalive answers with, built by 
     expect(rows[heading]).toMatch(/^Keepalive  (paused|stopped)/)
     expect(rows[heading]).not.toContain('off')
     expect(rows[heading + 1]!.trim()).not.toBe('')
-    expect(rows).toEqual((await commandText($, '')).split('\n'))
+    expect(wordsOf(rows)).toBe(wordsOf((await commandText($, '')).split('\n')))
     await pane.unmount()
   })
 
@@ -3896,7 +3906,7 @@ describe('the details pane draws the sections /keepalive answers with, built by 
     await pressPie($)
     const rows = await rowsOf(pane)
     expect(rows.some((row) => row === 'Keepalive  off')).toBe(true)
-    expect(rows).toEqual((await commandText($, '')).split('\n'))
+    expect(wordsOf(rows)).toBe(wordsOf((await commandText($, '')).split('\n')))
     await pane.unmount()
   })
 
@@ -5623,18 +5633,19 @@ describe("the TTL advice: the bare command names the other TTL once the recorded
     const pane = await drawnPane($)
     expect(pane).toContain(target)
     expect(pane).toContain(step)
-    // The line wraps at 48 columns in the pane, in the paused form too.
-    expect(widthOf(await paneRows($))).toBeLessThanOrEqual(48)
+    // The command keeps the line within 48 columns, in the paused form too; the pane carries it whole.
+    expect(widthOf((await commandText($, '')).split('\n'))).toBeLessThanOrEqual(48)
+    expect((await paneRows($)).some((row) => row.includes(target) && row.includes(step))).toBe(true)
   })
 
-  test('the line is wrapped to 48 columns in the details pane', async ($, on) => {
+  test('the line is carried whole in the details pane and wrapped to 48 columns in the command', async ($, on) => {
     kaWorld(on, { ...opusCached(), store: SIZED })
     const clock = mock.clock(on, { now: T0 })
     await $.classic.SessionStart({ source: 'startup', transcript_path: PATH })
     await clock.advance(1000)
     const rows = await paneRows($)
-    expect(flatOf(rows)).toContain('You\'re on a 5-minute cache with keepalive off. A 1-hour cache with keepalive off would have saved $4.74')
-    expect(widthOf(rows)).toBeLessThanOrEqual(48)
+    expect(rows.some((row) => row.includes('You\'re on a 5-minute cache with keepalive off. A 1-hour cache with keepalive off would have saved $4.74'))).toBe(true)
+    expect(widthOf((await commandText($, '')).split('\n'))).toBeLessThanOrEqual(48)
   })
 
   test('the other TTL is priced at the lead and pin a new session starts with, since switching TTL starts one', { options: { keepalive_count: 1, keepalive_default: 'on' } }, async ($, on) => {
@@ -6988,17 +6999,18 @@ describe('the best setup: one sentence, in the pane and in the bare command, pri
     )
   })
 
-  test('the details pane carries the sentence, wrapped, in its Advice section', async ($, on) => {
+  test('the details pane carries the sentence, whole, in its Advice section', async ($, on) => {
     kaWorld(on, { ...opusCached(), store: { 'pauses/old': Array.from({ length: 10 }, (_, i) => pauseOf(i)) } })
     const clock = mock.clock(on, { now: T0 })
     await $.classic.SessionStart({ source: 'startup', transcript_path: PATH })
     await clock.advance(1000)
     const rows = await paneRows($)
     const advice = rows.indexOf('Advice')
-    const sentence = rows.findIndex((row) => row.startsWith('  You\'re on a 5-minute cache with keepalive off.'))
+    const sentence = rows.findIndex((row) => row.startsWith('You\'re on a 5-minute cache with keepalive off.'))
     expect(advice).toBeGreaterThanOrEqual(0)
     expect(sentence).toBe(advice + 1)
-    expect(rows.every((row) => row.length <= 48)).toBe(true)
+    expect(rows[sentence]!.length).toBeGreaterThan(48)
+    expect(widthOf((await commandText($, '')).split('\n'))).toBeLessThanOrEqual(48)
   })
 
   test('while keepalive is off, its "on" setups are priced at the lead and count a click on the pie would send', async ($, on) => {
@@ -7098,7 +7110,7 @@ describe('the best setup: one sentence, in the pane and in the bare command, pri
     expect(rows.every((row) => row.length <= 48)).toBe(true)
     expect(rows.some((row) => row.includes('/keepalive on 15'))).toBe(true)
     expect(rows.some((row) => row.includes('/keepalive default on'))).toBe(true)
-    expect((await paneRows($)).every((row) => row.length <= 48)).toBe(true)
+    expect((await paneRows($)).some((row) => row.includes('/keepalive on 15') && row.includes('/keepalive default on'))).toBe(true)
   })
 
   test('a change of TTL needs no click when new sessions start keepalive as the change wants', { options: { keepalive_default: 'on' } }, async ($, on) => {
@@ -8051,13 +8063,13 @@ const SCENARIOS: Scenario[] = [
   { name: 'keepalive on before any session has started', old: { status: 'Keepalive is on, with no cache to count from yet.' }, run: noStateRun('on 60') },
 ]
 
-// The pane's rows as sections: each heading's row, then the rows under it up to the blank row, indentation stripped and joined with one space.
+// The pane's rows as sections: each heading's row (the first row of a block), then the rows under it up to the blank row, joined with one space.
 const sectionsOf = (rows: string[]): Map<string, { heading: string; text: string }> => {
   const found = new Map<string, { heading: string; text: string }>()
   let at = 0
   while (at < rows.length) {
     const heading = rows[at]!
-    if (heading === '' || heading.startsWith(' ')) {
+    if (heading === '') {
       at++
       continue
     }

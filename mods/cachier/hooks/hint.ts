@@ -1,8 +1,7 @@
 import type { ButtonProps, BoxProps, ElementConstructor, RenderElement, TextProps } from 'claude-code'
 import type { HintState, PriceCue } from '../types'
 import { cueOf, pieOf, type CueMark, type PieState, type Tone } from './countdown'
-import type { PaneSize } from './pane'
-import type { AnswerRow } from './sections'
+import type { PaneRow } from './sections'
 
 // The elements the footer line and the details pane are built from, as the surface's table hands them out.
 type Table = {
@@ -77,16 +76,14 @@ export const footerLine = (t: Table, state: HintState | null, on: boolean, onTog
   return t.Box({ flexDirection: 'row', children: [pieBox, t.Text({ dimColor: true, children: [' '] }), time, ...cueText] })
 }
 
-// The size the details pane asks for (PaneSize) for these laid-out rows: one row each, blank rows included, and the columns of the longest.
-export const paneSizeOf = (rows: AnswerRow[]): PaneSize => ({
-  rows: rows.length,
-  columns: Math.max(0, ...rows.map((row) => row.text.length)),
-})
-
-// The details pane's body: the answer's rows, one Text each, headings bold and nothing else styled, cut at the pane's width rather than wrapped.
+// The details pane's body: the pane's rows, one element each, headings bold and nothing else styled. Every Text wraps, so the engine wraps a
+// sentence at the width the pane is drawn at; a line sits in a box indented two columns, so each row it wraps into starts at that indent.
 // A blank row is one space, so the row is drawn whether or not the engine gives an empty Text a line.
-export const paneOf = (t: Table, rows: AnswerRow[]): RenderElement =>
+export const paneOf = (t: Table, rows: PaneRow[]): RenderElement =>
   t.Box({
     flexDirection: 'column',
-    children: rows.map((row) => t.Text({ ...(row.heading === true ? { bold: true } : {}), wrap: 'truncate-end', children: [row.text === '' ? ' ' : row.text] })),
+    children: rows.map((row) => {
+      if (row.kind === 'line') return t.Box({ paddingLeft: 2, children: [t.Text({ wrap: 'wrap', children: [row.text] })] })
+      return t.Text({ ...(row.kind === 'heading' ? { bold: true } : {}), wrap: 'wrap', children: [row.kind === 'blank' ? ' ' : row.text] })
+    }),
   })
