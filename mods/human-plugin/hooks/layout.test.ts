@@ -1,6 +1,7 @@
 import { expect, test } from 'claude-code/testing'
 import { backlogTail, bandDraws, bandRows, bandWidths, claudeRows, columnHeight, cutTitle, cutToColumns, headerLines, humanFoldRows, isChipShort, isSqueezed, rowLayout, squeezedFold, wrapText, type BandWidths, type ClaudeRow, type Control, type RowTexts } from './layout'
-import { displayColumns } from './items'
+import { displayColumns, unitsOf } from './columns'
+import { SEQUENCES } from './sequences'
 import type { Item, TodoItem } from '../types'
 
 const item = (id: number, blocking = false): Item => ({
@@ -366,11 +367,20 @@ test('a wide character is never split: ten ✅ are `✅✅✅✅…` at 9 and at
   expect(cutToColumns(cps(0x20000, 0x20001, 0x20000), 4)).toBe(`${cps(0x20000)}…`)
 })
 
-test('a joiner is never the last thing kept: the family of four then `x` is its first member and an ellipsis at 3, and its first two members at 5', () => {
-  const man = cps(0x1f468)
-  expect(cutToColumns(`${FAMILY}x`, 3)).toBe(`${man}…`)
-  expect(cutToColumns(`${FAMILY}x`, 3).includes(JOINER)).toBe(false)
-  expect(cutToColumns(`${FAMILY}x`, 5)).toBe(`${cps(0x1f468, 0x200d, 0x1f469)}…`)
+test('a joined sequence is one unit and a joiner is never the last thing kept: the family of four then `x` is whole at 3 and `…` at 2, a grinning face, a joiner and `x` is whole at 3 and `…` at 2, and ten families are four and an ellipsis at 9 and at 10', () => {
+  const face = cps(0x1f600)
+  expect(cutToColumns(`${FAMILY}x`, 3)).toBe(`${FAMILY}x`)
+  expect(cutToColumns(`${FAMILY}x`, 2)).toBe('…')
+  expect(cutToColumns(`${face}${JOINER}x`, 3)).toBe(`${face}${JOINER}x`)
+  expect(cutToColumns(`${face}${JOINER}x`, 2)).toBe('…')
+  expect(cutToColumns(`${face}${JOINER}${face}`, 4)).toBe(`${face}${JOINER}${face}`)
+  expect(cutToColumns(`${face}${JOINER}${face}${face}`, 5)).toBe(`${face}${JOINER}${face}…`)
+  for (const room of [9, 10]) {
+    const got = cutToColumns(FAMILY.repeat(10), room)
+    expect(got, `${room}`).toBe(`${FAMILY.repeat(4)}…`)
+    expect(displayColumns(got), `${room}`).toBe(9)
+  }
+  expect(cutToColumns(`${face}${JOINER}${face}${JOINER}xx`, 5)).toBe(`${face}${JOINER}${face}…`)
 })
 
 test('a code point and the U+FE0F after it are kept together or dropped together, as tmux draws the pair one glyph two columns wide: ten ❤ U+FE0F are seven hearts and an ellipsis at 15 and at 16, eight at 17 and at 18, nine at 19, and whole at 20', () => {
@@ -437,11 +447,12 @@ const SAMPLES = [
   `${KEYCAP_ONE.repeat(3)}x`,
   `${cps(0x2705, 0xfe0f)}${HEART}${cps(0x2705, 0xfe0f)}ab`,
   `${cps(0x2764, 0xfe0f, 0x200d, 0x1f525)} on fire ${HEART}`,
+  `${cps(0x261d, 0x1f3fd)} up ${cps(0x1faf1, 0x1f3fb, 0x200d, 0x1faf2, 0x1f3fc)} shake`,
+  `${FAMILY.repeat(3)} and ${cps(0x1f1fa, 0x1f1f8)}`,
 ]
 
-test('whatever the text and the room, the cut is the longest start of the text, in whole code points, not ending on a joiner and not before a U+FE0F, that leaves a column for the ellipsis, and it measures at most the room', () => {
+test('whatever the text and the room, the cut is the longest start of the text, in whole units, not ending on a joiner, that leaves a column for the ellipsis, and it measures at most the room', () => {
   for (const text of SAMPLES) {
-    const points = [...text]
     for (let room = -1; room <= 45; room++) {
       const where = `${JSON.stringify(text)} in ${room}`
       const got = cutToColumns(text, room)
@@ -455,14 +466,58 @@ test('whatever the text and the room, the cut is the longest start of the text, 
       }
       expect(got.endsWith('…'), where).toBe(true)
       expect(displayColumns(got), where).toBeLessThanOrEqual(room)
-      // The longest start that fits the room less the ellipsis, does not end on a joiner and is not followed by a U+FE0F (which would leave its last code point
-      // bare), found by trying every start.
+      // The longest start that ends between units, fits the room less the ellipsis and does not end on a joiner, found by trying every start.
       let want = ''
-      for (let n = 0; n <= points.length; n++) {
-        const start = points.slice(0, n).join('')
-        if (displayColumns(start) <= room - 1 && !start.endsWith(JOINER) && points[n] !== SELECTOR) want = start
+      let start = ''
+      for (const { text: unit } of unitsOf(text)) {
+        if (displayColumns(start) <= room - 1 && !start.endsWith(JOINER)) want = start
+        start += unit
       }
+      if (displayColumns(start) <= room - 1 && !start.endsWith(JOINER)) want = start
       expect(got, where).toBe(`${want}…`)
+    }
+  }
+})
+
+// Text built from sub-plan 3's measured sequences, every 37th of them (the doubled-joiner unit among them by name), each between ASCII, CJK and spaces so no two join into a
+// longer one: its pieces, whose ends are the only places a cut or a wrap may fall.
+const MEASURED = SEQUENCES.filter((_, k) => k % 37 === 0).map(([hex]) => cps(...hex.split(' ').map(code => parseInt(code, 16))))
+const PIECES = [...MEASURED.flatMap(text => [text, 'a', 'b', ' ', '日']), cps(0x1f600, 0x200d, 0x200d, 0x1f600), ' ']
+const endsOf = (pieces: readonly string[]): Set<string> => new Set(pieces.map((_, k) => pieces.slice(0, k + 1).join('')))
+
+test('for any text built from measured sequences, ASCII and CJK, ending on a joiner, and any room from 1 to 40, no cut ends inside a measured sequence or on a joiner, and each measures at most its room', () => {
+  expect(MEASURED.length).toBeGreaterThan(60)
+  expect(MEASURED.some(text => text.length > 8)).toBe(true)
+  const text = [...PIECES, JOINER].join('')
+  const ends = endsOf(PIECES)
+  for (let room = 1; room <= 40; room++) {
+    const got = cutToColumns(text, room)
+    const kept = got.slice(0, -1)
+    expect(displayColumns(got), `${room}`).toBeLessThanOrEqual(room)
+    expect(kept === '' || ends.has(kept), `${room}`).toBe(true)
+    expect(kept.endsWith(JOINER), `${room}`).toBe(false)
+  }
+  // Several starts, so the cut meets different sequences: each start rotates the pieces.
+  for (let start = 0; start < PIECES.length; start += 53) {
+    const rotated = [...PIECES.slice(start), ...PIECES.slice(0, start)]
+    for (let room = 1; room <= 40; room++) {
+      const kept = cutToColumns(rotated.join(''), room).slice(0, -1)
+      expect(kept === '' || endsOf(rotated).has(kept), `${start}, ${room}`).toBe(true)
+    }
+  }
+})
+
+test('the header\'s wrap never breaks inside a measured sequence: a word of measured sequences and ASCII wrapped at any width from 1 to 12 breaks only between them', () => {
+  const pieces = MEASURED.slice(0, 80).flatMap(text => [text, '-'])
+  const word = pieces.join('')
+  const ends = endsOf(pieces)
+  for (let width = 1; width <= 12; width++) {
+    const rows = wrapText(word, width)
+    expect(rows.join(''), `${width}`).toBe(word)
+    let upTo = ''
+    for (const row of rows) {
+      upTo += row
+      expect(ends.has(upTo), `${width}: ${JSON.stringify(row)}`).toBe(true)
     }
   }
 })
@@ -694,7 +749,7 @@ test('a title is cut by columns at its room, with its decision\'s marker, the li
   const row = (title: string, marker: string): RowTexts => ({ ...rowFor(marker === '' ? PLAIN : DECISION_19), title, marker })
   // A plain to-do at 42 has a control column of 17 and a prefix of 6: a room of 19.
   expect(rowLayout(row('日本語のタイトルは長い', ''), 42).title).toBe('日本語のタイトルは…')
-  expect(rowLayout(row(`${FAMILY} ${FAMILY} ${FAMILY}`, ''), 42).title).toBe(`${FAMILY} ${FAMILY} …`)
+  expect(rowLayout(row(FAMILY.repeat(12), ''), 42).title).toBe(`${FAMILY.repeat(9)}…`)
   // At 41 the room is 18: the ninth heart does not fit with its selector, so the title is eight hearts and the ellipsis, a column short of the room.
   expect(rowLayout(row(HEART.repeat(10), ''), 41).title).toBe(`${HEART.repeat(8)}…`)
   // A decision with an option of 19 columns at 96 has a control column of 29 and a room of 61: the title and its marker whole.

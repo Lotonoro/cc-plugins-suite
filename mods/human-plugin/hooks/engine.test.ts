@@ -1,7 +1,8 @@
 import type { On, PromptComposeInput, SessionAppendInput, UiPane } from 'claude-code'
 import { expect, mock, test, type Engine } from 'claude-code/testing'
 import { STEERING } from './steering'
-import { TOOL, displayColumns } from './items'
+import { displayColumns } from './columns'
+import { TOOL } from './items'
 import { headerLines, rowLayout, type Control, type RowLayout, type RowTexts } from './layout'
 import { TODO_TOOL } from './todo'
 import { correctionText } from './restatement'
@@ -1190,6 +1191,27 @@ test('a band mounted at 105 columns draws each row as one line in the 69 columns
   expect(shownOf(pressed[1])).toBe('Second to-do with a labelled …')
   expect(pressed[2].props?.width).toBe(34)
   expect(shownOf(pressed[2])).toBe(' ✓ Approve the migration ok [↶ 3s]')
+})
+
+test('a band mounted at 40 columns counts a family of four as 2 columns: a title of families gets the room the layout gives and is cut at a whole family, and a pressed answer of one family gets a box 2 columns wide', async ($, on) => {
+  on('prompt.submit', (_$, e) => ({ text: e.text }))
+  mock.clock(on)
+  mock.store(on)
+  on('ui.panes', () => ({ value: [] }))
+  const family = String.fromCodePoint(0x1f468, 0x200d, 0x1f469, 0x200d, 0x1f467, 0x200d, 0x1f466)
+  await $.tool.call({ tool: TOOL, action: 'add', title: family.repeat(20), done: family })
+  const band = await $.ui.mount({ plugin: 'human-plugin', surface: 'terminal', component: 'AbovePrompt', props: { ...BAND_PROPS, bodyColumns: 40 } })
+  const cells = async (): Promise<El[]> => cellsOf(rowElement(await band.drawn(), 1) as El)
+  // The prefix takes 5; the title keeps the 40 less the prefix and the control column, and shows as many whole families as leave a column for the ellipsis.
+  const [, title, controlCell] = (await cells()) as [El, El, El]
+  const room = 40 - 5 - Number(controlCell.props?.width)
+  expect(shownOf(title)).toBe(`${family.repeat(Math.floor((room - 1) / 2))}…`)
+  expect(displayColumns(shownOf(title))).toBe(2 * Math.floor((room - 1) / 2) + 1)
+  await band.press({ key: 'done-1' })
+  const pressed = (await cells()) as [El, El, El]
+  const box = elementsOf(pressed[2], 'Box').find(one => one !== pressed[2] && one.props?.width !== undefined)
+  expect(box?.props?.width).toBe(2)
+  expect(shownOf(box)).toBe(family)
 })
 
 test('beside the docked pane the band drawn through the terminal\'s table in bands of 52 to 95 columns squeezes the human list: every kind of control at an id of one to three digits, open, pressed, replied and sent, draws each row as one line of its prefix, its title cut to its room and a control cell of one width in every state, every pressed control its mark and undo button, under a header of two lines; at 96 the same rows are not squeezed', async ($, on) => {

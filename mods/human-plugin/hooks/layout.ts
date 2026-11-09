@@ -1,5 +1,6 @@
 import type { Item, TodoItem } from '../types'
-import { DONE_MAX, VARIATION_SELECTOR_16, columnsByCodePoint, displayColumns } from './items'
+import { displayColumns, unitsOf } from './columns'
+import { DONE_MAX } from './items'
 import { etaTail, inDisplayOrder } from './todo'
 
 export type BandRow = { kind: 'item'; item: Item } | { kind: 'more'; blocking: number; more: number; first: Item }
@@ -124,13 +125,12 @@ const wrapLine = (line: string, width: number): string[] => {
     if (columns > width) {
       // The breaks in the word from here (its first row has `width - used` columns) against from the start of the next row.
       if (Math.floor((columns - 1) / width) < 1 + Math.floor((columns - (width - used) - 1) / width)) newRow()
-      const chars = [...word]
-      chars.forEach((char, c) => {
-        const w = displayColumns(char)
+      const units = unitsOf(word)
+      units.forEach(({ text, columns: w }, c) => {
         if (used + w > width && used > 0) newRow()
-        row += char
+        row += text
         used += w
-        if (used === width && c < chars.length - 1) newRow()
+        if (used === width && c < units.length - 1) newRow()
       })
       return
     }
@@ -146,28 +146,24 @@ const wrapLine = (line: string, width: number): string[] => {
 export const wrapText = (text: string, width: number): string[] => text.split(/\r?\n/).flatMap(line => wrapLine(line, Math.max(1, width)))
 
 const ELLIPSIS = '…'
-const ZERO_WIDTH_JOINER = 0x200d
+const ZERO_WIDTH_JOINER = '\u200d'
 
-// A text cut at its end to `room` columns: whole when it fits, otherwise the longest start that leaves a column for the ellipsis, in whole code points, a U+FE0F kept
-// with the code point before it or dropped with it, and never ending on a joiner (which would join the ellipsis to what was kept), then the ellipsis. Nothing where
-// the room has no column.
+// A text cut at its end to `room` columns: whole when it fits, otherwise the longest start that leaves a column for the ellipsis, in whole units (a measured
+// sequence is never split), and never ending on a joiner (which would join the ellipsis to what was kept), then the ellipsis. Nothing where the room has no column.
 export const cutToColumns = (text: string, room: number): string => {
   if (room < 1) return ''
-  const parts = columnsByCodePoint(text)
-  if (parts.reduce((total, { columns }) => total + columns, 0) <= room) return text
+  const units = unitsOf(text)
+  if (units.reduce((total, { columns }) => total + columns, 0) <= room) return text
   let kept = 0
   let used = 0
-  while (kept < parts.length) {
-    // The pair of a code point and its U+FE0F is one glyph, drawn two columns wide where the code point alone is another, drawn one, so the two are cut as one unit.
-    // A mark that draws no column, such as a keycap's U+20E3 or a combining accent, never stops the cut, so it stays with the code point before it.
-    const unit = parts.slice(kept, kept + (parts[kept + 1]?.char.codePointAt(0) === VARIATION_SELECTOR_16 ? 2 : 1))
-    const columns = unit.reduce((total, part) => total + part.columns, 0)
+  // A mark that draws no column, such as a combining accent, never stops the cut, so it stays with the unit before it.
+  for (const { columns } of units) {
     if (used + columns > room - 1) break
     used += columns
-    kept += unit.length
+    kept++
   }
-  while (kept > 0 && parts[kept - 1]?.char.codePointAt(0) === ZERO_WIDTH_JOINER) kept--
-  return `${parts.slice(0, kept).map(({ char }) => char).join('')}${ELLIPSIS}`
+  while (kept > 0 && units[kept - 1]?.text.endsWith(ZERO_WIDTH_JOINER)) kept--
+  return `${units.slice(0, kept).map(({ text: unit }) => unit).join('')}${ELLIPSIS}`
 }
 
 // A title cut to `room` columns with its decision's marker (` […]`, empty for a row with none): the marker stays whole after the cut title while the room
