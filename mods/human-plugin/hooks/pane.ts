@@ -43,7 +43,8 @@ let shownPick: Shown | null = null
 // The stored selection the last read of the shown selection returned (shownSelection): where a press looks while no press or move has set shownPick, as after a
 // reload with the pane open.
 let lastRead: Selection = null
-// The number of items the backlog last asked rows for (backlogRequest), so a write that keeps the count asks for nothing (followTodo). Null until the backlog asks, as after a reload.
+// The number of items the backlog last asked rows for (countAsked), so a write that keeps the count asks for nothing (followTodo). Null until the backlog asks, as after a reload, and
+// after an open the pane refused.
 let askedItems: number | null = null
 
 // Each draw records the lists it drew (drawnItems, drawnTodo).
@@ -85,10 +86,17 @@ export const personClosed = (id: string, origin: PaneCloseOrigin['kind']): void 
 const paneRequest = (id: number, items: readonly Item[]): PaneOpenArgs => ({ id: PANE, title: 'Items for you', rows: paneRows(items.find(it => it.id === id)), focus: true })
 
 // The backlog's request for `todo`: the Claude list's title, a row for its header and one for each item, and the keyboard, so a list taller than the pane scrolls.
-// It records the number of items it asks rows for (askedItems).
-function backlogRequest(todo: readonly TodoItem[]): PaneOpenArgs {
+const backlogRequest = (todo: readonly TodoItem[]): PaneOpenArgs => ({ id: PANE, title: HEADING, rows: backlogRows(todo), focus: true })
+
+// Counts the rows the backlog asks of the pane for `todo` (askedItems) as the open is made, so a write that follows while the open is in flight is compared with the rows it asked for.
+// An open the pane refuses leaves the pane with rows the count does not name, so the count is forgotten and the next write asks again, unless a later ask counted another number;
+// the failure itself is left to the caller's catch.
+function countAsked(todo: readonly TodoItem[], opening: Promise<unknown>): Promise<unknown> {
   askedItems = todo.length
-  return { id: PANE, title: HEADING, rows: backlogRows(todo), focus: true }
+  return opening.catch((err: unknown) => {
+    if (askedItems === todo.length) askedItems = null
+    throw err
+  })
 }
 
 // The first thing a press does is open the pane: a press is only counted as asked while it is still running. The pane asks for
@@ -200,7 +208,7 @@ export async function followTodo($: EngineInterface, todo: readonly TodoItem[]):
   // Checked after the read: the person may have closed the pane meanwhile, and a re-ask would then reopen it.
   if (!paneOpen || shown !== CLAUDE_VIEW) return
   if (todo.length === 0) inBackground($, closePane($))
-  else if (todo.length !== askedItems) inBackground($, $.ui.open(backlogRequest(todo)))
+  else if (todo.length !== askedItems) inBackground($, countAsked(todo, $.ui.open(backlogRequest(todo))))
 }
 
 // Shows an item in the pane: the pane opens first when it is shut (the open is made inside the press), then the item is selected.
@@ -212,8 +220,9 @@ export function showItem($: EngineInterface, id: number): Promise<unknown> {
 
 // Shows the Claude list in the pane, from the list last drawn: opened from closed, or the open pane switched to it. It shows no human item, so it reads none.
 export function showBacklog($: EngineInterface): Promise<unknown> {
-  const opening = paneOpen ? $.ui.open(backlogRequest(drawnTodo)) : openPane($, backlogRequest(drawnTodo))
-  return Promise.all([opening, select($, CLAUDE_VIEW)])
+  const todo = drawnTodo
+  const opening = paneOpen ? $.ui.open(backlogRequest(todo)) : openPane($, backlogRequest(todo))
+  return Promise.all([countAsked(todo, opening), select($, CLAUDE_VIEW)])
 }
 
 // The item as printed, against the item now: the same content, the unread mark aside (a clear changes that, and a print does not show it).

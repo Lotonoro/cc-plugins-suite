@@ -3966,6 +3966,55 @@ test('a write that changes an item\'s state and keeps the number of items makes 
   expect(linesOf(await paneTree(hooks, $))).toEqual(['Claude TODO 2 in flight, 1 queued', '◐ Build the pane', '◐ Renamed', '○ Then'])
 })
 
+test('an open the pane refuses leaves its count of items asked as it was: the next write with that count asks again, the failure is logged, and once an open is taken a write that keeps the count asks for nothing', async () => {
+  reset()
+  const { hooks } = wire()
+  const { env, $: engine, opens } = backlogEnv([made(1)], [], null, [RUNNING, entry('Next', 'queued')])
+  const logs: string[] = []
+  const $ = { ...engine, ui: { ...engine.ui, log: (text: string) => void logs.push(text) } }
+  await endSession(hooks, $)
+  pressKey(await bandAt(hooks, $, 120), 'claude-header')
+  await settle()
+  expect(opens.map(o => o.rows)).toEqual([3])
+  const four = [RUNNING, entry('A', 'queued'), entry('B', 'queued'), entry('C', 'queued')]
+  const taken = env.ui.open
+  env.ui.open = async () => {
+    throw new Error('open refused')
+  }
+  await runTodo(hooks, $, { entries: four })
+  await settle()
+  expect(opens.map(o => o.rows)).toEqual([3, 5])
+  expect(logs.some(line => line.includes('open refused'))).toBe(true)
+  env.ui.open = taken
+  await runTodo(hooks, $, { entries: four })
+  await settle()
+  expect(opens.map(o => o.rows)).toEqual([3, 5, 5])
+  await runTodo(hooks, $, { entries: four })
+  await settle()
+  expect(opens.map(o => o.rows)).toEqual([3, 5, 5])
+})
+
+test('a write made while the pane\'s last open is still in flight is compared with the rows that open asked for: one that brings the count back to the one before it asks again, so the request ends at the second write\'s rows', async () => {
+  reset()
+  const { hooks } = wire()
+  const { env, $, opens } = backlogEnv([made(1)], [], null, [RUNNING, entry('Next', 'queued')])
+  await endSession(hooks, $)
+  pressKey(await bandAt(hooks, $, 120), 'claude-header')
+  await settle()
+  expect(opens.map(o => o.rows)).toEqual([3])
+  const taken = env.ui.open
+  let release: () => void = () => {}
+  env.ui.open = () => new Promise<{ isPlaced: boolean }>(resolve => (release = () => resolve({ isPlaced: true })))
+  await runTodo(hooks, $, { entries: [RUNNING, entry('A', 'queued'), entry('B', 'queued'), entry('C', 'queued')] })
+  await settle()
+  env.ui.open = taken
+  await runTodo(hooks, $, { entries: [RUNNING, entry('Next', 'queued')] })
+  await settle()
+  release()
+  await settle()
+  expect(opens.map(o => o.rows)).toEqual([3, 5, 3])
+})
+
 test('a write that empties the Claude list closes the pane on it', async () => {
   reset()
   const { hooks } = wire()
