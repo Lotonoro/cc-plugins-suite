@@ -922,7 +922,7 @@ test('a close another plugin refuses leaves the pane docked: a band drawn alone 
 })
 
 // The band's rows as the terminal's element table gives them: nodes of `{ type, props, children }`, a Text's children its strings.
-type El ={ type?: string; props?: { key?: string; width?: number; flexShrink?: number; paddingLeft?: number; paddingRight?: number; flexDirection?: string; label?: string; backgroundColor?: string }; children?: (El | string)[] }
+type El = { type?: string; props?: { key?: string; width?: number; flexShrink?: number; paddingLeft?: number; paddingRight?: number; flexDirection?: string; label?: string; backgroundColor?: string }; children?: (El | string)[] }
 const elementsOf = (node: El | string | undefined, type: string): El[] =>
   node === undefined || typeof node === 'string' ? [] : [...(node.type === type ? [node] : []), ...(node.children ?? []).flatMap(child => elementsOf(child, type))]
 // What a subtree shows: its text and its buttons' labels, in drawing order.

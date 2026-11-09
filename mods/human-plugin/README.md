@@ -24,7 +24,7 @@ To do for you 3 open
   to leave room for the control at the widest it gets, and a line break in a title reads as a space; a choice keeps its `[…]` after the cut title. That room is reserved at the control's
   widest state, so a press, an undo and the end of the three seconds move nothing: the control starts on the same column through all of them. A pressed answer's text shows up to 24 columns;
   where the title would keep under ten columns it is cut further with `…`, and where cutting it is not enough the pressed control shrinks to `✓ [↶ 3s]` (`✗` for a no) and the answer is in the pane.
-  A list beside the Claude column and one that has the whole band do the same, except that a list under 64 columns beside the column, which only this plugin's docked pane makes (see The Claude TODO column), is squeezed:
+  A list beside the Claude column and one that has the whole band do the same, except that a list under 64 columns beside the column, which happens only while this plugin's pane is open and docked (see The Claude TODO column), is squeezed:
   every pressed control, a reply included, is `✓ [↶ 3s]` from the start, and its header is the chip on one line with the count under it, each cut at the list's edge. When the band is too short for
   both lines and a row, the header is the chip alone, and a band too short for any row draws its header alone. The summary row is one line too, cut at the list's width with `…`.
 - **`[✓]`** says you've done it. You get three seconds to change your mind (`[↶ 3s]`; the window ends on the
