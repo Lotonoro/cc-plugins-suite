@@ -2,7 +2,7 @@ import type { On, PromptComposeInput, SessionAppendInput, UiPane } from 'claude-
 import { expect, mock, test, type Engine } from 'claude-code/testing'
 import { STEERING } from './steering'
 import { TOOL, displayColumns } from './items'
-import { wrapText } from './layout'
+import { headerLines, rowLayout, type Control, type RowLayout, type RowTexts } from './layout'
 import { TODO_TOOL } from './todo'
 import { correctionText } from './restatement'
 
@@ -857,74 +857,136 @@ test('the Claude column drawn alone, with no human items, keeps its whole box: 4
 })
 
 // The band's rows as the terminal's element table gives them: nodes of `{ type, props, children }`, a Text's children its strings.
-type El = { type?: string; props?: { key?: string; width?: number; flexShrink?: number; paddingLeft?: number; paddingRight?: number; flexDirection?: string; label?: string }; children?: (El | string)[] }
+type El = { type?: string; props?: { key?: string; width?: number; flexShrink?: number; paddingLeft?: number; paddingRight?: number; flexDirection?: string; label?: string; backgroundColor?: string }; children?: (El | string)[] }
 const elementsOf = (node: El | string | undefined, type: string): El[] =>
   node === undefined || typeof node === 'string' ? [] : [...(node.type === type ? [node] : []), ...(node.children ?? []).flatMap(child => elementsOf(child, type))]
 // What a subtree shows: its text and its buttons' labels, in drawing order.
 const shownOf = (node: El | string | undefined): string =>
   node === undefined ? '' : typeof node === 'string' ? node : node.type === 'Button' ? String(node.props?.label) : (node.children ?? []).map(shownOf).join('')
 const rowElement = (tree: unknown, id: number): El | undefined => elementsOf(tree as El, 'Box').find(box => box.props?.key === `item-${id}`)
-// A row's cells: its title's line (the row itself, or its first cell when the control sits under the title) and, under the title, the control's cell.
-const cellsOf = (row: El): { line: (El | string)[]; under: El | undefined } =>
-  row.props?.flexDirection === 'column' ? { line: (row.children?.[0] as El).children ?? [], under: row.children?.[1] as El } : { line: row.children ?? [], under: undefined }
+// A row is one line: its cells are its prefix, its title and its control, side by side.
+const cellsOf = (row: El): El[] => (row.children ?? []).filter((cell): cell is El => typeof cell !== 'string')
 
-// A row the sweep checks: its id, its title as drawn, its open control, and the control as it reads in the state the row is in (none for a decision still
-// open, which draws no control in the band).
-type SweepRow = { id: number; title: string; open: string; control: string }
+const UNDO3 = '[↶ 3s]'
+const control = (before: string, answer = '', after = ''): Control => ({ before, answer, after })
+// A pressed control as the band says it: its mark, the answer, and its undo button after a space when there is an answer.
+const said = (answer: string, mark = '✓'): Control => control(`${mark} `, answer, answer === '' ? UNDO3 : ` ${UNDO3}`)
+const REPLIED = control('✓ replied ', '', UNDO3)
 
-// Each row of a band drawn through the terminal's table at `layout` columns of room: the title whole and set in a box of the room it wraps in when it
-// wraps there or is wider than it (the button itself otherwise), the control whole on the line the open control's room gives it (beside the title while the
-// title keeps ten columns there, and under it otherwise; a state whose own control would leave the title no column goes under it), a pressed control's words
-// under the title in the box the undo button leaves them, and the row's pieces within the list.
-const checkSweepRows = (tree: unknown, layout: number, rows: SweepRow[], where: string): void => {
-  for (const { id, title, open, control } of rows) {
-    const name = `${where}, #${id}`
-    const row = rowElement(tree, id)
-    expect(row, name).toBeDefined()
-    const { line, under } = cellsOf(row as El)
-    const [prefix, titleCell, ...rest] = line
-    const prefixColumns = displayColumns(shownOf(prefix))
-    expect(prefixColumns, name).toBe(String(id).length + 4)
-    const room = (text: string): number => layout - prefixColumns - (text === '' ? 0 : 1 + displayColumns(text))
-    // The title is whole.
-    expect(shownOf(titleCell), name).toBe(title)
-    if (control === '') {
-      expect(rest, name).toEqual([])
-      expect(under, name).toBeUndefined()
-    } else {
-      const wantBeside = room(open) >= 10 && room(control) >= 1
-      expect(under === undefined, name).toBe(wantBeside)
-      // The control is whole: after its space at the end of the title's line, or alone under the title, indented to the title's start.
-      if (wantBeside) expect(shownOf(rest[0]), name).toBe(` ${control}`)
-      else {
-        expect(rest, name).toEqual([])
-        expect(under?.props?.paddingLeft, name).toBe(prefixColumns)
-        expect(shownOf(under), name).toBe(control)
-        const words = control.replace(/\[↶ \d+s\]$/, '')
-        if (words !== control) {
-          // A pressed control's words wrap beside the undo button in a box of the room it leaves them, and are bare when they fit.
-          const wide = layout - prefixColumns - displayColumns('[↶ 3s]')
-          const wrapped = wrapText(words, wide).length > 1
-          const wordsCell = ((under?.children?.[0] as El).children?.[0] ?? undefined) as El | undefined
-          if (wrapped) expect(wordsCell?.props, name).toMatchObject({ width: wide, flexShrink: 0 })
-          else expect(wordsCell?.type, name).toBe('Text')
-        }
-      }
-    }
-    // The title wraps in the room beside its control, or in the line under it or with none: a box of that room when it wraps there or is wider than it.
-    const beside = control !== '' && under === undefined
-    const titleRoom = beside ? room(control) : layout - prefixColumns
-    const [first = '', ...more] = wrapText(title, titleRoom)
-    if (more.length > 0 || displayColumns(first) > titleRoom) expect(titleCell, name).toMatchObject({ type: 'Box', props: { width: titleRoom, flexShrink: 0 } })
-    else expect(titleCell, name).toMatchObject({ type: 'Button' })
-  }
-}
-
-// An id's four kinds of row as the sweep adds them, the decision first (the pane shows the first item), then a plain to-do, a to-do labelled at the maximum
-// width and a yes/no, each with a title that wraps in any list.
-const SWEEP_TITLE = 'Review the deliberately long wrapping title of the first plain to-do item here and then some more words so that it wraps'
+// An id's five kinds of row as the sweep adds them, the decision first (the pane shows the first item), then a plain to-do, a to-do labelled at the maximum
+// width, a yes/no, and a plain to-do whose title holds a line break, each with a title longer than the narrowest lists.
+const SWEEP_TITLE = 'Review the deliberately long wrapping title of the first plain to-do item here and then some more words so that it is cut'
+const SWEEP_BROKEN = 'Ask the owner first\nthen the one who wrote the long title that is cut in a narrow list'
 const SWEEP_LABEL = 'Go with sqlite for cache'
 const SWEEP_OPTION = 'Use sqlite for the cache'
+
+// A kind of row: the title it is added with, its marker after the title, its open control, the controls its press can say, the index of the one the
+// sweep presses, and whether the sweep then replaces that press with a reply.
+type SweepKind = { name: string; title: string; marker: string; open: Control; pressed: Control[]; answered: number; replies: boolean }
+const SWEEP_KINDS: SweepKind[] = [
+  { name: 'a decision', title: SWEEP_TITLE, marker: ' […]', open: control(''), pressed: [said(SWEEP_OPTION), said('Use postgres'), REPLIED], answered: 0, replies: true },
+  { name: 'a plain to-do', title: SWEEP_TITLE, marker: '', open: control('[✓]'), pressed: [said(''), REPLIED], answered: 0, replies: false },
+  { name: 'a labelled to-do', title: SWEEP_TITLE, marker: '', open: control('[✓ ', SWEEP_LABEL, ']'), pressed: [said(SWEEP_LABEL), REPLIED], answered: 0, replies: false },
+  { name: 'a yes/no', title: SWEEP_TITLE, marker: '', open: control('[✓] [✗]'), pressed: [said('yes'), said('no', '✗'), REPLIED], answered: 0, replies: false },
+  { name: 'a plain to-do with a line break in its title', title: SWEEP_BROKEN, marker: '', open: control('[✓]'), pressed: [said(''), REPLIED], answered: 0, replies: false },
+]
+type Phase = 'open' | 'pressed' | 'replied' | 'sent'
+
+// The row's texts for the layout, from the kind and the digits of its id: the line break in a title is one space.
+const textsOf = (kind: SweepKind, id: number): RowTexts => ({
+  prefix: `  #${id} `,
+  title: kind.title.replace(/\s*\n\s*/g, ' '),
+  marker: kind.marker,
+  open: kind.open,
+  pressed: kind.pressed,
+  squeezed: `✓ ${UNDO3}`,
+  sent: '✓ sent',
+})
+
+// A title cut by hand at its room, ASCII: whole, or the start that leaves a column for the ellipsis, a decision's marker kept whole after it where the room
+// holds both.
+const labelBy = (title: string, marker: string, room: number): string => {
+  if (title.length + marker.length <= room) return title + marker
+  if (marker !== '' && room >= marker.length + 1) return `${title.slice(0, room - marker.length - 1)}…${marker}`
+  return `${title}${marker}`.slice(0, room - 1) + '…'
+}
+
+// What the control shows after its space in a phase: the open control, a pressed one with its answer cut to the layout's answer box (the squeezed `✓ [↶ 3s]`
+// where the layout squeezes), the reply, or `✓ sent`.
+const controlShows = (kind: SweepKind, phase: Phase, laid: RowLayout): string => {
+  if (phase === 'sent') return '✓ sent'
+  if (phase === 'open') return `${kind.open.before}${laid.open.text}${kind.open.after}`
+  if (laid.rung === 3) return `✓ ${UNDO3}`
+  const at = phase === 'replied' && kind.replies ? kind.pressed.indexOf(REPLIED) : kind.answered
+  const one = kind.pressed[at] as Control
+  return `${one.before}${laid.pressed[at]?.text}${one.after}`
+}
+
+// What a row drew in its open phase, which every later phase draws again: a press, an undo and the window's end move neither the title's label nor the
+// control cell's width. Keyed by the drawing (the ids and the band) and the row's id.
+type Drawing = Map<string, { label: string; control: number }>
+
+// Each row of a band drawn through the terminal's table at `layout` columns of room, as one line of three cells: the prefix, the title's button in a box that
+// shrinks, and the control's cell of the layout's width at its start; and the pieces add up to the layout. `rungs` collects the rung of the ladder each row drew at.
+const checkSweepRows = (tree: unknown, layout: number, ids: Record<string, number>, phase: Phase, drawing: string, first: Drawing, rungs: Set<number>): void => {
+  const where = `${phase}, ${drawing}`
+  for (const button of elementsOf(tree as El, 'Button')) expect(elementsOf(button, 'Text'), `${where}: a button holding a text`).toEqual([])
+  for (const kind of SWEEP_KINDS) {
+    const id = ids[kind.name] as number
+    const name = `${where}, ${kind.name} #${id}`
+    const row = rowElement(tree, id)
+    expect(row, name).toBeDefined()
+    expect(row?.props?.flexDirection, name).toBeUndefined()
+    const cells = cellsOf(row as El)
+    expect(cells.map(cell => cell.type), name).toEqual(['Box', 'Box', 'Box'])
+    const [prefix, titleCell, controlCell] = cells as [El, El, El]
+    const prefixColumns = displayColumns(shownOf(prefix))
+    expect(prefix.props, name).toMatchObject({ flexShrink: 0 })
+    expect(prefixColumns, name).toBe(String(id).length + 4)
+    const texts = textsOf(kind, id)
+    const laid = rowLayout(texts, layout)
+    rungs.add(laid.rung)
+    // The title: its button in a box that shrinks, the button's label the one-line title cut to the room the prefix and the control cell leave it.
+    expect(titleCell.props, name).toMatchObject({ flexShrink: 1 })
+    expect((titleCell.children ?? []).map(child => (typeof child === 'string' ? child : child.type)), name).toEqual(['Button'])
+    const label = shownOf(titleCell)
+    expect(elementsOf(titleCell, 'Button')[0]?.props?.key, name).toBe(`title-${id}`)
+    expect(label, name).toBe(laid.title)
+    expect(label, name).toBe(labelBy(texts.title, texts.marker, laid.room))
+    expect(displayColumns(label), name).toBeLessThanOrEqual(laid.room)
+    // The control cell: the layout's width, never shrunk; the pieces add up to the list's layout width.
+    expect(controlCell.props, name).toMatchObject({ flexShrink: 0, width: laid.control })
+    expect(prefixColumns + laid.room + Number(controlCell.props?.width), name).toBe(layout)
+    if (phase === 'open') first.set(`${drawing}, #${id}`, { label, control: laid.control })
+    else expect(first.get(`${drawing}, #${id}`), name).toEqual({ label, control: laid.control })
+    // The state's control after one space at the cell's start; a decision still open draws none.
+    const want = controlShows(kind, phase, laid)
+    const kids = controlCell.children ?? []
+    if (want === '') {
+      expect(kids, name).toEqual([])
+    } else {
+      expect(shownOf(kids[0]), name).toBe(' ')
+      expect(shownOf(controlCell), name).toBe(` ${want}`)
+      expect(displayColumns(shownOf(controlCell)), name).toBeLessThanOrEqual(laid.control)
+    }
+    // An open labelled to-do is one button, its label `[✓ `, the cut label and `]`.
+    if (phase === 'open' && kind.open.answer !== '') {
+      const buttons = elementsOf(controlCell, 'Button')
+      expect(buttons.map(button => button.props?.label), name).toEqual([`${kind.open.before}${laid.open.text}${kind.open.after}`])
+    }
+    // A pressed answer sits in a box of the layout's answer width holding the cut answer; the squeezed control, a reply and `✓ sent` have none.
+    const at = phase === 'replied' && kind.replies ? kind.pressed.indexOf(REPLIED) : kind.answered
+    const answered = phase === 'pressed' || phase === 'replied' ? (kind.pressed[at] as Control).answer !== '' && laid.rung !== 3 : false
+    const answerBoxes = elementsOf(controlCell, 'Box').filter(box => box !== controlCell && box.props?.width !== undefined)
+    if (answered) {
+      expect(answerBoxes.length, name).toBe(1)
+      expect(answerBoxes[0]?.props, name).toMatchObject({ width: laid.pressed[at]?.box, flexShrink: 0 })
+      expect(shownOf(answerBoxes[0]), name).toBe(laid.pressed[at]?.text)
+    } else {
+      expect(answerBoxes, name).toEqual([])
+    }
+  }
+}
 
 // Ids up to `to` taken by items that are then removed, so the next add gets id `to`.
 const skipIds = async ($: Engine, from: number, to: number): Promise<void> => {
@@ -932,7 +994,7 @@ const skipIds = async ($: Engine, from: number, to: number): Promise<void> => {
   for (let id = from; id < to; id++) await $.tool.call({ tool: TOOL, action: 'remove', id })
 }
 
-test('the band drawn through the terminal\'s table, with every kind of control at an id of one to three digits, open, pressed, replied and sent, sets each box at the width the width rule gives and each row as the layout places it, in lists of 20 to 155 columns', async ($, on) => {
+test('the band drawn through the terminal\'s table, with every kind of control at an id of one to three digits, open, pressed, replied and sent, draws each row as one line of its prefix, its title cut to its room and a control cell of one width in every state, in lists of 20 to 155 columns', async ($, on) => {
   on('prompt.submit', (_$, e) => ({ text: e.text }))
   const clock = mock.clock(on)
   mock.store(on)
@@ -942,27 +1004,25 @@ test('the band drawn through the terminal\'s table, with every kind of control a
   const band = await $.ui.mount({ plugin: 'human-plugin', surface: 'terminal', component: 'AbovePrompt', props: tall })
   const pane = await $.ui.mount({ plugin: 'human-plugin', surface: 'terminal', component: 'Pane', requestId: 'human-items', props: { title: 'Items for you', isFocused: true, bodyColumns: 80, placement: 'inline', scroll: { offset: 0, bodyRows: 20 }, view: {} } })
   const widths = [20, 21, 22, 23, 24, 31, 40, 52, 56, 63, 64, 70, 95, 96, 97, 105, 120, 155]
+  const firstDrawn: Drawing = new Map()
+  const rungs = new Set<number>()
   let next = 1
   for (const first of [1, 10, 100]) {
     await skipIds($, next, first)
-    const [decision, plain, labelled, yesno] = [first, first + 1, first + 2, first + 3] as const
+    const ids = Object.fromEntries(SWEEP_KINDS.map((kind, k) => [kind.name, first + k]))
+    const [decision, plain, labelled, yesno, broken] = SWEEP_KINDS.map(kind => ids[kind.name] as number) as [number, number, number, number, number]
     await $.tool.call({ tool: TOOL, action: 'add', title: SWEEP_TITLE, options: [{ label: SWEEP_OPTION, recommended: true }, { label: 'Use postgres' }] })
     await $.tool.call({ tool: TOOL, action: 'add', title: SWEEP_TITLE })
     await $.tool.call({ tool: TOOL, action: 'add', title: SWEEP_TITLE, done: SWEEP_LABEL })
     await $.tool.call({ tool: TOOL, action: 'add', title: SWEEP_TITLE, yesno: true })
-    next = first + 4
-    const rows = (controls: [string, string, string, string]): SweepRow[] =>
-      [
-        { id: decision, title: `${SWEEP_TITLE} […]`, open: '', control: controls[0] },
-        { id: plain, title: SWEEP_TITLE, open: '[✓]', control: controls[1] },
-        { id: labelled, title: SWEEP_TITLE, open: `[✓ ${SWEEP_LABEL}]`, control: controls[2] },
-        { id: yesno, title: SWEEP_TITLE, open: '[✓] [✗]', control: controls[3] },
-      ]
-    const check = async (phase: string, controls: [string, string, string, string]): Promise<void> => {
+    await $.tool.call({ tool: TOOL, action: 'add', title: SWEEP_BROKEN })
+    next = first + SWEEP_KINDS.length
+    const check = async (phase: Phase): Promise<void> => {
       for (const columns of widths) {
         await band.redraw({ ...tall, bodyColumns: columns })
         const tree = await band.drawn()
-        const where = `${phase}, ids from ${first}, band of ${columns}`
+        const drawing = `ids from ${first}, band of ${columns}`
+        const where = `${phase}, ${drawing}`
         // Two lists from 96 columns, each box at the width rule's, the human one padded on its right and the Claude one on its left; below that the human
         // list alone, with no width and no padding of its own.
         const column = Math.max(32, Math.floor(columns / 3))
@@ -976,29 +1036,58 @@ test('the band drawn through the terminal\'s table, with every kind of control a
           expect((tree as Drawn).props?.width, where).toBeUndefined()
           expect((tree as Drawn).props?.paddingRight, where).toBeUndefined()
         }
-        checkSweepRows(tree, twoLists ? columns - column - 1 : columns, rows(controls), where)
+        checkSweepRows(tree, twoLists ? columns - column - 1 : columns, ids, phase, drawing, firstDrawn, rungs)
       }
     }
-    const UNDO3 = '[↶ 3s]'
-    await check('open', ['', '[✓]', `[✓ ${SWEEP_LABEL}]`, '[✓] [✗]'])
-    // The three band controls pressed, and the decision's option pressed in the pane: each says its answer in full beside its undo button.
+    await check('open')
+    // The three band controls pressed, and the decision's option pressed in the pane: each says its answer beside its undo button.
     await band.press({ key: `done-${plain}` })
     await band.press({ key: `done-${labelled}` })
     await band.press({ key: `yes-${yesno}` })
+    await band.press({ key: `done-${broken}` })
     await pane.press({ key: `answer-${decision}-0` })
-    await check('pressed', [`✓ ${SWEEP_OPTION} ${UNDO3}`, `✓ ${UNDO3}`, `✓ ${SWEEP_LABEL} ${UNDO3}`, `✓ yes ${UNDO3}`])
+    await check('pressed')
     // The decision's press undone and replaced by a reply typed in the pane, which a pressed control names as `✓ replied`.
     await band.press({ key: `done-${decision}` })
     await pane.input({ key: `reply-${decision}`, text: 'Not yet' })
-    await check('replied', [`✓ replied ${UNDO3}`, `✓ ${UNDO3}`, `✓ ${SWEEP_LABEL} ${UNDO3}`, `✓ yes ${UNDO3}`])
+    await check('replied')
     // The windows end: every press is sent.
     await clock.advance(3000)
-    await check('sent', ['✓ sent', '✓ sent', '✓ sent', '✓ sent'])
+    await check('sent')
     for (let id = first; id < next; id++) await $.tool.call({ tool: TOOL, action: 'remove', id })
+  }
+  // The lists run from rows that keep every control whole to rows squeezed to the mark and the undo button.
+  expect([...rungs].sort()).toEqual([1, 2, 3])
+})
+
+test('the summary row drawn through the terminal\'s table is one line cut at the list\'s layout width with an ellipsis, in its warning box, with the count of what the rows left folded', async ($, on) => {
+  mock.clock(on)
+  mock.store(on)
+  on('ui.panes', () => ({ value: [] }))
+  for (let k = 1; k <= 8; k++) await $.tool.call({ tool: TOOL, action: 'add', title: `Blocking ask ${k}`, blocking: true })
+  for (let k = 1; k <= 3; k++) await $.tool.call({ tool: TOOL, action: 'add', title: `Other ask ${k}` })
+  const props = { ...BAND_PROPS, maxRows: 6 }
+  const band = await $.ui.mount({ plugin: 'human-plugin', surface: 'terminal', component: 'AbovePrompt', props })
+  for (const columns of [20, 22, 23, 24, 25, 26, 30, 40, 80, 120]) {
+    await band.redraw({ ...props, bodyColumns: columns })
+    const tree = await band.drawn()
+    const where = `band of ${columns}`
+    // The header takes the lines its count wraps to beside the chip, the summary one: the rest of the 6 rows are items, the blocking ones first.
+    const shown = elementsOf(tree as El, 'Box').filter(box => String(box.props?.key).startsWith('item-')).length
+    expect(shown, where).toBe(6 - headerLines(' To do for you ', ' 11 open ', columns) - 1)
+    expect(shown, where).toBeGreaterThanOrEqual(3)
+    const more = elementsOf(tree as El, 'Button').find(button => button.props?.key === 'band-more')
+    const summary = `+${8 - shown} blocking · +3 more […]`
+    const label = more?.props?.label
+    expect(label, where).toBe(summary.length <= columns ? summary : `${summary.slice(0, columns - 1)}…`)
+    expect(displayColumns(String(label)), where).toBeLessThanOrEqual(columns)
+    const holder = elementsOf(tree as El, 'Box').find(box => (box.children ?? []).some(child => typeof child !== 'string' && child.props?.key === 'band-more'))
+    expect(holder?.props?.backgroundColor, where).toBe('warning')
+    expect(elementsOf(more, 'Text'), where).toEqual([])
   }
 })
 
-test('a band mounted at 105 columns lays its rows out in the 69 columns its list of 70 keeps: a title that wraps beside its control is a box of the room the id and the control leave, and a press narrows it', async ($, on) => {
+test('a band mounted at 105 columns draws each row as one line in the 69 columns its list of 70 keeps: the prefix, a title cut to the room the control column leaves it, and the control cell, and a press moves neither', async ($, on) => {
   on('prompt.submit', (_$, e) => ({ text: e.text }))
   mock.clock(on)
   mock.store(on)
@@ -1009,18 +1098,30 @@ test('a band mounted at 105 columns lays its rows out in the 69 columns its list
   await $.tool.call({ tool: TOOL, action: 'add', title: 'Pick a decision with options that wraps as well', options: [{ label: 'Alpha', recommended: true }, { label: 'Beta' }] })
   await $.tool.call({ tool: TODO_TOOL, entries: [{ title: 'Writing the probe step', state: 'in_flight' }, { title: 'Second step in flight', state: 'in_flight' }, { title: 'Queued one', state: 'queued' }] })
   const band = await $.ui.mount({ plugin: 'human-plugin', surface: 'terminal', component: 'AbovePrompt', props: { ...BAND_PROPS, bodyColumns: 105 } })
-  const titleBox = async (id: number): Promise<El | string | undefined> => cellsOf(rowElement(await band.drawn(), id) as El).line[1]
+  const cells = async (id: number): Promise<El[]> => cellsOf(rowElement(await band.drawn(), id) as El)
   const tree = await band.drawn()
   expect(boxes(tree).human?.props).toMatchObject({ width: 70, paddingRight: 1 })
   expect(boxes(tree).column?.props).toMatchObject({ width: 35, paddingLeft: 1 })
-  // #1: the unread mark and the id take 5 and `[✓]` with its space 4, leaving the title 60 of the 69. #2: `[✓ Approve the migration ok]` and its space take 29,
-  // leaving 35. #3 and #4 fit their lines: the buttons themselves.
-  expect(await titleBox(1)).toMatchObject({ type: 'Box', props: { width: 60, flexShrink: 0 } })
-  expect(await titleBox(2)).toMatchObject({ type: 'Box', props: { width: 35, flexShrink: 0 } })
-  expect(await titleBox(3)).toMatchObject({ type: 'Button', props: { key: 'title-3' } })
-  expect(await titleBox(4)).toMatchObject({ type: 'Button', props: { key: 'title-4' } })
-  // Pressed, #2's control names its label beside the undo button (`✓ Approve the migration ok [↶ 3s]` and its space take 34), leaving its title 30.
+  // The unread mark and the id take 5. #1, #3 and #4 have a control column of 17 (the reply's `✓ replied [↶ 3s]` and the space before it), leaving their
+  // titles 47 of the 69. #2's label of 24 columns makes its pressed control `✓ Approve the migration ok [↶ 3s]`, so 34 with the space, leaving its title 30.
+  const want: [number, number, string][] = [
+    [1, 17, 'Review the deliberately long wrapping title of…'],
+    [2, 34, 'Second to-do with a labelled …'],
+    [3, 17, 'Is the third item a yes or no question that wr…'],
+    [4, 17, 'Pick a decision with options that wraps as… […]'],
+  ]
+  for (const [id, controlColumn, label] of want) {
+    const [prefix, title, controlCell] = (await cells(id)) as [El, El, El]
+    expect(displayColumns(shownOf(prefix)), `#${id}`).toBe(5)
+    expect(controlCell.props?.width, `#${id}`).toBe(controlColumn)
+    expect(shownOf(title), `#${id}`).toBe(label)
+    expect(5 + displayColumns(label) + controlColumn, `#${id}`).toBe(69)
+  }
+  expect(shownOf((await cells(2))[2])).toBe(' [✓ Approve the migration ok]')
+  // Pressed, #2's control names its label beside the undo button; its title and its control cell are as they were.
   await band.press({ key: 'done-2' })
-  expect(await titleBox(2)).toMatchObject({ type: 'Box', props: { width: 30, flexShrink: 0 } })
-  expect(shownOf(rowElement(await band.drawn(), 2))).toContain('✓ Approve the migration ok [↶ 3s]')
+  const pressed = (await cells(2)) as [El, El, El]
+  expect(shownOf(pressed[1])).toBe('Second to-do with a labelled …')
+  expect(pressed[2].props?.width).toBe(34)
+  expect(shownOf(pressed[2])).toBe(' ✓ Approve the migration ok [↶ 3s]')
 })

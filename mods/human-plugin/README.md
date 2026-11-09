@@ -9,7 +9,7 @@ as soon as it no longer applies.
 
 ```
 To do for you 3 open
-  #4 Approve PR #163 on GitHub                               [✓]
+  #4 Approve PR #163 on GitHub [✓]
   +2 more […]
 ```
 
@@ -20,10 +20,11 @@ To do for you 3 open
   others. The header turns amber while anything blocking is open, so its colour alone tells you whether any of the agent's work
   is stuck. The header reads `To do for you` until the agent states the term it uses for you, and then `To do for` followed by
   that term. A blocking ask is also pushed to your phone, and while you are at the terminal the push is retried each minute, for an hour at most, until it is sent.
-- **A row wraps.** A long title wraps word by word in the room beside its item number and its control, and a line break in a title starts a new line. The control stays on the
-  title's first line while the title keeps ten columns there, and otherwise draws on a line of its own under the title, in line with it, at any width; a label too long for that line wraps
-  word by word. A press, an undo and the end of the three seconds leave the control on the line it was on, except that a pressed control too wide to leave the title any column (in a very narrow
-  list, or on a choice with a long label) draws under the title. The band counts each row at the most lines it takes in any of those states, so a press never changes which rows fold into the summary row.
+- **A row is one line.** The item number, the title and the control share one line, the control one blank after the title. A title too long for its line is cut at its end with `…`
+  to leave room for the control at the widest it gets, and a line break in a title reads as a space; a choice keeps its `[…]` after the cut title. That room is reserved at the control's
+  widest state, so a press, an undo and the end of the three seconds move nothing: the control starts on the same column through all of them. A pressed answer's text shows up to 24 columns;
+  where the title would keep under ten columns it is cut further with `…`, and where cutting it is not enough the pressed control shrinks to `✓ [↶ 3s]` (`✗` for a no) and the answer is in the pane.
+  A list beside the Claude column and one that has the whole band do the same. The summary row is one line too, cut at the list's width with `…`.
 - **`[✓]`** says you've done it. You get three seconds to change your mind (`[↶ 3s]`; the window ends on the
   countdown's next one-second tick, so up to a second later), then the agent is told, checks, and removes the item. You can also say so in chat. Only the agent removes items, because it is the one that knows
   when an ask is settled; when it adds to a sent item instead, the item comes back open, with its reply field, marked `•`. A choice (a decision with options) gets answer buttons in the pane instead (see below).
@@ -105,6 +106,7 @@ Then start a new session and let the agent do the asking.
   running turn, which has not been observed live; if it differs, a done press that lands as a turn starts is read one
   model request later, never lost.
 - Tested on the terminal only: the desktop app is untested, though it draws the reply field too. A Remote Control phone draws no band or pane, so there the list is read through `/asks`, and the Claude TODO list through `/claude-todo`. The chime plays on macOS only.
+- In a very narrow terminal, a full-width list under 15 to 18 columns (the id, one column of title and the squeezed `✓ [↶ 3s]`, for ids of one to four digits) cannot hold a row on one line, and the row runs past the list.
 - The band's `To do for <term>` chip never shrinks, and a term of up to 20 columns makes it up to 32 columns wide with its spaces, so in a list narrower than that the header can overflow. The count
   beside the chip wraps in the columns the chip leaves, and the header takes as many lines as that needs.
 - A term read back from stored state is not re-checked against the 20-column and one-line limits that the tool applies to
