@@ -1,5 +1,6 @@
 import { expect, test } from 'claude-code/testing'
-import { act, displayColumns, listText, normalizeItem } from './items'
+import { displayColumns } from './columns'
+import { act, listText, normalizeItem } from './items'
 import { answerOf, doneNotice, expire, press, reply, type Form } from './done'
 import { bandDraws, headerLines, rowLayout, wrapText } from './layout'
 import { backlogPane, backlogRows, band, claudeColumn, pane, paneRows, rowTexts, toolLine, type Handlers, type Table, type View } from './ui'

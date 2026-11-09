@@ -32,7 +32,7 @@ To do for you 3 open
   countdown's next one-second tick, so up to a second later), then the agent is told, checks, and removes the item. You can also say so in chat. Only the agent removes items, because it is the one that knows
   when an ask is settled; when it adds to a sent item instead, the item comes back open, with its reply field, marked `•`. A choice (a decision with options) gets answer buttons in the pane instead (see below).
   A to-do the agent files with a `done` label, such as `Go with sqlite`, draws `[✓ Go with sqlite]`, and that press is
-  what the label says. A label is at most 24 columns (a wide character takes two). A bare `[✓]` on a proposal or a
+  what the label says. A label is at most 24 columns (a wide character takes two; a joined emoji such as a family or a flag counts as the wider of what Claude Code lays out and what the terminal draws, two columns where they agree). A bare `[✓]` on a proposal or a
   recommendation is a go-ahead for it.
 - **`[✓]` and `[✗]` on a yes/no question.** `[✓]` answers yes and `[✗]` answers no, on the row. Each gets the same three
   seconds to change your mind, then the agent is told the answer.
@@ -113,6 +113,7 @@ Then start a new session and let the agent do the asking.
 - The band's `To do for <term>` chip never shrinks while it fits, and a term of up to 20 columns makes it up to 32 columns wide with its spaces. The count beside the chip wraps in the columns the chip leaves, and the header takes as many lines as that needs.
   In a squeezed list (under 64 columns beside the Claude column), and in any list narrower than its chip and one column, the chip is cut at the list's edge instead, so a long term loses its end,
   and its count is on the line below, cut the same way; when the band is too short for both lines and a row, the header is the chip alone and the count is left out.
+- Joined emoji are counted from sequences measured in tmux 3.8 and Claude Code 2.1.311, so a sequence newer than Unicode 18.0 counts as its parts until it is measured. Under tmux 3.8 most emoji with a skin tone draw wider than Claude Code places them, so the text after one can be drawn over its end. A joined sequence Claude Code lays out wider than the terminal draws leaves a blank after it. A digit or `*` with a keycap mark and no U+FE0F counts two columns, a guess measured only on `#`.
 - A term read back from stored state is not re-checked against the 20-column and one-line limits that the tool applies to
   live input, so a hand-edited or corrupt stored list can show a longer or multi-line term.
 

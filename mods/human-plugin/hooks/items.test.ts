@@ -1,7 +1,10 @@
 import { expect, test } from 'claude-code/testing'
-import { DONE_MAX, EMPTY, act, carryNext, clearAll, columnsByCodePoint, displayColumns, listText, mergeRestored, normalizeItem, normalizeStore, parseInput, selectedItem, successorOf, type Ctx, type ToolInput } from './items'
+import { DONE_MAX, EMPTY, act, carryNext, clearAll, listText, mergeRestored, normalizeItem, normalizeStore, parseInput, selectedItem, successorOf, type Ctx, type ToolInput } from './items'
 import { expire, press, reply, turnsOf } from './done'
 import type { Item, Store } from '../types'
+
+// Code points written as numbers, so no editor or encoding changes a joiner or a variation selector that draws as nothing.
+const cps = (...codes: number[]): string => String.fromCodePoint(...codes)
 
 const input = (raw: unknown): ToolInput => {
   const parsed = parseInput(raw)
@@ -498,122 +501,6 @@ test('a done label is capped at 24 display columns: 24 ASCII is accepted, 25 ref
   expect(parseInput({ action: 'update', id: 1, done: '中'.repeat(13) })).toEqual({ ok: false, reason })
 })
 
-test('the display-column measure the label limit uses is exported: a wide character counts two columns, any other one, a surrogate pair as one character', () => {
-  expect(displayColumns('')).toBe(0)
-  expect(displayColumns('abc')).toBe(3)
-  expect(displayColumns('中文')).toBe(4)
-  expect(displayColumns('a中b')).toBe(4)
-  expect(displayColumns('😀')).toBe(2)
-  expect(displayColumns('✓ ↶ […]')).toBe(7)
-  expect(displayColumns('中'.repeat(12))).toBe(displayColumns('x'.repeat(24)))
-})
-
-// Code points written as numbers, so no editor or encoding changes a joiner or a variation selector that draws as nothing.
-const cps = (...codes: number[]): string => String.fromCodePoint(...codes)
-
-test('the measure counts each code point at the columns tmux drew for it alone, as the scan recorded: one for the glyphs the band draws and the text-presentation emoji, zero for joiners and selectors, two for wide characters', () => {
-  const cases: [string, string, number][] = [
-    // The glyphs the band draws, and the ones a title or an answer often holds.
-    ...['✓', '✗', '↶', '…', '[', ']', '•', '·', '#', ' ', 'a'].map((glyph): [string, string, number] => [glyph, glyph, 1]),
-    ['U+FF71 halfwidth katakana', cps(0xff71), 1],
-    ['U+2764 heart, text presentation', cps(0x2764), 1],
-    ['U+263A smiling face, text presentation', cps(0x263a), 1],
-    ['U+2714 check mark, text presentation', cps(0x2714), 1],
-    ['U+1F3F3 white flag', cps(0x1f3f3), 1],
-    ['U+3FFFD, the last code point scanned', cps(0x3fffd), 1],
-    ['U+200D joiner', cps(0x200d), 0],
-    ['U+FE0F variation selector 16', cps(0xfe0f), 0],
-    ['U+FE0E variation selector 15', cps(0xfe0e), 0],
-    ['U+20E3 combining keycap', cps(0x20e3), 0],
-    ['U+200B zero width space', cps(0x200b), 0],
-    ['U+2705 ✅', cps(0x2705), 2],
-    ['U+274C ❌', cps(0x274c), 2],
-    ['U+2B50 ⭐', cps(0x2b50), 2],
-    ['U+26A1 ⚡', cps(0x26a1), 2],
-    ['U+65E5 日', cps(0x65e5), 2],
-    ['U+306E の', cps(0x306e), 2],
-    ['U+D55C 한', cps(0xd55c), 2],
-    ['U+FF21 fullwidth A', cps(0xff21), 2],
-    ['U+3001 ideographic comma', cps(0x3001), 2],
-    ['U+20000', cps(0x20000), 2],
-    ['U+20001', cps(0x20001), 2],
-    ['U+2A6D6', cps(0x2a6d6), 2],
-    ['U+30000', cps(0x30000), 2],
-    ['U+1F600 😀', cps(0x1f600), 2],
-    ['U+1F468 👨', cps(0x1f468), 2],
-    ['U+1F308 🌈', cps(0x1f308), 2],
-    // Where the scan and the table the measure replaced disagree: wide characters the table missed, and ones it counted wide that tmux draws narrow.
-    ['U+2648 ♈', cps(0x2648), 2],
-    ['U+2329', cps(0x2329), 2],
-    ['U+1F004 🀄', cps(0x1f004), 2],
-    ['U+1F18E 🆎', cps(0x1f18e), 2],
-    ['U+17000', cps(0x17000), 2],
-    ['U+2A6DF', cps(0x2a6df), 2],
-    ['U+303F', cps(0x303f), 1],
-    ['U+1F321 🌡', cps(0x1f321), 1],
-    ['U+2A6E0', cps(0x2a6e0), 1],
-  ]
-  for (const [name, text, columns] of cases) expect(displayColumns(text), name).toBe(columns)
-})
-
-test('a variation selector 16 after a code point drawn one column wide adds one, as tmux draws the pair two wide; after anything else it adds none', () => {
-  expect(displayColumns(cps(0x2764, 0xfe0f)), 'heart and selector').toBe(2)
-  expect(displayColumns(cps(0x61, 0xfe0f)), 'a and selector').toBe(2)
-  expect(displayColumns(cps(0x31, 0xfe0f, 0x20e3)), 'keycap 1').toBe(2)
-  expect(displayColumns(cps(0x2713, 0xfe0f)), 'check mark and selector').toBe(2)
-  // After a wide character the pair is two wide already; alone, or after a joiner, a selector takes no column.
-  expect(displayColumns(cps(0x2705, 0xfe0f)), 'wide and selector').toBe(2)
-  expect(displayColumns(cps(0xfe0f)), 'alone').toBe(0)
-  expect(displayColumns(cps(0x200d, 0xfe0f)), 'after a joiner').toBe(0)
-  expect(displayColumns(cps(0x61, 0xfe0f, 0xfe0f)), 'a second selector').toBe(2)
-})
-
-test('a joined sequence counts as its parts, never fewer columns than tmux draws it in: the family of four 8, the rainbow flag 4, a thumbs-up with a skin tone 4, two regional indicators 2, a letter, a joiner and a letter 2', () => {
-  expect(displayColumns(cps(0x1f468, 0x200d, 0x1f469, 0x200d, 0x1f467, 0x200d, 0x1f466)), 'family of four').toBe(8)
-  expect(displayColumns(cps(0x1f3f3, 0xfe0f, 0x200d, 0x1f308)), 'rainbow flag').toBe(4)
-  expect(displayColumns(cps(0x1f44d, 0x1f3fd)), 'thumbs-up, medium skin tone').toBe(4)
-  expect(displayColumns(cps(0x1f1fa, 0x1f1f8)), 'US flag').toBe(2)
-  expect(displayColumns(cps(0x61, 0x200d, 0x62)), 'a joiner b').toBe(2)
-  expect(displayColumns(cps(0x2705, 0x274c, 0x2b50, 0x26a1)), 'four emoji').toBe(8)
-})
-
-test('a code point the scan did not measure counts two, the widest any measured one drew, so a cut lands early and never over the list', () => {
-  const unmeasured: [string, number][] = [
-    ['U+0007 a control', 0x07],
-    ['U+0000', 0x00],
-    ['U+001F', 0x1f],
-    ['U+007F', 0x7f],
-    ['U+009B a C1 control', 0x9b],
-    ['U+009F', 0x9f],
-    ['U+FFFE', 0xfffe],
-    ['U+FFFF', 0xffff],
-    ['U+1FFFE', 0x1fffe],
-    ['U+1FFFF', 0x1ffff],
-    ['U+3FFFE, the first past the scan', 0x3fffe],
-    ['U+E0100 a variation selector supplement', 0xe0100],
-    ['U+F0000 a private use plane', 0xf0000],
-    ['U+10FFFF', 0x10ffff],
-  ]
-  for (const [name, code] of unmeasured) expect(displayColumns(cps(code)), name).toBe(2)
-  // A lone surrogate is not a code point of the scan either.
-  expect(displayColumns('\ud800'), 'lone high surrogate').toBe(2)
-  expect(displayColumns('\udfff'), 'lone low surrogate').toBe(2)
-  // The code points either side of a gap in the scan are measured.
-  for (const code of [0x20, 0x7e, 0xa0, 0xd7ff, 0xe000, 0xfffd, 0x1fffd]) expect(displayColumns(cps(code)), `U+${code.toString(16)}`).toBe(1)
-})
-
-test('the columns of a text by code point: each whole code point with what it adds, a surrogate pair one, the selector after a one-column code point one, and the sum is the text\'s columns', () => {
-  expect(columnsByCodePoint('')).toEqual([])
-  expect(columnsByCodePoint(`a${cps(0x20000)}`)).toEqual([{ char: 'a', columns: 1 }, { char: cps(0x20000), columns: 2 }])
-  expect(columnsByCodePoint(cps(0x2764, 0xfe0f, 0x200d, 0x1f525)).map(({ columns }) => columns)).toEqual([1, 1, 0, 2])
-  expect(columnsByCodePoint(cps(0x2705, 0xfe0f)).map(({ columns }) => columns)).toEqual([2, 0])
-  expect(columnsByCodePoint('\ud800a').map(({ char, columns }) => [char.length, columns])).toEqual([[1, 2], [1, 1]])
-  for (const text of ['Fix it', `日本${cps(0x1f600, 0xfe0f)}`, cps(0x31, 0xfe0f, 0x20e3), cps(0x1f468, 0x200d, 0x1f469)]) {
-    expect(columnsByCodePoint(text).reduce((sum, { columns }) => sum + columns, 0), text).toBe(displayColumns(text))
-    expect(columnsByCodePoint(text).map(({ char }) => char).join(''), text).toBe(text)
-  }
-})
-
 test('the band\'s answer cap and the tool\'s label limit are one constant, 24 columns', () => {
   expect(DONE_MAX).toBe(24)
   expect(parseInput({ action: 'add', title: 'Pick', done: 'a'.repeat(DONE_MAX) }).ok).toBe(true)
@@ -665,6 +552,16 @@ test('the label and term limits read the scan\'s widths: ⭐ takes two columns, 
   const owned = applied(EMPTY, { action: 'add', title: 'Pick a db' }).store
   expect(applied(owned, { action: 'update', id: 1, term: '⭐'.repeat(10) }).store.term).toBe('⭐'.repeat(10))
   expect(act(owned, input({ action: 'update', id: 1, term: '⭐'.repeat(11) }), MAIN)).toEqual({ deny: TERM_TOO_LONG })
+})
+
+test('the label and term limits count a joined sequence as one unit: 12 families of four are a label and 13 are refused, 10 are a term and 11 are refused', () => {
+  const labelReason = 'done must be at most 24 columns: name what a press does in a few words'
+  const family = cps(0x1f468, 0x200d, 0x1f469, 0x200d, 0x1f467, 0x200d, 0x1f466)
+  expect(parseInput({ action: 'add', title: 'Pick', done: family.repeat(12) })).toMatchObject({ ok: true, value: { doneLabel: family.repeat(12) } })
+  expect(parseInput({ action: 'add', title: 'Pick', done: family.repeat(13) })).toEqual({ ok: false, reason: labelReason })
+  const owned = applied(EMPTY, { action: 'add', title: 'Pick a db' }).store
+  expect(applied(owned, { action: 'update', id: 1, term: family.repeat(10) }).store.term).toBe(family.repeat(10))
+  expect(act(owned, input({ action: 'update', id: 1, term: family.repeat(11) }), MAIN)).toEqual({ deny: TERM_TOO_LONG })
 })
 
 test('a character the old table counted one column but tmux draws two is refused at its drawn width, and one it counted two but tmux draws one is accepted at its drawn width', () => {

@@ -1,5 +1,5 @@
 // Generated data, not edited by hand: the columns tmux 3.8 (TERM=tmux-256color, under iTerm2 3.7.6 on macOS) drew for every code point from U+0000 to U+3FFFD,
-// each printed alone and read as how far tmux moved its cursor, scanned on 2026-11-08. A new scan regenerates this file; the measure in items.ts reads it.
+// each printed alone and read as how far tmux moved its cursor, scanned on 2026-11-08. A new scan regenerates this file; the measure in columns.ts reads it.
 //
 // DRAWN: the runs drawn 0 or 2 columns wide, as [from, to, columns]. Every other code point the scan measured was drawn 1 column wide.
 // UNMEASURED: what the scan did not measure (the C0 and C1 controls, the surrogates, U+FFFE, U+FFFF, U+1FFFE and U+1FFFF, and everything from
