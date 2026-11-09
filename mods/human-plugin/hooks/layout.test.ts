@@ -558,6 +558,16 @@ test('the reply\'s `✓ replied [↶ 3s]` is never cut: it keeps the control col
   }
 })
 
+test('the control column is the widest of every state, the open control and the sent one included, and the space before them', () => {
+  // `✓ sent` is narrower than every other state, so a sent text wider than the reply's 16 columns shows the layout takes it into account.
+  const sent = '✓ sent to the agent, which will answer when it is next idle'
+  expect(displayColumns(sent)).toBeGreaterThan(16)
+  expect(rowLayout({ ...rowFor(PLAIN), sent }, 120).control).toBe(1 + displayColumns(sent))
+  // An open label of 24 columns is 28 with its brackets, wider than a pressed control that names no answer.
+  const open = ctl('[✓ ', LABEL_24, ']')
+  expect(rowLayout({ ...rowFor(PLAIN), open, pressed: [said('')] }, 120).control).toBe(29)
+})
+
 test('a wide label is cut by columns and never split, so its box can be a column wider than its text: twelve wide characters at a layout width of 36 get a box of 10 holding four of them and an ellipsis', () => {
   const wide = cps(0x4e2d).repeat(12)
   expect(displayColumns(wide)).toBe(24)

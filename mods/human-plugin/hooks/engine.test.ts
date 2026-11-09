@@ -927,8 +927,8 @@ const controlShows = (kind: SweepKind, phase: Phase, laid: RowLayout): string =>
 type Drawing = Map<string, { label: string; control: number }>
 
 // Each row of a band drawn through the terminal's table at `layout` columns of room, as one line of three cells: the prefix, the title's button in a box that
-// shrinks, and the control's cell of the layout's width at its start; and the pieces add up to the layout.
-const checkSweepRows = (tree: unknown, layout: number, ids: Record<string, number>, phase: Phase, drawing: string, first: Drawing): void => {
+// shrinks, and the control's cell of the layout's width at its start; and the pieces add up to the layout. `rungs` collects the rung of the ladder each row drew at.
+const checkSweepRows = (tree: unknown, layout: number, ids: Record<string, number>, phase: Phase, drawing: string, first: Drawing, rungs: Set<number>): void => {
   const where = `${phase}, ${drawing}`
   for (const button of elementsOf(tree as El, 'Button')) expect(elementsOf(button, 'Text'), `${where}: a button holding a text`).toEqual([])
   for (const kind of SWEEP_KINDS) {
@@ -945,6 +945,7 @@ const checkSweepRows = (tree: unknown, layout: number, ids: Record<string, numbe
     expect(prefixColumns, name).toBe(String(id).length + 4)
     const texts = textsOf(kind, id)
     const laid = rowLayout(texts, layout)
+    rungs.add(laid.rung)
     // The title: its button in a box that shrinks, the button's label the one-line title cut to the room the prefix and the control cell leave it.
     expect(titleCell.props, name).toMatchObject({ flexShrink: 1 })
     expect((titleCell.children ?? []).map(child => (typeof child === 'string' ? child : child.type)), name).toEqual(['Button'])
@@ -1004,6 +1005,7 @@ test('the band drawn through the terminal\'s table, with every kind of control a
   const pane = await $.ui.mount({ plugin: 'human-plugin', surface: 'terminal', component: 'Pane', requestId: 'human-items', props: { title: 'Items for you', isFocused: true, bodyColumns: 80, placement: 'inline', scroll: { offset: 0, bodyRows: 20 }, view: {} } })
   const widths = [20, 21, 22, 23, 24, 31, 40, 52, 56, 63, 64, 70, 95, 96, 97, 105, 120, 155]
   const firstDrawn: Drawing = new Map()
+  const rungs = new Set<number>()
   let next = 1
   for (const first of [1, 10, 100]) {
     await skipIds($, next, first)
@@ -1034,7 +1036,7 @@ test('the band drawn through the terminal\'s table, with every kind of control a
           expect((tree as Drawn).props?.width, where).toBeUndefined()
           expect((tree as Drawn).props?.paddingRight, where).toBeUndefined()
         }
-        checkSweepRows(tree, twoLists ? columns - column - 1 : columns, ids, phase, drawing, firstDrawn)
+        checkSweepRows(tree, twoLists ? columns - column - 1 : columns, ids, phase, drawing, firstDrawn, rungs)
       }
     }
     await check('open')
@@ -1054,6 +1056,8 @@ test('the band drawn through the terminal\'s table, with every kind of control a
     await check('sent')
     for (let id = first; id < next; id++) await $.tool.call({ tool: TOOL, action: 'remove', id })
   }
+  // The lists run from rows that keep every control whole to rows squeezed to the mark and the undo button.
+  expect([...rungs].sort()).toEqual([1, 2, 3])
 })
 
 test('the summary row drawn through the terminal\'s table is one line cut at the list\'s layout width with an ellipsis, in its warning box, with the count of what the rows left folded', async ($, on) => {

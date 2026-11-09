@@ -81,6 +81,8 @@ const answers = (t: Table, h: Handlers, item: Item): RenderElement =>
 const SENT = '✓ sent'
 const YES = '[✓]'
 const NO = '[✗]'
+// A decision with options is marked `[…]` after its title: its answers are in the pane alone. A row with its buttons on the line (a to-do's `[✓]`, a yes/no's
+// marks) needs no marker, and its title still opens the pane.
 const DECISION_MARKER = ' […]'
 const undoLabel = (seconds: number): string => `[↶ ${seconds}s]`
 
