@@ -4,6 +4,7 @@ import { labelOf, oneLine, orderedOptions, replyText, turnsOf } from './done'
 import { briefParts } from './fences'
 import { outcomeOf, parseInput, selectedItem, type ToolInput } from './items'
 import {
+  backlogTail,
   bandRows,
   bandWidths,
   claudeRows,
@@ -454,25 +455,28 @@ export const pane = (t: Table, h: Handlers, store: Store, view: View): RenderEle
 export const backlogRows = (todo: readonly TodoItem[]): number => 1 + todo.length
 
 // One backlog item's row: its head, the glyph, a space and its whole title as one text set to cut at its end, in a box that shrinks, then its ETA tail, dim, in a box that does not.
-// When the row is wider than the body the title gives way: the engine cuts the head, by the measure it draws by, in the room the tail leaves, so the ETA stays whole and the row
-// stays one line. A body narrower than the tail itself leaves the head no room and the row wraps (measured: a 63-column tail in a 48-column body).
-const backlogItem = (t: Table, item: TodoItem): RenderElement =>
-  t.Box({
+// The tail is cut beforehand (backlogTail) to the room `body` leaves beside the head's minimum, and left out when that room keeps none of the ETA, so the tail never outgrows the
+// body: the engine cuts the head, by the measure it draws by, in the room the tail leaves, and the row stays one line.
+const backlogItem = (t: Table, item: TodoItem, body: number): RenderElement => {
+  const head = `${GLYPH[item.state]} ${item.title}`
+  const tail = backlogTail(head, etaTail(item), body)
+  return t.Box({
     children: [
-      t.Box({ flexShrink: 1, children: [t.Text({ wrap: 'truncate-end', children: [`${GLYPH[item.state]} ${item.title}`] })] }),
-      t.Box({ flexShrink: 0, children: [t.Text({ dimColor: true, children: [etaTail(item)] })] }),
+      t.Box({ flexShrink: 1, children: [t.Text({ wrap: 'truncate-end', children: [head] })] }),
+      ...(tail === '' ? [] : [t.Box({ flexShrink: 0, children: [t.Text({ dimColor: true, children: [tail] })] })]),
     ],
   })
+}
 
 // The backlog: the whole Claude list, read-only, in the pane that shows a human item otherwise. A header line with the counts in the long form, then the in-flight items and the
-// queued ones, each in the agent's written order and each one row (backlogItem). The header is set to cut at its end and the engine cuts it, at the body's edge by the measure it
-// draws by, so it never wraps. It presses nothing: the human never changes this list.
-export const backlogPane = (t: Table, todo: readonly TodoItem[]): RenderElement =>
+// queued ones, each in the agent's written order and each one row (backlogItem) in a `body`-column pane. The header is set to cut at its end and the engine cuts it, at the body's
+// edge by the measure it draws by, so it never wraps. It presses nothing: the human never changes this list.
+export const backlogPane = (t: Table, todo: readonly TodoItem[], body: number): RenderElement =>
   t.Box({
     flexDirection: 'column',
     children: [
       t.Text({ wrap: 'truncate-end', children: [`${HEADING} ${countsText(todo)}`] }),
-      ...inDisplayOrder(todo).map(item => backlogItem(t, item)),
+      ...inDisplayOrder(todo).map(item => backlogItem(t, item, body)),
     ],
   })
 

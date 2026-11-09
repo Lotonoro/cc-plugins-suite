@@ -1,5 +1,5 @@
 import { expect, test } from 'claude-code/testing'
-import { bandDraws, bandRows, bandWidths, claudeRows, columnHeight, cutTitle, cutToColumns, headerLines, humanFoldRows, isSqueezed, rowLayout, squeezedFold, wrapText, type ClaudeRow, type Control, type RowTexts } from './layout'
+import { backlogTail, bandDraws, bandRows, bandWidths, claudeRows, columnHeight, cutTitle, cutToColumns, headerLines, humanFoldRows, isSqueezed, rowLayout, squeezedFold, wrapText, type ClaudeRow, type Control, type RowTexts } from './layout'
 import { displayColumns } from './items'
 import type { Item, TodoItem } from '../types'
 
@@ -839,6 +839,50 @@ test('for any number of items and any room the squeezed fold draws the two-line 
       expect(rows, where).toEqual(bandRows(items, Math.max(0, room - top)))
       expect(rows.length > 0, where).toBe(room >= 2)
       expect(top + rows.length, where).toBeLessThanOrEqual(Math.max(room, 1))
+    }
+  }
+})
+
+// The backlog row's tail: cut to the body less the smaller of the head's width and 12, and dropped where no ETA character survives.
+const CJK_TAIL = ` · ${'漢'.repeat(30)}`
+const LONG_HEAD = `◐ ${'x'.repeat(80)}`
+
+test('a backlog tail is whole while the head keeps its minimum beside it, and cut at its end with an ellipsis, no wide character split, past that', () => {
+  expect(backlogTail(LONG_HEAD, ' · ship it after the review pass!', 48)).toBe(' · ship it after the review pass!')
+  expect(backlogTail(LONG_HEAD, CJK_TAIL, 97)).toBe(CJK_TAIL)
+  const cutAt48 = backlogTail(LONG_HEAD, CJK_TAIL, 48)
+  expect(cutAt48.endsWith('…')).toBe(true)
+  expect(displayColumns(cutAt48)).toBeLessThanOrEqual(36)
+  expect(cutAt48).toBe(` · ${'漢'.repeat(16)}…`)
+})
+
+test('a backlog tail is ` · ship it after the re…` at body 36, absent at bodies 13 to 16, and the CJK tail is ` · 日…` at a room of 6 and absent at 5', () => {
+  expect(backlogTail(LONG_HEAD, ' · ship it after the review pass!', 36)).toBe(' · ship it after the re…')
+  expect(backlogTail(LONG_HEAD, ' · ship it after the review pass!', 17)).toBe(' · s…')
+  for (const body of [13, 14, 15, 16]) expect(backlogTail(LONG_HEAD, ' · ship it after the review pass!', body), `body ${body}`).toBe('')
+  expect(backlogTail(LONG_HEAD, ` · ${'日'.repeat(30)}`, 18)).toBe(' · 日…')
+  expect(backlogTail(LONG_HEAD, ` · ${'日'.repeat(30)}`, 17)).toBe('')
+})
+
+test('a backlog tail measures at most the room (body less the smaller of the head and 12), ends in an ellipsis when cut and keeps an ETA character, or is absent, for every body, head and tail', () => {
+  for (let body = 1; body <= 120; body++) {
+    for (let head = 3; head <= 82; head += 3) {
+      for (const unit of ['a', '漢']) {
+        for (let eta = 1; eta <= Math.floor(60 / displayColumns(unit)); eta += 3) {
+          const tail = ` · ${unit.repeat(eta)}`
+          const text = backlogTail('x'.repeat(head), tail, body)
+          const room = Math.max(0, body - Math.min(head, 12))
+          const label = `body ${body} head ${head} tail ${tail}`
+          if (displayColumns(tail) <= room) expect(text, label).toBe(tail)
+          else if (room < 3 + displayColumns(unit) + 1) expect(text, label).toBe('')
+          else {
+            expect(displayColumns(text), label).toBeLessThanOrEqual(room)
+            expect(text.endsWith('…'), label).toBe(true)
+            expect(displayColumns(text.slice(0, -1)), label).toBeGreaterThan(3)
+            expect(text.slice(3, -1).split('').every(char => char === unit), label).toBe(true)
+          }
+        }
+      }
     }
   }
 })
