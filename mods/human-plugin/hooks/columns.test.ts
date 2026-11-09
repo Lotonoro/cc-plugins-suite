@@ -84,11 +84,14 @@ test('a code point the scan did not measure counts two, the widest any measured 
     ['U+1FFFE', 0x1fffe],
     ['U+1FFFF', 0x1ffff],
     ['U+3FFFE, the first past the scan', 0x3fffe],
+    // Past the scan, so the fallback guess and not a measurement: U+E0101 is the unmeasured code point next to the three measured ones below.
     ['U+E0101 a variation selector supplement', 0xe0101],
     ['U+F0000 a private use plane', 0xf0000],
     ['U+10FFFF', 0x10ffff],
   ]
   for (const [name, code] of unmeasured) expect(displayColumns(cps(code)), name).toBe(2)
+  // Three code points past the scan were measured by sub-plan 3 alone, 0 in tmux and in the engine, where the fallback would give 2.
+  for (const code of [0xe0067, 0xe007f, 0xe0100]) expect(displayColumns(cps(code)), `U+${code.toString(16)} measured`).toBe(0)
   // A lone surrogate is not a code point of the scan either.
   expect(displayColumns('\ud800'), 'lone high surrogate').toBe(2)
   expect(displayColumns('\udfff'), 'lone low surrogate').toBe(2)
