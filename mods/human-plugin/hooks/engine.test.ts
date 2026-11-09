@@ -1479,7 +1479,7 @@ for (const [first, terms, digits] of [[2, [TERMS[0]], 'one digit'], [2, [TERMS[1
           await band.redraw({ ...tall, bodyColumns: columns })
           const tree = await band.drawn()
           const where = `${phase}, ids from ${base}, band of ${columns}`
-          const header = (tree as El).children?.[0]
+          const header = cellsOf(tree as El)[0]
           if (columns > displayColumns(chip)) {
             expect(header?.props?.flexDirection, where).toBeUndefined()
             expect(header?.children, where).toHaveLength(2)
