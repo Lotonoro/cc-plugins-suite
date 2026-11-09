@@ -690,14 +690,20 @@ test('the header counts the count\'s wrapped lines in the columns the chip leave
   expect(wrapText(' 8 open ', 5)).toEqual([' 8 ', 'open '])
 })
 
-test('a count wider than the columns the chip leaves wraps word by word there, the header never under one line, whatever the chip', () => {
+test('a count wider than the columns the chip leaves wraps word by word there, and with no column left it takes a line per character', () => {
   // The count ` 1234 open, 999999999999 sent ` is 30 columns: the 25 a list of 40 leaves beside the chip hold ` 1234 open, 999999999999` and `sent `.
   const count = ` 1234 open, ${'9'.repeat(12)} sent `
   expect(displayColumns(count)).toBe(30)
   expect(headerLines(' To do for you ', count, 40)).toBe(2)
   expect(headerLines(' To do for you ', count, 45)).toBe(1)
-  // A chip as wide as the list or wider (a 20-column term) leaves the count no column, and the header is still at least its one line.
+  // The chip never shrinks, and a 20-column term makes it 32 columns, as wide as a list of 32 and wider than one of 31 or 20, so the chip leaves the count
+  // -12, -1 and 0 columns there, and 1 at 33. The model wraps in at least one column, so ` 8 open `, its eight characters (a space, `8`, a space, `o`, `p`,
+  // `e`, `n`, a space), takes eight lines at all four widths. That is the model's count only: how the engine draws a count with no column left beside the
+  // chip is unmeasured.
   const chip = ` To do for ${'x'.repeat(20)} `
-  for (const width of [20, 31, 32, 33]) expect(headerLines(chip, ' 8 open ', width), `${width}`).toBeGreaterThanOrEqual(1)
+  expect(displayColumns(chip)).toBe(32)
+  expect(wrapText(' 8 open ', 1)).toEqual([' ', '8', ' ', 'o', 'p', 'e', 'n', ' '])
+  for (const width of [20, 31, 32, 33]) expect(headerLines(chip, ' 8 open ', width), `${width}`).toBe(8)
+  // With the 8 columns a list of 40 leaves, the count fits on one line.
   expect(headerLines(chip, ' 8 open ', 40)).toBe(1)
 })
