@@ -8,14 +8,14 @@
 // pings its count sends and a rewrite if they could not hold the cache. An "on" count is the pinned one, else the count learned from the
 // whole history (learn.ts), else break-even. An "on" setup at the current TTL runs at this session's lead and pin; one at the other TTL
 // needs a new session, so it runs at the lead and pin a new session starts with (`fresh`). That new session starts keepalive on or off as
-// `fresh.on` says, so a change of TTL says to click the pie only where the setup it names differs from that start.
+// `fresh.on` says, so a change of TTL names that start, and the default, the command and the click only where the setup it names differs from it.
 import type { CacheView, TtlLabel, Unit } from '../types'
 import type { PauseRecord } from './history'
 import { pausesCost, priceable, ttlAdviceOf, ttlSwitchOf, type TtlRates } from './learn'
-import { dollars, pricedSpeed, ratesFor, tierOf, type Money } from './prices'
+import { dollars, pricedSpeed, ratesFor, TTL_MS, tierOf, type Money } from './prices'
 import { printRequest } from './keepalive'
 import { SPAN_SPACE } from './sections'
-import { setupPhrase, type Setup } from './setup'
+import { refreshIntervalMs, setupPhrase, type Setup } from './setup'
 
 // Whether the pauses priced are this session's, or the newest recent ones across sessions.
 export type Source = 'session' | 'recent'
@@ -183,12 +183,22 @@ export const adviceLine = (result: Result, unit: Unit, leadMs: number): string =
   }
   const { from, to, savedUsd, of, source, startsOn, run } = result
   const amount = unit === 'dollars' ? dollars(savedUsd) : 'money'
-  // The click is in the new session when the TTL switch starts one: it is the session the click is made in. It comes with the command that
-  // does the same, at the run the target was priced at, as one span the wrap keeps on a row; the command comes first, so no punctuation
-  // follows it.
-  const command = printRequest(to.keepalive ? { kind: 'on', leadMs: run.leadMs, count: run.pinned } : { kind: 'off' })
-  const click = startsOn === to.keepalive ? '' : `run ${command.split(' ').join(SPAN_SPACE)} or click the pie ${to.keepalive ? 'on' : 'off'}`
-  const how = from.ttl === to.ttl ? click : click === '' ? `${ttlSwitchOf(to.ttl)} (new sessions)` : `${ttlSwitchOf(to.ttl)} and, in the new session, ${click}`
+  // A command is one span the wrap keeps on a row, and the command comes first, so no punctuation follows it.
+  const spanOf = (command: string): string => command.split(' ').join(SPAN_SPACE)
+  const onOrOff = to.keepalive ? 'on' : 'off'
+  const click = `run ${spanOf(printRequest(to.keepalive ? { kind: 'on', leadMs: run.leadMs, count: run.pinned } : { kind: 'off' }))} or click the pie ${onOrOff}`
+  // At the same TTL the click is made in this session, which a keepalive change always leaves other than the change wants.
+  // At the other TTL a new session starts, and its start does what the target wants when it starts keepalive as the target has it, or
+  // when the target has keepalive off and the new session's run sends nothing at the target TTL.
+  const clause = newSessionClause(startsOn)
+  const how =
+    from.ttl === to.ttl
+      ? click
+      : startsOn === to.keepalive
+        ? `${ttlSwitchOf(to.ttl)} ${clause}`
+        : startsOn && refreshIntervalMs(run.leadMs, TTL_MS[to.ttl]) === null
+          ? `${ttlSwitchOf(to.ttl)} ${clause} and so run ${setupPhrase({ ttl: to.ttl, keepalive: true }, run.leadMs)}`
+          : `${ttlSwitchOf(to.ttl)} ${clause}; either run ${spanOf(printRequest({ kind: 'default', mode: onOrOff }))} before starting the new session, or in the new session ${click}`
   return `${opening}. ${capital(otherSetup(to))} would have saved ${amount} over ${pausesOf(of, source)}${note}: ${how}.`
 }
 

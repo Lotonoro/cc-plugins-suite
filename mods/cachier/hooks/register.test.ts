@@ -7081,7 +7081,7 @@ describe('the best setup: one sentence, in the pane and in the bare command, pri
   // 150-minute pauses with no growth: on 5 m each pays its rewrite ($0.48), with keepalive off or on at its learned count of none; at 1 h
   // keepalive on holds each for two reads ($0.04). A change to 1 h with keepalive on saves $4.40 over ten.
   const longPauses = Array.from({ length: 10 }, (_, i) => ({ ...pauseOf(i), pausedMs: 150 * MIN, grownTokens: 0 }))
-  const TO_1H_ON = 'A 1-hour cache with keepalive on would have saved $4.40 over 10 recent pauses: set "promptCacheTtl": "1h" in settings.json (new sessions)'
+  const TO_1H_ON = 'A 1-hour cache with keepalive on would have saved $4.40 over 10 recent pauses: set "promptCacheTtl": "1h" in settings.json for new sessions, which start with keepalive on (keepalive_default)'
 
   test('a change of TTL says to click the pie on when new sessions start keepalive off, though it is on here', { options: { keepalive_default: 'off' } }, async ($, on) => {
     kaWorld(on, { ...opusCached(), store: { 'pauses/old': longPauses } })
@@ -7092,11 +7092,12 @@ describe('the best setup: one sentence, in the pane and in the bare command, pri
     await clock.advance(1000)
     const text = (await commandText($, '')).replace(/\n\s*/g, ' ')
     expect(text).toContain('Keepalive  paused')
-    expect(text).toContain('A 1-hour cache with keepalive on would have saved $4.40 over 10 recent pauses: set "promptCacheTtl": "1h" in settings.json and, in the new session, run /keepalive on 15 or click the pie on.')
-    expect(await drawnPane($)).toContain('and, in the new session, run /keepalive on 15 or click the pie on.')
+    expect(text).toContain('A 1-hour cache with keepalive on would have saved $4.40 over 10 recent pauses: set "promptCacheTtl": "1h" in settings.json for new sessions, which start with keepalive off (keepalive_default); either run /keepalive default on before starting the new session, or in the new session run /keepalive on 15 or click the pie on.')
+    expect(await drawnPane($)).toContain('for new sessions, which start with keepalive off (keepalive_default); either run /keepalive default on before starting the new session, or in the new session run /keepalive on 15 or click the pie on.')
     const rows = (await commandText($, '')).split('\n')
     expect(rows.every((row) => row.length <= 48)).toBe(true)
     expect(rows.some((row) => row.includes('/keepalive on 15'))).toBe(true)
+    expect(rows.some((row) => row.includes('/keepalive default on'))).toBe(true)
     expect((await paneRows($)).every((row) => row.length <= 48)).toBe(true)
   })
 

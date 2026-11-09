@@ -87,6 +87,14 @@ describe('printRequest: the request the best-setup sentence names, as the parser
     expect(printRequest({ kind: 'on', leadMs: 15000, count: 2 })).toBe('/keepalive on 15 2')
   })
 
+  test('default on and default off', () => {
+    expect(printRequest({ kind: 'default', mode: 'on' })).toBe('/keepalive default on')
+    expect(printRequest({ kind: 'default', mode: 'off' })).toBe('/keepalive default off')
+    for (const mode of ['on', 'off'] as const) {
+      expect(parseRequest(printRequest({ kind: 'default', mode }).slice('/keepalive'.length))).toEqual({ kind: 'default', mode })
+    }
+  })
+
   test('the parser given a printed request returns it unchanged', () => {
     const args = (text: string) => text.slice('/keepalive'.length)
     for (const lead of ['15', '300', '15.5', '1.005']) {
