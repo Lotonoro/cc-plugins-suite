@@ -2,7 +2,7 @@ import { expect, test } from 'claude-code/testing'
 import { register, wireHooks } from './register'
 import { offer, reset, setOnChange, startTurn, takeHeld, endTurn } from './turns'
 import { EMPTY, TOOL, act, normalizeStore } from './items'
-import { NO_ETA, TODO_TOOL } from './todo'
+import { NO_ETA, TODO_TOOL, fillTodo } from './todo'
 import { REMINDER_TEXT } from './reminder'
 import { TODO_SPEC, TOOL_SPEC } from './steering'
 import { paneRows } from './ui'
@@ -3251,4 +3251,47 @@ test('a batch end whose count cannot be read logs it, carries no reminder and st
   expect(out).toEqual({ passed: e })
   expect(rows).toHaveLength(1)
   expect(logs.some(line => line.includes('count unreadable'))).toBe(true)
+})
+
+test('a reload of the mod keeps the reminder count: the hooks wired again over the same state give the reminder once, not a second one', async () => {
+  const { env, values } = memEnv([made(1, { title: 'Live ask', detail: '' })], [], null)
+  values.reminder = 49
+  const first = await batchEnd(env, 1)
+  expect(first.out).toEqual({ passed: first.e, additionalContext: [REMINDER_TEXT] })
+  const reloaded = await batchEnd(env, 1)
+  expect(reloaded.out).toEqual({ passed: reloaded.e })
+  expect(values.reminder).toBe(51)
+})
+
+test('a rebuild from a transcript fills the Claude list and leaves the reminder count as it was', async () => {
+  const { env, values } = memEnv([], [], null)
+  values.reminder = 7
+  await fillTodo(env as never, [{ title: 'Rebuilt step', state: 'in_flight', eta: NO_ETA }])
+  expect(values.todo).toEqual([entry('Rebuilt step', 'in_flight')])
+  expect(values.reminder).toBe(7)
+})
+
+test('a /clear whose reminder reset fails logs it, and the human list and the Claude list are still emptied', async () => {
+  reset()
+  const { hooks } = wire()
+  const { env, values } = memEnv([made(1, { title: 'Live ask', detail: '' })], [], null)
+  const logs: string[] = []
+  const set = env.state.set
+  const failing = {
+    ...env,
+    state: {
+      ...env.state,
+      set: async (ref: { key: string }, value: unknown) => {
+        if (ref.key === 'reminder') throw new Error('count unwritable')
+        return set(ref, value)
+      },
+    },
+    ui: { ...env.ui, log: (text: string) => void logs.push(text) },
+  }
+  values.todo = [entry('Build', 'in_flight')]
+  const e = { reason: 'clear' }
+  expect(await (hooks['session.end'] as Handler)(failing as never, e as never, next(false) as never)).toEqual({ passed: e })
+  expect(values.todo).toEqual([])
+  expect((values.list as { items: unknown[] }).items).toEqual([])
+  expect(logs.some(line => line.includes('count unwritable'))).toBe(true)
 })
