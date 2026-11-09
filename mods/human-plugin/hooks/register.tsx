@@ -15,7 +15,7 @@ import { band, pane, toolLine, type Handlers, type View } from './ui'
 import { bandDraws } from './layout'
 import { correctionText, newlyRestated, restatedIds } from './restatement'
 import { enter } from './deliver'
-import { PANE, endPane, followShown, markRead, personClosed, pickItem, setDrawn, shownSelection, showItem, syncPane } from './pane'
+import { PANE, endPane, followShown, markRead, paneDocked, personClosed, pickItem, seated, setDrawn, shownSelection, showItem, syncPane } from './pane'
 import { endPushes, pushAnswer } from './push'
 import { pressAnswer, pressDone, pressReply, rearmWindows, stopTicker } from './windows'
 import { restored, resetRebuild, setForkedTranscript, startForkRestore, startRestore } from './rebuild'
@@ -441,11 +441,13 @@ export const wireHooks = (on: On, windowMs: number): void => {
     const todo = await readTodo($)
     if (!bandDraws(store.items.length, todo)) return next(e)
     const selected = await shownSelection($)
-    const view: View = { maxRows: e.props.maxRows, now: await $.clock.now(), windowMs, selected, claude: { items: todo, columns: e.props.bodyColumns } }
+    const view: View = { maxRows: e.props.maxRows, now: await $.clock.now(), windowMs, selected, claude: { items: todo, columns: e.props.bodyColumns, isDocked: paneDocked(e.surface) } }
     return band($.ui.resolve(e), handlers($, windowMs), store, view)
   })
 
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
+    // First, before anything this draw reads: the band's width rule turns on whether this surface has seated the pane as a dock.
+    seated($, e.surface, e.props.placement)
     const view: View = { maxRows: 0, now: await $.clock.now(), windowMs, selected: await shownSelection($) }
     const store = await readList($)
     setDrawn(store.items)

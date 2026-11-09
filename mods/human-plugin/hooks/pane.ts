@@ -20,6 +20,10 @@ async function readSelection($: EngineInterface): Promise<number | null> {
 let paneOpen = false
 // The open the mod has made and the engine has not settled yet: the engine's record does not list the pane until it settles.
 let pendingOpen = false
+// The surfaces whose pane draw has reported a dock (the `Pane` render's `placement`) since the pane was opened from closed, by the surface name the render
+// carries. Only a draw says: the engine's pane list does not, and a session may draw on several surfaces. A report of another placement leaves a surface
+// as it is, so within one opening a surface only goes from unseen to seen. The records outlive a close and reset on the next open from closed (openPane).
+const docks = new Set<string>()
 // The list the surface drew last, from the band or the pane, which a press reads synchronously when it opens or resizes the pane
 // (see openPane). The surface redraws on each change, so this is at most one draw behind the list.
 let drawnItems: readonly Item[] = []
@@ -30,6 +34,20 @@ let shownItem: number | null = null
 // Each draw records the list it drew (drawnItems).
 export const setDrawn = (items: readonly Item[]): void => {
   drawnItems = items
+}
+
+// Whether a band drawn on `surface` sits beside this plugin's pane docked: the pane is open and a draw of it on that surface has reported a dock since it was
+// opened from closed. Derived from the open flag and the records, so each way the pane stops being open ends the dock with no edit here. Another plugin's
+// docked pane is not seen, and a pane open on a surface that has not drawn it as a dock is not counted docked.
+export const paneDocked = (surface: string): boolean => paneOpen && docks.has(surface)
+
+// The Pane draw's report of where its `surface` seated the pane. The band's width rule turns on the answer, and the engine does not draw a band again when
+// only the pane's placement changes, so a report that changes what paneDocked answers for that surface asks for a redraw, and a report that changes nothing
+// asks for none, which is what ends the redraws.
+export function seated($: EngineInterface, surface: string, placement: 'dock' | 'inline'): void {
+  const was = paneDocked(surface)
+  if (placement === 'dock') docks.add(surface)
+  if (paneDocked(surface) !== was) $.ui.invalidate('ui.render')
 }
 
 // The engine's record of the pane, which is what an unload leaves behind without a ui.close the mod hears. Not read while an open
@@ -55,6 +73,8 @@ const paneRequest = (id: number, items: readonly Item[]) => ({ id: PANE, title: 
 function openPane($: EngineInterface, id: number): Promise<unknown> {
   paneOpen = true
   pendingOpen = true
+  // The surface may seat the pane elsewhere than it last did (the terminal's width has changed): until it draws, it is not counted docked.
+  docks.clear()
   const opened = $.ui.open(paneRequest(id, drawnItems)).finally(() => {
     pendingOpen = false
   })
@@ -159,9 +179,11 @@ export function markRead($: EngineInterface, id: number, printed?: Item): Promis
 // must not clear it.
 async function closePane($: EngineInterface): Promise<void> {
   paneOpen = false
-  // A close another plugin refuses leaves the pane open, so the flag goes back to open.
+  // A close another plugin refuses leaves the pane open, so the flag goes back to open. The pane is where it was and the engine draws nothing again for it,
+  // so the bands drawn since the flag cleared, which had no dock beside them, are asked to draw again when any surface has seen it docked.
   await $.ui.close({ id: PANE }).catch((err: unknown) => {
     paneOpen = true
+    if (docks.size > 0) $.ui.invalidate('ui.render')
     throw err
   })
 }

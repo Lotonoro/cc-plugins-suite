@@ -42,6 +42,8 @@ export type BandWidths = { human: ListWidth | null; claude: ListWidth | null }
 // The band's smallest width for both lists to draw (the human list keeps 64 of it), and the Claude column's narrowest width.
 const TWO_LIST_WIDTH = 96
 const CLAUDE_MIN_WIDTH = 32
+// Beside this plugin's docked pane the band is the transcript's column, and both lists draw from a narrower band: the column's 32 and a human list of 20.
+const DOCKED_TWO_LIST_WIDTH = 52
 // The empty column each box keeps while both lists draw.
 const MARGIN = 1
 
@@ -51,13 +53,13 @@ const whole = (box: number): ListWidth => ({ box, layout: box })
 export const bandDraws = (humanCount: number, todo: readonly TodoItem[]): boolean => humanCount > 0 || todo.some(isInFlight)
 
 // The widths of the band's lists at `columns`. Beside a human list the Claude column draws when it has any item and the band is wide enough
-// for both; alone it draws when an item is in flight, at any width. It is a third of the band, rounded down, never under 32 columns or wider
-// than the band; the human list takes the rest, or all of the band when the column does not draw. Both lists keep their boxes' empty column
-// (`layout` one less than `box`) only while both draw.
-export const bandWidths = (columns: number, humanCount: number, todo: readonly TodoItem[]): BandWidths => {
+// for both, 96 columns or 52 beside this plugin's pane docked (`isDocked`, pane.ts); alone it draws when an item is in flight, at any width. It is a third of
+// the band, rounded down, never under 32 columns or wider than the band; the human list takes the rest, or all of the band when the column does not draw.
+// Both lists keep their boxes' empty column (`layout` one less than `box`) only while both draw.
+export const bandWidths = (columns: number, humanCount: number, todo: readonly TodoItem[], isDocked = false): BandWidths => {
   const column = Math.min(columns, Math.max(CLAUDE_MIN_WIDTH, Math.floor(columns / 3)))
   if (humanCount === 0) return { human: null, claude: todo.some(isInFlight) ? whole(column) : null }
-  if (todo.length > 0 && columns >= TWO_LIST_WIDTH) {
+  if (todo.length > 0 && columns >= (isDocked ? DOCKED_TWO_LIST_WIDTH : TWO_LIST_WIDTH)) {
     const human = columns - column
     return { human: { box: human, layout: human - MARGIN }, claude: { box: column, layout: column - MARGIN } }
   }

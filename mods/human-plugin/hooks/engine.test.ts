@@ -856,8 +856,73 @@ test('the Claude column drawn alone, with no human items, keeps its whole box: 4
   }
 })
 
+// The mod's pane as the engine keeps it: opened by the mod, listed by `ui.panes` while it is in the set, and dropped by the test as the engine would. The
+// Pane drawing a test mounts says where the surface seated it.
+const paneRecord = (on: On) => {
+  const shown = new Set<string>()
+  on('ui.open', (_$, e) => {
+    shown.add(e.id)
+    return { value: { isPlaced: true } }
+  })
+  on('ui.panes', () => ({ value: [...shown].map(id => ({ id, title: id, isShown: true, hasKeyboard: false, isFocused: false, isPlaced: true }) as UiPane) }))
+  return shown
+}
+const PANE_PROPS = { title: 'Items for you', isFocused: true, bodyColumns: 48, placement: 'dock' as 'dock' | 'inline', scroll: { offset: 0, bodyRows: 20 }, view: {} }
+const within = (node: Drawn | undefined, text: string): boolean => JSON.stringify(node).includes(text)
+
+test('a band of 52 columns draws the human list 20 wide beside the Claude column 32 wide once the mod\'s pane is open and its surface has drawn it as a dock, with no other event, and drops it when the engine no longer lists the pane', async ($, on) => {
+  mock.clock(on)
+  mock.store(on)
+  const shown = paneRecord(on)
+  await $.tool.call({ tool: TOOL, action: 'add', title: 'Ship' })
+  await $.tool.call({ tool: TODO_TOOL, entries: [{ title: 'Build it', state: 'in_flight' }] })
+  const band = await $.ui.mount({ plugin: 'human-plugin', surface: 'terminal', component: 'AbovePrompt', props: { ...BAND_PROPS, bodyColumns: 52 } })
+  expect(JSON.stringify(await band.drawn())).not.toContain('Claude TODO')
+  // The press opens the pane. Until its drawing says where it sits, the band has no dock.
+  await band.press({ key: 'title-1' })
+  expect(JSON.stringify(await band.drawn())).not.toContain('Claude TODO')
+  const pane = await $.ui.mount({ plugin: 'human-plugin', surface: 'terminal', component: 'Pane', requestId: 'human-items', props: PANE_PROPS })
+  const { human, column } = boxes(await band.drawn())
+  expect(human?.props?.width).toBe(20)
+  expect(within(human, 'Ship')).toBe(true)
+  expect(within(human, 'Claude TODO')).toBe(false)
+  expect(column?.props?.width).toBe(32)
+  expect(within(column, 'Claude TODO 1 active, 0 queued')).toBe(true)
+  // The pane seen as a dock stays one while it is open, drawn in another placement or not.
+  await pane.redraw({ ...PANE_PROPS, placement: 'inline' })
+  expect(within(boxes(await band.drawn()).column, 'Claude TODO')).toBe(true)
+  // The engine drops the pane with no close the mod hears, and the band is drawn again at the width that gives.
+  shown.clear()
+  await band.redraw()
+  expect(JSON.stringify(await band.drawn())).not.toContain('Claude TODO')
+})
+
+test('a close another plugin refuses leaves the pane docked: a band drawn alone while the close was in flight draws both lists again, with no other event', async ($, on) => {
+  mock.clock(on)
+  mock.store(on)
+  const shown = paneRecord(on)
+  let redraw: () => Promise<void> = async () => {}
+  on('ui.close', async () => {
+    // The engine's list does not show the pane while the close runs, and the band is drawn then.
+    shown.delete('human-items')
+    await redraw()
+    shown.add('human-items')
+    return { deny: 'kept open by another plugin' }
+  })
+  await $.tool.call({ tool: TOOL, action: 'add', title: 'Pick a db' })
+  await $.tool.call({ tool: TODO_TOOL, entries: [{ title: 'Build it', state: 'in_flight' }] })
+  const band = await $.ui.mount({ plugin: 'human-plugin', surface: 'terminal', component: 'AbovePrompt', props: { ...BAND_PROPS, bodyColumns: 52 } })
+  redraw = () => band.redraw()
+  await band.press({ key: 'title-1' })
+  await $.ui.mount({ plugin: 'human-plugin', surface: 'terminal', component: 'Pane', requestId: 'human-items', props: PANE_PROPS })
+  expect(within(boxes(await band.drawn()).column, 'Claude TODO')).toBe(true)
+  // A second press, on the item the pane shows, asks to close it.
+  await band.press({ key: 'title-1' })
+  expect(within(boxes(await band.drawn()).column, 'Claude TODO')).toBe(true)
+})
+
 // The band's rows as the terminal's element table gives them: nodes of `{ type, props, children }`, a Text's children its strings.
-type El = { type?: string; props?: { key?: string; width?: number; flexShrink?: number; paddingLeft?: number; paddingRight?: number; flexDirection?: string; label?: string; backgroundColor?: string }; children?: (El | string)[] }
+type El ={ type?: string; props?: { key?: string; width?: number; flexShrink?: number; paddingLeft?: number; paddingRight?: number; flexDirection?: string; label?: string; backgroundColor?: string }; children?: (El | string)[] }
 const elementsOf = (node: El | string | undefined, type: string): El[] =>
   node === undefined || typeof node === 'string' ? [] : [...(node.type === type ? [node] : []), ...(node.children ?? []).flatMap(child => elementsOf(child, type))]
 // What a subtree shows: its text and its buttons' labels, in drawing order.

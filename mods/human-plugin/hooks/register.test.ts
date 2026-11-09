@@ -3076,8 +3076,15 @@ test('/claude-todo changes neither list: the human list and the Claude list are 
 
 // The band with the Claude column: the AbovePrompt hook reads the Claude list beside the human one and draws both at the band's `bodyColumns`.
 type Tree = { type?: string; width?: number; children?: Tree[]; [k: string]: unknown }
-const bandAt = (hooks: Record<string, Handler>, env: unknown, bodyColumns: number, extra: Record<string, unknown> = {}) =>
-  drawn(env, () => hooks['ui.render {"component":"AbovePrompt"}']?.(env as never, { props: { hasSurvey: false, maxRows: 20, bodyColumns, ...extra } } as never, next(false) as never)) as Promise<Tree>
+// `viewport`: the terminal's size and whether it is fullscreen, as a draw might carry them, on the event and in its props. The band reads neither.
+const bandAt = (hooks: Record<string, Handler>, env: unknown, bodyColumns: number, extra: Record<string, unknown> = {}, surface = 'terminal', viewport?: object) =>
+  drawn(env, () =>
+    hooks['ui.render {"component":"AbovePrompt"}']?.(
+      env as never,
+      { surface, ...(viewport === undefined ? {} : { viewport }), props: { hasSurvey: false, maxRows: 20, bodyColumns, ...(viewport === undefined ? {} : { viewport }), ...extra } } as never,
+      next(false) as never,
+    ),
+  ) as Promise<Tree>
 // Trees are compared as JSON: a press handler is a fresh closure on every draw.
 const flat = (node: unknown): string => JSON.stringify(node)
 const sameTree = flat
@@ -3095,6 +3102,355 @@ test('with two human items and no Claude items the band is the one drawn today a
   expect(wide.children?.map(c => c.width)).toEqual([80, 40])
   expect(flat(wide.children?.[1])).toContain('○ Write the tests')
   expect(sameTree(await bandAt(hooks, env, 90))).toBe(sameTree(today))
+})
+
+// Where the pane stands: the Pane hook is raised on every surface, and its props say how that surface seated the pane. The band draws the Claude column
+// beside this plugin's pane once a draw of it on the band's own surface has reported a dock since the pane was opened from closed: from 52 columns,
+// and elsewhere from 96.
+const paneAt = (hooks: Record<string, Handler>, env: unknown, placement: 'dock' | 'inline', surface = 'terminal') =>
+  drawn(env, () => hooks['ui.render {"component":"Pane","requestId":"human-items"}']?.(env as never, { surface, props: { bodyColumns: 48, placement } } as never, next(false) as never))
+// The `$` with its `ui.invalidate` counted: what the mod asked the engine to draw again.
+const asking = (env: ReturnType<typeof memEnv>['env']) => {
+  const asked: string[] = []
+  return { $: { ...env, ui: { ...env.ui, invalidate: (event: string) => void asked.push(event) } }, asked }
+}
+// A band on `surface`: whether it draws the Claude column beside the human list. The width beside a docked pane is 52 columns and a pane docked at 110
+// columns leaves the band 56, so a band of each width is drawn, and they must agree.
+const columnDrawn = async (hooks: Record<string, Handler>, env: unknown, surface = 'terminal'): Promise<boolean> => {
+  const at52 = flat(await bandAt(hooks, env, 52, {}, surface)).includes('Claude TODO')
+  expect(flat(await bandAt(hooks, env, 56, {}, surface)).includes('Claude TODO'), `a band of 56 columns on ${surface} agrees with one of 52`).toBe(at52)
+  return at52
+}
+const endSession = (hooks: Record<string, Handler>, env: unknown) => (hooks['session.end'] as Handler)(env as never, { reason: 'exit' } as never, next(false) as never)
+const personCloses = async (hooks: Record<string, Handler>, env: unknown, open: string[]): Promise<void> => {
+  open.length = 0
+  await (hooks['ui.close'] as Handler)(env as never, { id: 'human-items', origin: { kind: 'person' } } as never, next(false) as never)
+}
+// The mod's records of docks outlive a close and reset when the pane is opened from closed, so a test starts from a pane opened and shut again: no
+// pane, no record, and no redraw asked yet.
+const freshDock = async (hooks: Record<string, Handler>, env: unknown, open: string[], asked: string[]): Promise<void> => {
+  await endSession(hooks, env)
+  findButton(await bandAt(hooks, env, 80), 'title-1')?.onPress()
+  await settle()
+  await personCloses(hooks, env, open)
+  asked.length = 0
+}
+
+test('a band of 52 and one of 56 draw both lists once the pane is open and its surface has drawn it as a dock, and the dock\'s first draw asks for the redraw; no later pane draw asks for another', async () => {
+  reset()
+  const { hooks } = wire()
+  const open: string[] = []
+  const { env, values } = memEnv([made(1), made(2)], open, null)
+  const { $, asked } = asking(env)
+  values.todo = [entry('Running', 'in_flight')]
+  await freshDock(hooks, $, open, asked)
+  // The pane is shut: a draw of it, whatever it says, changes nothing the band draws, and asks for nothing.
+  await paneAt(hooks, $, 'inline')
+  expect(await columnDrawn(hooks, $)).toBe(false)
+  expect(asked).toEqual([])
+  // The pane is open inline and has not been drawn as a dock: the human list alone, full width.
+  open.push('human-items')
+  expect(await columnDrawn(hooks, $)).toBe(false)
+  expect((await bandAt(hooks, $, 56)).width).toBeUndefined()
+  // The band is drawn at the narrower width first, then the pane is drawn as a dock: the draw asks for the band, with no other event.
+  await paneAt(hooks, $, 'dock')
+  expect(asked).toEqual(['ui.render'])
+  const docked = await bandAt(hooks, $, 52)
+  expect(docked.width).toBe(52)
+  expect(docked.children?.map(c => c.width)).toEqual([20, 32])
+  expect(flat(docked.children?.[1])).toContain('◐ Running')
+  const wider = await bandAt(hooks, $, 56)
+  expect(wider.children?.map(c => c.width)).toEqual([24, 32])
+  // A later pane draw on the surface, docked or in another placement, asks for nothing, and the band still shows both lists.
+  await paneAt(hooks, $, 'dock')
+  await paneAt(hooks, $, 'inline')
+  await paneAt(hooks, $, 'dock')
+  expect(asked).toEqual(['ui.render'])
+  expect(await columnDrawn(hooks, $)).toBe(true)
+})
+
+// What a draw's viewport can say: none, a terminal of 110 columns that is not fullscreen, a fullscreen one of 61 columns (the dock's transcript column
+// at 110) and a fullscreen one of 110.
+const VIEWPORTS: (object | undefined)[] = [undefined, { columns: 110, rows: 45, isFullscreen: false }, { columns: 61, rows: 70, isFullscreen: true }, { columns: 110, rows: 70, isFullscreen: true }]
+
+test('at a band of 52 and one of 56 the mod\'s pane state and its surface\'s dock alone decide the Claude column, whatever viewport the draw carries', async () => {
+  reset()
+  const { hooks } = wire()
+  const open: string[] = []
+  const { env, values } = memEnv([made(1), made(2)], open, null)
+  const { $, asked } = asking(env)
+  values.todo = [entry('Running', 'in_flight')]
+  await freshDock(hooks, $, open, asked)
+  const hasColumn = (tree: Tree): boolean => flat(tree).includes('Claude TODO')
+  const check = async (expected: boolean, name: string): Promise<void> => {
+    for (const columns of [52, 56]) {
+      const without = await bandAt(hooks, $, columns)
+      expect(hasColumn(without), `${name}, ${columns} columns`).toBe(expected)
+      if (expected) expect(without.children?.map(c => c.width), `${name}, ${columns} columns`).toEqual([columns - 32, 32])
+      for (const viewport of VIEWPORTS) {
+        const tree = await bandAt(hooks, $, columns, {}, 'terminal', viewport)
+        expect(hasColumn(tree), `${name}, ${columns} columns, ${JSON.stringify(viewport)}`).toBe(expected)
+        expect(sameTree(tree), `${name}, ${columns} columns, ${JSON.stringify(viewport)}`).toBe(sameTree(without))
+      }
+    }
+  }
+  // Another plugin's dock: this plugin's pane is not open.
+  await check(false, 'the pane is shut')
+  open.push('human-items')
+  await paneAt(hooks, $, 'inline')
+  await check(false, 'the pane is inline')
+  await paneAt(hooks, $, 'dock')
+  await check(true, 'the pane is docked')
+})
+
+test('each surface keeps its own answer: a pane docked on the terminal and inline on the desktop gives the terminal band the Claude column and the desktop band none, and a draw on one never changes the other', async () => {
+  reset()
+  const { hooks } = wire()
+  const open: string[] = []
+  const { env, values } = memEnv([made(1), made(2)], open, null)
+  const { $, asked } = asking(env)
+  values.todo = [entry('Running', 'in_flight')]
+  await freshDock(hooks, $, open, asked)
+  open.push('human-items')
+  await bandAt(hooks, $, 52, {}, 'terminal')
+  await paneAt(hooks, $, 'dock', 'terminal')
+  await paneAt(hooks, $, 'inline', 'desktop')
+  expect(asked).toEqual(['ui.render'])
+  expect(await columnDrawn(hooks, $, 'terminal')).toBe(true)
+  expect(await columnDrawn(hooks, $, 'desktop')).toBe(false)
+  // The desktop docks it too: a change for the desktop alone, and the terminal's answer is as it was.
+  await paneAt(hooks, $, 'dock', 'desktop')
+  expect(asked).toEqual(['ui.render', 'ui.render'])
+  expect(await columnDrawn(hooks, $, 'desktop')).toBe(true)
+  expect(await columnDrawn(hooks, $, 'terminal')).toBe(true)
+  // A band drawn on a surface no pane has drawn on has no dock.
+  expect(await columnDrawn(hooks, $, 'vscode')).toBe(false)
+  // A pane drawn inline on one surface leaves the other's answer as it was, and a band drawn there again shows what it showed.
+  const before = flat(await bandAt(hooks, $, 56, {}, 'desktop'))
+  await paneAt(hooks, $, 'inline', 'terminal')
+  expect(flat(await bandAt(hooks, $, 56, {}, 'desktop'))).toBe(before)
+  expect(asked).toEqual(['ui.render', 'ui.render'])
+})
+
+test('two clients of one surface kind whose pane draws report dock and inline in turn ask for one redraw after the pane is opened, and the band shows both lists after the first dock', async () => {
+  reset()
+  const { hooks } = wire()
+  const open: string[] = []
+  const { env, values } = memEnv([made(1), made(2)], open, null)
+  const { $, asked } = asking(env)
+  values.todo = [entry('Running', 'in_flight')]
+  await freshDock(hooks, $, open, asked)
+  findButton(await bandAt(hooks, $, 52), 'title-1')?.onPress()
+  await settle()
+  expect(open).toEqual(['human-items'])
+  const drawsOf = async (sequence: ('dock' | 'inline')[]): Promise<void> => {
+    for (const placement of sequence) await paneAt(hooks, $, placement)
+  }
+  await drawsOf(['inline', 'inline'])
+  expect(asked).toEqual([])
+  await drawsOf(['dock', 'inline', 'dock', 'inline', 'inline', 'dock', 'inline'])
+  expect(asked).toEqual(['ui.render'])
+  expect(await columnDrawn(hooks, $)).toBe(true)
+})
+
+test('a pane opened from closed forgets the docks it was seen in: the band is the human list alone until the new pane has drawn as a dock, and that draw asks for the band', async () => {
+  reset()
+  const { hooks } = wire()
+  const open: string[] = []
+  const { env, values } = memEnv([made(1), made(2)], open, null)
+  const { $, asked } = asking(env)
+  values.todo = [entry('Running', 'in_flight')]
+  await freshDock(hooks, $, open, asked)
+  const press = async (): Promise<void> => {
+    findButton(await bandAt(hooks, $, 52), 'title-1')?.onPress()
+    await settle()
+  }
+  await press()
+  expect(open).toEqual(['human-items'])
+  await paneAt(hooks, $, 'dock')
+  expect(await columnDrawn(hooks, $)).toBe(true)
+  // The second press, on the item the pane shows, shuts it. The shut pane has no dock.
+  await press()
+  expect(open).toEqual([])
+  expect(await columnDrawn(hooks, $)).toBe(false)
+  // The third opens it again, and it may be seated elsewhere: until it draws, the old dock is not read.
+  await press()
+  expect(open).toEqual(['human-items'])
+  expect(await columnDrawn(hooks, $)).toBe(false)
+  asked.length = 0
+  await paneAt(hooks, $, 'dock')
+  expect(asked).toEqual(['ui.render'])
+  expect(await columnDrawn(hooks, $)).toBe(true)
+})
+
+// The pane open as a dock on the terminal, as a press opens it and its draw seats it.
+const dockedPane = async (hooks: Record<string, Handler>, env: unknown, open: string[], asked: string[]): Promise<void> => {
+  await freshDock(hooks, env, open, asked)
+  findButton(await bandAt(hooks, env, 52), 'title-1')?.onPress()
+  await settle()
+  await paneAt(hooks, env, 'dock')
+  expect(open).toEqual(['human-items'])
+  expect(await columnDrawn(hooks, env)).toBe(true)
+}
+
+// Each way the pane stops being open: the dock ends with it, and a pane opened from closed again is not docked until it has drawn as a dock.
+const ENDS: [string, (hooks: Record<string, Handler>, env: unknown, open: string[]) => Promise<void>][] = [
+  ['the person closes it', (hooks, env, open) => personCloses(hooks, env, open)],
+  [
+    'the mod closes it, by a press on the item it shows',
+    async (hooks, env) => {
+      findButton(await bandAt(hooks, env, 52), 'title-1')?.onPress()
+      await settle()
+    },
+  ],
+  [
+    'a /clear ends the session',
+    async (hooks, env) => {
+      await (hooks['session.end'] as Handler)(env as never, { reason: 'clear' } as never, next(false) as never)
+      await settle()
+    },
+  ],
+  [
+    'the engine\'s pane list no longer shows it, as after an unload, with no close the mod hears',
+    async (_hooks, _env, open) => {
+      open.length = 0
+    },
+  ],
+]
+for (const [ending, end] of ENDS) {
+  test(`when ${ending}, the band of 52 and of 56 is the human list alone, and a pane opened again is not read as docked until its draw reports a dock`, async () => {
+    reset()
+    const { hooks } = wire()
+    const open: string[] = []
+    const { env, values } = memEnv([made(1), made(2)], open, null)
+    const { $, asked } = asking(env)
+    values.todo = [entry('Running', 'in_flight')]
+    await dockedPane(hooks, $, open, asked)
+    await end(hooks, $, open)
+    expect(open).toEqual([])
+    values.list = { items: [made(1), made(2)], next: 3 }
+    values.todo = [entry('Running', 'in_flight')]
+    expect(await columnDrawn(hooks, $)).toBe(false)
+    findButton(await bandAt(hooks, $, 52), 'title-1')?.onPress()
+    await settle()
+    expect(open).toEqual(['human-items'])
+    expect(await columnDrawn(hooks, $)).toBe(false)
+    asked.length = 0
+    await paneAt(hooks, $, 'dock')
+    expect(asked).toEqual(['ui.render'])
+    expect(await columnDrawn(hooks, $)).toBe(true)
+  })
+}
+
+test('a session end other than /clear that leaves the pane in the engine\'s list leaves the dock; a press that opens the pane from closed before any band draw resyncs it narrows the band until the pane draws as a dock again, which asks for the band', async () => {
+  reset()
+  const { hooks } = wire()
+  const open: string[] = []
+  const { env, values } = memEnv([made(1), made(2)], open, null)
+  const { $, asked } = asking(env)
+  values.todo = [entry('Running', 'in_flight')]
+  await dockedPane(hooks, $, open, asked)
+  await endSession(hooks, $)
+  expect(await columnDrawn(hooks, $)).toBe(true)
+  // The session ends again, and a press made on the band drawn before it opens the pane from closed with no band draw between.
+  const tree = await bandAt(hooks, $, 52)
+  await endSession(hooks, $)
+  findButton(tree, 'title-1')?.onPress()
+  await settle()
+  expect(open).toEqual(['human-items'])
+  expect(await columnDrawn(hooks, $)).toBe(false)
+  asked.length = 0
+  await paneAt(hooks, $, 'dock')
+  expect(asked).toEqual(['ui.render'])
+  expect(await columnDrawn(hooks, $)).toBe(true)
+})
+
+// A pane whose close another plugin refuses. With `state.refuse` on, the engine's list has no pane while the close is pending, `state.during` runs then
+// (a band drawn in that window), and the list has the pane again when the call rejects.
+const refusing = (env: ReturnType<typeof memEnv>['env'], open: string[]) => {
+  const { $: counted, asked } = asking(env)
+  const state = { refuse: false, during: async (): Promise<void> => {} }
+  const close = async (e: { id: string }): Promise<void> => {
+    if (!state.refuse) return counted.ui.close(e)
+    open.splice(open.indexOf(e.id), 1)
+    await state.during()
+    open.push(e.id)
+    throw new Error('close refused')
+  }
+  return { $: { ...counted, ui: { ...counted.ui, close } }, asked, state }
+}
+
+test('a close another plugin refuses leaves the pane open and docked: the band drawn alone while it was pending is asked for again, and draws the Claude column', async () => {
+  reset()
+  const { hooks } = wire()
+  const open: string[] = []
+  const { env, values } = memEnv([made(1), made(2)], open, null)
+  const { $, asked, state } = refusing(env, open)
+  values.todo = [entry('Running', 'in_flight')]
+  await dockedPane(hooks, $, open, asked)
+  asked.length = 0
+  const tree = await bandAt(hooks, $, 52)
+  let inFlight: Tree | undefined
+  state.refuse = true
+  state.during = async () => {
+    inFlight = await bandAt(hooks, $, 52)
+  }
+  findButton(tree, 'title-1')?.onPress()
+  await settle()
+  await settle()
+  // The list lacked the pane when the band was drawn in the window, so that draw had no column; the refusal asks for the draw again.
+  expect(inFlight).toBeDefined()
+  expect(flat(inFlight)).not.toContain('Claude TODO')
+  expect(open).toEqual(['human-items'])
+  expect(asked).toEqual(['ui.render'])
+  expect(await columnDrawn(hooks, $)).toBe(true)
+})
+
+test('a close another plugin refuses asks for no redraw when the pane was never drawn as a dock: the band had no dock to lose', async () => {
+  reset()
+  const { hooks } = wire()
+  const open: string[] = []
+  const { env, values } = memEnv([made(1), made(2)], open, null)
+  const { $, asked, state } = refusing(env, open)
+  values.todo = [entry('Running', 'in_flight')]
+  await freshDock(hooks, $, open, asked)
+  findButton(await bandAt(hooks, $, 52), 'title-1')?.onPress()
+  await settle()
+  await paneAt(hooks, $, 'inline')
+  const tree = await bandAt(hooks, $, 52)
+  state.refuse = true
+  state.during = async () => {
+    await bandAt(hooks, $, 52)
+  }
+  findButton(tree, 'title-1')?.onPress()
+  await settle()
+  await settle()
+  expect(open).toEqual(['human-items'])
+  expect(asked).toEqual([])
+})
+
+test('switching the pane to another item, and an item the agent removes from under it, leave the band docked with nothing asked, before the pane draws again', async () => {
+  reset()
+  const { hooks } = wire()
+  const open: string[] = []
+  const { env, values } = memEnv([made(1), made(2), made(3)], open, null)
+  const { $, asked } = asking(env)
+  values.todo = [entry('Running', 'in_flight')]
+  await dockedPane(hooks, $, open, asked)
+  asked.length = 0
+  // A press on another item's title switches the open pane to it: the pane is opened again with that item's rows.
+  const opens: object[] = []
+  const switching = { ...$, ui: { ...$.ui, open: (args: object) => (opens.push(args), $.ui.open(args as never)) } }
+  findButton(await bandAt(hooks, switching, 52), 'title-2')?.onPress()
+  await settle()
+  expect(opens.length).toBe(1)
+  expect(await columnDrawn(hooks, $)).toBe(true)
+  // The agent removes the item the pane shows: the pane moves on to the next one.
+  await runTool(hooks, switching, { action: 'remove', id: 2 })
+  await settle()
+  expect(opens.length).toBe(2)
+  expect(await columnDrawn(hooks, $)).toBe(true)
+  expect(asked).toEqual([])
 })
 
 test('with no human items an item in flight draws the column alone, 40 wide, and nothing in flight hands on', async () => {

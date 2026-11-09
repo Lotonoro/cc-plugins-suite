@@ -50,7 +50,8 @@ export type Handlers = {
 // What the band draws with: the rows the surface has, the time now, and the undo window's length. `selected`: the item the pane
 // shows, if any. `claude`: the Claude list and the columns the band is laid out in, which the Claude column is drawn from. It also gives the human
 // list its width, which its rows are laid out and cut in; without it the band has no width to fit its rows to, and draws each whole, nothing cut.
-export type View = { maxRows: number; now: number; windowMs: number; selected?: number | null; claude?: { items: readonly TodoItem[]; columns: number } }
+// `isDocked`: whether this plugin's pane is docked on the band's surface (pane.ts), which narrows the width the two lists need.
+export type View = { maxRows: number; now: number; windowMs: number; selected?: number | null; claude?: { items: readonly TodoItem[]; columns: number; isDocked?: boolean } }
 
 const CHECK = { color: 'green' }
 
@@ -335,7 +336,7 @@ const headerTexts = (store: Store): { chip: string; count: string } => {
 export const band = (t: Table, h: Handlers, store: Store, view: View): RenderElement => {
   const open = store.items.filter(it => it.state === 'open')
   const todo = view.claude?.items ?? []
-  const widths: BandWidths = view.claude === undefined ? { human: null, claude: null } : bandWidths(view.claude.columns, store.items.length, todo)
+  const widths: BandWidths = view.claude === undefined ? { human: null, claude: null } : bandWidths(view.claude.columns, store.items.length, todo, view.claude.isDocked)
   // The columns the human rows are laid out in; null for a band with no width to lay them out in, which draws them whole.
   const fit = widths.human === null ? null : widths.human.layout
   // The column's fixed lines (its header and every in-flight row) can make the band taller than `maxRows` beside the human list.
