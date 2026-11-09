@@ -4040,7 +4040,7 @@ test('a write that changes an item\'s state and keeps the number of items makes 
   expect(linesOf(await paneTree(hooks, $))).toEqual(['Claude TODO 2 in flight, 1 queued', '◐ Build the pane', '◐ Renamed', '○ Then'])
 })
 
-test('an open the pane refuses leaves its count of items asked as it was: the next write with that count asks again, the failure is logged, and once an open is taken a write that keeps the count asks for nothing', async () => {
+test('after an open the pane refuses, the next write with the count that open asked for asks again, and the failure is logged; once an open is taken, a write that keeps the count asks for nothing', async () => {
   reset()
   const { hooks } = wire()
   const { env, $: engine, opens } = backlogEnv([made(1)], [], null, [RUNNING, entry('Next', 'queued')])
