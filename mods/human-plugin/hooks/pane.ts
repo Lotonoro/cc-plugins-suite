@@ -266,13 +266,14 @@ export function pickBacklog($: EngineInterface): Promise<unknown> {
   return paneOpen && shownNow() === CLAUDE_VIEW ? closePane($) : showBacklog($)
 }
 
-// A session's end: the flag and the records of what the pane shows clear, and a /clear closes an open pane first, since its item leaves with the list and the pane
-// must not stay open on nothing.
+// A session's end: the flag and the records of what the pane shows clear, and the pane closes first when it is open on the Claude list, whatever ended the session: a resume
+// rebuilds that list from its transcript, a writer the list's follow-up never sees, so the pane would hold rows for a list that no longer matches. A /clear closes an open pane
+// whichever view it shows, since its item leaves with the list and the pane must not stay open on nothing. A pane on a human item otherwise stays.
 export function endPane($: EngineInterface, clear: boolean): void {
-  const wasOpen = paneOpen
+  const closes = paneOpen && (clear || shownNow() === CLAUDE_VIEW)
   paneOpen = false
   shownPick = null
   lastRead = null
   askedItems = null
-  if (clear && wasOpen) inBackground($, closePane($))
+  if (closes) inBackground($, closePane($))
 }

@@ -390,7 +390,8 @@ export const wireHooks = (on: On, windowMs: number): void => {
     reset()
     stopTicker()
     resetRebuild()
-    // The pane goes first, before anything that can fail: its item leaves with the list, so it must not stay open on nothing.
+    // The pane goes first, before anything that can fail: after a /clear its item leaves with the list, and a resume rebuilds the Claude list the backlog shows, so the pane must
+    // not stay open on nothing or on the old list's rows.
     endPane($, e.reason === 'clear')
     if (e.reason === 'clear') {
       const kept = carryNext(await readList($), await $.store.get(NEXT_KEY))

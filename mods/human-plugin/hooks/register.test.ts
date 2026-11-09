@@ -3121,7 +3121,14 @@ const columnDrawn = async (hooks: Record<string, Handler>, env: unknown, surface
   expect(flat(await bandAt(hooks, env, 56, {}, surface)).includes('Claude TODO'), `a band of 56 columns on ${surface} agrees with one of 52`).toBe(at52)
   return at52
 }
-const endSession = (hooks: Record<string, Handler>, env: unknown) => (hooks['session.end'] as Handler)(env as never, { reason: 'exit' } as never, next(false) as never)
+// The session's end that starts a test. The module keeps the pane's records from one test to the next, and a session's end closes a pane that shows the Claude list, so the last
+// test's session ends first, on a `$` of its own, and the close it makes is not asked of this test's.
+const endSession = async (hooks: Record<string, Handler>, env: unknown) => {
+  const last = { ui: { close: async () => {}, log: () => {} } }
+  await (hooks['session.end'] as Handler)(last as never, { reason: 'exit' } as never, next(false) as never)
+  await settle()
+  return (hooks['session.end'] as Handler)(env as never, { reason: 'exit' } as never, next(false) as never)
+}
 const personCloses = async (hooks: Record<string, Handler>, env: unknown, open: string[]): Promise<void> => {
   open.length = 0
   await (hooks['ui.close'] as Handler)(env as never, { id: 'human-items', origin: { kind: 'person' } } as never, next(false) as never)
@@ -4201,6 +4208,37 @@ test('a /clear with the pane on the Claude list closes it', async () => {
   await settle()
   expect(closes).toEqual(['human-items'])
   expect(open).toEqual([])
+})
+
+test('a session end of any reason closes the pane while it shows the Claude list, since a resume rebuilds that list from its transcript and the pane\'s rows would no longer match it', async () => {
+  for (const reason of ['resume', 'prompt_input_exit', 'logout', 'other']) {
+    reset()
+    const { hooks } = wire()
+    const { $, closes, open } = backlogEnv([made(1)], [], null, SIX)
+    await endSession(hooks, $)
+    pressKey(await bandAt(hooks, $, 120), 'claude-header')
+    await settle()
+    expect(open, reason).toEqual(['human-items'])
+    await (hooks['session.end'] as Handler)($ as never, { reason } as never, next(false) as never)
+    await settle()
+    expect(closes, reason).toEqual(['human-items'])
+    expect(open, reason).toEqual([])
+  }
+})
+
+test('a session end that is not a /clear leaves a pane on a human item open, as it did', async () => {
+  for (const reason of ['resume', 'prompt_input_exit']) {
+    reset()
+    const { hooks } = wire()
+    const { $, closes, open } = backlogEnv([made(1), made(2)], [], null, SIX)
+    await endSession(hooks, $)
+    pressKey(await bandAt(hooks, $, 120), 'title-1')
+    await settle()
+    await (hooks['session.end'] as Handler)($ as never, { reason } as never, next(false) as never)
+    await settle()
+    expect(closes, reason).toEqual([])
+    expect(open, reason).toEqual(['human-items'])
+  }
 })
 
 test('a refused write of the Claude list\'s selection leaves the pane drawing the stored selection, and the band, drawn again, showing the stored selection\'s item as the shown one', async () => {
