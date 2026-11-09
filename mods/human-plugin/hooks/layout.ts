@@ -1,5 +1,5 @@
 import type { Item, TodoItem } from '../types'
-import { DONE_MAX, columnsByCodePoint, displayColumns } from './items'
+import { DONE_MAX, VARIATION_SELECTOR_16, columnsByCodePoint, displayColumns } from './items'
 import { inDisplayOrder } from './todo'
 
 export type BandRow = { kind: 'item'; item: Item } | { kind: 'more'; blocking: number; more: number; first: Item }
@@ -127,18 +127,23 @@ export const wrapText = (text: string, width: number): string[] => text.split(/\
 const ELLIPSIS = '…'
 const ZERO_WIDTH_JOINER = 0x200d
 
-// A text cut at its end to `room` columns: whole when it fits, otherwise the longest start that leaves a column for the ellipsis, in whole code points and never
-// ending on a joiner (which would join the ellipsis to what was kept), then the ellipsis. Nothing where the room has no column.
+// A text cut at its end to `room` columns: whole when it fits, otherwise the longest start that leaves a column for the ellipsis, in whole code points, a U+FE0F kept
+// with the code point before it or dropped with it, and never ending on a joiner (which would join the ellipsis to what was kept), then the ellipsis. Nothing where
+// the room has no column.
 export const cutToColumns = (text: string, room: number): string => {
   if (room < 1) return ''
   const parts = columnsByCodePoint(text)
   if (parts.reduce((total, { columns }) => total + columns, 0) <= room) return text
   let kept = 0
   let used = 0
-  for (const { columns } of parts) {
+  while (kept < parts.length) {
+    // The pair of a code point and its U+FE0F is one glyph, drawn two columns wide where the code point alone is another, drawn one, so the two are cut as one unit.
+    // A mark that draws no column, such as a keycap's U+20E3 or a combining accent, never stops the cut, so it stays with the code point before it.
+    const unit = parts.slice(kept, kept + (parts[kept + 1]?.char.codePointAt(0) === VARIATION_SELECTOR_16 ? 2 : 1))
+    const columns = unit.reduce((total, part) => total + part.columns, 0)
     if (used + columns > room - 1) break
     used += columns
-    kept++
+    kept += unit.length
   }
   while (kept > 0 && parts[kept - 1]?.char.codePointAt(0) === ZERO_WIDTH_JOINER) kept--
   return `${parts.slice(0, kept).map(({ char }) => char).join('')}${ELLIPSIS}`

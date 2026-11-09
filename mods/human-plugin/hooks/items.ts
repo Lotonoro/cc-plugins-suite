@@ -144,7 +144,7 @@ const columnsAlone = (code: number): number => {
   return holding(UNMEASURED, code) === undefined ? 1 : 2
 }
 
-const VARIATION_SELECTOR_16 = 0xfe0f
+export const VARIATION_SELECTOR_16 = 0xfe0f
 
 // The columns each code point of a text adds on screen, in order; a code point is whole, a surrogate pair one. It adds the columns tmux drew for it
 // alone, except a U+FE0F after a code point drawn one column wide, which adds one: tmux draws the pair two wide (`❤` and `a` with a U+FE0F, the keycap

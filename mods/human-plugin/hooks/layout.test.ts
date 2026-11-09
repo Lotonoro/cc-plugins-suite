@@ -281,7 +281,13 @@ test('a character wider than the width is a row of its own, and no empty row com
 // Code points written as numbers, so no editor or encoding changes a joiner or a variation selector that draws as nothing.
 const cps = (...codes: number[]): string => String.fromCodePoint(...codes)
 const JOINER = cps(0x200d)
+const SELECTOR = cps(0xfe0f)
+const KEYCAP_MARK = cps(0x20e3)
 const FAMILY = cps(0x1f468, 0x200d, 0x1f469, 0x200d, 0x1f467, 0x200d, 0x1f466)
+// A heart with its selector, and a keycap `1` (digit, selector, enclosing keycap): tmux draws each two columns wide, and the measure gives the heart or the digit one
+// column and the selector the other.
+const HEART = cps(0x2764, 0xfe0f)
+const KEYCAP_ONE = cps(0x31, 0xfe0f, 0x20e3)
 
 test('a text that fits its room is whole, and a wider one is cut at its end with an ellipsis inside the room: `Ship it to staging today` is whole at 24 and at 30, `Ship it to stag…` at 16, `Ship it to…` at 11 and `Shi…` at 4', () => {
   const label = 'Ship it to staging today'
@@ -311,6 +317,47 @@ test('a joiner is never the last thing kept: the family of four then `x` is its 
   expect(cutToColumns(`${FAMILY}x`, 5)).toBe(`${cps(0x1f468, 0x200d, 0x1f469)}…`)
 })
 
+test('a code point and the U+FE0F after it are kept together or dropped together, as tmux draws the pair one glyph two columns wide: ten ❤ U+FE0F are seven hearts and an ellipsis at 15 and at 16, eight at 17 and at 18, nine at 19, and whole at 20', () => {
+  const hearts = HEART.repeat(10)
+  expect(displayColumns(hearts)).toBe(20)
+  for (const [room, kept] of [[15, 7], [16, 7], [17, 8], [18, 8], [19, 9]] as const) expect(cutToColumns(hearts, room), `${room}`).toBe(`${HEART.repeat(kept)}…`)
+  expect(cutToColumns(hearts, 20)).toBe(hearts)
+  // A heart that does not fit with its selector is dropped whole: a room of 2 holds the ellipsis alone, and one of 3 a heart and the ellipsis.
+  expect(cutToColumns(hearts, 2)).toBe('…')
+  expect(cutToColumns(hearts, 3)).toBe(`${HEART}…`)
+})
+
+test('a keycap is kept whole or dropped whole, its digit, selector and enclosing keycap: four of them are three and an ellipsis at 7, two at 6 and at 5, one at 4 and at 3, and the ellipsis alone at 2', () => {
+  const keycaps = KEYCAP_ONE.repeat(4)
+  expect(displayColumns(keycaps)).toBe(8)
+  for (const [room, kept] of [[7, 3], [6, 2], [5, 2], [4, 1], [3, 1]] as const) expect(cutToColumns(keycaps, room), `${room}`).toBe(`${KEYCAP_ONE.repeat(kept)}…`)
+  expect(cutToColumns(keycaps, 2)).toBe('…')
+})
+
+test('whatever the room, a cut never ends between a code point and the U+FE0F or keycap mark after it in the text, and measures at most the room: eight ❤ U+FE0F then words, keycaps, a letter and a selector, a wide character and a selector', () => {
+  const titles = [
+    `${HEART.repeat(8)} then some words`,
+    `Ship ${HEART.repeat(8)} it`,
+    `${KEYCAP_ONE.repeat(4)} then some words`,
+    `${cps(0x61, 0xfe0f)}b${cps(0x61, 0xfe0f)}b${cps(0x61, 0xfe0f)}b`,
+    `${cps(0x2705, 0xfe0f)}${HEART}${cps(0x2705, 0xfe0f)}${HEART} ok`,
+  ]
+  for (const title of titles) {
+    const points = [...title]
+    for (let room = 1; room <= 45; room++) {
+      const where = `${JSON.stringify(title)} in ${room}`
+      const got = cutToColumns(title, room)
+      expect(displayColumns(got), where).toBeLessThanOrEqual(room)
+      if (got === title) continue
+      expect(got.endsWith('…'), where).toBe(true)
+      // What was kept is the start of the title, and the code point after it is neither a selector nor a keycap mark, so no kept code point is left bare.
+      const kept = [...got].slice(0, -1)
+      expect(points.slice(0, kept.length), where).toEqual(kept)
+      expect([SELECTOR, KEYCAP_MARK].includes(points[kept.length] ?? ''), where).toBe(false)
+    }
+  }
+})
+
 test('a text wider than one column is `…` at a room of 1, and nothing is kept where there is no room', () => {
   for (const text of ['ab', 'Fix it', cps(0x65e5), cps(0x2705), FAMILY]) expect(cutToColumns(text, 1), text).toBe('…')
   expect(cutToColumns('a', 1)).toBe('a')
@@ -330,9 +377,13 @@ const SAMPLES = [
   `ab${cps(0x07)}cd`,
   `a\ud800bc`,
   `${cps(0x1f44d, 0x1f3fd)} ok`,
+  `${HEART.repeat(8)} and words`,
+  `${KEYCAP_ONE.repeat(3)}x`,
+  `${cps(0x2705, 0xfe0f)}${HEART}${cps(0x2705, 0xfe0f)}ab`,
+  `${cps(0x2764, 0xfe0f, 0x200d, 0x1f525)} on fire ${HEART}`,
 ]
 
-test('whatever the text and the room, the cut is the longest start of the text, in whole code points and not ending on a joiner, that leaves a column for the ellipsis, and it measures at most the room', () => {
+test('whatever the text and the room, the cut is the longest start of the text, in whole code points, not ending on a joiner and not before a U+FE0F, that leaves a column for the ellipsis, and it measures at most the room', () => {
   for (const text of SAMPLES) {
     const points = [...text]
     for (let room = -1; room <= 45; room++) {
@@ -348,11 +399,12 @@ test('whatever the text and the room, the cut is the longest start of the text, 
       }
       expect(got.endsWith('…'), where).toBe(true)
       expect(displayColumns(got), where).toBeLessThanOrEqual(room)
-      // The longest start that fits the room less the ellipsis and does not end on a joiner, found by trying every start.
+      // The longest start that fits the room less the ellipsis, does not end on a joiner and is not followed by a U+FE0F (which would leave its last code point
+      // bare), found by trying every start.
       let want = ''
       for (let n = 0; n <= points.length; n++) {
         const start = points.slice(0, n).join('')
-        if (displayColumns(start) <= room - 1 && !start.endsWith(JOINER)) want = start
+        if (displayColumns(start) <= room - 1 && !start.endsWith(JOINER) && points[n] !== SELECTOR) want = start
       }
       expect(got, where).toBe(`${want}…`)
     }
@@ -581,11 +633,13 @@ test('a wide label is cut by columns and never split, so its box can be a column
   expect(got.room).toBe(10)
 })
 
-test('a title is cut by columns at its room, with its decision\'s marker, the line break already joined: wide characters and the family of four are never split', () => {
+test('a title is cut by columns at its room, with its decision\'s marker, the line break already joined: wide characters, the family of four and a heart with its selector are never split', () => {
   const row = (title: string, marker: string): RowTexts => ({ ...rowFor(marker === '' ? PLAIN : DECISION_19), title, marker })
   // A plain to-do at 42 has a control column of 17 and a prefix of 6: a room of 19.
   expect(rowLayout(row('日本語のタイトルは長い', ''), 42).title).toBe('日本語のタイトルは…')
   expect(rowLayout(row(`${FAMILY} ${FAMILY} ${FAMILY}`, ''), 42).title).toBe(`${FAMILY} ${FAMILY} …`)
+  // At 41 the room is 18: the ninth heart does not fit with its selector, so the title is eight hearts and the ellipsis, a column short of the room.
+  expect(rowLayout(row(HEART.repeat(10), ''), 41).title).toBe(`${HEART.repeat(8)}…`)
   // A decision with an option of 19 columns at 96 has a control column of 29 and a room of 61: the title and its marker whole.
   expect(rowLayout(row('Pick the release train for the next deploy', ' […]'), 96).title).toBe('Pick the release train for the next deploy […]')
   const tight = rowLayout(row('Pick the release train for the next deploy', ' […]'), 42)
