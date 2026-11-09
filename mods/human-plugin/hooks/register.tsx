@@ -462,7 +462,7 @@ export const wireHooks = (on: On, windowMs: number): void => {
     if (selected === CLAUDE_VIEW) {
       const todo = await readTodo($)
       setDrawnTodo(todo)
-      return backlogPane($.ui.resolve(e), todo)
+      return backlogPane($.ui.resolve(e), todo, e.props.bodyColumns)
     }
     const view: View = { maxRows: 0, now: await $.clock.now(), windowMs, selected }
     const store = await readList($)

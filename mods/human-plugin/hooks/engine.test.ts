@@ -1347,6 +1347,20 @@ test('a press on the band\'s Claude header, a Claude row and +N queued each open
   expect(elementsOf(tree, 'Input')).toEqual([])
 })
 
+test('the Pane cuts a backlog row\'s ETA tail to the body it is given and leaves a long ETA whole in a wide body', async ($, on) => {
+  mock.clock(on)
+  mock.store(on)
+  backlogRecord(on)
+  await $.tool.call({ tool: TODO_TOOL, entries: [{ title: 'Long title '.repeat(8), state: 'in_flight', eta: '漢'.repeat(30) }, { title: 'Long title '.repeat(8), state: 'queued', eta: '~10 min' }] })
+  const pane = await $.ui.mount({ plugin: 'human-plugin', surface: 'terminal', component: 'Pane', requestId: 'human-items', props: { ...CLAUDE_PANE, } })
+  const tails = async (): Promise<string[][]> => (((await pane.drawn()) as El).children as El[]).slice(1).map(row => elementsOf(row, 'Text').filter(text => text.props?.dimColor === true).map(text => shownOf(text)))
+  expect(await tails()).toEqual([[` · ${'漢'.repeat(16)}…`], [' · ~10 min']])
+  await pane.redraw({ ...CLAUDE_PANE, bodyColumns: 97 })
+  expect(await tails()).toEqual([[` · ${'漢'.repeat(30)}`], [' · ~10 min']])
+  await pane.redraw({ ...CLAUDE_PANE, bodyColumns: 14 })
+  expect(await tails()).toEqual([[], []])
+})
+
 test('with the pane open on the Claude list the Pane draws each ETA and the band\'s Claude column still draws each row as its glyph and title, and no ETA', async ($, on) => {
   mock.clock(on)
   mock.store(on)

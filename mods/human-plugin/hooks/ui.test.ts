@@ -1862,7 +1862,7 @@ test('the backlog view is a header line with the counts in the long form and the
       { type: 'Box', flexShrink: 0, children: [{ type: 'Text', dimColor: true, children: [tail] }] },
     ],
   })
-  expect((backlogPane(table, todo) as Node).children).toEqual([
+  expect((backlogPane(table, todo, 120) as Node).children).toEqual([
     { type: 'Text', wrap: 'truncate-end', children: ['Claude TODO 2 in flight, 2 queued'] },
     row(`◐ ${'x'.repeat(80)}`, ' · ~10 min'),
     row(`◐ ${'漢'.repeat(40)}`, ' · no ETA'),
@@ -1877,9 +1877,23 @@ test('the dim part of each backlog row is its entry\'s ETA tail, and an item sto
     { title: 'Ship it', state: 'queued', eta: 'z'.repeat(30) },
     { title: 'Wait', state: 'queued', eta: 'no ETA' },
   ]
-  const rows = (backlogPane(table, todo) as Node).children?.slice(1) as Node[]
+  const rows = (backlogPane(table, todo, 120) as Node).children?.slice(1) as Node[]
   expect(rows.map(row => nodes(row, 'Text').filter(text => text.dimColor === true).map(text => shown(text)))).toEqual(todo.map(it => [etaTail(it)]))
   expect(rows.map(row => shown(row))).toEqual(['◐ Run the tests · ~10 min', `○ Ship it · ${'z'.repeat(30)}`, '○ Wait · no ETA'])
+})
+
+test('a backlog row\'s tail is cut to the room the body leaves beside the head\'s minimum and left out where no ETA character fits, while the head stays whole', () => {
+  const cjk = '漢'.repeat(30)
+  const todo: TodoItem[] = [
+    { title: 'x'.repeat(80), state: 'in_flight', eta: cjk },
+    { title: 'x'.repeat(80), state: 'queued', eta: '~10 min' },
+  ]
+  const tails = (body: number): string[][] => ((backlogPane(table, todo, body) as Node).children?.slice(1) as Node[]).map(row => nodes(row, 'Text').filter(text => text.dimColor === true).map(text => shown(text)))
+  expect(tails(48)).toEqual([[` · ${'漢'.repeat(16)}…`], [' · ~10 min']])
+  expect(tails(97)).toEqual([[etaTail(todo[0] as TodoItem)], [' · ~10 min']])
+  expect(tails(14)).toEqual([[], []])
+  const heads = ((backlogPane(table, todo, 14) as Node).children?.slice(1) as Node[]).map(row => shown(nodes(row, 'Text')[0]))
+  expect(heads).toEqual([`◐ ${'x'.repeat(80)}`, `○ ${'x'.repeat(80)}`])
 })
 
 test('the backlog view asks for one row for its header and one for each item, as many as it draws: 2, 4 and 13 rows for lists of 1, 3 and 12 items', () => {
@@ -1887,21 +1901,21 @@ test('the backlog view asks for one row for its header and one for each item, as
     const todo = [...flight(Math.ceil(items / 2)), ...queue(Math.floor(items / 2))]
     expect(todo).toHaveLength(items)
     expect(backlogRows(todo), `${items} items`).toBe(rows)
-    expect((backlogPane(table, todo) as Node).children, `${items} items`).toHaveLength(rows)
+    expect((backlogPane(table, todo, 120) as Node).children, `${items} items`).toHaveLength(rows)
   }
 })
 
 test('the backlog view drawn from an empty list is its header line alone, and asks for that one row', () => {
-  const tree = backlogPane(table, []) as Node
+  const tree = backlogPane(table, [], 120) as Node
   expect((tree.children as Node[]).map(line => [line.type, line.wrap, shown(line)])).toEqual([['Text', 'truncate-end', 'Claude TODO 0 in flight, 0 queued']])
   expect(backlogRows([])).toBe(1)
 })
 
 test('the backlog view draws no control: no button, field or markdown that could change the Claude list', () => {
-  const tree = backlogPane(table, [...flight(2), ...queue(2)])
+  const tree = backlogPane(table, [...flight(2), ...queue(2)], 120)
   expect(nodes(tree, 'Button')).toEqual([])
   expect(nodes(tree, 'Input')).toEqual([])
-  expect(nodes(backlogPane(withInput, [...flight(2), ...queue(2)]), 'Input')).toEqual([])
+  expect(nodes(backlogPane(withInput, [...flight(2), ...queue(2)], 120), 'Input')).toEqual([])
   expect(nodes(tree, 'Markdown')).toEqual([])
 })
 
