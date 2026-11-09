@@ -5403,7 +5403,7 @@ describe('the pause history: this load\'s pauses and the store agree at quiescen
     // 300 s and 362 s, 24 ratio units each at 18,559 x $0.20 per MTok, $0.0891 each; the 1 h TTL expires none. The first pause's growth is
     // 18,559 tokens: $0.0928 at 5 m, $0.1485 at 1 h. Saving: 0.1781 + 0.0928 - 0.1485 = $0.1225, shown $0.12. Had the sixth grown from the
     // whole context, it would add $0.0928 at 5 m and $0.1485 at 1 h, a net of -$0.0557, and the line would show $0.07.
-    expect((await commandText($, '')).replace(/\n\s*/g, ' ')).toContain('A 1-hour cache would have saved $0.12 over 6 priced pauses across sessions')
+    expect((await commandText($, '')).replace(/\n\s*/g, ' ')).toMatch(/A 1-hour cache with keepalive off would have saved \$0\.12 over 6 priced pauses across sessions/)
   })
 })
 
@@ -5580,13 +5580,61 @@ describe("the TTL advice: the bare command names the other TTL once the recorded
     const clock = mock.clock(on, { now: T0 })
     await $.classic.SessionStart({ source: 'startup', transcript_path: PATH })
     await clock.advance(1000)
-    expect(await toggle($, '')).toContain('A 1-hour cache would have saved $4.74 over 10 priced pauses across sessions: set "promptCacheTtl": "1h" in settings.json.')
+    expect(await toggle($, '')).toContain(
+      'You\'re on a 5-minute cache with keepalive off. A 1-hour cache with keepalive off would have saved $4.74 over 10 priced pauses across sessions: set "promptCacheTtl": "1h" in settings.json for new sessions, which start with keepalive off (keepalive_default).',
+    )
     await toggle($, 'on 15')
     await clock.advance(1000)
-    expect(await toggle($, '')).toContain('A 1-hour cache would have saved $0.74 over 10 priced pauses across sessions')
+    expect(await toggle($, '')).toContain('You\'re on a 5-minute cache with keepalive on. A 1-hour cache with keepalive off would have saved $0.74')
     await toggle($, 'on 15 3')
     await clock.advance(1000)
-    expect(await toggle($, '')).toContain('A 1-hour cache would have saved $5.34 over 10 priced pauses across sessions')
+    expect(await toggle($, '')).toContain('You\'re on a 5-minute cache with keepalive on. A 1-hour cache with keepalive off would have saved $5.34')
+  })
+
+  test('keepalive on at a lead not below the TTL: the line names the setup you are on paused, with the reason the Keepalive section gives', async ($, on) => {
+    kaWorld(on, { ...opusCached(), store: SIZED })
+    const clock = mock.clock(on, { now: T0 })
+    await $.classic.SessionStart({ source: 'startup', transcript_path: PATH })
+    await clock.advance(1000)
+    await toggle($, 'on 300')
+    await clock.advance(1000)
+    const text = await toggle($, '')
+    const reason = 'lead 300 s is not below the 300 s TTL'
+    expect(text).toContain(`Keepalive  paused`)
+    expect(text).toContain(reason)
+    expect(text).toContain(
+      `You're on a 5-minute cache with keepalive paused, sending nothing (${reason}). A 1-hour cache with keepalive off would have saved $4.74 over 10 priced pauses across sessions: set "promptCacheTtl": "1h" in settings.json for new sessions, which start with keepalive off (keepalive_default).`,
+    )
+  })
+
+  test('a 1-hour session whose new sessions start keepalive on at a 300 s lead is told to go back to a 5-minute cache that sends nothing', { options: { keepalive_default: 'on', keepalive_lead_s: 300 } }, async ($, on) => {
+    // Ten 2-minute pauses on a context that grew 50k each: the 1 h write costs more than the 5 m one, and no pause lapses at 5 m.
+    const short = { 'pauses/old': SIZED['pauses/old'].map((r) => ({ ...r, pausedMs: 2 * MIN, grownTokens: 50000 })) }
+    const oneHour = { text: lines([user({ uuid: 'u1', parent: null, ts: iso(T0) }), assistant({ uuid: 'a1', parent: 'u1', ts: iso(T0), write: 18551, tags: ONE_HOUR, model: 'claude-opus-5-5', speed: 'standard' })]) }
+    kaWorld(on, { ...oneHour, store: short })
+    const clock = mock.clock(on, { now: T0 })
+    await $.classic.SessionStart({ source: 'startup', transcript_path: PATH })
+    await clock.advance(1000)
+    const target = 'A 5-minute cache with keepalive paused, sending nothing (lead 300 s is not below the 300 s TTL) would have saved'
+    const step = 'which start with keepalive on (keepalive_default).'
+    const text = await toggle($, '')
+    expect(text).toContain(target)
+    expect(text).toContain(step)
+    const pane = await drawnPane($)
+    expect(pane).toContain(target)
+    expect(pane).toContain(step)
+    // The line wraps at 48 columns in the pane, in the paused form too.
+    expect(widthOf(await paneRows($))).toBeLessThanOrEqual(48)
+  })
+
+  test('the line is wrapped to 48 columns in the details pane', async ($, on) => {
+    kaWorld(on, { ...opusCached(), store: SIZED })
+    const clock = mock.clock(on, { now: T0 })
+    await $.classic.SessionStart({ source: 'startup', transcript_path: PATH })
+    await clock.advance(1000)
+    const rows = await paneRows($)
+    expect(flatOf(rows)).toContain('You\'re on a 5-minute cache with keepalive off. A 1-hour cache with keepalive off would have saved $4.74')
+    expect(widthOf(rows)).toBeLessThanOrEqual(48)
   })
 
   test('the other TTL is priced at the lead and pin a new session starts with, since switching TTL starts one', { options: { keepalive_count: 1, keepalive_default: 'on' } }, async ($, on) => {
@@ -5602,7 +5650,8 @@ describe("the TTL advice: the bare command names the other TTL once the recorded
     await clock.advance(1000)
     const text = await toggle($, '')
     expect(text).toContain('Keepalive  on, refreshing')
-    expect(text).not.toContain('A 1-hour cache would have saved')
+    expect(text).not.toContain('priced pause')
+    expect(await drawnPane($)).not.toContain('priced pause')
   })
 
   // Ten 150-minute pauses with no growth: on 5 m each pays its rewrite ($0.48), with keepalive off or on at its learned count of none;
@@ -5616,7 +5665,9 @@ describe("the TTL advice: the bare command names the other TTL once the recorded
     await clock.advance(1000)
     await toggle($, 'off')
     await clock.advance(1000)
-    expect(await toggle($, '')).toContain('A 1-hour cache would have saved $4.40 over 10 priced pauses across sessions: set "promptCacheTtl": "1h" in settings.json.')
+    expect(await toggle($, '')).toContain(
+      'You\'re on a 5-minute cache with keepalive off. A 1-hour cache with keepalive on would have saved $4.40 over 10 priced pauses across sessions: set "promptCacheTtl": "1h" in settings.json for new sessions, which start with keepalive on (keepalive_default).',
+    )
   })
 
   test('the other TTL is priced with keepalive off when new sessions start it off, though this session has it on', { options: { keepalive_default: 'off' } }, async ($, on) => {
@@ -5628,7 +5679,8 @@ describe("the TTL advice: the bare command names the other TTL once the recorded
     await clock.advance(1000)
     const text = await toggle($, '')
     expect(text).toContain('Keepalive  paused')
-    expect(text).not.toContain('A 1-hour cache would have saved')
+    expect(text).not.toContain('priced pause')
+    expect(await drawnPane($)).not.toContain('priced pause')
   })
 
   test('with no recorded context, the pane gives no advice', async ($, on) => {
@@ -5637,7 +5689,8 @@ describe("the TTL advice: the bare command names the other TTL once the recorded
     const clock = mock.clock(on, { now: T0 })
     await $.classic.SessionStart({ source: 'startup', transcript_path: PATH })
     await clock.advance(1000)
-    expect(await drawnHint($)).not.toContain('cache would have saved')
+    expect(await toggle($, '')).not.toContain('priced pause')
+    expect(await drawnPane($)).not.toContain('priced pause')
   })
 })
 

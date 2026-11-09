@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'claude-code/testing'
 import type { PauseRecord } from './history'
-import { learnedLine, learnedOf, looCosts, pauseCost, pausesCost, ttlAdviceLine, ttlAdviceOf, type Pricing } from './learn'
+import { learnedLine, learnedOf, looCosts, pauseCost, pausesCost, ttlAdviceOf, type Pricing } from './learn'
 
 const S = 1000
 const MIN = 60 * S
@@ -100,8 +100,6 @@ describe('ttlAdviceOf: the TTL that would have cost less over the recorded pause
     expect(a.better).toBe('1h')
     expect(Math.round(a.savedUsd * 100) / 100).toBe(4.74)
     expect(a.of).toBe(10)
-    expect(ttlAdviceLine(a, '$4.74')).toBe('A 1-hour cache would have saved $4.74 over 10 priced pauses across sessions: set "promptCacheTtl": "1h" in settings.json.')
-    expect(ttlAdviceLine({ ...a, of: 1 }, '$0.47')).toBe('A 1-hour cache would have saved $0.47 over 1 priced pause across sessions: set "promptCacheTtl": "1h" in settings.json.')
   })
 
   test('short pauses on a fast-growing context stay at 5m; from 1h they say to go back, by the writes alone', () => {
@@ -111,7 +109,6 @@ describe('ttlAdviceOf: the TTL that would have cost less over the recorded pause
     // 50k written per pause at $8 rather than $5 per million.
     expect(back).toMatchObject({ better: '5m', of: 10 })
     expect(Math.round(back.savedUsd * 100) / 100).toBe(1.5)
-    expect(ttlAdviceLine(back, '$1.50')).toBe('A 5-minute cache would have saved $1.50 over 10 priced pauses across sessions: set "promptCacheTtl": "5m" in settings.json.')
   })
 
   test('with keepalive on, the pauses are priced at the pings it would send, so 1h saves less', () => {

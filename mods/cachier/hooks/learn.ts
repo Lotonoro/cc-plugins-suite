@@ -9,7 +9,7 @@
 
 import type { TtlLabel } from '../types'
 import type { PauseRecord } from './history'
-import { TTL_MS, TTL_WORDS } from './prices'
+import { TTL_MS } from './prices'
 import { refreshIntervalMs } from './setup'
 
 // The cache's timing and price that a count is learned for: those of the cache the next pause would ping.
@@ -138,8 +138,8 @@ const learnedCountsAt = (history: readonly PauseRecord[], maxCount: number, p: P
 // What the pauses would have cost at a TTL, in dollars: each pause's turn writes at that TTL's write rate, then the pause with no pings
 // while keepalive is off, or else at its pinned count, or the count it would learn from `history` for that TTL, or break-even. Keepalive on
 // with a lead not below the TTL is priced as off: such a run pauses on its lead and sends no refresh (keepalive.ts step). Null where the
-// model has no price for that TTL. Only pauses that carry their context and growth can be priced: the caller passes those. The TTL line and
-// the best-setup sentence (advice.ts) both price through this, so they cannot disagree on the same pauses.
+// model has no price for that TTL. Only pauses that carry their context and growth can be priced: the caller passes those. The Advice
+// section's two sentences, the TTL line and the best-setup sentence (both in advice.ts), price through this, so they cannot disagree on the same pauses.
 export const pausesCost = (
   pauses: readonly PauseRecord[],
   history: readonly PauseRecord[],
@@ -188,12 +188,5 @@ export const ttlAdviceOf = (
 
 // How to switch to a TTL: the `promptCacheTtl` setting, which the prompt-caching docs rank above ENABLE_PROMPT_CACHING_1H and below
 // only FORCE_PROMPT_CACHING_5M and CLAUDE_CODE_PROMPT_CACHE_TTL. The docs don't say a running session picks up a change to it, so a
-// switch is priced and worded as a new session. The TTL line and the best-setup sentence (advice.ts) both say it this way.
+// switch is priced and worded as a new session. The Advice section's two sentences (advice.ts) and the Settings section's TTL row all say it this way.
 export const ttlSwitchOf = (ttl: TtlLabel): string => `set "promptCacheTtl": "${ttl}" in settings.json`
-
-// The sentence on a TTL that would have cost less, and how to switch to it. It names its scope, every priced pause across
-// sessions (those that carry their context), so it does not read as contradicting the best-setup sentence (advice.ts), which prices this
-// session's pauses or the recent ones.
-export const ttlAdviceLine = (a: { better: TtlLabel; savedUsd: number; of: number }, amount: string): string => {
-  return `A ${TTL_WORDS[a.better]} cache would have saved ${amount} over ${a.of} priced ${a.of === 1 ? 'pause' : 'pauses'} across sessions: ${ttlSwitchOf(a.better)}.`
-}

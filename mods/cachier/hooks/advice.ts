@@ -1,15 +1,17 @@
-// The cheapest setup over the recorded pauses, of the four there are: TTL 5 m or 1 h, keepalive on or off. Pure: register.ts gathers the
-// view, the prices, the lead, the cap, the pinned count and the pauses, and this says the one sentence to show.
+// The words of the Advice section's two sentences: the cheapest setup over the recorded pauses, of the four there are (TTL 5 m or 1 h,
+// keepalive on or off), and the TTL line, which prices the other TTL against this one over every priced pause. Both open by naming the setup
+// you are on, and their steps share the new-session clause. Pure: register.ts gathers the view, the prices, the lead, the cap, the pinned
+// count and the pauses, and this words them from the pricing learn.ts does.
 //
-// Each setup prices the same pauses, through the pricing the TTL line uses (learn.ts pausesCost). Every pause carries the growth writes its
+// Each setup of the best-setup sentence prices the same pauses, through the pricing the TTL line uses (learn.ts pausesCost). Every pause carries the growth writes its
 // turn made, at the TTL's write rate, and then the pause itself: with keepalive off a rewrite once the TTL has passed; with it on, the
 // pings its count sends and a rewrite if they could not hold the cache. An "on" count is the pinned one, else the count learned from the
 // whole history (learn.ts), else break-even. An "on" setup at the current TTL runs at this session's lead and pin; one at the other TTL
 // needs a new session, so it runs at the lead and pin a new session starts with (`fresh`). That new session starts keepalive on or off as
 // `fresh.on` says, so a change of TTL says to click the pie only where the setup it names differs from that start.
-import type { CacheView, Unit } from '../types'
+import type { CacheView, TtlLabel, Unit } from '../types'
 import type { PauseRecord } from './history'
-import { pausesCost, priceable, ttlSwitchOf, type TtlRates } from './learn'
+import { pausesCost, priceable, ttlAdviceOf, ttlSwitchOf, type TtlRates } from './learn'
 import { dollars, pricedSpeed, ratesFor, tierOf, type Money } from './prices'
 import { setupPhrase, type Setup } from './setup'
 
@@ -126,6 +128,12 @@ const NO_PAUSE_LEAD_MS = 0
 const otherSetup = (setup: Setup): string => setupPhrase(setup, NO_PAUSE_LEAD_MS)
 const capital = (text: string): string => text.charAt(0).toUpperCase() + text.slice(1)
 
+// The opening both Advice sentences share: the setup you are on, at this session's lead.
+const openingOf = (current: Setup, leadMs: number): string => `You're on ${setupPhrase(current, leadMs)}`
+
+// What a switch of TTL leaves new sessions on: the keepalive state they start with, and the option that decides it.
+export const newSessionClause = (startsOn: boolean): string => `for new sessions, which start with keepalive ${startsOn ? 'on' : 'off'} (keepalive_default)`
+
 // The opening that names the cheapest setup that is not worth changing to, and its saving in the unit shown: over `span` when no tail names
 // the pauses. `noted` puts the tokens note inside its parenthesis, where no later clause carries one.
 const nearOpening = (near: Near, unit: Unit, span?: string, noted = false): string => {
@@ -140,7 +148,7 @@ const nearOpening = (near: Near, unit: Unit, span?: string, noted = false): stri
 export const adviceLine = (result: Result, unit: Unit, leadMs: number): string => {
   const note = unit === 'tokens' ? TOKENS_NOTE : ''
   const current = result.kind === 'change' ? result.from : result.setup
-  const opening = `You're on ${setupPhrase(current, leadMs)}`
+  const opening = openingOf(current, leadMs)
   if (result.kind === 'even') {
     const { setup, near, baselineSavedUsd, of, source } = result
     const baseline = baselineOf(setup)
@@ -183,4 +191,22 @@ export const ratesOfView = (view: Extract<CacheView, { kind: 'known' }>, money: 
 export const adviceOf = (inputs: Inputs, unit: Unit): string => {
   const result = bestSetupOf(inputs)
   return result === null ? '' : adviceLine(result, unit, inputs.leadMs)
+}
+
+// The TTL line on a TTL that would have cost less (ttlAdviceOf), with the setup you are on and the setup it is priced against: the other TTL
+// as a new session starts it, so at the new session's lead, where it can be paused. It names its scope, every priced pause across sessions,
+// so it does not read as contradicting the best-setup sentence, which prices this session's pauses or the recent ones. The figure is in
+// dollars in either unit.
+export const ttlLine = (a: { better: TtlLabel; savedUsd: number; of: number }, inputs: Inputs): string => {
+  const { fresh } = inputs
+  const target = setupPhrase({ ttl: a.better, keepalive: fresh.on }, fresh.leadMs)
+  const pauses = `${a.of} priced ${a.of === 1 ? 'pause' : 'pauses'}`
+  return `${openingOf(inputs.current, inputs.leadMs)}. ${capital(target)} would have saved ${dollars(a.savedUsd)} over ${pauses} across sessions: ${ttlSwitchOf(a.better)} ${newSessionClause(fresh.on)}.`
+}
+
+// The TTL line for these inputs, or '' while the current TTL would not have cost more.
+export const ttlLineOf = (inputs: Inputs): string => {
+  const { history, rates, leadMs, cap, current, pinned, fresh } = inputs
+  const a = ttlAdviceOf(history, rates, leadMs, cap, current.ttl, { on: current.keepalive, pinned }, fresh)
+  return a === null ? '' : ttlLine(a, inputs)
 }

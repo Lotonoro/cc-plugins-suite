@@ -239,9 +239,13 @@ Which is cheaper depends on how long you pause and how much each turn writes, so
 both, at today's rates, in the mode keepalive is in: no refreshes while it is off, your pinned count, or the count it
 would learn for that TTL. A switch takes a new session, so the other TTL is priced as one starts: keepalive on or off as
 `keepalive_default` says, at the `keepalive_lead_s` lead and no pinned count. Once the other TTL would have cost less,
-the answer says so and how to switch (`A 1-hour cache would have saved $4.74 over 10 priced pauses across sessions:
-set "promptCacheTtl": "1h" in settings.json.`). The figure is what it is, over every priced pause across sessions (those recorded
-with their context); this line has no threshold, so weigh a saving over a few pauses as the few pauses it is.
+the answer says so and how to switch (`You're on a 5-minute cache with keepalive off. A 1-hour cache with keepalive off
+would have saved $4.74 over 10 priced pauses across sessions: set "promptCacheTtl": "1h" in settings.json for new
+sessions, which start with keepalive off (keepalive_default).`). The line names the setup you are on and the setup it is
+priced against, each by its TTL and keepalive state; keepalive that sends nothing is named paused, with its reason (a
+lead not below the TTL). The step names the keepalive state new sessions start with and `keepalive_default`, which decides
+it. The figure is what it is, over every priced pause across sessions (those recorded with their context); this line has
+no threshold, so weigh a saving over a few pauses as the few pauses it is.
 
 ### Best setup
 

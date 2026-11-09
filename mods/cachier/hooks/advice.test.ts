@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'claude-code/testing'
 import type { PauseRecord } from './history'
-import { adviceLine, adviceOf, bestSetupOf, pricedOf, ratesOfView, type Inputs } from './advice'
+import { adviceLine, adviceOf, bestSetupOf, newSessionClause, pricedOf, ratesOfView, ttlLine, ttlLineOf, type Inputs } from './advice'
 import { PRICES } from './prices'
 
 const S = 1000
@@ -360,5 +360,109 @@ describe('ratesOfView: the rates a known cache pays, and none for a model with n
   test('a cache written in fast mode gives no rates, as its spends have no price', () => {
     const money = { unit: 'dollars' as const, list: PRICES, model: 'claude-opus-5-5', speed: 'fast', ttl: '5m' as const }
     expect(ratesOfView({ ...view, speed: 'fast' }, money)).toBeNull()
+  })
+})
+
+describe('newSessionClause: the words 41 reuses for what a switch of TTL leaves new sessions on', () => {
+  test('it says the start mode and the option that decides it', () => {
+    expect(newSessionClause(true)).toBe('for new sessions, which start with keepalive on (keepalive_default)')
+    expect(newSessionClause(false)).toBe('for new sessions, which start with keepalive off (keepalive_default)')
+  })
+})
+
+describe('ttlLineOf: the TTL line names the setup you are on, the setup it is priced against, and the keepalive state new sessions start with', () => {
+  const back = inputs({ history: pauses(10, 2 * MIN, 50000), current: { ttl: '1h', keepalive: false }, fresh: { on: true, leadMs: 300 * S, pinned: null } })
+
+  test('the target is a setup that sends nothing, named paused at the new session\'s lead, and the clause still says on', () => {
+    expect(ttlLineOf(back)).toBe(
+      'You\'re on a 1-hour cache with keepalive off. A 5-minute cache with keepalive paused, sending nothing (lead 300 s is not below the 300 s TTL) would have saved $1.50 over 10 priced pauses across sessions: set "promptCacheTtl": "5m" in settings.json for new sessions, which start with keepalive on (keepalive_default).',
+    )
+  })
+
+  test('over one priced pause it says pause', () => {
+    expect(ttlLineOf({ ...back, history: back.history.slice(0, 1) })).toContain('over 1 priced pause across sessions')
+  })
+
+  test('it names the target at the new session\'s lead, not this session\'s', () => {
+    const slow = inputs({ history: pauses(10, 20 * MIN, 2000), current: { ttl: '5m', keepalive: false } })
+    // This session at a 15 s lead, new sessions on at 300 s, switching back from 1 h: the 5-minute target reads paused.
+    const line = ttlLineOf({ ...back, leadMs: 15 * S, current: { ttl: '1h', keepalive: true } })
+    expect(line).toContain('You\'re on a 1-hour cache with keepalive on. A 5-minute cache with keepalive paused, sending nothing (lead 300 s is not below the 300 s TTL) would have saved')
+    // And at a 15 s new-session lead the same target reads on.
+    expect(ttlLineOf({ ...back, fresh: { ...back.fresh, leadMs: 15 * S } })).toContain('A 5-minute cache with keepalive on would have saved')
+    expect(ttlLineOf(slow)).toContain('A 1-hour cache with keepalive off would have saved $4.74')
+  })
+
+  test('it names a paused current setup with the reason, and the figure is dollars in either unit', () => {
+    const line = ttlLineOf({ ...inputs({ history: pauses(10, 20 * MIN, 2000), current: { ttl: '5m', keepalive: true } }), leadMs: 300 * S })
+    expect(line).toBe(
+      'You\'re on a 5-minute cache with keepalive paused, sending nothing (lead 300 s is not below the 300 s TTL). A 1-hour cache with keepalive off would have saved $4.74 over 10 priced pauses across sessions: set "promptCacheTtl": "1h" in settings.json for new sessions, which start with keepalive off (keepalive_default).',
+    )
+  })
+
+  test('the target names the keepalive state new sessions start with', () => {
+    expect(ttlLineOf(inputs({ history: pauses(10, 150 * MIN), current: { ttl: '5m', keepalive: false }, fresh: { on: true, leadMs: 15 * S, pinned: null } }))).toBe(
+      'You\'re on a 5-minute cache with keepalive off. A 1-hour cache with keepalive on would have saved $4.40 over 10 priced pauses across sessions: set "promptCacheTtl": "1h" in settings.json for new sessions, which start with keepalive on (keepalive_default).',
+    )
+  })
+
+  test('with nothing to price the line is empty', () => {
+    expect(ttlLineOf(inputs({ history: pauses(10, 2 * MIN, 50000), current: { ttl: '5m', keepalive: false } }))).toBe('')
+    expect(ttlLineOf(inputs({ current: { ttl: '5m', keepalive: false } }))).toBe('')
+  })
+
+  test('the best-setup sentence and the TTL line open with the same words for the same setup and lead', () => {
+    for (const current of [{ ttl: '5m' as const, keepalive: true }, { ttl: '5m' as const, keepalive: false }]) {
+      for (const leadMs of [15 * S, 300 * S]) {
+        const run = { current, leadMs, history: pauses(10, 30 * MIN, 2000) }
+        const opening = (text: string): string => text.slice(0, text.indexOf('. '))
+        const sentence = adviceOf(inputs(run), 'dollars')
+        const line = ttlLineOf(inputs(run))
+        expect(sentence).not.toBe('')
+        expect(line).not.toBe('')
+        expect(opening(line)).toBe(opening(sentence))
+        expect(opening(line).startsWith('You\'re on a ')).toBe(true)
+      }
+    }
+  })
+
+  test('across current TTL, keepalive, new-session start and new-session lead, the line names the current setup first and the target second, and the clause says the start mode', () => {
+    const NAMED = /a (5|1)-(minute|hour) cache with keepalive (on|off|paused, sending nothing \([^)]*\))/gi
+    let lines = 0
+    let paused = 0
+    for (const ttl of ['5m', '1h'] as const) {
+      for (const keepalive of [true, false]) {
+        for (const startOn of [true, false]) {
+          for (const freshLead of [15 * S, 300 * S]) {
+            // Pauses on which the other TTL wins: long and slowly growing from 5m, short and fast growing from 1h.
+            const history = ttl === '5m' ? pauses(10, 20 * MIN, 2000) : pauses(10, 2 * MIN, 50000)
+            const i = inputs({ history, current: { ttl, keepalive }, fresh: { on: startOn, leadMs: freshLead, pinned: null } })
+            const line = ttlLineOf(i)
+            if (line === '') continue
+            lines++
+            const [current, target] = line.match(NAMED)!
+            expect(line.startsWith(`You're on ${current}. ${target} would have saved`)).toBe(true)
+            expect(current!.includes(ttl === '5m' ? '5-minute' : '1-hour')).toBe(true)
+            expect(target!.includes(ttl === '5m' ? '1-hour' : '5-minute')).toBe(true)
+            const clause = line.match(/which start with keepalive (on|off) \(keepalive_default\)/)![1]
+            expect(clause).toBe(startOn ? 'on' : 'off')
+            if (target!.includes('paused')) {
+              paused++
+              expect(clause).toBe('on')
+            } else expect(target!.endsWith(`keepalive ${clause}`)).toBe(true)
+            expect(line).not.toContain('A 1-hour cache would have saved')
+            expect(line).not.toContain('A 5-minute cache would have saved')
+          }
+        }
+      }
+    }
+    expect(lines).toBeGreaterThan(0)
+    expect(paused).toBeGreaterThan(0)
+  })
+
+  test('ttlLine words a result it is handed', () => {
+    expect(ttlLine({ better: '1h', savedUsd: 4.74, of: 10 }, inputs({ history: pauses(10, 20 * MIN, 2000), current: { ttl: '5m', keepalive: false } }))).toBe(
+      'You\'re on a 5-minute cache with keepalive off. A 1-hour cache with keepalive off would have saved $4.74 over 10 priced pauses across sessions: set "promptCacheTtl": "1h" in settings.json for new sessions, which start with keepalive off (keepalive_default).',
+    )
   })
 })

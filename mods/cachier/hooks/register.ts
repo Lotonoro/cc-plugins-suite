@@ -54,14 +54,14 @@ import { singleFlight } from './guard'
 import { footerLine, paneOf, paneSizeOf } from './hint'
 import { followDraw, isPaneOpen, lastRows, paneAlarm, PANE, pressSize, readPane, recordRows, recordSize, syncPane, togglePane } from './pane'
 import { appended, HISTORY_BOUND, keyOf, KEY_PREFIX, merged, recordOf, recordsOf, staleKeys, type PauseRecord } from './history'
-import { adviceOf, ratesOfView, type Inputs } from './advice'
-import { learnedLine, learnedOf, ttlAdviceLine, ttlAdviceOf, ttlSwitchOf, type Learned } from './learn'
+import { adviceOf, ratesOfView, ttlLineOf, type Inputs } from './advice'
+import { learnedLine, learnedOf, ttlSwitchOf, type Learned } from './learn'
 import { breakEvenLine, countLineOf, judge, KEPT_COUNT, ratioOf, rebuildSpendOf, runCountOf, sessionBalanceLine, NO_JUDGED, pauseOf, type Pause } from './verdict'
 import { answerOf, layoutOf, type AnswerRow, type Setting, type Snapshot } from './sections'
 import { stampLabel, withStamp } from './stamp'
 import { foldStatsEvents, INITIAL_STATS, pendingFor, rundownSections, sessionLineOf, type MissEvent, type LongPauseEvent } from './stats'
 import { lookupRows, readCache, type History, type Host, type Row } from './transcript'
-import { dollars, NO_KINDS, spendOf, TTL_WORDS, unitOf, uponOf, writeReadRatio, type Money } from './prices'
+import { NO_KINDS, spendOf, TTL_WORDS, unitOf, uponOf, writeReadRatio, type Money } from './prices'
 import { priceCheck, priceList, priceReady, priceSink, priceSync, report, type PriceEvent } from './pricesync'
 
 type Dollar = EngineInterface
@@ -152,7 +152,8 @@ type Memo<T> = { pauses: readonly (readonly unknown[])[]; key: string; value: T 
 const memoised = <T>(memo: Memo<T> | null, pauses: readonly (readonly unknown[])[], key: string, make: () => T): Memo<T> =>
   memo !== null && memo.key === key && memo.pauses.every((p, i) => p === pauses[i]) ? memo : { pauses, key, value: make() }
 let learnedMemo: Memo<Learned | null> | null = null
-let adviceMemo: Memo<ReturnType<typeof ttlAdviceOf>> | null = null
+// The TTL line, memoised on the history it prices and the inputs it words.
+let ttlLineMemo: Memo<string> | null = null
 // The best-setup sentence, memoised on the pauses and inputs it prices.
 let sentenceMemo: Memo<string> | null = null
 // This load's reset of the state an earlier load left, from session.start; unset until it starts.
@@ -929,7 +930,7 @@ const snapshotNow = async ($: Dollar): Promise<Snapshot> => {
     // This session repeats the Keepalive section's refreshes line and balance, and the Advice section's misses line, word for word. Before the
     // first refresh the refreshes line is the fallback here, this section's own.
     session: [refreshes === '' ? 'This session: no refreshes yet.' : refreshes, balance, ...rundown.advice].filter((line) => line !== ''),
-    advice: [sentenceNow(held, view, money), ...ttlAdviceLines(held, view, money), ...rundown.advice, ...unitNotes(money, view, rebuildSpend, tally, stats)].filter((line) => line !== ''),
+    advice: [sentenceNow(held, view, money), ttlLineNow(held, view, money), ...rundown.advice, ...unitNotes(money, view, rebuildSpend, tally, stats)].filter((line) => line !== ''),
     settings: settingsOf(raw, run, kept, tally, view, money, nowMs, unitPressedNow(unitHeld)),
   }
 }
@@ -1217,36 +1218,17 @@ const countLines = (k: KeepaliveState, view: CacheView, money: Money, nowMs: num
 // lead and pin, since it has no lastUsed.
 const newSessionRun = (d: Defaults) => ({ on: defaultMode === 'on', leadMs: d.leadMs, pinned: d.count })
 
-// The bare command's line on the other TTL, once the recorded pauses say it would have cost less at today's prices: the current TTL in
-// the mode keepalive is in, at the running run; the other as the new session a switch needs would run it (newSessionRun). Recomputed
-// only when its inputs change.
-const ttlAdviceLines = (k: KeepaliveState, view: CacheView, money: Money): string[] => {
-  if (view.kind !== 'known' || defaultRun === undefined) return []
+// The inputs both Advice sentences are priced and worded from, or null where neither gives anything: the view is not known, its model has
+// no rates, or the options' defaults are not loaded yet. The "on" setups at this TTL run as keepalive does: the running run, or the one a
+// click on the pie would start. At the other TTL they run as the new session a switch needs would (newSessionRun), with no lastUsed to
+// start from.
+const adviceInputs = (k: KeepaliveState, view: CacheView, money: Money): Inputs | null => {
+  if (view.kind !== 'known' || defaultRun === undefined) return null
   const rates = ratesOfView(view, money)
-  if (rates === null) return []
-  const leadMs = k.config?.leadMs ?? defaultRun.leadMs
-  const current = view.ttlLabel
-  const keepalive = { on: k.config !== null, pinned: k.config?.count ?? null }
-  const newRun = newSessionRun(defaultRun)
-  const cap = defaultRun.cap
-  const key = [rates.read, rates.write5m, rates.write1h, leadMs, cap, current, keepalive.on, keepalive.pinned, JSON.stringify(newRun)].join('|')
-  adviceMemo = memoised(adviceMemo, [history], key, () => ttlAdviceOf(history, rates, leadMs, cap, current, keepalive, newRun))
-  const a = adviceMemo.value
-  return a === null ? [] : [ttlAdviceLine(a, dollars(a.savedUsd))]
-}
-
-// The one sentence on the best setup, as the details pane and bare /keepalive show it: '' with no result. Pricing the history is the costly
-// part, so the sentence is memoised on the pauses and the inputs it prices, and every surface asks the same memo.
-const sentenceNow = (k: KeepaliveState, view: CacheView, money: Money): string => {
-  if (view.kind !== 'known' || defaultRun === undefined) return ''
-  const rates = ratesOfView(view, money)
-  if (rates === null) return ''
-  // The "on" setups at this TTL run as keepalive does: the running run, or the one a click on the pie would start. At the other TTL
-  // they run as the new session a switch needs would (newSessionRun), with no lastUsed to start from.
+  if (rates === null) return null
   const run = runOf(k, defaultRun)
-  const session = sessionPauses()
-  const inputs: Inputs = {
-    session,
+  return {
+    session: sessionPauses(),
     history,
     rates,
     leadMs: run.leadMs,
@@ -1255,8 +1237,27 @@ const sentenceNow = (k: KeepaliveState, view: CacheView, money: Money): string =
     pinned: run.count,
     fresh: newSessionRun(defaultRun),
   }
-  const key = [JSON.stringify(rates), inputs.leadMs, inputs.cap, JSON.stringify(inputs.current), inputs.pinned, JSON.stringify(inputs.fresh), money.unit].join('|')
-  sentenceMemo = memoised(sentenceMemo, [session, history], key, () => adviceOf(inputs, money.unit))
+}
+
+// The Advice section's TTL line, once the recorded pauses say the other TTL would have cost less at today's prices: '' with no line. The
+// current TTL is priced in the mode keepalive is in, at the running run; the other as the new session a switch needs would run it. It prices
+// no session pauses, so it is memoised on the history alone and the inputs it words; with keepalive off a lead and pin that change neither
+// price nor words still rebuild it, which is harmless.
+const ttlLineNow = (k: KeepaliveState, view: CacheView, money: Money): string => {
+  const inputs = adviceInputs(k, view, money)
+  if (inputs === null) return ''
+  const key = [JSON.stringify(inputs.rates), inputs.leadMs, inputs.cap, JSON.stringify(inputs.current), inputs.pinned, JSON.stringify(inputs.fresh)].join('|')
+  ttlLineMemo = memoised(ttlLineMemo, [history], key, () => ttlLineOf(inputs))
+  return ttlLineMemo.value
+}
+
+// The one sentence on the best setup, as the details pane and bare /keepalive show it: '' with no result. Pricing the history is the costly
+// part, so the sentence is memoised on the pauses and the inputs it prices, and every surface asks the same memo.
+const sentenceNow = (k: KeepaliveState, view: CacheView, money: Money): string => {
+  const inputs = adviceInputs(k, view, money)
+  if (inputs === null) return ''
+  const key = [JSON.stringify(inputs.rates), inputs.leadMs, inputs.cap, JSON.stringify(inputs.current), inputs.pinned, JSON.stringify(inputs.fresh), money.unit].join('|')
+  sentenceMemo = memoised(sentenceMemo, [inputs.session, history], key, () => adviceOf(inputs, money.unit))
   return sentenceMemo.value
 }
 
