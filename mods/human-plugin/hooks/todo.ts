@@ -1,5 +1,6 @@
 import { atom, read, update, type EngineInterface } from 'claude-code'
 import type { TodoItem } from '../types'
+import { cutLine } from './done'
 import { LINE_BREAK } from './items'
 import type { ToolCall } from './ui'
 
@@ -15,6 +16,16 @@ const STATE_LIST = `${STATES.slice(0, -1).join(', ')} or ${STATES[STATES.length 
 // The longest title, in UTF-16 units: the unit the length of a JavaScript string is, and the one /asks's bounds are counted in.
 export const TITLE_MAX = 80
 
+// The longest ETA, in UTF-16 units, and the text an entry holds when it is given none. An ETA is never refused: etaOf stores what it can.
+export const ETA_MAX = 30
+export const NO_ETA = 'no ETA'
+
+// The ETA to store for any value a call or a stored list gives: its text trimmed and on one line, cut to ETA_MAX; NO_ETA when it is no text or blank.
+export const etaOf = (raw: unknown): string => {
+  const eta = typeof raw === 'string' ? cutLine(raw.trim(), ETA_MAX) : ''
+  return eta === '' ? NO_ETA : eta
+}
+
 export const HEADING = 'Claude TODO'
 
 // The list lives in $.state under its own key (a hot reload keeps it), and is null until it is first written in a session: that tells a list
@@ -24,13 +35,13 @@ const TODO = { plugin: 'human-plugin', key: 'todo' } as const
 const todo = atom(TODO, null as TodoItem[] | null)
 
 // A stored list, or null when none was written. A stored entry is kept when its title is text and its state is known; its title's length is not
-// re-checked, so a hand-edited list can hold a longer one.
+// re-checked, so a hand-edited list can hold a longer one. Its ETA is read as a write's is, so an entry stored before the field gets NO_ETA.
 export const normalizeTodo = (raw: unknown): TodoItem[] | null => {
   if (!Array.isArray(raw)) return null
   return raw.flatMap((entry: unknown): TodoItem[] => {
     if (typeof entry !== 'object' || entry === null) return []
-    const { title, state } = entry as Record<string, unknown>
-    return typeof title === 'string' && (state === 'queued' || state === 'in_flight') ? [{ title, state }] : []
+    const { title, state, eta } = entry as Record<string, unknown>
+    return typeof title === 'string' && (state === 'queued' || state === 'in_flight') ? [{ title, state, eta: etaOf(eta) }] : []
   })
 }
 
@@ -69,14 +80,14 @@ export const parseTodo = (raw: unknown): TodoParsed => {
     const at = `entry ${k + 1}`
     const entry: unknown = entries[k]
     if (typeof entry !== 'object' || entry === null) return { ok: false, reason: `${at} must be an object with a title and a state` }
-    const { title: given, state } = entry as Record<string, unknown>
+    const { title: given, state, eta } = entry as Record<string, unknown>
     if (typeof given !== 'string') return { ok: false, reason: `${at}: the title must be text` }
     const title = given.trim()
     if (title === '') return { ok: false, reason: `${at}: the title is empty` }
     if (LINE_BREAK.test(title)) return { ok: false, reason: `${at}: the title must be on one line` }
     if (title.length > TITLE_MAX) return { ok: false, reason: `${at}: the title is over ${TITLE_MAX} characters` }
     if (!isState(state)) return { ok: false, reason: `${at}: the state must be ${STATE_LIST}` }
-    if (state !== 'done') kept.push({ title, state })
+    if (state !== 'done') kept.push({ title, state, eta: etaOf(eta) })
   }
   return { ok: true, value: kept }
 }
@@ -88,6 +99,9 @@ export const inDisplayOrder = (items: readonly TodoItem[]): TodoItem[] => [
   ...items.filter(it => it.state === 'queued'),
 ]
 
+// What joins a title to its ETA where a person reads the list (`/claude-todo`, and the backlog pane).
+export const SEPARATOR = ' · '
+
 // The glyph each state is drawn with, wherever the list is shown. A done entry is never stored, so done has none.
 export const GLYPH = { in_flight: '◐', queued: '○' } as const satisfies Record<TodoItem['state'], string>
 
@@ -98,12 +112,10 @@ export const countsText = (items: readonly TodoItem[]): string => `${countOf(ite
 // The same counts in the band's short form, which names the in-flight state "active" (the column's header is too narrow for the long form).
 export const bandCountsText = (items: readonly TodoItem[]): string => `${countOf(items, 'in_flight')} active, ${countOf(items, 'queued')} queued`
 
-// The tool's answer: one line that counts the list. A read also lists the entries in their written order, one line each with its state, so the
-// agent's next write can restate the list as it was given.
-export const todoReply = (items: readonly TodoItem[], isRead: boolean): string => {
-  const head = `${HEADING}: ${countsText(items)}`
-  return isRead && items.length > 0 ? [head, ...items.map(it => `- ${it.state}: ${it.title}`)].join('\n') : head
-}
+// The tool's answer, to a write and to a read alike: a line that counts the list, then every entry in written order with its state, its title and
+// its ETA as stored, so the agent sees a default or a cut it was given and its next write can restate the list.
+export const todoReply = (items: readonly TodoItem[]): string =>
+  [`${HEADING}: ${countsText(items)}`, ...items.map(it => `- ${it.state}: ${it.title} (ETA: ${it.eta})`)].join('\n')
 
 // The counts a successful call's reply opens with, as the transcript row says them.
 const countsOf = (reply: string): string => {

@@ -1,7 +1,7 @@
 import { expect, test } from 'claude-code/testing'
 import { replay, rowsOf, type Source } from './replay'
 import { TOOL } from './items'
-import { TODO_TOOL } from './todo'
+import { NO_ETA, TODO_TOOL } from './todo'
 import { correctionText } from './restatement'
 
 const row = (ts: string, content: unknown, extra: Record<string, unknown> = {}) =>
@@ -636,7 +636,7 @@ test('the bare done notice an older release wrote still marks its item done-pend
 // earlier writes are not replayed.
 const todoUse = (id: string, input: Record<string, unknown>) => toolUse(id, input, TODO_TOOL)
 const todoError = (id: string, text: string) => ({ type: 'user', message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: id, content: text, is_error: true }] } })
-const entries = (...pairs: [string, string][]) => pairs.map(([title, state]) => ({ title, state }))
+const entries = (...pairs: [string, string][]) => pairs.map(([title, state]) => ({ title, state, eta: NO_ETA }))
 
 const TODO_WRITES = lines(
   link('u0', null, at(0), prompt('start')),
@@ -650,6 +650,24 @@ const TODO_WRITES = lines(
 
 test('the rebuilt Claude list is the last write\'s, with its done entries absent and its written order kept', async () => {
   expect((await replay([sourceOf(TODO_WRITES)])).todo).toEqual(entries(['Third', 'in_flight'], ['Fourth', 'queued'], ['Fifth', 'queued']))
+})
+
+test('a transcript written before the ETA existed rebuilds each entry with no ETA; one whose writes carry an ETA rebuilds each as stored', async () => {
+  const text = (input: Record<string, unknown>) =>
+    lines(
+      link('u0', null, at(0), prompt('start')),
+      link('a1', 'u0', at(1), todoUse('w1', input)),
+      link('r1', 'a1', at(2), toolResult('w1', 'Claude TODO: 1 in flight, 1 queued')),
+    )
+  expect((await replay([sourceOf(text({ entries: [{ title: 'Old', state: 'in_flight' }, { title: 'Older', state: 'queued' }] }))])).todo).toEqual([
+    { title: 'Old', state: 'in_flight', eta: NO_ETA },
+    { title: 'Older', state: 'queued', eta: NO_ETA },
+  ])
+  const withEta = { entries: [{ title: 'New', state: 'in_flight', eta: '~10 min' }, { title: 'Newer', state: 'queued', eta: 'y'.repeat(40) }] }
+  expect((await replay([sourceOf(text(withEta))])).todo).toEqual([
+    { title: 'New', state: 'in_flight', eta: '~10 min' },
+    { title: 'Newer', state: 'queued', eta: `${'y'.repeat(29)}…` },
+  ])
 })
 
 test('a transcript with no Claude list write rebuilds an empty Claude list, and the human list rebuilds as before', async () => {
@@ -693,7 +711,7 @@ test('a read-only call is not a write: the list stays the last write\'s', async 
     link('a1', 'u0', at(1), todoUse('w1', { entries: entries(['Build', 'in_flight']) })),
     link('r1', 'a1', at(2), toolResult('w1', 'Claude TODO: 1 in flight, 0 queued')),
     link('a2', 'r1', at(3), todoUse('w2', {})),
-    link('r2', 'a2', at(4), toolResult('w2', 'Claude TODO: 1 in flight, 0 queued\n- in_flight: Build')),
+    link('r2', 'a2', at(4), toolResult('w2', 'Claude TODO: 1 in flight, 0 queued\n- in_flight: Build (ETA: no ETA)')),
   )
   expect((await replay([sourceOf(text)])).todo).toEqual(entries(['Build', 'in_flight']))
 })

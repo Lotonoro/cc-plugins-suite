@@ -878,7 +878,7 @@ test('a table after a fence in a second-level list item is drawn as a list, with
 
 
 // The Claude column: the band's tree with the Claude list beside the human list.
-const mk = (state: TodoItem['state'], n: number, prefix = state === 'queued' ? 'q' : 'f'): TodoItem[] => Array.from({ length: n }, (_, k) => ({ title: `${prefix}${k + 1}`, state }))
+const mk = (state: TodoItem['state'], n: number, prefix = state === 'queued' ? 'q' : 'f'): TodoItem[] => Array.from({ length: n }, (_, k) => ({ title: `${prefix}${k + 1}`, state, eta: `eta ${prefix}${k + 1}` }))
 const flight = (n: number): TodoItem[] => mk('in_flight', n)
 const queue = (n: number): TodoItem[] => mk('queued', n)
 const humans = (n: number, blocking = false): Store => ({ items: Array.from({ length: n }, (_, k) => at(k + 1, blocking && k === 0)), next: n + 1, term: null })
@@ -917,6 +917,14 @@ test('under 96 columns the Claude column hides and the human list draws as it do
   sameTree(drawn(humans(2), [...flight(1), ...queue(2)], 90), band(table, handlers, humans(2), view()))
 })
 
+test('the Claude column draws each row as its glyph and its title, with no ETA', () => {
+  const right = columnsOf(drawn(humans(2), [...flight(1), ...queue(1)], 120))[1] as Node
+  const rows = lineTexts(right).slice(1).join('\n')
+  expect(rows).toContain('◐ f1')
+  expect(rows).toContain('○ q1')
+  expect(rows).not.toMatch(/eta|ETA/)
+})
+
 test('the Claude header counts the list in the short form, in flight as active', () => {
   const right = columnsOf(drawn(humans(2), [...flight(2), ...queue(3)], 120))[1] as Node
   expect(lineTexts(right)[0]).toBe('Claude TODO 2 active, 3 queued')
@@ -947,7 +955,7 @@ test('the header is one line set to cut at the column\'s layout width: 31 beside
 
 test('a row is the state\'s glyph and the title on one line, set to cut at the column\'s edge, in-flight first', () => {
   const long = 'x'.repeat(80)
-  const right = columnsOf(drawn(humans(6), [{ title: 'queued one', state: 'queued' }, { title: long, state: 'in_flight' }], 120))[1] as Node
+  const right = columnsOf(drawn(humans(6), [{ title: 'queued one', state: 'queued', eta: 'no ETA' }, { title: long, state: 'in_flight', eta: 'no ETA' }], 120))[1] as Node
   const rows = (right.children as Node[]).slice(1)
   expect(rows.map(row => texts(row).join(''))).toEqual([`◐ ${long}`, '○ queued one'])
   expect(rows.map(row => [row.type, row.wrap])).toEqual([['Text', 'truncate-end'], ['Text', 'truncate-end']])

@@ -2,7 +2,7 @@ import { expect, test } from 'claude-code/testing'
 import { register, wireHooks } from './register'
 import { offer, reset, setOnChange, startTurn, takeHeld, endTurn } from './turns'
 import { EMPTY, TOOL, act, normalizeStore } from './items'
-import { TODO_TOOL } from './todo'
+import { NO_ETA, TODO_TOOL } from './todo'
 import { TODO_SPEC, TOOL_SPEC } from './steering'
 import { paneRows } from './ui'
 import { correctionText } from './restatement'
@@ -2808,7 +2808,7 @@ test('every form an open item\'s foot names is accepted by the command: a range 
 const todoHook = (hooks: Record<string, Handler>, event: string): Handler => hooks[`${event} ${JSON.stringify({ tool: TODO_TOOL })}`] as Handler
 const runTodo = (hooks: Record<string, Handler>, env: unknown, input: Record<string, unknown>) =>
   todoHook(hooks, 'tool.call')(env as never, { tool: TODO_TOOL, ...input } as never, next(false) as never)
-const entry = (title: string, state: string) => ({ title, state })
+const entry = (title: string, state: string, eta = NO_ETA) => ({ title, state, eta })
 
 test('session.start registers both tools, neither deferred: the human list\'s and the Claude list\'s', async () => {
   reset()
@@ -2830,7 +2830,9 @@ test('a write stores the queued and in-flight entries in the order given and non
   const { hooks } = wire()
   const { env, values } = memEnv([], [], null)
   const entries = [entry('Queued first', 'queued'), entry('Finished', 'done'), entry('Running', 'in_flight'), entry('Queued last', 'queued')]
-  expect(await runTodo(hooks, env, { entries })).toEqual({ result: 'Claude TODO: 1 in flight, 2 queued' })
+  expect(await runTodo(hooks, env, { entries })).toEqual({
+    result: ['Claude TODO: 1 in flight, 2 queued', '- queued: Queued first (ETA: no ETA)', '- in_flight: Running (ETA: no ETA)', '- queued: Queued last (ETA: no ETA)'].join('\n'),
+  })
   expect(values.todo).toEqual([entry('Queued first', 'queued'), entry('Running', 'in_flight'), entry('Queued last', 'queued')])
 })
 
@@ -2840,7 +2842,7 @@ test('a call with an empty array empties the list, and one with no array leaves 
   const { env, values } = memEnv([], [], null)
   await runTodo(hooks, env, { entries: [entry('Queued first', 'queued'), entry('Running', 'in_flight')] })
   const before = values.todo
-  expect(await runTodo(hooks, env, {})).toEqual({ result: 'Claude TODO: 1 in flight, 1 queued\n- queued: Queued first\n- in_flight: Running' })
+  expect(await runTodo(hooks, env, {})).toEqual({ result: 'Claude TODO: 1 in flight, 1 queued\n- queued: Queued first (ETA: no ETA)\n- in_flight: Running (ETA: no ETA)' })
   expect(values.todo).toEqual(before)
   expect(await runTodo(hooks, env, { entries: [] })).toEqual({ result: 'Claude TODO: 0 in flight, 0 queued' })
   expect(values.todo).toEqual([])
@@ -2960,9 +2962,9 @@ test('two writes whose first one is slower apply in the order the calls arrived:
   const read = runTodo(hooks, slow, {})
   await settle()
   gate.release()
-  expect(await first).toEqual({ result: 'Claude TODO: 0 in flight, 1 queued' })
-  expect(await second).toEqual({ result: 'Claude TODO: 1 in flight, 0 queued' })
-  expect(await read).toEqual({ result: 'Claude TODO: 1 in flight, 0 queued\n- in_flight: Second' })
+  expect(await first).toEqual({ result: 'Claude TODO: 0 in flight, 1 queued\n- queued: First (ETA: no ETA)' })
+  expect(await second).toEqual({ result: 'Claude TODO: 1 in flight, 0 queued\n- in_flight: Second (ETA: no ETA)' })
+  expect(await read).toEqual({ result: 'Claude TODO: 1 in flight, 0 queued\n- in_flight: Second (ETA: no ETA)' })
   expect(values.todo).toEqual([entry('Second', 'in_flight')])
 })
 
@@ -2975,7 +2977,7 @@ test('/claude-todo prints the Claude list the tool keeps: the in-flight items, t
   const { env } = memEnv([], [], null)
   await runTodo(hooks, env, { entries: [entry('Queued first', 'queued'), entry('Running', 'in_flight'), entry('Queued last', 'queued')] })
   expect(await claudeTodo(hooks, env)).toEqual({
-    text: '  Claude TODO: 1 in flight, 2 queued\n  in flight:\n    ◐ Running\n  queued:\n    ○ Queued first\n    ○ Queued last',
+    text: '  Claude TODO: 1 in flight, 2 queued\n  in flight:\n    ◐ Running · no ETA\n  queued:\n    ○ Queued first · no ETA\n    ○ Queued last · no ETA',
   })
   await runTodo(hooks, env, { entries: [] })
   expect(await claudeTodo(hooks, env)).toEqual({ text: '  The Claude TODO list is empty.' })
@@ -3003,7 +3005,7 @@ const REBUILT_STEP = [
     message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'w', content: 'Claude TODO: 1 in flight, 0 queued' }] },
   },
 ]
-const REBUILT_TEXT = '  Claude TODO: 1 in flight, 0 queued\n  in flight:\n    ◐ Rebuilt step'
+const REBUILT_TEXT = '  Claude TODO: 1 in flight, 0 queued\n  in flight:\n    ◐ Rebuilt step · no ETA'
 
 test('/claude-todo prints the rebuilt list once a rebuild has finished, and its rebuilding line while the rebuild runs past its wait', async () => {
   freshModule()

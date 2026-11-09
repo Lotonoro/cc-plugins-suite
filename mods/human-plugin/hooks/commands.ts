@@ -2,7 +2,7 @@ import type { Item, TodoItem, Turn } from '../types'
 import { cutLine, cutText, formsOf, humanTurn, isNumbered, labelOf, orderedOptions, replyText, turnsOf, type AnswerOutcome, type Form } from './done'
 import { LINE_BREAK } from './items'
 import { bandOrder } from './layout'
-import { GLYPH, HEADING, countsText, inDisplayOrder } from './todo'
+import { GLYPH, HEADING, SEPARATOR, countsText, inDisplayOrder } from './todo'
 
 // The bounds the answers keep, in UTF-16 units. `cap` is the most `/asks <n>` prints, the cut line included; `floor` is the least its cut newest
 // turn keeps, as printed, one unit less when a surrogate pair straddles the cut; `title` and `label` cut those fields in `/asks <n>`;
@@ -69,7 +69,7 @@ const trimmed = (args: string): string => args.replace(/^[ \t]+|[ \t]+$/g, '')
 export const hasArgument = (args: string): boolean => trimmed(args) !== ''
 
 // The Claude TODO list as `/claude-todo` prints it: a line that counts it, then the in-flight entries and the queued ones, each group in written
-// order under a heading of its own, an entry as its state's glyph and its title cut to the list's width. At most LIMITS.listItems entries are
+// order under a heading of its own, an entry as its state's glyph, its title cut to the list's width and its ETA whole. At most LIMITS.listItems entries are
 // named, in-flight first, and a last line counts what is left out of each group that lost any. The entry lines are indented twice, so no line
 // of the print starts short of the indent.
 export const claudeTodoText = (items: readonly TodoItem[]): string => {
@@ -79,7 +79,7 @@ export const claudeTodoText = (items: readonly TodoItem[]): string => {
   const left: string[] = []
   for (const [state, heading] of [['in_flight', 'in flight'], ['queued', 'queued']] as const) {
     const group = named.filter(it => it.state === state)
-    if (group.length > 0) lines.push(`${INDENT}${heading}:`, ...group.map(it => `${INDENT}${INDENT}${GLYPH[state]} ${cutLine(it.title, LIMITS.listLine)}`))
+    if (group.length > 0) lines.push(`${INDENT}${heading}:`, ...group.map(it => `${INDENT}${INDENT}${GLYPH[state]} ${cutLine(it.title, LIMITS.listLine)}${SEPARATOR}${it.eta}`))
     const more = items.filter(it => it.state === state).length - group.length
     if (more > 0) left.push(`${more} more ${heading}`)
   }

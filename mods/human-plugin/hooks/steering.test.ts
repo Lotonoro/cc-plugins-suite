@@ -1,7 +1,7 @@
 import { expect, test } from 'claude-code/testing'
 import { STEERING, TODO_SPEC, TOOL_NAME, TOOL_SPEC } from './steering'
 import { TOOL } from './items'
-import { STATES, TITLE_MAX, TODO_NAME, TODO_TOOL } from './todo'
+import { ETA_MAX, NO_ETA, STATES, TITLE_MAX, TODO_NAME, TODO_TOOL } from './todo'
 
 test('the steering section is a session section that names the tool and its rules', () => {
   expect(STEERING.id).toBe('human-plugin:steering')
@@ -151,12 +151,26 @@ test('the Claude TODO schema offers exactly the states the check accepts, and it
   expect(entry.properties.state.enum).toEqual([...STATES])
   expect(entry.properties.title.description).toContain(`at most ${TITLE_MAX}`)
   expect(entry.required).toEqual(['title', 'state'])
+  expect(Object.keys(entry.properties)).toEqual(['title', 'state', 'eta'])
+  expect(entry.properties.eta.type).toBe('string')
+  expect(entry.properties.eta.description).toContain(`at most ${ETA_MAX}`)
+  expect(entry.properties.eta.description).toContain(NO_ETA)
   expect(TODO_SPEC.inputSchema.properties.entries.type).toBe('array')
 })
 
 test('the Claude TODO tool description carries the steering\'s rules in short', () => {
   for (const rule of ['the whole list', 'done', 'main agent', 'when a step starts or finishes', 'few words', 'never go here']) {
     expect(TODO_SPEC.description).toContain(rule)
+  }
+})
+
+test('the steering section and the tool description each say to give every entry an ETA and to write no ETA when there is none', () => {
+  for (const text of [STEERING.text, TODO_SPEC.description]) {
+    expect(text).toContain('`eta`')
+    expect(text).toContain(`\`${NO_ETA}\``)
+    expect(text).toContain(`${ETA_MAX} characters`)
+    expect(text).toContain('~10 min')
+    expect(text).toContain('after tests')
   }
 })
 

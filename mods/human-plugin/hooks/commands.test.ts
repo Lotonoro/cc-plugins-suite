@@ -5,7 +5,7 @@ import {
 } from './commands'
 import { TOOL } from './items'
 import { replay, rowsOf, type Source } from './replay'
-import { GLYPH } from './todo'
+import { GLYPH, NO_ETA } from './todo'
 import type { Item, TodoItem, Turn } from '../types'
 
 // The `/asks` answers, parsed and worded. The expectations are the layouts the plan gives, so a change to a line shows here.
@@ -594,7 +594,7 @@ test('a resume reads back nothing from the phone block: an item titled like a do
 })
 
 // The `/claude-todo` print: the Claude TODO list as indented text, in-flight items first, bounded as `/asks` is.
-const step = (title: string, state: TodoItem['state']): TodoItem => ({ title, state })
+const step = (title: string, state: TodoItem['state'], eta = `eta ${title}`): TodoItem => ({ title, state, eta })
 const steps = (count: number, state: TodoItem['state'], name = state): TodoItem[] => Array.from({ length: count }, (_, k) => step(`${name} ${k + 1}`, state))
 const FLIGHT = GLYPH.in_flight
 const QUEUED = GLYPH.queued
@@ -605,19 +605,26 @@ test('two in-flight and three queued items print the counting line, then each gr
     [
       '  Claude TODO: 2 in flight, 3 queued',
       '  in flight:',
-      `    ${FLIGHT} f1`,
-      `    ${FLIGHT} f2`,
+      `    ${FLIGHT} f1 · eta f1`,
+      `    ${FLIGHT} f2 · eta f2`,
       '  queued:',
-      `    ${QUEUED} q1`,
-      `    ${QUEUED} q2`,
-      `    ${QUEUED} q3`,
+      `    ${QUEUED} q1 · eta q1`,
+      `    ${QUEUED} q2 · eta q2`,
+      `    ${QUEUED} q3 · eta q3`,
     ].join('\n'),
   )
 })
 
 test('a group with no items prints no heading', () => {
-  expect(claudeTodoText([step('q1', 'queued')])).toBe(['  Claude TODO: 0 in flight, 1 queued', '  queued:', `    ${QUEUED} q1`].join('\n'))
-  expect(claudeTodoText([step('f1', 'in_flight')])).toBe(['  Claude TODO: 1 in flight, 0 queued', '  in flight:', `    ${FLIGHT} f1`].join('\n'))
+  expect(claudeTodoText([step('q1', 'queued')])).toBe(['  Claude TODO: 0 in flight, 1 queued', '  queued:', `    ${QUEUED} q1 · eta q1`].join('\n'))
+  expect(claudeTodoText([step('f1', 'in_flight')])).toBe(['  Claude TODO: 1 in flight, 0 queued', '  in flight:', `    ${FLIGHT} f1 · eta f1`].join('\n'))
+})
+
+test('an entry prints its title cut to 80, then its ETA whole; an entry given none prints no ETA', () => {
+  const long = 'x'.repeat(100)
+  const eta = 'after the review lands, ok'
+  expect(claudeTodoText([step(long, 'in_flight', eta)]).split('\n')[2]).toBe(`    ${FLIGHT} ${'x'.repeat(79)}… · ${eta}`)
+  expect(claudeTodoText([step('Run the tests', 'in_flight', NO_ETA)]).split('\n')[2]).toBe(`    ${FLIGHT} Run the tests · no ETA`)
 })
 
 test('an empty list prints the one empty line', () => {
@@ -631,7 +638,7 @@ test('five in flight and twenty queued name the five and fifteen queued, and end
   expect(lines.filter(line => line.includes(FLIGHT))).toHaveLength(5)
   expect(lines.filter(line => line.includes(QUEUED))).toHaveLength(15)
   expect(lines[lines.length - 1]).toBe('  and 5 more queued')
-  expect(lines[lines.length - 2]).toBe(`    ${QUEUED} queued 15`)
+  expect(lines[lines.length - 2]).toBe(`    ${QUEUED} queued 15 · eta queued 15`)
 })
 
 test('twenty-five in flight and three queued name twenty in flight, print no queued heading, and count both groups left out', () => {
@@ -652,21 +659,21 @@ test('exactly twenty items print whole, with no count line, and twenty-one fold 
 
 test('an item\'s line is its indents, its glyph and a space, then its title; a title of 80 units prints whole, a longer stored one is cut to 80 with its ellipsis', () => {
   const whole = 'x'.repeat(LIMITS.listLine)
-  expect(claudeTodoText([step(whole, 'queued')]).split('\n')[2]).toBe(`    ${QUEUED} ${whole}`)
-  const cut = claudeTodoText([step('x'.repeat(200), 'in_flight')]).split('\n')[2] ?? ''
-  expect(cut).toBe(`    ${FLIGHT} ${'x'.repeat(LIMITS.listLine - 1)}…`)
-  expect(cut.slice(`    ${FLIGHT} `.length)).toHaveLength(LIMITS.listLine)
+  expect(claudeTodoText([step(whole, 'queued', NO_ETA)]).split('\n')[2]).toBe(`    ${QUEUED} ${whole} · no ETA`)
+  const cut = claudeTodoText([step('x'.repeat(200), 'in_flight', NO_ETA)]).split('\n')[2] ?? ''
+  expect(cut).toBe(`    ${FLIGHT} ${'x'.repeat(LIMITS.listLine - 1)}… · no ETA`)
+  expect(cut.slice(`    ${FLIGHT} `.length, -' · no ETA'.length)).toHaveLength(LIMITS.listLine)
 })
 
 test('a stored title with line breaks prints on one line, and a cut never splits a surrogate pair', () => {
-  expect(claudeTodoText([step('one\ntwo\r\nthree', 'queued')]).split('\n')).toHaveLength(3)
-  const text = claudeTodoText([step(pair.repeat(60), 'queued')])
+  expect(claudeTodoText([step('one\ntwo\r\nthree', 'queued', NO_ETA)]).split('\n')).toHaveLength(3)
+  const text = claudeTodoText([step(pair.repeat(60), 'queued', NO_ETA)])
   expect(lone(text)).toBe(false)
-  expect((text.split('\n')[2] ?? '').slice(`    ${QUEUED} `.length).length).toBeLessThanOrEqual(LIMITS.listLine)
+  expect((text.split('\n')[2] ?? '').slice(`    ${QUEUED} `.length, -' · no ETA'.length).length).toBeLessThanOrEqual(LIMITS.listLine)
 })
 
 test('every printed line starts with the two-space indent, whatever the list holds', () => {
-  for (const items of [[], steps(30, 'in_flight'), [...steps(5, 'in_flight'), ...steps(30, 'queued')], [step('a\nb', 'queued')]]) {
+  for (const items of [[], steps(30, 'in_flight'), [...steps(5, 'in_flight'), ...steps(30, 'queued')], [step('a\nb', 'queued', NO_ETA)]]) {
     for (const line of claudeTodoText(items).split('\n')) expect(line.startsWith('  ')).toBe(true)
   }
 })

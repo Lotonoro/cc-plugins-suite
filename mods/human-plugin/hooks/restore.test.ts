@@ -1,7 +1,7 @@
 import type { On } from 'claude-code'
 import { expect, mock, test, type Engine } from 'claude-code/testing'
 import { TOOL } from './items'
-import { TODO_TOOL } from './todo'
+import { NO_ETA, TODO_TOOL } from './todo'
 
 // The rebuild through the session's own hooks: classic.SessionStart (or, for a fork, session.start and the first turn)
 // starts it, `cat` streams each transcript, and the tool waits for it. The test's hooks stand for the host beneath.
@@ -224,7 +224,7 @@ const todoCall = (uuid: string, parent: string, s: number, id: string, input: Re
   ({ uuid, parentUuid: parent, timestamp: at(s), type: 'assistant', message: { role: 'assistant', content: [{ type: 'tool_use', id, name: TODO_TOOL, input }] } })
 const todoErrored = (uuid: string, parent: string, s: number, id: string, text: string) =>
   ({ uuid, parentUuid: parent, timestamp: at(s), type: 'user', message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: id, content: text, is_error: true }] } })
-const entries = (...pairs: [string, string][]) => pairs.map(([title, state]) => ({ title, state }))
+const entries = (...pairs: [string, string][]) => pairs.map(([title, state]) => ({ title, state, eta: NO_ETA }))
 const TODO_SESSION = jsonl(
   prompt('u0', null, 0),
   todoCall('a1', 'u0', 1, 'w1', { entries: entries(['Plan one', 'in_flight']) }),
@@ -234,7 +234,7 @@ const TODO_SESSION = jsonl(
   todoCall('a3', 'r2', 5, 'w3', { entries: entries(['Plan two', 'done'], ['Plan three', 'in_flight'], ['Plan four', 'queued']) }),
   reply('r3', 'a3', 6, 'w3', 'Claude TODO: 1 in flight, 1 queued'),
   todoCall('a4', 'r3', 7, 'w4', {}),
-  reply('r4', 'a4', 8, 'w4', 'Claude TODO: 1 in flight, 1 queued\n- in_flight: Plan three\n- queued: Plan four'),
+  reply('r4', 'a4', 8, 'w4', 'Claude TODO: 1 in flight, 1 queued\n- in_flight: Plan three (ETA: no ETA)\n- queued: Plan four (ETA: no ETA)'),
   todoCall('a5', 'r4', 9, 'w5', { entries: entries(['Errored', 'in_flight']) }),
   todoErrored('r5', 'a5', 10, 'w5', 'claude_todo: the mod failed to answer the call'),
   prompt('p-old', 'r5', 11),
@@ -242,7 +242,7 @@ const TODO_SESSION = jsonl(
   reply('r6', 'a6', 13, 'w6', 'Claude TODO: 1 in flight, 0 queued'),
   prompt('p-new', 'r5', 14),
 )
-const LAST_LIST = 'Claude TODO: 1 in flight, 1 queued\n- in_flight: Plan three\n- queued: Plan four'
+const LAST_LIST = 'Claude TODO: 1 in flight, 1 queued\n- in_flight: Plan three (ETA: no ETA)\n- queued: Plan four (ETA: no ETA)'
 // The same session with a human ask added on the live branch after the last prompt.
 const BOTH = jsonl(...TODO_SESSION.trim().split('\n').map(line => JSON.parse(line) as Record<string, unknown>), call('h1', 'p-new', 15, 'h', { action: 'add', title: 'An ask' }), reply('hr', 'h1', 16, 'h', 'added #1'))
 const todoList = async ($: Engine) => String((await $.tool.call({ tool: TODO_TOOL })).result)
@@ -292,7 +292,7 @@ test('a list written live before the rebuild stays as written, an emptied one in
   host(on, { [MAIN]: TODO_SESSION })
   await $.tool.call({ tool: TODO_TOOL, entries: entries(['Live', 'in_flight']) })
   await $.classic.SessionStart({ source: 'resume', transcript_path: MAIN })
-  expect(await todoList($)).toBe('Claude TODO: 1 in flight, 0 queued\n- in_flight: Live')
+  expect(await todoList($)).toBe('Claude TODO: 1 in flight, 0 queued\n- in_flight: Live (ETA: no ETA)')
 })
 
 test('a list emptied live before the rebuild stays empty', async ($, on) => {
@@ -330,7 +330,7 @@ test('a fork whose first live write lands before its rebuild starts keeps that w
   files.appear(FORK)
   await $.turn.start({ text: 'go on', turnId: 't1' })
   await clock.settle()
-  expect(await todoList($)).toBe('Claude TODO: 1 in flight, 0 queued\n- in_flight: Newer than the transcript')
+  expect(await todoList($)).toBe('Claude TODO: 1 in flight, 0 queued\n- in_flight: Newer than the transcript (ETA: no ETA)')
 })
 
 // A write to one key of the state that never lands: the version it checks against is always stale, so the update gives up. The kit answers the

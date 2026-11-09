@@ -1,5 +1,5 @@
 import type { PromptComposeSection } from 'claude-code'
-import { STATES, TITLE_MAX, TODO_NAME } from './todo'
+import { ETA_MAX, NO_ETA, STATES, TITLE_MAX, TODO_NAME } from './todo'
 
 // Static text: the same bytes on every turn and after every list change, so the system prompt's cache is written once.
 export const STEERING: PromptComposeSection = {
@@ -26,6 +26,7 @@ export const STEERING: PromptComposeSection = {
     '- The Claude TODO list is your own work, kept through claude_todo: your own steps, the step you are on (in_flight) and the steps queued after it (queued). Each call gives the whole list and replaces the last one; a step that is done is dropped.',
     '- Only the main agent keeps the Claude TODO list; a subagent does not call claude_todo.',
     '- Write the Claude TODO list when a step starts or finishes, or when the plan of steps changes, not on a turn where nothing moved. Keep it short and current: titles are a few words. Call claude_todo with no entries to read it back, for example after a compaction.',
+    `- Give every entry of the Claude TODO list an \`eta\`: short text, at most ${ETA_MAX} characters, such as \`~10 min\` or \`after tests\`. When you cannot say, write \`${NO_ETA}\` rather than leaving the field out. Each call's answer lists every entry with its ETA as stored, so restate them in your next write.`,
     '- Asks of the human never go on the Claude TODO list: they go on the human_items list, filed once and never restated, and the Claude TODO list does not repeat a human item.',
   ].join('\n'),
 }
@@ -88,19 +89,22 @@ export const TODO_SPEC = {
     'steps queued after it (queued). A call gives the whole list in entries, in the order you want it kept, and replaces the last ' +
     'one; an entry marked done is dropped at once. An empty entries array empties the list. Call with no entries to read the list back, ' +
     'for example after a compaction. Write it when a step starts or finishes, or when the plan of steps changes, not on a turn where ' +
-    'nothing moved. Keep it short: titles are a few words. Only the main agent keeps this list. Asks of the human never go here: ' +
-    'file them with human_items.',
+    'nothing moved. Keep it short: titles are a few words. Give every entry an `eta`: short text, at most ' +
+    `${ETA_MAX} characters, such as \`~10 min\` or \`after tests\`; write \`${NO_ETA}\` when you cannot say, rather than leaving it out. ` +
+    'The answer to a call, to a read as to a write, lists every entry with its ETA as stored. Only the main agent keeps this list. ' +
+    'Asks of the human never go here: file them with human_items.',
   inputSchema: {
     type: 'object',
     properties: {
       entries: {
         type: 'array',
-        description: 'The whole list, in the order to keep: each entry a title and a state. Leave it out to read the list.',
+        description: 'The whole list, in the order to keep: each entry a title, a state and an eta. Leave it out to read the list.',
         items: {
           type: 'object',
           properties: {
             title: { type: 'string', description: `One line of a few words, at most ${TITLE_MAX} characters.` },
             state: { type: 'string', enum: [...STATES] },
+            eta: { type: 'string', description: `Short text, at most ${ETA_MAX} characters, such as "~10 min" or "after tests". Write "${NO_ETA}" when you cannot say.` },
           },
           required: ['title', 'state'],
         },

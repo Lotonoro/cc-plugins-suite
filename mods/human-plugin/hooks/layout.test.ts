@@ -141,7 +141,7 @@ test('a band over its rows folds the human list to the rows the engine\'s window
   expect(humanFoldRows(10, 31)).toBe(9)
 })
 
-const todoItem = (title: string, state: TodoItem['state']): TodoItem => ({ title, state })
+const todoItem = (title: string, state: TodoItem['state']): TodoItem => ({ title, state, eta: 'no ETA' })
 const flying = (n: number): TodoItem[] => Array.from({ length: n }, (_, k) => todoItem(`f${k + 1}`, 'in_flight'))
 const waiting = (n: number): TodoItem[] => Array.from({ length: n }, (_, k) => todoItem(`q${k + 1}`, 'queued'))
 const titles = (rows: ClaudeRow[]): string[] => rows.map(r => (r.kind === 'item' ? r.item.title : `+${r.count} queued`))

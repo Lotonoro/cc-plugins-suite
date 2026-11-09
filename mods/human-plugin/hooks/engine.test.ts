@@ -53,6 +53,34 @@ test('a malformed call is refused, and the steering section is the same before a
   expect(after?.scope).toBe('session')
 })
 
+test('the steering section is byte-identical with an empty Claude list, one entry with an ETA, and several entries some with no ETA', async ($, on) => {
+  mock.clock(on)
+  mock.store(on)
+  on('ui.panes', () => ({ value: [] }))
+  on('prompt.compose', () => ({ sections: [] }))
+  const steering = async () => (await $.prompt.compose(FACTS)).sections.find(s => s.id === STEERING.id)?.text
+  const empty = await steering()
+  await $.tool.call({ tool: TODO_TOOL, entries: [{ title: 'Build it', state: 'in_flight', eta: '~10 min' }] })
+  expect(await steering()).toBe(empty)
+  await $.tool.call({ tool: TODO_TOOL, entries: [{ title: 'Build it', state: 'in_flight', eta: '~10 min' }, { title: 'Test it', state: 'queued' }, { title: 'Ship', state: 'queued', eta: 'no ETA' }] })
+  expect(await steering()).toBe(empty)
+  expect(empty).toBe(STEERING.text)
+})
+
+test('the band\'s Claude column draws each row as its glyph and title, and no ETA', async ($, on) => {
+  mock.clock(on)
+  mock.store(on)
+  on('ui.panes', () => ({ value: [] }))
+  await $.tool.call({ tool: TOOL, action: 'add', title: 'Pick a db' })
+  await $.tool.call({ tool: TODO_TOOL, entries: [{ title: 'Build it', state: 'in_flight', eta: '~10 min' }, { title: 'Test it', state: 'queued', eta: 'after tests' }] })
+  const ui = await $.ui.mount({ plugin: 'human-plugin', surface: 'terminal', component: 'AbovePrompt', props: { ...BAND_PROPS, bodyColumns: 120 } })
+  const drawn = JSON.stringify(await ui.drawn())
+  expect(drawn).toContain('◐ Build it')
+  expect(drawn).not.toContain('ETA')
+  expect(drawn).not.toContain('~10 min')
+  expect(drawn).not.toContain('after tests')
+})
+
 const BAND_PROPS = { hasSurvey: false, isWorking: false, maxRows: 20, bodyColumns: 80, scroll: { offset: 0, bodyRows: 20 }, view: {} }
 
 test('a done press waits out the undo window and sends once; a second press inside the window sends nothing', async ($, on) => {

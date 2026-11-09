@@ -59,7 +59,7 @@ export type OwedNotices = { held: Notice[]; waiting: Notice[] }
 // One entry of the Claude TODO list, the agent's own running list (todo.ts): a title and the state of its step. A step that is done
 // leaves the list at once, so no stored entry is.
 export type TodoState = 'queued' | 'in_flight'
-export type TodoItem = { title: string; state: TodoState }
+export type TodoItem = { title: string; state: TodoState; eta: string }
 
 declare module 'claude-code' {
   interface PluginState {

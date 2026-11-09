@@ -216,7 +216,7 @@ const todoAnswer = async ($: EngineInterface, e: unknown) => {
     await before
     if (!(await restored($))) return { deny: `${TODO_NAME}: the list is still being rebuilt from the transcript; call again in a moment` }
     if (parsed.value !== null) await writeTodo($, parsed.value)
-    return { result: todoReply(parsed.value ?? (await readTodo($)), parsed.value === null) }
+    return { result: todoReply(parsed.value ?? (await readTodo($))) }
   } finally {
     turn.done()
   }

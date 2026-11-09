@@ -1,5 +1,5 @@
 import { expect, test } from 'claude-code/testing'
-import { GLYPH, HEADING, STATES, TITLE_MAX, TODO_NAME, TODO_TOOL, bandCountsText, countsText, inDisplayOrder, normalizeTodo, parseTodo, todoLine, todoReply } from './todo'
+import { ETA_MAX, GLYPH, HEADING, NO_ETA, SEPARATOR, STATES, TITLE_MAX, TODO_NAME, TODO_TOOL, bandCountsText, countsText, inDisplayOrder, normalizeTodo, parseTodo, todoLine, todoReply } from './todo'
 import type { TodoItem } from '../types'
 
 const write = (entries: unknown): TodoItem[] | null => {
@@ -13,9 +13,9 @@ const refusal = (raw: unknown): string => {
   return parsed.reason
 }
 const LIST: TodoItem[] = [
-  { title: 'Write tests', state: 'queued' },
-  { title: 'Build', state: 'in_flight' },
-  { title: 'Ship', state: 'queued' },
+  { title: 'Write tests', state: 'queued', eta: 'after tests' },
+  { title: 'Build', state: 'in_flight', eta: '~10 min' },
+  { title: 'Ship', state: 'queued', eta: NO_ETA },
 ]
 
 test('the tool is named claude_todo and its states are queued, in_flight and done', () => {
@@ -34,9 +34,9 @@ test('a write keeps the queued and in-flight entries in the order given, and dro
       { title: 'Queued last', state: 'queued' },
     ]),
   ).toEqual([
-    { title: 'Queued first', state: 'queued' },
-    { title: 'Running', state: 'in_flight' },
-    { title: 'Queued last', state: 'queued' },
+    { title: 'Queued first', state: 'queued', eta: NO_ETA },
+    { title: 'Running', state: 'in_flight', eta: NO_ETA },
+    { title: 'Queued last', state: 'queued', eta: NO_ETA },
   ])
 })
 
@@ -47,9 +47,9 @@ test('an empty array is a write of the empty list, and an input with no array is
 })
 
 test('a title is trimmed, and a title of exactly 80 UTF-16 units is accepted', () => {
-  expect(write([{ title: '  Build it  ', state: 'queued' }])).toEqual([{ title: 'Build it', state: 'queued' }])
+  expect(write([{ title: '  Build it  ', state: 'queued' }])).toEqual([{ title: 'Build it', state: 'queued', eta: NO_ETA }])
   const longest = 'x'.repeat(80)
-  expect(write([{ title: longest, state: 'queued' }])).toEqual([{ title: longest, state: 'queued' }])
+  expect(write([{ title: longest, state: 'queued' }])).toEqual([{ title: longest, state: 'queued', eta: NO_ETA }])
 })
 
 test('a title of 81 UTF-16 units is refused with the limit named; a surrogate pair counts as two units', () => {
@@ -83,7 +83,7 @@ test('a stored list keeps an entry whose title is text and whose state is known,
   const long = 'x'.repeat(200)
   expect(
     normalizeTodo([
-      { title: 'Build', state: 'in_flight' },
+      { title: 'Build', state: 'in_flight', eta: '~5 min' },
       { title: 3, state: 'queued' },
       { title: 'Ghost', state: 'done' },
       { title: 'Odd', state: 'weird' },
@@ -92,8 +92,8 @@ test('a stored list keeps an entry whose title is text and whose state is known,
       { title: long, state: 'queued' },
     ]),
   ).toEqual([
-    { title: 'Build', state: 'in_flight' },
-    { title: long, state: 'queued' },
+    { title: 'Build', state: 'in_flight', eta: '~5 min' },
+    { title: long, state: 'queued', eta: NO_ETA },
   ])
 })
 
@@ -111,14 +111,53 @@ test('the display order puts in-flight entries ahead of queued ones, each in wri
 test('the counts read N in flight, M queued, with both numbers always', () => {
   expect(countsText(LIST)).toBe('1 in flight, 2 queued')
   expect(countsText([])).toBe('0 in flight, 0 queued')
-  expect(countsText([{ title: 'a', state: 'in_flight' }, { title: 'b', state: 'in_flight' }])).toBe('2 in flight, 0 queued')
+  expect(countsText([{ title: 'a', state: 'in_flight', eta: NO_ETA }, { title: 'b', state: 'in_flight', eta: NO_ETA }])).toBe('2 in flight, 0 queued')
 })
 
-test('a write answers one line that counts the list; a read lists the entries in written order, one line each with its state', () => {
-  expect(todoReply(LIST, false)).toBe('Claude TODO: 1 in flight, 2 queued')
-  expect(todoReply([], false)).toBe('Claude TODO: 0 in flight, 0 queued')
-  expect(todoReply(LIST, true)).toBe(['Claude TODO: 1 in flight, 2 queued', '- queued: Write tests', '- in_flight: Build', '- queued: Ship'].join('\n'))
-  expect(todoReply([], true)).toBe('Claude TODO: 0 in flight, 0 queued')
+test('a write and a read answer the counting line, then each entry in written order as its state, title and ETA; an empty list answers the counting line alone', () => {
+  expect(todoReply(LIST)).toBe(
+    ['Claude TODO: 1 in flight, 2 queued', '- queued: Write tests (ETA: after tests)', '- in_flight: Build (ETA: ~10 min)', '- queued: Ship (ETA: no ETA)'].join('\n'),
+  )
+  expect(todoReply([])).toBe('Claude TODO: 0 in flight, 0 queued')
+})
+
+test('the ETA is stored as written, trimmed', () => {
+  expect(write([{ title: 'Build', state: 'queued', eta: '  ~10 min ' }])).toEqual([{ title: 'Build', state: 'queued', eta: '~10 min' }])
+})
+
+test('a missing, null, non-text or blank ETA is accepted and stored as no ETA', () => {
+  expect(NO_ETA).toBe('no ETA')
+  for (const eta of [undefined, null, 3, true, {}, '', '   ', '\n \t']) {
+    expect(write([{ title: 'Build', state: 'queued', eta }])).toEqual([{ title: 'Build', state: 'queued', eta: NO_ETA }])
+  }
+  expect(write([{ title: 'Build', state: 'queued' }])).toEqual([{ title: 'Build', state: 'queued', eta: NO_ETA }])
+})
+
+test('a line break in an ETA becomes a space', () => {
+  expect(write([{ title: 'Build', state: 'queued', eta: 'after\ntests' }])?.[0]?.eta).toBe('after tests')
+  expect(write([{ title: 'Build', state: 'queued', eta: 'after\r\ntests' }])?.[0]?.eta).toBe('after tests')
+})
+
+test('an ETA over 30 UTF-16 units is cut to 30, the ellipsis inside the 30; one of exactly 30 is kept', () => {
+  expect(ETA_MAX).toBe(30)
+  const exact = 'y'.repeat(30)
+  expect(write([{ title: 'Build', state: 'queued', eta: exact }])?.[0]?.eta).toBe(exact)
+  const cut = write([{ title: 'Build', state: 'queued', eta: 'y'.repeat(31) }])?.[0]?.eta
+  expect(cut).toBe(`${'y'.repeat(29)}…`)
+  expect(cut?.length).toBe(30)
+  expect(todoReply(write([{ title: 'Build', state: 'queued', eta: 'y'.repeat(60) }]) ?? [])).toContain(`(ETA: ${'y'.repeat(29)}…)`)
+})
+
+test('a stored entry with no ETA, or one that is not text, reads back as no ETA; a stored one is normalised as a write would', () => {
+  expect(normalizeTodo([{ title: 'Old', state: 'queued' }, { title: 'Odd', state: 'queued', eta: 5 }, { title: 'Two', state: 'queued', eta: 'a\nb' }])).toEqual([
+    { title: 'Old', state: 'queued', eta: NO_ETA },
+    { title: 'Odd', state: 'queued', eta: NO_ETA },
+    { title: 'Two', state: 'queued', eta: 'a b' },
+  ])
+})
+
+test('the separator that joins a title to its ETA where a person reads it is a middle dot between spaces', () => {
+  expect(SEPARATOR).toBe(' · ')
 })
 
 const call = (input: unknown, output: unknown, isRunning = false, isErrored = false) => todoLine({ input, output, isRunning, isErrored })
@@ -131,7 +170,7 @@ test('the transcript line says the list is being written while a write runs, and
 
 test('the transcript line gives the counts once a call succeeds, for a write and for a read alike', () => {
   expect(call({ entries: LIST }, 'Claude TODO: 1 in flight, 2 queued')).toBe('human-plugin: Claude TODO 1 in flight, 2 queued')
-  expect(call({}, todoReply(LIST, true))).toBe('human-plugin: Claude TODO 1 in flight, 2 queued')
+  expect(call({}, todoReply(LIST))).toBe('human-plugin: Claude TODO 1 in flight, 2 queued')
   expect(call({ entries: [] }, 'Claude TODO: 0 in flight, 0 queued')).toBe('human-plugin: Claude TODO 0 in flight, 0 queued')
 })
 
@@ -155,6 +194,6 @@ test('each state has one glyph: a half-filled circle in flight, an empty one que
 test('the band\'s short counts word the same counts as the long form: active for in flight', () => {
   expect(bandCountsText(LIST)).toBe('1 active, 2 queued')
   expect(bandCountsText([])).toBe('0 active, 0 queued')
-  expect(bandCountsText([{ title: 'a', state: 'in_flight' }, { title: 'b', state: 'in_flight' }])).toBe('2 active, 0 queued')
+  expect(bandCountsText([{ title: 'a', state: 'in_flight', eta: NO_ETA }, { title: 'b', state: 'in_flight', eta: NO_ETA }])).toBe('2 active, 0 queued')
   expect(`${HEADING} ${bandCountsText(LIST)}`).toBe('Claude TODO 1 active, 2 queued')
 })
