@@ -1,5 +1,5 @@
 import { expect, test } from 'claude-code/testing'
-import { EMPTY, act, carryNext, clearAll, displayColumns, listText, mergeRestored, normalizeItem, normalizeStore, parseInput, selectedItem, successorOf, type Ctx, type ToolInput } from './items'
+import { DONE_MAX, EMPTY, act, carryNext, clearAll, columnsByCodePoint, displayColumns, listText, mergeRestored, normalizeItem, normalizeStore, parseInput, selectedItem, successorOf, type Ctx, type ToolInput } from './items'
 import { expire, press, reply, turnsOf } from './done'
 import type { Item, Store } from '../types'
 
@@ -592,6 +592,24 @@ test('a code point the scan did not measure counts two, the widest any measured 
   expect(displayColumns('\udfff'), 'lone low surrogate').toBe(2)
   // The code points either side of a gap in the scan are measured.
   for (const code of [0x20, 0x7e, 0xa0, 0xd7ff, 0xe000, 0xfffd, 0x1fffd]) expect(displayColumns(cps(code)), `U+${code.toString(16)}`).toBe(1)
+})
+
+test('the columns of a text by code point: each whole code point with what it adds, a surrogate pair one, the selector after a one-column code point one, and the sum is the text\'s columns', () => {
+  expect(columnsByCodePoint('')).toEqual([])
+  expect(columnsByCodePoint(`a${cps(0x20000)}`)).toEqual([{ char: 'a', columns: 1 }, { char: cps(0x20000), columns: 2 }])
+  expect(columnsByCodePoint(cps(0x2764, 0xfe0f, 0x200d, 0x1f525)).map(({ columns }) => columns)).toEqual([1, 1, 0, 2])
+  expect(columnsByCodePoint(cps(0x2705, 0xfe0f)).map(({ columns }) => columns)).toEqual([2, 0])
+  expect(columnsByCodePoint('\ud800a').map(({ char, columns }) => [char.length, columns])).toEqual([[1, 2], [1, 1]])
+  for (const text of ['Fix it', `日本${cps(0x1f600, 0xfe0f)}`, cps(0x31, 0xfe0f, 0x20e3), cps(0x1f468, 0x200d, 0x1f469)]) {
+    expect(columnsByCodePoint(text).reduce((sum, { columns }) => sum + columns, 0), text).toBe(displayColumns(text))
+    expect(columnsByCodePoint(text).map(({ char }) => char).join(''), text).toBe(text)
+  }
+})
+
+test('the band\'s answer cap and the tool\'s label limit are one constant, 24 columns', () => {
+  expect(DONE_MAX).toBe(24)
+  expect(parseInput({ action: 'add', title: 'Pick', done: 'a'.repeat(DONE_MAX) }).ok).toBe(true)
+  expect(parseInput({ action: 'add', title: 'Pick', done: 'a'.repeat(DONE_MAX + 1) }).ok).toBe(false)
 })
 
 test('an update with done: \'\' clears the label; on a plain to-do with none it changes nothing, and an add refuses it', () => {

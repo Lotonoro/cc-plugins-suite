@@ -1,5 +1,5 @@
 import { expect, test } from 'claude-code/testing'
-import { bandDraws, bandRows, bandWidths, claudeRows, columnHeight, headerLines, humanFoldRows, rowLayout, rowLines, rowsHeight, wrapText, type ClaudeRow, type RowLayout, type RowTexts } from './layout'
+import { bandDraws, bandRows, bandWidths, claudeRows, columnHeight, cutTitle, cutToColumns, headerLines, humanFoldRows, rowLayout, wrapText, type ClaudeRow, type Control, type RowTexts } from './layout'
 import { displayColumns } from './items'
 import type { Item, TodoItem } from '../types'
 
@@ -84,54 +84,28 @@ test('a band never exceeds the rows it is given, and no list or no row draws not
   expect(bandRows([], 0)).toEqual([])
 })
 
-test('the fold counts each row by the lines it is given, the summary row included, and the summary takes the last of the rows', () => {
-  const sorted = [item(1, true), item(2, true), item(3), item(4)]
-  const tall = (row: ReturnType<typeof bandRows>[number]) => (row.kind === 'item' && row.item.id === 2 ? 2 : 1)
-  // Items 1 and 2 take 1 + 2 lines and the summary one: 4 lines fill 4 rows.
-  expect(bandRows(sorted, 4, tall)).toEqual([
-    { kind: 'item', item: item(1, true) },
-    { kind: 'item', item: item(2, true) },
-    { kind: 'more', blocking: 0, more: 2, first: item(3) },
-  ])
-  // With 3 rows the tall item no longer fits beside a summary, so it folds and counts as blocking.
-  expect(bandRows(sorted, 3, tall)).toEqual([
-    { kind: 'item', item: item(1, true) },
-    { kind: 'more', blocking: 1, more: 2, first: item(2, true) },
-  ])
-  // Every item laid out at once needs 5 lines; 5 rows draw them all with no summary.
-  expect(bandRows(sorted, 5, tall).every(row => row.kind === 'item')).toBe(true)
-  expect(rowsHeight(bandRows(sorted, 4, tall), tall)).toBe(4)
-})
-
-test('a summary taller than the rows draws nothing, so the rows never exceed the rows they are given', () => {
-  const tall = () => 3
-  expect(bandRows([item(1), item(2)], 2, tall)).toEqual([])
-  expect(bandRows([item(1), item(2)], 0, tall)).toEqual([])
-  // The summary that fits draws, and a single item taller than the rows is folded into it.
-  const summaryTall = (row: ReturnType<typeof bandRows>[number]) => (row.kind === 'more' ? 2 : 4)
-  expect(bandRows([item(1), item(2)], 2, summaryTall)).toEqual([{ kind: 'more', blocking: 0, more: 2, first: item(1) }])
-  expect(bandRows([item(1), item(2)], 1, summaryTall)).toEqual([])
-})
-
-test('whatever each row takes and whatever the rows given, the rows drawn never take more than the rows given', () => {
-  const items = Array.from({ length: 12 }, (_, k) => item(k + 1, k % 3 === 0))
-  // A deterministic spread of heights, summaries of one to three lines.
-  const heightOf = (row: ReturnType<typeof bandRows>[number]) => (row.kind === 'more' ? 1 + (row.blocking % 3) : 1 + (row.item.id % 4))
-  for (let rows = 0; rows <= 40; rows++) {
-    expect(rowsHeight(bandRows(items, rows, heightOf), heightOf), `${rows}`).toBeLessThanOrEqual(rows)
+test('a row is one line, so the fold draws every item when they fit and otherwise one fewer than the rows given with the summary of the rest as the last, for any number of items and rows', () => {
+  for (let count = 0; count <= 14; count++) {
+    const items = Array.from({ length: count }, (_, k) => item(k + 1, k % 3 === 0))
+    const order = [...items.filter(it => it.blocking), ...items.filter(it => !it.blocking)]
+    const asRows = (list: Item[]) => list.map((it): ReturnType<typeof bandRows>[number] => ({ kind: 'item', item: it }))
+    for (let rows = 0; rows <= 16; rows++) {
+      const where = `${count} items in ${rows} rows`
+      const drawn = bandRows(items, rows)
+      expect(drawn.length, where).toBeLessThanOrEqual(rows)
+      if (count <= rows) {
+        expect(drawn, where).toEqual(asRows(order))
+      } else if (rows === 0) {
+        expect(drawn, where).toEqual([])
+      } else {
+        const folded = order.slice(rows - 1)
+        expect(drawn, where).toEqual([
+          ...asRows(order.slice(0, rows - 1)),
+          { kind: 'more', blocking: folded.filter(it => it.blocking).length, more: folded.filter(it => !it.blocking).length, first: folded[0] as Item },
+        ])
+      }
+    }
   }
-})
-
-test('the fold counts each row once and each summary it tries once, however long the list', () => {
-  const items = Array.from({ length: 60 }, (_, k) => item(k + 1))
-  let counted = 0
-  const rows = bandRows(items, 20, () => {
-    counted++
-    return 1
-  })
-  expect(rows).toHaveLength(20)
-  expect(rows[19]).toMatchObject({ kind: 'more' })
-  expect(counted).toBeLessThanOrEqual(2 * items.length)
 })
 
 test('a band over its rows folds the human list to the rows the engine\'s window shows, one fewer; a band that fits folds to its rows', () => {
@@ -304,381 +278,320 @@ test('a character wider than the width is a row of its own, and no empty row com
   expect(wrapText('ab 漢', 1)).toEqual(['a', 'b', ' ', '漢'])
 })
 
-// A plain to-do's row texts as ui.ts's builder makes them, with the id 12: its open control, then what the pressed control says and the undo button.
-const plain = (over: Partial<RowTexts> = {}): RowTexts => ({ prefix: '  #12 ', title: 'Fix it', open: '[✓]', said: ['✓ ', '✓ replied '], undo: '[↶ 3s]', sent: '✓ sent', ...over })
+// Code points written as numbers, so no editor or encoding changes a joiner or a variation selector that draws as nothing.
+const cps = (...codes: number[]): string => String.fromCodePoint(...codes)
+const JOINER = cps(0x200d)
+const FAMILY = cps(0x1f468, 0x200d, 0x1f469, 0x200d, 0x1f467, 0x200d, 0x1f466)
 
-// Every state a row reaches: open, pressed in each way it can say its answer, and sent.
-const statesOf = (layout: RowLayout) => [layout.open, ...layout.pressed, layout.sent]
-// The lines each state takes, in that order.
-const linesOf = (layout: RowLayout): number[] => statesOf(layout).map(state => state.widths.length)
+test('a text that fits its room is whole, and a wider one is cut at its end with an ellipsis inside the room: `Ship it to staging today` is whole at 24 and at 30, `Ship it to stag…` at 16, `Ship it to…` at 11 and `Shi…` at 4', () => {
+  const label = 'Ship it to staging today'
+  expect(displayColumns(label)).toBe(24)
+  expect(cutToColumns(label, 30)).toBe(label)
+  expect(cutToColumns(label, 24)).toBe(label)
+  expect(cutToColumns(label, 23)).toBe('Ship it to staging tod…')
+  expect(cutToColumns(label, 16)).toBe('Ship it to stag…')
+  expect(cutToColumns(label, 11)).toBe('Ship it to…')
+  expect(cutToColumns(label, 4)).toBe('Shi…')
+  expect(cutToColumns('', 5)).toBe('')
+})
 
-// What the placement rule puts where, worked out from the room alone and apart from rowLayout. A control sits on its title's line when the title keeps ten
-// columns there beside the id and the row's open control (the space before a control counted; a decision's open control is none), whatever the title's
-// length and in a list of any width; a state moves under the title only when its own control would leave the title no column. For each state: its place,
-// the lines it takes, and the width of the box its title is set in, the room it wraps in, when it wraps there or is wider than it.
-type Placed = { place: 'beside' | 'below'; lines: number; title: number | null }
-const placedBy = (row: RowTexts, width: number): Placed[] => {
-  const line = width - displayColumns(row.prefix)
-  const room = (control: string): number => line - (control === '' ? 0 : 1 + displayColumns(control))
-  const boxed = (wide: number): number | null => {
-    const [first = '', ...more] = wrapText(row.title, wide)
-    return more.length > 0 || displayColumns(first) > wide ? wide : null
-  }
-  // The control on the title's line in each state, the words that go under the title instead, and the undo button beside their first line.
-  const states = [
-    { control: row.open, words: row.open, undo: '' },
-    ...row.said.map(said => ({ control: `${said}${row.undo}`, words: said, undo: row.undo })),
-    { control: row.sent, words: row.sent, undo: '' },
-  ]
-  return states.map(({ control, words, undo }): Placed => {
-    if (room(row.open) >= 10 && room(control) >= 1) return { place: 'beside', lines: wrapText(row.title, room(control)).length, title: boxed(room(control)) }
-    const under = words === '' ? 0 : wrapText(words, Math.max(1, line - displayColumns(undo))).length
-    return { place: 'below', lines: wrapText(row.title, line).length + under, title: boxed(line) }
-  })
-}
+test('a wide character is never split: ten ✅ are `✅✅✅✅…` at 9 and at 10, `日本語のタイトル` is `日本語…` at 7, and U+20000, U+20001 and U+20000 are the first and an ellipsis at 4', () => {
+  const check = cps(0x2705)
+  expect(cutToColumns(check.repeat(10), 9)).toBe(`${check.repeat(4)}…`)
+  expect(cutToColumns(check.repeat(10), 10)).toBe(`${check.repeat(4)}…`)
+  expect(displayColumns(`${check.repeat(4)}…`)).toBe(9)
+  expect(cutToColumns('日本語のタイトル', 7)).toBe('日本語…')
+  expect(cutToColumns(cps(0x20000, 0x20001, 0x20000), 4)).toBe(`${cps(0x20000)}…`)
+})
 
-// The layout's states against the rule's: where each control sits, the lines each state takes, which titles are boxed and how wide, that no line is
-// wider than the list, and that the control's line is the open control's in every state but the one whose own control leaves the title no column.
-const checkAgainstRule = (row: RowTexts, width: number, where: string): void => {
-  const layout = rowLayout(row, width)
-  const states = statesOf(layout)
-  const want = placedBy(row, width)
-  expect(states.length, where).toBe(want.length)
-  states.forEach((state, k) => {
-    expect({ place: state.place, lines: state.widths.length, title: state.title }, `${where}, state ${k}`).toEqual(want[k])
-    for (const w of state.widths) expect(w <= width, `${where}, state ${k}: ${w}`).toBe(true)
-  })
-  const line = width - displayColumns(row.prefix)
-  const controls = [row.open, ...row.said.map(said => `${said}${row.undo}`), row.sent]
-  states.forEach((state, k) => {
-    const noColumn = line - 1 - displayColumns(controls[k] ?? '') < 1
-    expect(state.place === layout.open.place || noColumn, `${where}, state ${k} moved`).toBe(true)
-  })
-}
+test('a joiner is never the last thing kept: the family of four then `x` is its first member and an ellipsis at 3, and its first two members at 5', () => {
+  const man = cps(0x1f468)
+  expect(cutToColumns(`${FAMILY}x`, 3)).toBe(`${man}…`)
+  expect(cutToColumns(`${FAMILY}x`, 3).includes(JOINER)).toBe(false)
+  expect(cutToColumns(`${FAMILY}x`, 5)).toBe(`${cps(0x1f468, 0x200d, 0x1f469)}…`)
+})
 
-// The control kinds the sweeps cover, and the titles each is drawn with: a short one, one wider than a list under 64, one wider than any list, and one
-// holding a line break.
-const KINDS: Partial<RowTexts>[] = [
-  { open: '[✓]', said: ['✓ ', '✓ replied '] },
-  { open: `[✓ ${'x'.repeat(24)}]`, said: [`✓ ${'x'.repeat(24)} `, '✓ replied '] },
-  { open: '[✓] [✗]', said: ['✓ yes ', '✗ no ', '✓ replied '] },
-  { open: '', said: ['✓ Use sqlite ', `✓ ${'an option label '.repeat(8)}`, '✓ replied '] },
+test('a text wider than one column is `…` at a room of 1, and nothing is kept where there is no room', () => {
+  for (const text of ['ab', 'Fix it', cps(0x65e5), cps(0x2705), FAMILY]) expect(cutToColumns(text, 1), text).toBe('…')
+  expect(cutToColumns('a', 1)).toBe('a')
+  expect(cutToColumns('abc', 0)).toBe('')
+  expect(cutToColumns('abc', -3)).toBe('')
+})
+
+const SAMPLES = [
+  'Ship it to staging today',
+  `${cps(0x2705, 0x274c, 0x2b50, 0x26a1)} four emoji then words`,
+  '日本語のタイトル and some words',
+  cps(0x20000, 0x20001, 0x20000, 0x20001),
+  `${FAMILY}x${FAMILY}`,
+  `${cps(0x2764, 0xfe0f)}abc${cps(0x2764, 0xfe0f)}`,
+  `a${cps(0x301)}bcd${cps(0x301)}`,
+  `${cps(0x31, 0xfe0f, 0x20e3)}x`,
+  `ab${cps(0x07)}cd`,
+  `a\ud800bc`,
+  `${cps(0x1f44d, 0x1f3fd)} ok`,
 ]
-const titlesOf = (kind: Partial<RowTexts>): string[] =>
-  [
-    'Fix it',
-    'A title that is longer than the list and has a pneumonoultramicroscopic word',
-    'Review the deliberately long wrapping title of the first plain to-do item here'.repeat(2),
-    'Ask the owner first\nthen the one who wrote the long title that wraps in a narrow list',
-  ].map(title => (kind.open === '' ? `${title} […]` : title))
 
-test('in a list of 20 a plain to-do with a two-digit id keeps its control on its title\'s line and one with a three-digit id draws it below, a title of one short word included', () => {
-  expect(rowLayout(plain(), 20).open.place).toBe('beside')
-  expect(rowLayout(plain({ prefix: '• #12 ' }), 20).open.place).toBe('beside')
-  expect(rowLayout(plain({ prefix: '  #123 ' }), 20).open.place).toBe('below')
-  // `Hi` and `  #123 [✓]` fit 20 columns on one line, yet the room for a title there is 9, under the ten that keep a control beside it.
-  expect(rowLayout(plain({ title: 'Hi', prefix: '  #12 ' }), 20).open.place).toBe('beside')
-  const three = rowLayout(plain({ title: 'Hi', prefix: '  #123 ' }), 20)
-  expect(three.open.place).toBe('below')
-  // The title is its own line and the control the next: both indented 7.
-  expect(three.open.widths).toEqual([7 + 2, 7 + 3])
-})
-
-test('handed 19, the layout width a margin leaves a box of 20, a plain to-do with a one-digit id keeps its control on its title\'s line and a two-digit id draws it below; handed 20, the two-digit id keeps it', () => {
-  const title = 'A title long enough to wrap in the ten columns that are left'
-  // The id takes 5 and `[✓]` with its space 4: the title keeps ten columns, set in a box of them.
-  expect(rowLayout(plain({ prefix: '  #1 ', title }), 19).open).toMatchObject({ place: 'beside', title: 10 })
-  expect(rowLayout(plain({ prefix: '  #1 ', title }), 18).open.place).toBe('below')
-  expect(rowLayout(plain({ title }), 19).open.place).toBe('below')
-  expect(rowLayout(plain({ title }), 20).open).toMatchObject({ place: 'beside', title: 10 })
-})
-
-test('the control sits on the title\'s line while the title keeps ten columns there beside the id and the open control, the space before the control counted', () => {
-  // The id takes 6 and the control 3 and its space: 6 + 4 + 10 = 20.
-  expect(rowLayout(plain(), 20).open.place).toBe('beside')
-  expect(rowLayout(plain(), 19).open.place).toBe('below')
-  // A labelled to-do at the label's maximum, 24 columns, whether ASCII or wide: 28 for its brackets and check, and the space.
-  for (const label of ['x'.repeat(24), '中'.repeat(12)]) {
-    const labelled = plain({ open: `[✓ ${label}]` })
-    expect(rowLayout(labelled, 45).open.place).toBe('beside')
-    expect(rowLayout(labelled, 44).open.place).toBe('below')
-  }
-  // A yes/no's two marks are 7 columns and the space: 6 + 8 + 10 = 24.
-  expect(rowLayout(plain({ open: '[✓] [✗]' }), 24).open.place).toBe('beside')
-  expect(rowLayout(plain({ open: '[✓] [✗]' }), 23).open.place).toBe('below')
-})
-
-test('a row that draws no control (a decision) counts only its id beside the title, so its control\'s line is the title\'s at every id width and list width', () => {
-  for (const digits of [2, 3, 4]) {
-    for (let width = 20; width <= 63; width++) {
-      expect(rowLayout(plain({ open: '', prefix: `  #${'1'.repeat(digits)} ` }), width).open.place, `${digits} digits at ${width}`).toBe('beside')
-    }
-  }
-})
-
-test('the control sits beside its title while the title keeps ten columns there, whatever the title\'s length', () => {
-  // The id takes 6 and the control `x` times 47 with its space 48: 54, leaving the title 10 at a list of 64.
-  const wide = (columns: number, title: string): RowTexts => plain({ title, open: 'x'.repeat(columns) })
-  const long = 'A title that is longer than the room the id and the control leave it'
-  expect(rowLayout(wide(47, long), 64).open).toMatchObject({ place: 'beside', title: 10 })
-  expect(rowLayout(wide(48, long), 64).open.place).toBe('below')
-  // A title that would fit on the line with its control is placed by the room too: `Fix` and the control are 57 columns, which a list of 64
-  // holds, and the room is 9 with the control at 48 and 10 at 47.
-  expect(rowLayout(wide(47, 'Fix'), 64).open).toMatchObject({ place: 'beside', title: null, widths: [6 + 3 + 48] })
-  expect(rowLayout(wide(48, 'Fix'), 64).open).toMatchObject({ place: 'below', title: null, widths: [6 + 3, 6 + 48] })
-  expect(rowLayout(wide(48, 'Fix it now please'), 64).open.place).toBe('below')
-})
-
-test('a title with a word longer than the list: the row\'s lines are its tallest state\'s, as wrapped by hand, in a list of 20', () => {
-  // A plain to-do #12 at a list of 20: its id takes 6, so the open control leaves the title 10 columns, the pressed `✓ [↶ 3s]` 5, a reply
-  // `✓ replied [↶ 3s]` none (it goes under the title, which has 14 columns, its words 8 beside the undo button), and `✓ sent` 7.
-  const hand = {
-    open: ['Fix abcdef', 'ghijklmnop', 'qrstuvwxyz', ' now'],
-    pressed: ['Fix a', 'bcdef', 'ghijk', 'lmnop', 'qrstu', 'vwxyz', ' now'],
-    reply: ['Fix ', 'abcdefghijklmn', 'opqrstuvwxyz ', 'now', '✓ ', 'replied '],
-    sent: ['Fix ', 'abcdefg', 'hijklmn', 'opqrstu', 'vwxyz ', 'now'],
-  }
-  const row = plain({ title: 'Fix abcdefghijklmnopqrstuvwxyz now' })
-  expect(linesOf(rowLayout(row, 20))).toEqual([hand.open.length, hand.pressed.length, hand.reply.length, hand.sent.length])
-  expect(rowLines(row, 20)).toBe(7)
-})
-
-test('a title with wide characters: the row\'s lines are its tallest state\'s, as wrapped by hand, in a list of 20', () => {
-  // Two columns a character: the open control leaves 10 columns (5 characters), the pressed one 5 (2 characters), a reply goes under the title (7
-  // characters a line, then its words in 8 columns), and `✓ sent` leaves 7 (3 characters).
-  const hand = {
-    open: ['部署新版本', '到生产环境'],
-    pressed: ['部署', '新版', '本到', '生产', '环境'],
-    reply: ['部署新版本到生', '产环境', '✓ ', 'replied '],
-    sent: ['部署新', '版本到', '生产环', '境'],
-  }
-  const row = plain({ title: '部署新版本到生产环境' })
-  expect(linesOf(rowLayout(row, 20))).toEqual([hand.open.length, hand.pressed.length, hand.reply.length, hand.sent.length])
-  expect(rowLines(row, 20)).toBe(5)
-})
-
-test('a title holding a line break: the break starts a line, and the row\'s lines are its tallest state\'s, as wrapped by hand, in a list of 20', () => {
-  // `Ask` is a line and `the owner` the next in 10 columns; in 5 the second wraps to `the ` and `owner`; a reply goes under the title (two lines, then its
-  // words in 8 columns, two lines); in 7 the second wraps the same.
-  const hand = {
-    open: ['Ask', 'the owner'],
-    pressed: ['Ask', 'the ', 'owner'],
-    reply: ['Ask', 'the owner', '✓ ', 'replied '],
-    sent: ['Ask', 'the ', 'owner'],
-  }
-  const row = plain({ title: 'Ask\nthe owner' })
-  expect(linesOf(rowLayout(row, 20))).toEqual([hand.open.length, hand.pressed.length, hand.reply.length, hand.sent.length])
-  expect(rowLines(row, 20)).toBe(4)
-  // The title wraps, so it is set in a box of the room the open control leaves it.
-  expect(rowLayout(row, 20).open).toMatchObject({ place: 'beside', title: 10, widths: [20, 6 + 9] })
-})
-
-test('a labelled to-do whose control sits below its title: the row\'s lines are the title\'s and the tallest control state\'s, as wrapped by hand, in a list of 20', () => {
-  // #1 at a list of 20: the id takes 5, so the open control `[✓ Go with sqlite]` (18, and its space) leaves the title no room and drops below. Every
-  // line is then indented 5 and has 15 columns: the title takes one, the open control two, the pressed one two with the undo button's 6 columns beside
-  // its words (9 left for them), a reply two, and `✓ sent` one.
-  const hand = {
-    title: ['Pick a db'],
-    open: ['[✓ Go with ', 'sqlite]'],
-    pressed: ['✓ Go with', ' sqlite '],
-    reply: ['✓ replied', ' '],
-    sent: ['✓ sent'],
-  }
-  const row = plain({ prefix: '  #1 ', title: 'Pick a db', open: '[✓ Go with sqlite]', said: ['✓ Go with sqlite ', '✓ replied '] })
-  const layout = rowLayout(row, 20)
-  expect(statesOf(layout).map(state => state.place)).toEqual(['below', 'below', 'below', 'below'])
-  expect(linesOf(layout)).toEqual([hand.open, hand.pressed, hand.reply, hand.sent].map(under => hand.title.length + under.length))
-  expect(rowLines(row, 20)).toBe(3)
-})
-
-test('a decision pressed with a reply: the title wraps beside no control open and under the pressed control\'s words, as wrapped by hand, in a list of 20', () => {
-  // #12 at a list of 20, no open control: the title keeps 14 columns open, so its control's line is the title's; pressed with an option, or with a reply,
-  // the control would leave it none and goes under the title (14 columns, its words 8 beside the undo button); `✓ sent` leaves 7.
-  const hand = {
-    open: ['Pick a store ', '[…]'],
-    option: ['Pick a store ', '[…]', '✓ Use ', 'sqlite '],
-    reply: ['Pick a store ', '[…]', '✓ ', 'replied '],
-    sent: ['Pick a ', 'store ', '[…]'],
-  }
-  const row = plain({ title: 'Pick a store […]', open: '', said: ['✓ Use sqlite ', '✓ replied '] })
-  const layout = rowLayout(row, 20)
-  expect(layout.open.place).toBe('beside')
-  expect(statesOf(layout).map(state => state.place)).toEqual(['beside', 'below', 'below', 'beside'])
-  expect(linesOf(layout)).toEqual([hand.open.length, hand.option.length, hand.reply.length, hand.sent.length])
-  expect(rowLines(row, 20)).toBe(4)
-})
-
-test('a labelled to-do at the maximum label width with a title that wraps beside it, in a list of 69 beside the column: the row\'s lines are its tallest state\'s, as wrapped by hand', () => {
-  // `• #2 ` takes 5 and the open control `[✓ Approve the migration ok]` (28) with its space 29, leaving the title 35: two lines. Pressed it says its
-  // answer in full beside the undo button, 34 with its space, leaving 30: three lines. A reply leaves 47, `✓ sent` 57: two lines each.
-  const hand = {
-    open: ['Second to-do with a labelled ', 'control and a wrapping title too'],
-    pressed: ['Second to-do with a labelled ', 'control and a wrapping title ', 'too'],
-    reply: ['Second to-do with a labelled control and a ', 'wrapping title too'],
-    sent: ['Second to-do with a labelled control and a wrapping title', ' too'],
-  }
-  const row = plain({
-    prefix: '• #2 ',
-    title: 'Second to-do with a labelled control and a wrapping title too',
-    open: '[✓ Approve the migration ok]',
-    said: ['✓ Approve the migration ok ', '✓ replied '],
-    undo: '[↶ 3s]',
-  })
-  expect(linesOf(rowLayout(row, 69))).toEqual([hand.open.length, hand.pressed.length, hand.reply.length, hand.sent.length])
-  expect(rowLines(row, 69)).toBe(3)
-  expect(rowLayout(row, 69).open).toMatchObject({ place: 'beside', title: 35 })
-  expect(rowLayout(row, 69).pressed[0]).toMatchObject({ place: 'beside', title: 30 })
-})
-
-test('a title that wraps beside its control is a box the room wide that the id and the control leave, so the control keeps the list\'s edge; one that fits takes the columns it needs', () => {
-  // #12 (6 columns) with a title of 6: the open control and its space take 4 more, the pressed `✓ [↶ 3s]` and its space 9, `✓ sent` and its space 7.
-  const layout = rowLayout(plain({ title: 'Fix it' }), 20)
-  expect(layout.open).toMatchObject({ place: 'beside', title: null, widths: [16] })
-  // The pressed title wraps in 5 columns, to `Fix ` and `it`: the box is 5 wide with the control after it, and the line after is the id and `it`.
-  expect(layout.pressed[0]).toMatchObject({ place: 'beside', title: 5, widths: [20, 8] })
-  expect(layout.sent).toMatchObject({ place: 'beside', title: null, widths: [19] })
-})
-
-test('a row that fits its list on one line is placed as it always was: no box for its title, and its widths are the columns it needs', () => {
-  const layout = rowLayout(plain({ title: 'Fix it' }), 70)
-  expect(layout.open).toMatchObject({ place: 'beside', title: null, widths: [6 + 6 + 4] })
-  // Pressed, the control says its answer in full beside the undo button: `✓ [↶ 3s]`, then `✓ replied [↶ 3s]`.
-  expect(layout.pressed.map(state => state.widths)).toEqual([[6 + 6 + 9], [6 + 6 + 17]])
-  expect(layout.sent).toMatchObject({ place: 'beside', title: null, widths: [19] })
-})
-
-test('a title that wraps beside no control (an open decision) is set in a box of the line the id leaves it, so the surface wraps it where the layout does; one that fits is the button itself', () => {
-  const title = 'A decision whose title is longer than the line it is drawn on in a list of forty columns'
-  const open = rowLayout(plain({ open: '', title }), 40).open
-  expect(open).toMatchObject({ place: 'beside', title: 34 })
-  expect(open.widths).toEqual(wrapText(title, 34).map(row => 6 + displayColumns(row)))
-  expect(open.widths.length).toBeGreaterThan(1)
-  expect(rowLayout(plain({ open: '', title: 'Pick a db […]' }), 40).open).toMatchObject({ place: 'beside', title: null, widths: [6 + 13] })
-})
-
-test('a title under its control is set in a box of the line the id leaves it when it wraps there, and is the button itself when it fits', () => {
-  // #1 at a list of 20: the labelled control leaves the title no room, so it is under the title, which has the 15 columns past the id.
-  const labelled = plain({ prefix: '  #1 ', open: '[✓ Go with sqlite]', said: ['✓ Go with sqlite ', '✓ replied '] })
-  // The title wraps to `Pick a database` (15) and ` for the cache` (14); the control to `[✓ Go with ` (11) and `sqlite]` (7).
-  const long = rowLayout({ ...labelled, title: 'Pick a database for the cache' }, 20)
-  expect(long.open).toMatchObject({ place: 'below', title: 15, widths: [5 + 15, 5 + 14, 5 + 11, 5 + 7] })
-  const short = rowLayout({ ...labelled, title: 'Pick a db' }, 20)
-  expect(short.open).toMatchObject({ place: 'below', title: null, widths: [5 + 9, 5 + 11, 5 + 7] })
-  // A decision draws no control, so a list too narrow to leave its title ten columns past the id has nothing to put under it: the title alone, boxed.
-  const narrow = rowLayout(plain({ open: '', title: 'Pick a store […]' }), 12).open
-  expect(narrow).toMatchObject({ place: 'below', title: 6, widths: wrapText('Pick a store […]', 6).map(row => 6 + displayColumns(row)) })
-})
-
-test('a state moves under the title only when its own control would leave the title no column: the exception to the open control\'s place', () => {
-  const pressedAt = (label: number, width: number) =>
-    rowLayout(plain({ prefix: '  #1 ', title: 'Pick a store […]', open: '', said: [`✓ ${'x'.repeat(label)} `], undo: '[↶ 5s]' }), width).pressed[0]
-  // The id takes 5; the pressed control is `✓ `, the label, a space and the undo button's 6, and its own space before it: 10 and the label. A list of
-  // 64 leaves the title 1 column with a label of 48 and none with 49.
-  expect(pressedAt(48, 64)).toMatchObject({ place: 'beside', title: 1 })
-  expect(pressedAt(49, 64)?.place).toBe('below')
-  // A wide character is two columns, wider than that room: its title is still set in the box of one.
-  const wide = plain({ prefix: '  #1 ', title: '漢', open: '', said: [`✓ ${'x'.repeat(48)} `], undo: '[↶ 5s]' })
-  expect(rowLayout(wide, 64).pressed[0]).toMatchObject({ place: 'beside', title: 1, widths: [64] })
-  // A plain to-do #12 at a list of 22: open `[✓]` leaves its title 12 and `✓ [↶ 3s]` 7, `✓ replied [↶ 3s]` none, and `✓ sent` 9.
-  const layout = rowLayout(plain(), 22)
-  expect(statesOf(layout).map(state => state.place)).toEqual(['beside', 'beside', 'below', 'beside'])
-})
-
-test('in every full-width list from 20 to 63 every control kind in every state is placed by the open control\'s room alone and takes the lines and the title box the rule gives it, at an id of one to four digits', () => {
-  for (const kind of KINDS) {
-    for (const title of titlesOf(kind)) {
-      for (const digits of [1, 2, 3, 4]) {
-        for (let width = 20; width <= 63; width++) {
-          const row = plain({ ...kind, title, prefix: `• #${'1'.repeat(digits)} ` })
-          checkAgainstRule(row, width, `${kind.open} ${digits} digits at ${width}: ${title}`)
-        }
+test('whatever the text and the room, the cut is the longest start of the text, in whole code points and not ending on a joiner, that leaves a column for the ellipsis, and it measures at most the room', () => {
+  for (const text of SAMPLES) {
+    const points = [...text]
+    for (let room = -1; room <= 45; room++) {
+      const where = `${JSON.stringify(text)} in ${room}`
+      const got = cutToColumns(text, room)
+      if (displayColumns(text) <= room) {
+        expect(got, where).toBe(text)
+        continue
       }
-    }
-  }
-})
-
-test('at every list from 64 to 120 every control kind in every state is placed by the open control\'s room alone, takes the lines and the title box the rule gives it, and fits the list; an open control sits beside its title', () => {
-  for (const kind of KINDS) {
-    for (const title of titlesOf(kind)) {
-      for (const digits of [1, 2, 3, 4]) {
-        for (let width = 64; width <= 120; width++) {
-          const row = plain({ ...kind, title, prefix: `• #${'1'.repeat(digits)} ` })
-          const where = `${kind.open} ${digits} digits at ${width}: ${title}`
-          checkAgainstRule(row, width, where)
-          // An open control is at most 28 columns, so it always leaves the title ten.
-          expect(rowLayout(row, width).open.place, where).toBe('beside')
-        }
+      if (room < 1) {
+        expect(got, where).toBe('')
+        continue
       }
+      expect(got.endsWith('…'), where).toBe(true)
+      expect(displayColumns(got), where).toBeLessThanOrEqual(room)
+      // The longest start that fits the room less the ellipsis and does not end on a joiner, found by trying every start.
+      let want = ''
+      for (let n = 0; n <= points.length; n++) {
+        const start = points.slice(0, n).join('')
+        if (displayColumns(start) <= room - 1 && !start.endsWith(JOINER)) want = start
+      }
+      expect(got, where).toBe(`${want}…`)
     }
   }
 })
 
-test('a list of 64 or more keeps a row that fits one line on one line with its control beside its title, as it did before the rule', () => {
+test('a decision\'s title keeps its marker whole after the cut title while the room holds the marker and an ellipsis (5 columns), and below that is cut with the marker as one text', () => {
+  const title = 'Pick the release train for the next deploy'
+  const marker = ' […]'
+  expect(cutTitle(title, marker, 20)).toBe('Pick the releas… […]')
+  expect(cutTitle(title, marker, 5)).toBe('… […]')
+  expect(cutTitle(title, marker, 4)).toBe('Pic…')
+  expect(cutTitle(title, marker, 1)).toBe('…')
+  // Whole where it fits, marker included; one column short of that the title gives way and the marker stays.
+  expect(cutTitle('Pick a db', marker, 13)).toBe('Pick a db […]')
+  expect(cutTitle('Pick a db', marker, 12)).toBe('Pick a … […]')
+  // A row with no marker is its title cut as a text.
+  expect(cutTitle('Fix the build', '', 13)).toBe('Fix the build')
+  expect(cutTitle('Fix the build', '', 8)).toBe('Fix the…')
+})
+
+test('the summary text is cut like a title, at the list\'s layout width: `+3 blocking · +5 more […]` is whole at 25 columns and `+3 blocking · +5 m…` at 19', () => {
+  const summary = '+3 blocking · +5 more […]'
+  expect(displayColumns(summary)).toBe(25)
+  expect(cutToColumns(summary, 25)).toBe(summary)
+  expect(cutToColumns(summary, 19)).toBe('+3 blocking · +5 m…')
+})
+
+test('a title label measures at most its room, is the whole title with its marker when that fits, and ends in the marker whenever the room holds the marker and an ellipsis', () => {
+  const marker = ' […]'
+  for (const [title, mark] of [['Pick the release train for the next deploy', marker], ['日本語のタイトル', marker], ['Fix the build', ''], [`${FAMILY} deploy`, marker]] as const) {
+    for (let room = 1; room <= 60; room++) {
+      const where = `${JSON.stringify(title)} in ${room}`
+      const label = cutTitle(title, mark, room)
+      expect(displayColumns(label), where).toBeLessThanOrEqual(room)
+      if (displayColumns(title + mark) <= room) expect(label, where).toBe(title + mark)
+      else if (mark !== '' && room >= 5) expect(label.endsWith(`…${mark}`), where).toBe(true)
+      else expect(label.endsWith('…'), where).toBe(true)
+    }
+  }
+})
+
+// --- a row's ladder
+
+const UNDO = '[↶ 3s]'
+const ctl = (before: string, answer = '', after = ''): Control => ({ before, answer, after })
+// A pressed control as ui.ts's builder makes it: its mark, the answer, and the undo button after a space when there is an answer.
+const said = (answer: string, mark = '✓'): Control => ctl(`${mark} `, answer, answer === '' ? UNDO : ` ${UNDO}`)
+const REPLIED = ctl('✓ replied ', '', UNDO)
+
+const LABEL_24 = 'Ship it to staging today'
+const OPTION_19 = 'Use sqlite for data'
+const OPTION_56 = 'Use sqlite with write-ahead logging and a nightly backup'
+const OPTION_150 = `${Array.from({ length: 30 }, () => 'word').join(' ')}x`
+
+type Kind = { name: string; marker: string; open: Control; pressed: Control[] }
+const decision = (name: string, option: string): Kind => ({ name, marker: ' […]', open: ctl(''), pressed: [said(option), said('Use postgres'), REPLIED] })
+const labelled = (name: string, label: string): Kind => ({ name, marker: '', open: ctl('[✓ ', label, ']'), pressed: [said(label), REPLIED] })
+const PLAIN: Kind = { name: 'a plain to-do', marker: '', open: ctl('[✓]'), pressed: [said(''), REPLIED] }
+const YES_NO: Kind = { name: 'a yes/no', marker: '', open: ctl('[✓] [✗]'), pressed: [said('yes'), said('no', '✗'), REPLIED] }
+const LABELLED_24 = labelled('a to-do labelled at 24 columns', LABEL_24)
+const LABELLED_5 = labelled('a to-do labelled at 5 columns', 'Go on')
+const DECISION_19 = decision('a decision with an option of 19 columns', OPTION_19)
+const DECISION_56 = decision('a decision with an option of 56 columns', OPTION_56)
+const DECISION_150 = decision('a decision with an option of 150 columns', OPTION_150)
+const KINDS: Kind[] = [PLAIN, LABELLED_24, LABELLED_5, YES_NO, DECISION_19, DECISION_56, DECISION_150]
+
+// A kind's row texts for an id of `digits` digits: the unread mark or two blanks, the id and a space, so the prefix is digits + 4 columns.
+const rowFor = (kind: Kind, digits = 2, title = 'Fix it'): RowTexts => ({
+  prefix: `${digits % 2 === 0 ? '• ' : '  '}#${'1'.repeat(digits)} `,
+  title,
+  marker: kind.marker,
+  open: kind.open,
+  pressed: kind.pressed,
+  squeezed: `✓ ${UNDO}`,
+  sent: '✓ sent',
+})
+
+test('the answer texts the sweeps use are the lengths their names say', () => {
+  expect([OPTION_19, OPTION_56, OPTION_150, LABEL_24].map(displayColumns)).toEqual([19, 56, 150, 24])
+  expect(displayColumns(rowFor(PLAIN).prefix)).toBe(6)
+  expect(displayColumns(rowFor(PLAIN, 3).prefix)).toBe(7)
+})
+
+// The ladder worked on the strings the states draw, one rung at a time as the rule words it, apart from rowLayout: the row's rungs in order are the full
+// control with its answer texts up to 24 columns, then the answers cut a column at a time down to 1, then the same again with every pressed control
+// squeezed to its mark and undo button; the first that leaves the title ten columns is the row's, and where none does it is the narrowest, the first
+// such. A control's column is the widest of its states and the space before it. The answers here are ASCII, so a text's length is its columns.
+const cut = (text: string, columns: number): string => (text.length <= columns ? text : `${text.slice(0, columns - 1)}…`)
+const oracle = (row: RowTexts, width: number): { rung: number; answer: number; control: number; room: number } => {
+  const prefix = displayColumns(row.prefix)
+  const control = (squeezed: boolean, answer: number): number => {
+    const drawn = (one: Control): string => `${one.before}${cut(one.answer, answer)}${one.after}`
+    const states = [drawn(row.open), ...(squeezed ? [row.squeezed] : row.pressed.map(drawn)), row.sent].filter(text => text !== '')
+    return 1 + Math.max(...states.map(displayColumns))
+  }
+  const rungs = [false, true].flatMap(squeezed => Array.from({ length: 24 }, (_, k) => ({ squeezed, answer: 24 - k })).map(rung => ({ ...rung, control: control(rung.squeezed, rung.answer) })))
+  const picked = rungs.find(rung => width - prefix - rung.control >= 10) ?? rungs.reduce((best, rung) => (rung.control < best.control ? rung : best))
+  return { rung: picked.squeezed ? 3 : picked.answer === 24 ? 1 : 2, answer: picked.answer, control: picked.control, room: Math.max(1, width - prefix - picked.control) }
+}
+
+// What hand work gives for the id 12 and the 3-second window: for each kind and layout width, the rung, the row's answer width, the control column and the
+// title's room.
+const FIGURES: [Kind, [number, number, number, number, number][]][] = [
+  [PLAIN, [[20, 3, 24, 9, 5], [32, 3, 24, 9, 17], [42, 1, 24, 17, 19], [64, 1, 24, 17, 41], [96, 1, 24, 17, 73]]],
+  [YES_NO, [[20, 3, 24, 9, 5], [32, 3, 24, 9, 17], [42, 1, 24, 17, 19], [64, 1, 24, 17, 41], [96, 1, 24, 17, 73]]],
+  [LABELLED_24, [[20, 3, 4, 9, 5], [32, 3, 11, 16, 10], [42, 2, 16, 26, 10], [64, 1, 24, 34, 24], [96, 1, 24, 34, 56]]],
+  [DECISION_56, [[20, 3, 24, 9, 5], [32, 3, 24, 9, 17], [42, 2, 16, 26, 10], [64, 1, 24, 34, 24], [96, 1, 24, 34, 56]]],
+]
+
+test('the id 12 and the 3-second window give the rung, the answer width, the control column and the title\'s room worked by hand, for each kind at layout widths 20, 32, 42, 64 and 96', () => {
+  for (const [kind, rows] of FIGURES) {
+    for (const [width, rung, answer, control, room] of rows) {
+      const got = rowLayout(rowFor(kind, 2), width)
+      expect({ rung: got.rung, answer: got.answer, control: got.control, room: got.room }, `${kind.name} at ${width}`).toEqual({ rung, answer, control, room })
+    }
+  }
+})
+
+test('a full-width row keeps its title ten columns with its full control from a layout width of 32 to 35 (a plain to-do or a yes/no) and 49 to 52 (a to-do labelled at 24 columns, a decision with an option of 24 columns or more) for ids of one to four digits, and gives a squeezed control below 32 to 35, for every kind alike', () => {
+  for (const digits of [1, 2, 3, 4]) {
+    const prefix = digits + 4
+    for (const kind of KINDS) {
+      const fullFrom = prefix + (kind === PLAIN || kind === YES_NO || kind === LABELLED_5 ? 17 : kind === DECISION_19 ? 29 : 34) + 10
+      expect(rowLayout(rowFor(kind, digits), fullFrom).rung, `${kind.name}, ${digits} digits at ${fullFrom}`).toBe(1)
+      expect(rowLayout(rowFor(kind, digits), fullFrom - 1).rung, `${kind.name}, ${digits} digits at ${fullFrom - 1}`).not.toBe(1)
+      // Rung 2 keeps the title ten down to a layout width of the prefix and 27, where the control is 17 columns; below it only the squeezed control does.
+      expect(rowLayout(rowFor(kind, digits), prefix + 27).rung, `${kind.name}, ${digits} digits at ${prefix + 27}`).not.toBe(3)
+      expect(rowLayout(rowFor(kind, digits), prefix + 26).rung, `${kind.name}, ${digits} digits at ${prefix + 26}`).toBe(3)
+    }
+  }
+  expect([1, 2, 3, 4].map(digits => digits + 4 + 17 + 10)).toEqual([32, 33, 34, 35])
+  expect([1, 2, 3, 4].map(digits => digits + 4 + 34 + 10)).toEqual([49, 50, 51, 52])
+})
+
+test('at every layout width from the prefix and 10 to 120, for every kind at an id of one to four digits, the layout is the ladder worked on the strings, its control column is the widest state\'s and the space before it, the prefix, the room and the control add up to the layout width, and the title keeps ten columns from the prefix and 19', () => {
+  const long = 'Review the deliberately long title of the first plain to-do item here and then some more words so that it is cut'
+  // A title cut by hand at the room, ASCII: whole, or the start that leaves a column for the ellipsis, the marker kept whole after it where the room holds both.
+  const labelOf = (title: string, marker: string, room: number): string => {
+    if (title.length + marker.length <= room) return title + marker
+    if (marker !== '' && room >= marker.length + 1) return `${title.slice(0, room - marker.length - 1)}…${marker}`
+    return `${title}${marker}`.slice(0, room - 1) + '…'
+  }
+  const taken = (one: Control, box: number): number => displayColumns(one.before) + box + displayColumns(one.after)
   for (const kind of KINDS) {
     for (const digits of [1, 2, 3, 4]) {
-      const prefix = `• #${'1'.repeat(digits)} `
-      for (const width of [64, 70, 100, 120]) {
-        const row = plain({ ...kind, prefix, title: kind.open === '' ? 'Pick a db […]' : 'Fix it' })
-        const layout = rowLayout(row, width)
-        // A title of one short word beside the open control, and beside the pressed one when it too fits the line.
-        expect(layout.open, `${width}`).toMatchObject({ place: 'beside', title: null })
-        expect(layout.open.widths, `${width}`).toHaveLength(1)
+      for (const title of ['Fix it', long]) {
+        const row = rowFor(kind, digits, title)
+        const prefix = displayColumns(row.prefix)
+        for (let width = prefix + 10; width <= 120; width++) {
+          const where = `${kind.name}, ${digits} digits at ${width}, ${title.length} columns of title`
+          const got = rowLayout(row, width)
+          expect({ rung: got.rung, answer: got.answer, control: got.control, room: got.room }, where).toEqual(oracle(row, width))
+          expect(prefix + got.room + got.control, where).toBe(width)
+          expect(got.room, where).toBeGreaterThanOrEqual(width >= prefix + 19 ? 10 : 1)
+          // Every state's control, at the width its allotted answer box gives it, fits the column, and the widest one fills it.
+          const controls = [kind.open, ...kind.pressed]
+          const boxes = [got.open, ...got.pressed]
+          expect(boxes, where).toHaveLength(controls.length)
+          const states = [
+            ...(kind.open.before + kind.open.answer + kind.open.after === '' ? [] : [taken(kind.open, got.open.box)]),
+            ...(got.rung === 3 ? [displayColumns(row.squeezed)] : kind.pressed.map((one, k) => taken(one, got.pressed[k]?.box ?? -1))),
+            displayColumns(row.sent),
+          ]
+          expect(got.control, where).toBe(1 + Math.max(...states))
+          // Each answer's box is its measured columns or the row's answer width, whichever is smaller, and holds its text cut to it.
+          for (const [k, one] of controls.entries()) {
+            const allotted = boxes[k]
+            expect(allotted?.box, `${where}, state ${k}`).toBe(Math.min(displayColumns(one.answer), got.answer))
+            expect(allotted?.text, `${where}, state ${k}`).toBe(cut(one.answer, got.answer))
+            expect(displayColumns(allotted?.text ?? ''), `${where}, state ${k}`).toBeLessThanOrEqual(allotted?.box ?? -1)
+          }
+          // The title's label is the title cut by hand to the room.
+          expect(got.title, where).toBe(labelOf(title, kind.marker, got.room))
+        }
       }
     }
   }
 })
 
-test('the pressed control of a decision with an option label of any length stays beside its title while the title keeps a column there, and goes under it otherwise, at every list from 64 to 120', () => {
-  const title = 'Pick a store […]'
-  for (const labelColumns of [10, 30, 45, 60, 100, 150, 400]) {
-    // Words of four letters, so the label wraps wherever the room puts it.
-    const label = Array.from({ length: Math.ceil(labelColumns / 5) }, () => 'word').join(' ')
-    const said = `✓ ${label} `
-    const row = plain({ prefix: '  #1 ', title, open: '', said: [said], undo: '[↶ 5s]' })
-    for (let width = 64; width <= 120; width++) {
-      const where = `${labelColumns} at ${width}`
-      const layout = rowLayout(row, width)
-      const pressed = layout.pressed[0]
-      // The id takes 5; the pressed control, its space before it and its undo button take the rest, and the title keeps what is left.
-      const room = width - 5 - (1 + said.length + 6)
-      expect(pressed?.place, where).toBe(room >= 1 ? 'beside' : 'below')
-      // The decision draws no control until it is pressed, and sent says `✓ sent`.
-      expect(layout.open.place, where).toBe('beside')
-      checkAgainstRule(row, width, where)
-      if (room >= 1) {
-        // Beside, the title wraps in the room the control leaves it, boxed when it wraps there.
-        const rows = wrapText(title, room)
-        expect(pressed?.title, where).toBe(rows.length > 1 ? room : null)
-        expect(pressed?.widths.length, where).toBe(rows.length)
-      } else if (pressed !== undefined) {
-        // Under the title, which takes its lines first, the words wrap beside the undo button: a box of the room the button leaves.
-        const sayRoom = width - 5 - 6
-        const rows = wrapText(said, sayRoom).length
-        expect(pressed.said, where).toBe(rows > 1 ? sayRoom : null)
-        expect(pressed.widths.length, where).toBe(wrapText(title, width - 5).length + rows)
-      }
+test('the answer\'s box is its measured columns or the row\'s answer width, whichever is smaller: `Ship it to staging today` gets 24 at layout widths 64 and 96 and 16 at 42, `OK` gets 2 at every layout width, and a decision\'s 56-column option gets 24 at 96', () => {
+  for (const width of [64, 96]) {
+    const got = rowLayout(rowFor(LABELLED_24), width)
+    expect([got.open.box, got.pressed[0]?.box], `${width}`).toEqual([24, 24])
+    expect([got.open.text, got.pressed[0]?.text], `${width}`).toEqual([LABEL_24, LABEL_24])
+  }
+  const narrow = rowLayout(rowFor(LABELLED_24), 42)
+  expect([narrow.open.box, narrow.pressed[0]?.box]).toEqual([16, 16])
+  expect([narrow.open.text, narrow.pressed[0]?.text]).toEqual(['Ship it to stag…', 'Ship it to stag…'])
+  for (let width = 16; width <= 120; width++) {
+    const got = rowLayout(rowFor(labelled('a to-do labelled OK', 'OK')), width)
+    expect([got.open.box, got.pressed[0]?.box, got.open.text, got.pressed[0]?.text], `${width}`).toEqual([2, 2, 'OK', 'OK'])
+  }
+  expect(rowLayout(rowFor(DECISION_56), 96).pressed[0]).toEqual({ box: 24, text: 'Use sqlite with write-a…' })
+})
+
+test('the reply\'s `✓ replied [↶ 3s]` is never cut: it keeps the control column at 17 columns with its space down to the squeezed control', () => {
+  for (const kind of KINDS) {
+    for (let width = 16; width <= 120; width++) {
+      const got = rowLayout(rowFor(kind), width)
+      if (got.rung !== 3) expect(got.control, `${kind.name} at ${width}`).toBeGreaterThanOrEqual(17)
     }
   }
 })
 
-test('a decision pressed with an option label of 150 columns at a list of 64: the words wrap beside the undo button under the title, as wrapped by hand', () => {
-  // Thirty words of four letters (149 columns), the check and a space before them and a space after: 152. The id takes 5, so the words have
-  // 59 columns under the title and 53 beside the undo button's 6: ten words and the check on the first line (52 columns with the space after
-  // the tenth), ten on the second (50), and ten and the space after the last on the third (50).
-  const said = `✓ ${Array.from({ length: 30 }, () => 'word').join(' ')} `
-  const row = plain({ prefix: '  #1 ', title: 'Pick a store […]', open: '', said: [said], undo: '[↶ 5s]' })
-  const layout = rowLayout(row, 64)
-  expect(layout.pressed[0]).toMatchObject({ place: 'below', title: null, said: 53, widths: [5 + 16, 5 + 53 + 6, 5 + 50, 5 + 50] })
-  expect(rowLines(row, 64)).toBe(4)
+test('a wide label is cut by columns and never split, so its box can be a column wider than its text: twelve wide characters at a layout width of 36 get a box of 10 holding four of them and an ellipsis', () => {
+  const wide = cps(0x4e2d).repeat(12)
+  expect(displayColumns(wide)).toBe(24)
+  const got = rowLayout(rowFor(labelled('a to-do labelled with wide characters', wide)), 36)
+  expect(got.rung).toBe(2)
+  expect(got.answer).toBe(10)
+  expect(got.open).toEqual({ box: 10, text: `${cps(0x4e2d).repeat(4)}…` })
+  expect(got.pressed[0]).toEqual({ box: 10, text: `${cps(0x4e2d).repeat(4)}…` })
+  // The widest state is the pressed control: its mark and space, the box and the undo button after a space, and the space before them.
+  expect(got.control).toBe(1 + 2 + 10 + 1 + 6)
+  expect(got.room).toBe(10)
 })
 
-test('a control wider than its line goes under the title and wraps there, whatever the id: an open control of 70 columns at a list of 64', () => {
-  const row = plain({ prefix: '  #1 ', title: 'Pick a db', open: `[✓ ${'word '.repeat(13)}x]` })
-  const layout = rowLayout(row, 64)
-  expect(layout.open.place).toBe('below')
-  // Under the title the control wraps in the 59 columns past the id.
-  expect(layout.open.widths.every(w => w <= 64)).toBe(true)
-  expect(layout.open.widths.length).toBeGreaterThan(2)
+test('a title is cut by columns at its room, with its decision\'s marker, the line break already joined: wide characters and the family of four are never split', () => {
+  const row = (title: string, marker: string): RowTexts => ({ ...rowFor(marker === '' ? PLAIN : DECISION_19), title, marker })
+  // A plain to-do at 42 has a control column of 17 and a prefix of 6: a room of 19.
+  expect(rowLayout(row('日本語のタイトルは長い', ''), 42).title).toBe('日本語のタイトルは…')
+  expect(rowLayout(row(`${FAMILY} ${FAMILY} ${FAMILY}`, ''), 42).title).toBe(`${FAMILY} ${FAMILY} …`)
+  // A decision with an option of 19 columns at 96 has a control column of 29 and a room of 61: the title and its marker whole.
+  expect(rowLayout(row('Pick the release train for the next deploy', ' […]'), 96).title).toBe('Pick the release train for the next deploy […]')
+  const tight = rowLayout(row('Pick the release train for the next deploy', ' […]'), 42)
+  expect(tight.title.endsWith('… […]')).toBe(true)
+  expect(displayColumns(tight.title)).toBe(tight.room)
+})
+
+test('below the narrowest width the row cannot be one line within the list: the control takes its squeezed 9 columns and the title keeps one, whatever the list', () => {
+  for (const kind of KINDS) {
+    for (const width of [1, 8, 12, 15]) {
+      const got = rowLayout(rowFor(kind), width)
+      expect([got.rung, got.control, got.room], `${kind.name} at ${width}`).toEqual([3, 9, 1])
+    }
+    // At the prefix and 10 the title keeps exactly one column.
+    expect(rowLayout(rowFor(kind), 16).room, kind.name).toBe(1)
+  }
 })
 
 test('the header counts the count\'s wrapped lines in the columns the chip leaves, which never shrinks: ` To do for you ` and ` 8 open ` take 23 columns, so a list of 20 draws the count on two lines', () => {

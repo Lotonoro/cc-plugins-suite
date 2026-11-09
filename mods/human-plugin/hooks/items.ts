@@ -117,8 +117,9 @@ const parseOptions = (raw: unknown): { ok: true; value: ItemOption[] | undefined
 }
 
 // The longest label a to-do's ✓ may carry, in display columns: a few words, so the drawn `[✓ label]` does not crowd the title out of a
-// narrow band. A wide character (CJK, emoji) takes two columns.
-const DONE_MAX = 24
+// narrow band. A wide character (CJK, emoji) takes two columns. The band's cap on an answer's text is this constant too, so a label the tool accepts
+// is never cut in a list wide enough for the full row.
+export const DONE_MAX = 24
 
 // The range of `ranges` (sorted, none overlapping) that holds `code`, undefined when none does.
 const holding = <R extends readonly [number, number, ...unknown[]]>(ranges: readonly R[], code: number): R | undefined => {
@@ -149,7 +150,7 @@ const VARIATION_SELECTOR_16 = 0xfe0f
 // alone, except a U+FE0F after a code point drawn one column wide, which adds one: tmux draws the pair two wide (`❤` and `a` with a U+FE0F, the keycap
 // `1` U+FE0F U+20E3). A sequence tmux draws as one glyph (a family joined by U+200D, an emoji with a skin tone) counts as its parts, so never fewer
 // columns than it is drawn in, and a cut or a count on it errs early, never over the room.
-const columnsByCodePoint = (text: string): { char: string; columns: number }[] => {
+export const columnsByCodePoint = (text: string): { char: string; columns: number }[] => {
   let before = 0
   return [...text].map(char => {
     const code = char.codePointAt(0) ?? 0
