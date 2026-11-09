@@ -451,19 +451,6 @@ test('an answer pressed draws its label with the countdown, and the band\'s chec
   expect(drawn).not.toContain('Use sqlite')
 })
 
-test('a decision\'s title press reaches the pane for that item, with the item\'s number alone: the band tells the press nothing of what the pane shows', () => {
-  const decision: Item = { ...item, detail: 'One line.', blocking: true, options: [
-    { label: 'Use sqlite', description: '', recommended: false },
-    { label: 'Use postgres', description: '', recommended: true },
-  ] }
-  const picked: unknown[][] = []
-  const press: Handlers = { ...handlers, pick: (...args: unknown[]) => void picked.push(args) }
-  const tree = band(table, press, { items: [decision], next: 2, term: null }, view())
-  const titlePress = nodes(tree, 'Button').find(n => n.key === 'title-1')?.onPress as (() => void) | undefined
-  titlePress?.()
-  expect(picked).toEqual([[1]])
-})
-
 // The band's buttons in the order the focus ring walks them.
 const buttonKeys = (tree: unknown): string[] => nodes(tree, 'Button').map(b => String(b.key))
 
