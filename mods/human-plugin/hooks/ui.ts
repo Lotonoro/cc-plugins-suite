@@ -1,5 +1,5 @@
 import type { ButtonProps, BoxProps, ElementConstructor, InputProps, MarkdownProps, RenderElement, TextProps, UiCopyArgs } from 'claude-code'
-import type { Item, Store, TodoItem, Turn } from '../types'
+import type { Item, Selection, Store, TodoItem, Turn } from '../types'
 import { labelOf, oneLine, orderedOptions, replyText, turnsOf } from './done'
 import { briefParts } from './fences'
 import { outcomeOf, parseInput, selectedItem, type ToolInput } from './items'
@@ -16,13 +16,12 @@ import {
   squeezedFold,
   type Answer,
   type BandWidths,
-  type ClaudeRow,
   type Control,
   type ListWidth,
   type RowTexts,
 } from './layout'
 import { tablesAsLists } from './tables'
-import { GLYPH, HEADING, bandCountsText } from './todo'
+import { GLYPH, HEADING, bandCountsText, countsText, inDisplayOrder } from './todo'
 
 // The elements the band and the pane are built from, as the surface's table hands them out. The constructors take the
 // props with `children`, as JSX would pass them; the mod has no JSX factory in an imported module.
@@ -37,8 +36,9 @@ export type Table = {
 
 // What a press asks for; the handlers are the plugin's own and do the work.
 export type Handlers = {
-  // A band item's title: opens the pane on the item, or closes the pane when it shows it (`isSelected`).
-  pick: (id: number, isSelected: boolean) => void
+  // A band item's title: opens the pane on the item, or closes the pane when it shows it. The band tells the press nothing of what the pane shows: the press is decided from
+  // pane.ts's own records of the pane (pickItem), since a second press can land before the band draws again.
+  pick: (id: number) => void
   // A done press (`answer` null), a labelled to-do's press (`answer`: its label), the press of an option (`answer`: its label), or a yes or no (`answer`: `yes` or `no`).
   done: (id: number, answer: string | null) => void
   // The band's summary row: opens the pane on `id`, the first item the band folds.
@@ -47,13 +47,15 @@ export type Handlers = {
   reply: (id: number, text: string) => void
   // A brief's copy button: puts `text`, one fenced block's lines, on the clipboard of the surface pressed on.
   copy: (text: string, surface: UiCopyArgs['surface']) => void
+  // A press on the Claude column, its header, a row or its `+N queued` row alike: opens the pane on the Claude list, or closes the pane when it shows it.
+  backlog: () => void
 }
 
-// What the band draws with: the rows the surface has, the time now, and the undo window's length. `selected`: the item the pane
-// shows, if any. `claude`: the Claude list and the columns the band is laid out in, which the Claude column is drawn from. It also gives the human
+// What the band draws with: the rows the surface has, the time now, and the undo window's length. `selected`: what the pane shows, if anything (an item, the Claude list, or
+// none, which counts the first item as shown), which the pane's draw alone reads. `claude`: the Claude list and the columns the band is laid out in, which the Claude column is drawn from. It also gives the human
 // list its width, which its rows are laid out and cut in; without it the band has no width to fit its rows to, and draws each whole, nothing cut.
 // `isDocked`: whether this plugin's pane is docked on the band's surface (pane.ts), which narrows the width the two lists need.
-export type View = { maxRows: number; now: number; windowMs: number; selected?: number | null; claude?: { items: readonly TodoItem[]; columns: number; isDocked?: boolean } }
+export type View = { maxRows: number; now: number; windowMs: number; selected?: Selection; claude?: { items: readonly TodoItem[]; columns: number; isDocked?: boolean } }
 
 const CHECK = { color: 'green' }
 
@@ -206,14 +208,14 @@ const doneControl = (t: Table, h: Handlers, item: Item, view: View, inPane: bool
 // The one rule for a blank brief: whitespace alone is no brief, in the title, the pane's rows and the pane's draw.
 const hasBrief = (item: Item): boolean => item.detail.trim() !== ''
 
-// A band row. `isShown`: whether the pane shows this item, so a press on it closes the pane. `width`: the columns the row is laid out in (layout.ts), null for a
+// A band row. `width`: the columns the row is laid out in (layout.ts), null for a
 // band with no width. `squeezed`: whether its list is a squeezed one (isSqueezed), whose rows start the ladder at its last stage. A laid-out row is one line of three
 // cells: its prefix, its title's button in a box that shrinks, its label the title cut to the room, and the control's cell, as wide as the row's widest state needs and
 // never shrunk, with the state's control at its start. The titles and the answers are the strings the layout cut, drawn bare, so the terminal never wraps them.
-const itemRow = (t: Table, h: Handlers, item: Item, view: View, isShown: boolean, width: number | null, squeezed: boolean): RenderElement => {
+const itemRow = (t: Table, h: Handlers, item: Item, view: View, width: number | null, squeezed: boolean): RenderElement => {
   const texts = rowTexts(item, view.windowMs)
   const prefix = t.Box({ flexShrink: 0, children: [t.Text({ bold: item.blocking, dimColor: !item.blocking, children: [texts.prefix] })] })
-  const title = (label: string): RenderElement => t.Button({ key: `title-${item.id}`, plain: true, label, onPress: () => h.pick(item.id, isShown) })
+  const title = (label: string): RenderElement => t.Button({ key: `title-${item.id}`, plain: true, label, onPress: () => h.pick(item.id) })
   if (width === null) {
     const control = doneControl(t, h, item, view, false)
     return t.Box({
@@ -305,24 +307,28 @@ export const toolLine = (call: ToolCall): string => {
 // The chip names the term the agent states for the human; it says "you" until one is stated, and again once the agent clears it (the term '').
 const chipText = (term: string | null): string => (term === null || term === '' ? 'To do for you' : `To do for ${term}`)
 
-// One row of the Claude column: the state's glyph and the title on one line, cut at the column's edge; the queued summary is dim.
-const claudeRow = (t: Table, row: ClaudeRow): RenderElement =>
-  row.kind === 'item'
-    ? t.Text({ wrap: 'truncate-end', children: [`${GLYPH[row.item.state]} ${row.item.title}`] })
-    : t.Text({ dimColor: true, wrap: 'truncate-end', children: [`+${row.count} queued`] })
-
 // The columns a list's box keeps empty inside its width: its box less its layout width (layout.ts).
 const marginOf = (width: ListWidth): number => width.box - width.layout
 
-// The Claude column: its header with the counts in the short form, then its rows (see claudeRows), each cut at the column's layout width, inside
-// the box's padding. `height`: the human list's lines, which the queued rows fill down to.
-const claudeColumn = (t: Table, todo: readonly TodoItem[], width: ListWidth, height: number): RenderElement =>
-  t.Box({
+// The Claude column: its header with the counts in the short form, then its rows (see claudeRows), each cut at the column's layout width, inside the box's padding.
+// `height`: the human list's lines, which the queued rows fill down to. Each line is a button of its own that opens the backlog (the engine gives a box no press), addressed by
+// its place in the column: a Claude item carries no id, and a button with no address takes its label, so two rows with one title would share it. A button wraps its text
+// rather than cutting it, so each is handed its text cut already; the queued summary is dim.
+export const claudeColumn = (t: Table, h: Handlers, todo: readonly TodoItem[], width: ListWidth, height: number): RenderElement => {
+  const line = (key: string, text: string, isDim: boolean): RenderElement =>
+    t.Button({ key, plain: true, ...(isDim ? { dimColor: true } : {}), label: cutToColumns(text, width.layout), onPress: () => h.backlog() })
+  return t.Box({
     flexDirection: 'column',
     width: width.box,
     ...(marginOf(width) > 0 ? { paddingLeft: marginOf(width) } : {}),
-    children: [t.Text({ wrap: 'truncate-end', children: [`${HEADING} ${bandCountsText(todo)}`] }), ...claudeRows(todo, height).map(row => claudeRow(t, row))],
+    children: [
+      line('claude-header', `${HEADING} ${bandCountsText(todo)}`, false),
+      ...claudeRows(todo, height).map((row, k) =>
+        row.kind === 'item' ? line(`claude-row-${k}`, `${GLYPH[row.item.state]} ${row.item.title}`, false) : line('claude-queued', `+${row.count} queued`, true),
+      ),
+    ],
   })
+}
 
 // The header's two cells: the chip, the line that asks for the person's attention (filled `warning` while the agent is stuck on an open blocking
 // item, `permission` otherwise), and the count after it in plain text: the open items, and the sent ones by their own count.
@@ -371,10 +377,9 @@ export const band = (t: Table, h: Handlers, store: Store, view: View): RenderEle
   // The header's lines, and the rows that fit under it. A squeezed list folds both together; any other list's header takes the lines its count wraps to.
   const wrapped = fit === null ? 1 : headerLines(chip, count, fit)
   const { top, rows } = squeezed ? squeezedFold(store.items, room) : { top: wrapped, rows: bandRows(store.items, Math.max(0, room - wrapped)) }
-  const shownId = selectedItem(store.items, view.selected ?? null)?.id
   const fill = open.some(it => it.blocking) ? 'warning' : 'permission'
   const header = squeezed ? squeezedHeader(t, chip, count, fill, top) : plainHeader(t, chip, count, fill)
-  const body = rows.map(row => (row.kind === 'item' ? itemRow(t, h, row.item, view, row.item.id === shownId, fit, squeezed) : summaryRow(t, h, row, fit)))
+  const body = rows.map(row => (row.kind === 'item' ? itemRow(t, h, row.item, view, fit, squeezed) : summaryRow(t, h, row, fit)))
   if (view.claude === undefined || widths.claude === null) return t.Box({ flexDirection: 'column', children: [header, ...body] })
   // Two boxes at the band's width, the Claude column last: alone it keeps its width and stays at the right edge, with nothing drawn to its left.
   const humanList =
@@ -392,7 +397,7 @@ export const band = (t: Table, h: Handlers, store: Store, view: View): RenderEle
     flexDirection: 'row',
     justifyContent: 'flex-end',
     width: view.claude.columns,
-    children: [...humanList, claudeColumn(t, todo, widths.claude, widths.human === null ? 0 : top + rows.length)],
+    children: [...humanList, claudeColumn(t, h, todo, widths.claude, widths.human === null ? 0 : top + rows.length)],
   })
 }
 
@@ -444,6 +449,21 @@ export const pane = (t: Table, h: Handlers, store: Store, view: View): RenderEle
   // An empty list has nothing to show. A pane whose selected item has just been removed draws nothing until the tool call moves it on.
   return store.items.length === 0 ? t.Text({ dimColor: true, children: ['Nothing to do for you.'] }) : t.Box({ children: [] })
 }
+
+// The rows the backlog asks for: its header line and one for each item.
+export const backlogRows = (todo: readonly TodoItem[]): number => 1 + todo.length
+
+// The backlog: the whole Claude list, read-only, in the pane that shows a human item otherwise. A header line with the counts in the long form, then the in-flight items and the
+// queued ones, each in the agent's written order and each one line: its glyph, a space and its whole title. Each line is set to cut at its end and the engine cuts it, at the
+// body's edge by the measure it draws by, so a line never wraps whatever its title holds. It presses nothing: the human never changes this list.
+export const backlogPane = (t: Table, todo: readonly TodoItem[]): RenderElement =>
+  t.Box({
+    flexDirection: 'column',
+    children: [
+      t.Text({ wrap: 'truncate-end', children: [`${HEADING} ${countsText(todo)}`] }),
+      ...inDisplayOrder(todo).map(item => t.Text({ wrap: 'truncate-end', children: [`${GLYPH[item.state]} ${item.title}`] })),
+    ],
+  })
 
 // The reply field under an open item's controls: one line, Enter sends the text trimmed, and a blank one is nothing. Not drawn where the
 // surface's table has no Input, nor for an item whose press is in its window or sent.

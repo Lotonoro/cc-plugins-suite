@@ -1,4 +1,4 @@
-import type { Item, ItemOption, ItemState, Store, Turn } from '../types'
+import type { Item, ItemOption, ItemState, Selection, Store, Turn } from '../types'
 import { answered, archive, cancelWindow, labelOf, reopen, turnsOf, withSection } from './done'
 import { DRAWN, UNMEASURED } from './widths'
 
@@ -413,9 +413,9 @@ export const act = (store: Store, input: ToolInput, ctx: Ctx): Outcome => {
   }, `updated #${target.id}`), input.term, ctx)
 }
 
-// The item the pane shows: the selected one, or with no selection the first. A selection whose item is gone names none; the pane
-// moves on when its item is removed (successorOf), and that move writes the selection, so the lookup stays exact.
-export const selectedItem = (items: readonly Item[], selected: number | null): Item | undefined =>
+// The item the pane shows: the selected one, or with no selection the first. A selection that names the Claude list names no human item, and neither does
+// one whose item is gone; the pane moves on when its item is removed (successorOf), and that move writes the selection, so the lookup stays exact.
+export const selectedItem = (items: readonly Item[], selected: Selection): Item | undefined =>
   selected === null ? items[0] : items.find(it => it.id === selected)
 
 // The item the pane moves to when the one it shows leaves the actionable set (removed, or its press's window ended and it was sent): the

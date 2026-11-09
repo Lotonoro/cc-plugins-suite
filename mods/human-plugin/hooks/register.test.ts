@@ -732,7 +732,7 @@ const made = (id: number, extra: Record<string, unknown> = {}) => ({
   answer: null,
   ...extra,
 })
-const memEnv = (items: unknown[], open: string[], selection: number | null, submitted: unknown[] = [], timers: Timer[] = []) => {
+const memEnv = (items: unknown[], open: string[], selection: unknown, submitted: unknown[] = [], timers: Timer[] = []) => {
   const values: Record<string, unknown> = { list: { items, next: items.length + 1 }, selection }
   // The test moves the clock: a press is timed at it, and a tick (`tickAt`) runs at the time the test sets.
   const clock = { now: 0 }
@@ -1538,7 +1538,7 @@ test('an update of the brief to the open item the pane shows re-asks its rows th
 // selection. The kit cannot load the module afresh (its static analysis refuses a dynamic import in a hooks module), so this ends
 // the session instead, which clears the same record (session.end): the engine's pane is kept, the record is empty, and the band's
 // first draw resyncs paneOpen from the engine, as after a reload.
-const reloaded = async (open: string[], items: unknown[], selection: number | null, submitted: unknown[] = [], timers: Timer[] = []) => {
+const reloaded = async (open: string[], items: unknown[], selection: unknown, submitted: unknown[] = [], timers: Timer[] = []) => {
   const { hooks } = wire()
   const { env, values, clock } = memEnv(items, open, selection, submitted, timers)
   await (hooks['session.end'] as Handler)(env as never, { reason: 'exit' } as never, next(false) as never)
@@ -1612,7 +1612,7 @@ test('a press whose selection write is still in flight holds the pane on the pre
   expect(JSON.stringify(await paneTree(hooks, env))).toContain('#3 non-blocking, open: Item 3')
 })
 
-test('while a press\'s selection write is still in flight, the band counts the pressed item as shown: a second press on its title closes the pane', async () => {
+test('while a press\'s selection write is still in flight, the pane\'s own record says the pressed item is shown: a second press on its title closes the pane', async () => {
   const open = ['human-items']
   const { hooks, env } = await reloaded(open, [made(1), made(2), made(3)], 1)
   const writes: Array<() => void> = []
@@ -3121,7 +3121,14 @@ const columnDrawn = async (hooks: Record<string, Handler>, env: unknown, surface
   expect(flat(await bandAt(hooks, env, 56, {}, surface)).includes('Claude TODO'), `a band of 56 columns on ${surface} agrees with one of 52`).toBe(at52)
   return at52
 }
-const endSession = (hooks: Record<string, Handler>, env: unknown) => (hooks['session.end'] as Handler)(env as never, { reason: 'exit' } as never, next(false) as never)
+// The session's end that starts a test. The module keeps the pane's records from one test to the next, and a session's end closes a pane that shows the Claude list, so the last
+// test's session ends first, on a `$` of its own, and the close it makes is not asked of this test's.
+const endSession = async (hooks: Record<string, Handler>, env: unknown) => {
+  const last = { ui: { close: async () => {}, log: () => {} } }
+  await (hooks['session.end'] as Handler)(last as never, { reason: 'exit' } as never, next(false) as never)
+  await settle()
+  return (hooks['session.end'] as Handler)(env as never, { reason: 'exit' } as never, next(false) as never)
+}
 const personCloses = async (hooks: Record<string, Handler>, env: unknown, open: string[]): Promise<void> => {
   open.length = 0
   await (hooks['ui.close'] as Handler)(env as never, { id: 'human-items', origin: { kind: 'person' } } as never, next(false) as never)
@@ -3650,4 +3657,670 @@ test('a /clear whose reminder reset fails logs it, and the human list and the Cl
   expect(values.todo).toEqual([])
   expect((values.list as { items: unknown[] }).items).toEqual([])
   expect(logs.some(line => line.includes('count unwritable'))).toBe(true)
+})
+
+// The backlog pane: the Claude list, shown in the pane's one id in place of a human item. `backlogEnv` keeps every open request whole, every close and every redraw the
+// mod asks for, over the in-memory list, selection and pane; `open` is the engine's list of panes, which a test may change as the engine would.
+type OpenAsked = { id: string; title?: string; rows?: number; focus?: true }
+const backlogEnv = (items: unknown[], open: string[], selection: unknown, todo: object[], timers: Timer[] = []) => {
+  const { env, values, clock } = memEnv(items, open, selection, [], timers)
+  values.todo = todo
+  const opens: OpenAsked[] = []
+  const closes: string[] = []
+  const asked: string[] = []
+  const $ = {
+    ...env,
+    ui: {
+      ...env.ui,
+      invalidate: (event: string) => void asked.push(event),
+      open: async (args: OpenAsked) => {
+        opens.push(args)
+        return env.ui.open(args)
+      },
+      close: async (args: { id: string }) => {
+        closes.push(args.id)
+        return env.ui.close(args)
+      },
+    },
+  }
+  return { $, env, values, clock, opens, closes, asked, open }
+}
+// Presses the button keyed `key` on a drawn tree. A button that is not there fails the test, instead of a press that does nothing.
+const pressKey = (tree: unknown, key: string): void => {
+  const target = findButton(tree, key)
+  if (target === undefined) throw new Error(`no button keyed ${key} in the tree`)
+  target.onPress()
+}
+// One item in flight and five queued. A band of 120 columns beside two human items draws the column's header, the in-flight row and `+5 queued`.
+const RUNNING = entry('Build the pane', 'in_flight')
+const SIX = [RUNNING, ...[1, 2, 3, 4, 5].map(k => entry(`Queued ${k}`, 'queued'))]
+// A drawn backlog's lines: each child of its root is one text.
+const linesOf = (tree: unknown): string[] => ((tree as Tree).children ?? []).map(line => (line as unknown as { children: string[] }).children.join(''))
+const ITEM_ONE = '#1 non-blocking, open: Item 1'
+
+test('a press on the Claude header, on a Claude row and on +N queued each opens the pane on the Claude list within the press: one request, titled Claude TODO, with a row for the header and one for each item of the whole list, and the keyboard', async () => {
+  for (const key of ['claude-header', 'claude-row-0', 'claude-queued']) {
+    reset()
+    const { hooks } = wire()
+    const { $, values, opens, open } = backlogEnv([made(1), made(2)], [], null, SIX)
+    await endSession(hooks, $)
+    pressKey(await bandAt(hooks, $, 120), key)
+    // Before anything the press awaits: an open made after an await is not counted as asked.
+    expect(opens, key).toEqual([{ id: 'human-items', title: 'Claude TODO', rows: 7, focus: true }])
+    await settle()
+    expect(open, key).toEqual(['human-items'])
+    expect(values.selection, key).toBe('claude-todo')
+  }
+})
+
+test('the pane on the Claude list draws a header line with the counts in the long form, then every item, in-flight first and each group in written order, one text each set to cut at its end; no control, and no state written', async () => {
+  reset()
+  const { hooks } = wire()
+  const { $ } = backlogEnv([made(1)], [], 'claude-todo', [entry('Queued first', 'queued'), entry('Build', 'in_flight'), entry('Queued second', 'queued')])
+  await endSession(hooks, $)
+  const tree = await paneTree(hooks, $)
+  expect(linesOf(tree)).toEqual(['Claude TODO 1 in flight, 2 queued', '◐ Build', '○ Queued first', '○ Queued second'])
+  expect(((tree as Tree).children ?? []).map(line => line.wrap)).toEqual(['truncate-end', 'truncate-end', 'truncate-end', 'truncate-end'])
+  expect(flat(tree)).not.toContain('"type":"Button"')
+  expect(flat(tree)).not.toContain('"type":"Markdown"')
+})
+
+test('with no human items the band draws only the Claude column\'s header and in-flight rows, and a press on its header opens the pane with the queued items too; a second press closes it', async () => {
+  reset()
+  const { hooks } = wire()
+  const { $, opens, closes, open } = backlogEnv([], [], null, [RUNNING, entry('Later', 'queued'), entry('Latest', 'queued')])
+  await endSession(hooks, $)
+  const tree = await bandAt(hooks, $, 120)
+  expect(flat(tree)).not.toContain('Later')
+  pressKey(tree, 'claude-header')
+  await settle()
+  expect(opens).toEqual([{ id: 'human-items', title: 'Claude TODO', rows: 4, focus: true }])
+  expect(linesOf(await paneTree(hooks, $))).toEqual(['Claude TODO 1 in flight, 2 queued', '◐ Build the pane', '○ Later', '○ Latest'])
+  pressKey(await bandAt(hooks, $, 120), 'claude-header')
+  await settle()
+  expect(closes).toEqual(['human-items'])
+  expect(open).toEqual([])
+})
+
+test('a press on the Claude column while the pane shows the Claude list closes the pane, and the next one opens it again', async () => {
+  reset()
+  const { hooks } = wire()
+  const { $, opens, closes, open } = backlogEnv([made(1), made(2)], [], null, SIX)
+  await endSession(hooks, $)
+  for (const key of ['claude-header', 'claude-header', 'claude-row-0', 'claude-queued']) {
+    pressKey(await bandAt(hooks, $, 120), key)
+    await settle()
+  }
+  expect(opens).toHaveLength(2)
+  expect(closes).toEqual(['human-items', 'human-items'])
+  expect(open).toEqual([])
+})
+
+test('two presses on the Claude column before the band draws again, from a closed pane, open the pane and then close it', async () => {
+  reset()
+  const { hooks } = wire()
+  const { $, opens, closes, open } = backlogEnv([made(1), made(2)], [], null, SIX)
+  await endSession(hooks, $)
+  const tree = await bandAt(hooks, $, 120)
+  pressKey(tree, 'claude-header')
+  pressKey(tree, 'claude-row-0')
+  await settle()
+  expect(opens).toHaveLength(1)
+  expect(closes).toEqual(['human-items'])
+  expect(open).toEqual([])
+})
+
+test('from a pane on a human item, two presses on the Claude column before the band draws again switch it to the backlog and then close it', async () => {
+  reset()
+  const { hooks } = wire()
+  const { $, opens, closes, open } = backlogEnv([made(1), made(2)], [], null, SIX)
+  await endSession(hooks, $)
+  pressKey(await bandAt(hooks, $, 120), 'title-1')
+  await settle()
+  const tree = await bandAt(hooks, $, 120)
+  pressKey(tree, 'claude-header')
+  pressKey(tree, 'claude-queued')
+  await settle()
+  expect(opens.map(o => o.title)).toEqual(['Items for you', 'Claude TODO'])
+  expect(closes).toEqual(['human-items'])
+  expect(open).toEqual([])
+})
+
+test('with the pane on item 3, a press on the Claude column and then one on item 3\'s title before the band draws again switch the pane to the backlog and then to item 3, and leave it open', async () => {
+  reset()
+  const { hooks } = wire()
+  const { $, values, opens, closes, open } = backlogEnv([made(1), made(2), made(3)], [], null, SIX)
+  await endSession(hooks, $)
+  pressKey(await bandAt(hooks, $, 120), 'title-3')
+  await settle()
+  const tree = await bandAt(hooks, $, 120)
+  pressKey(tree, 'claude-header')
+  pressKey(tree, 'title-3')
+  await settle()
+  expect(opens.map(o => o.title)).toEqual(['Items for you', 'Claude TODO', 'Items for you'])
+  expect(closes).toEqual([])
+  expect(open).toEqual(['human-items'])
+  expect(values.selection).toBe(3)
+  expect(flat(await paneTree(hooks, $))).toContain('#3 non-blocking, open: Item 3')
+})
+
+// A press opens the pane from the Claude list the band drew last, within the press. A write made since, with the pane not showing the list, asked the pane nothing, so the press looks at the
+// stored list once its open has settled.
+const THREE = [RUNNING, entry('Next', 'queued'), entry('Then', 'queued')]
+
+test('a press on the Claude column made after a write changed the number of items and before the band draws again opens the pane within the press from the list drawn last, and then asks again for the rows of the list now', async () => {
+  reset()
+  const { hooks } = wire()
+  const { $, opens } = backlogEnv([made(1), made(2)], [], null, THREE)
+  await endSession(hooks, $)
+  const tree = await bandAt(hooks, $, 120)
+  await runTodo(hooks, $, { entries: SIX })
+  pressKey(tree, 'claude-header')
+  expect(opens.map(o => o.rows)).toEqual([4])
+  await settle()
+  expect(opens.map(o => o.rows)).toEqual([4, 7])
+  expect(linesOf(await paneTree(hooks, $))).toHaveLength(7)
+})
+
+test('the same press from a pane on a human item switches it within the press from the list drawn last, and then asks again for the rows of the list now', async () => {
+  reset()
+  const { hooks } = wire()
+  const { $, opens } = backlogEnv([made(1), made(2)], [], null, THREE)
+  await endSession(hooks, $)
+  pressKey(await bandAt(hooks, $, 120), 'title-1')
+  await settle()
+  const tree = await bandAt(hooks, $, 120)
+  await runTodo(hooks, $, { entries: SIX })
+  pressKey(tree, 'claude-header')
+  expect(opens.map(o => o.title)).toEqual(['Items for you', 'Claude TODO'])
+  expect(opens.map(o => o.rows).slice(1)).toEqual([4])
+  await settle()
+  expect(opens.map(o => o.rows).slice(1)).toEqual([4, 7])
+})
+
+test('a press on the Claude column made after a write emptied the list and before the band draws again does not leave the pane open on its header line alone, from a closed pane or from a pane on a human item', async () => {
+  for (const onItem of [false, true]) {
+    reset()
+    const { hooks } = wire()
+    const { $, open } = backlogEnv([made(1), made(2)], [], null, THREE)
+    await endSession(hooks, $)
+    if (onItem) {
+      pressKey(await bandAt(hooks, $, 120), 'title-1')
+      await settle()
+    }
+    const tree = await bandAt(hooks, $, 120)
+    await runTodo(hooks, $, { entries: [] })
+    pressKey(tree, 'claude-header')
+    await settle()
+    expect(open, onItem ? 'on an item' : 'closed').toEqual([])
+  }
+})
+
+test('a second press on the Claude column before the first has looked at the stored list closes the pane, and the first press then asks it nothing more', async () => {
+  reset()
+  const { hooks } = wire()
+  const { $, opens, closes, open } = backlogEnv([made(1), made(2)], [], null, THREE)
+  await endSession(hooks, $)
+  const tree = await bandAt(hooks, $, 120)
+  await runTodo(hooks, $, { entries: SIX })
+  pressKey(tree, 'claude-header')
+  pressKey(tree, 'claude-row-0')
+  await settle()
+  expect(opens.map(o => o.rows)).toEqual([4])
+  expect(closes).toEqual(['human-items'])
+  expect(open).toEqual([])
+})
+
+test('with the pane on a human item a press on the Claude column shows the Claude list in the same pane; with it on the Claude list a press on a human title, on the Claude column\'s other rows and on the summary row each switch it again: the engine lists one pane after each', async () => {
+  reset()
+  const { hooks } = wire()
+  const { $, values, opens, closes } = backlogEnv([1, 2, 3, 4, 5, 6].map(id => made(id)), [], null, SIX)
+  await endSession(hooks, $)
+  const press = async (key: string, extra: Record<string, unknown> = {}): Promise<[string | undefined, unknown, string[]]> => {
+    pressKey(await bandAt(hooks, $, 120, extra), key)
+    await settle()
+    return [opens[opens.length - 1]?.title, values.selection, (await $.ui.panes()).map(pane => pane.id)]
+  }
+  expect(await press('title-1')).toEqual(['Items for you', 1, ['human-items']])
+  expect(await press('claude-header')).toEqual(['Claude TODO', 'claude-todo', ['human-items']])
+  expect(await press('title-2')).toEqual(['Items for you', 2, ['human-items']])
+  expect(await press('claude-row-0')).toEqual(['Claude TODO', 'claude-todo', ['human-items']])
+  // The band given four rows folds the items from the third on, and its summary row opens the first of them.
+  expect(await press('band-more', { maxRows: 4 })).toEqual(['Items for you', 3, ['human-items']])
+  expect(closes).toEqual([])
+})
+
+test('a stored selection that is an item number opens on that item, claude-todo opens the Claude list, and any other stored value opens as no selection does: on the first item', async () => {
+  const cases: [unknown, string][] = [
+    [2, '#2 non-blocking, open: Item 2'],
+    [null, ITEM_ONE],
+    ['claude-todo', 'Claude TODO 1 in flight, 0 queued'],
+    ['claude-list', ITEM_ONE],
+    ['2', ITEM_ONE],
+    [true, ITEM_ONE],
+    [{ id: 2 }, ITEM_ONE],
+    [[2], ITEM_ONE],
+    [0, ITEM_ONE],
+    [-2, ITEM_ONE],
+    [1.5, ITEM_ONE],
+  ]
+  for (const [stored, shown] of cases) {
+    reset()
+    const { hooks } = wire()
+    const { $ } = backlogEnv([made(1), made(2)], [], stored, [RUNNING])
+    await endSession(hooks, $)
+    expect(flat(await paneTree(hooks, $)), JSON.stringify(stored)).toContain(shown)
+  }
+})
+
+test('a stored selection that is no item number and not claude-todo counts as none for a press too: with the pane open on the first item, a press on its title closes the pane', async () => {
+  reset()
+  const { hooks } = wire()
+  const open = ['human-items']
+  const { $, closes } = backlogEnv([made(1), made(2)], open, 'garbage', SIX)
+  await endSession(hooks, $)
+  pressKey(await bandAt(hooks, $, 120), 'title-1')
+  await settle()
+  expect(closes).toEqual(['human-items'])
+  expect(open).toEqual([])
+})
+
+test('with no selection stored the first human item counts as the shown one: with the pane open on it a press on its title closes the pane, and one on the Claude column switches it to the backlog', async () => {
+  for (const [key, title] of [['title-1', undefined], ['claude-header', 'Claude TODO']] as const) {
+    reset()
+    const { hooks } = wire()
+    const open = ['human-items']
+    const { $, opens, closes } = backlogEnv([made(1), made(2)], open, null, SIX)
+    await endSession(hooks, $)
+    pressKey(await bandAt(hooks, $, 120), key)
+    await settle()
+    expect(opens.map(o => o.title), key).toEqual(title === undefined ? [] : [title])
+    expect(closes, key).toEqual(title === undefined ? ['human-items'] : [])
+    expect(open, key).toEqual(title === undefined ? [] : ['human-items'])
+  }
+})
+
+test('after a reload with the backlog open and no press made since, a press on the Claude column closes the pane, and a press on a human title shows that item in the same pane', async () => {
+  for (const [key, closed] of [['claude-header', true], ['claude-row-0', true], ['claude-queued', true], ['title-1', false], ['title-2', false]] as const) {
+    reset()
+    const { hooks } = wire()
+    const open = ['human-items']
+    const { $, values, opens, closes } = backlogEnv([made(1), made(2)], open, 'claude-todo', SIX)
+    await endSession(hooks, $)
+    pressKey(await bandAt(hooks, $, 120), key)
+    await settle()
+    expect(closes, key).toEqual(closed ? ['human-items'] : [])
+    expect(open, key).toEqual(closed ? [] : ['human-items'])
+    expect(opens.map(o => o.title), key).toEqual(closed ? [] : ['Items for you'])
+    expect(values.selection, key).toBe(closed ? 'claude-todo' : Number(key.slice(-1)))
+  }
+})
+
+test('after a reload with the pane on item 2, a press on the Claude column switches it to the backlog and a press on item 2\'s title closes it', async () => {
+  for (const [key, title] of [['claude-header', 'Claude TODO'], ['title-2', undefined]] as const) {
+    reset()
+    const { hooks } = wire()
+    const open = ['human-items']
+    const { $, opens, closes } = backlogEnv([made(1), made(2)], open, 2, SIX)
+    await endSession(hooks, $)
+    pressKey(await bandAt(hooks, $, 120), key)
+    await settle()
+    expect(opens.map(o => o.title), key).toEqual(title === undefined ? [] : [title])
+    expect(closes, key).toEqual(title === undefined ? ['human-items'] : [])
+  }
+})
+
+test('with the pane on the Claude list no band row of the human list is the shown item: a press on the first item\'s title shows it, where with no selection it would close the pane', async () => {
+  reset()
+  const { hooks } = wire()
+  const { $, values, opens, closes } = backlogEnv([made(1), made(2)], [], null, SIX)
+  await endSession(hooks, $)
+  pressKey(await bandAt(hooks, $, 120), 'claude-header')
+  await settle()
+  pressKey(await bandAt(hooks, $, 120), 'title-1')
+  await settle()
+  expect(opens.map(o => o.title)).toEqual(['Claude TODO', 'Items for you'])
+  expect(closes).toEqual([])
+  expect(values.selection).toBe(1)
+})
+
+test('opening the Claude list from a closed pane, and switching to it from an item, leave every human item\'s unread mark as it was; switching back to an item reads that item alone', async () => {
+  reset()
+  const { hooks } = wire()
+  const unread = [made(1, { unread: true }), made(2, { unread: true })]
+  const { $, values } = backlogEnv(unread, [], null, SIX)
+  await endSession(hooks, $)
+  const marks = (): boolean[] => (values.list as { items: { unread: boolean }[] }).items.map(it => it.unread)
+  pressKey(await bandAt(hooks, $, 120), 'claude-header')
+  await settle()
+  expect(marks()).toEqual([true, true])
+  // An item opened from closed reads every item (the pane's open does), and the marks are raised again for the switch to the backlog.
+  pressKey(await bandAt(hooks, $, 120), 'claude-header')
+  await settle()
+  pressKey(await bandAt(hooks, $, 120), 'title-1')
+  await settle()
+  expect(marks()).toEqual([false, false])
+  values.list = { items: [made(1, { unread: true }), made(2, { unread: true })], next: 3 }
+  pressKey(await bandAt(hooks, $, 120), 'claude-header')
+  await settle()
+  expect(marks()).toEqual([true, true])
+  pressKey(await bandAt(hooks, $, 120), 'title-2')
+  await settle()
+  expect(marks()).toEqual([true, false])
+})
+
+test('a write that adds two items to the Claude list redraws the pane on it with them and asks again for two rows more, before the call answers', async () => {
+  reset()
+  const { hooks } = wire()
+  const { $, opens } = backlogEnv([made(1)], [], null, [RUNNING, entry('Next', 'queued')])
+  await endSession(hooks, $)
+  pressKey(await bandAt(hooks, $, 120), 'claude-header')
+  await settle()
+  expect(opens.map(o => o.rows)).toEqual([3])
+  await runTodo(hooks, $, { entries: [RUNNING, entry('Next', 'queued'), entry('Then', 'queued'), entry('Last', 'queued')] })
+  expect(opens).toEqual([
+    { id: 'human-items', title: 'Claude TODO', rows: 3, focus: true },
+    { id: 'human-items', title: 'Claude TODO', rows: 5, focus: true },
+  ])
+  expect(linesOf(await paneTree(hooks, $))).toEqual(['Claude TODO 1 in flight, 3 queued', '◐ Build the pane', '○ Next', '○ Then', '○ Last'])
+})
+
+test('a write that changes an item\'s state and keeps the number of items makes no new open request, and the pane draws the new state', async () => {
+  reset()
+  const { hooks } = wire()
+  const { $, opens, closes } = backlogEnv([made(1)], [], null, [RUNNING, entry('Next', 'queued'), entry('Then', 'queued')])
+  await endSession(hooks, $)
+  pressKey(await bandAt(hooks, $, 120), 'claude-header')
+  await settle()
+  await runTodo(hooks, $, { entries: [RUNNING, entry('Next', 'in_flight'), entry('Then', 'queued')] })
+  await runTodo(hooks, $, { entries: [RUNNING, entry('Renamed', 'in_flight'), entry('Then', 'queued')] })
+  await settle()
+  expect(opens).toHaveLength(1)
+  expect(closes).toEqual([])
+  expect(linesOf(await paneTree(hooks, $))).toEqual(['Claude TODO 2 in flight, 1 queued', '◐ Build the pane', '◐ Renamed', '○ Then'])
+})
+
+test('after an open the pane refuses, the next write with the count that open asked for asks again, and the failure is logged; once an open is taken, a write that keeps the count asks for nothing', async () => {
+  reset()
+  const { hooks } = wire()
+  const { env, $: engine, opens } = backlogEnv([made(1)], [], null, [RUNNING, entry('Next', 'queued')])
+  const logs: string[] = []
+  const $ = { ...engine, ui: { ...engine.ui, log: (text: string) => void logs.push(text) } }
+  await endSession(hooks, $)
+  pressKey(await bandAt(hooks, $, 120), 'claude-header')
+  await settle()
+  expect(opens.map(o => o.rows)).toEqual([3])
+  const four = [RUNNING, entry('A', 'queued'), entry('B', 'queued'), entry('C', 'queued')]
+  const taken = env.ui.open
+  env.ui.open = async () => {
+    throw new Error('open refused')
+  }
+  await runTodo(hooks, $, { entries: four })
+  await settle()
+  expect(opens.map(o => o.rows)).toEqual([3, 5])
+  expect(logs.some(line => line.includes('open refused'))).toBe(true)
+  env.ui.open = taken
+  await runTodo(hooks, $, { entries: four })
+  await settle()
+  expect(opens.map(o => o.rows)).toEqual([3, 5, 5])
+  await runTodo(hooks, $, { entries: four })
+  await settle()
+  expect(opens.map(o => o.rows)).toEqual([3, 5, 5])
+})
+
+test('a write made while the pane\'s last open is still in flight is compared with the rows that open asked for: one that brings the count back to the one before it asks again, so the request ends at the second write\'s rows', async () => {
+  reset()
+  const { hooks } = wire()
+  const { env, $, opens } = backlogEnv([made(1)], [], null, [RUNNING, entry('Next', 'queued')])
+  await endSession(hooks, $)
+  pressKey(await bandAt(hooks, $, 120), 'claude-header')
+  await settle()
+  expect(opens.map(o => o.rows)).toEqual([3])
+  const taken = env.ui.open
+  let release: () => void = () => {}
+  env.ui.open = () => new Promise<{ isPlaced: boolean }>(resolve => (release = () => resolve({ isPlaced: true })))
+  await runTodo(hooks, $, { entries: [RUNNING, entry('A', 'queued'), entry('B', 'queued'), entry('C', 'queued')] })
+  await settle()
+  env.ui.open = taken
+  await runTodo(hooks, $, { entries: [RUNNING, entry('Next', 'queued')] })
+  await settle()
+  release()
+  await settle()
+  expect(opens.map(o => o.rows)).toEqual([3, 5, 3])
+})
+
+test('a write that empties the Claude list closes the pane on it', async () => {
+  reset()
+  const { hooks } = wire()
+  const { $, opens, closes, open } = backlogEnv([made(1)], [], null, SIX)
+  await endSession(hooks, $)
+  pressKey(await bandAt(hooks, $, 120), 'claude-header')
+  await settle()
+  await runTodo(hooks, $, { entries: [] })
+  await settle()
+  expect(opens).toHaveLength(1)
+  expect(closes).toEqual(['human-items'])
+  expect(open).toEqual([])
+})
+
+test('two writes made back to back, the first held up in its follow-up, leave the pane\'s request at the second write\'s rows: each follow-up runs inside its call, in the calls\' order', async () => {
+  reset()
+  const { hooks } = wire()
+  const { env, $, values, opens } = backlogEnv([made(1)], [], null, [RUNNING, entry('Next', 'queued')])
+  await endSession(hooks, $)
+  pressKey(await bandAt(hooks, $, 120), 'claude-header')
+  await settle()
+  // The first call's follow-up reads the selection: hold that read until the second call has been made.
+  let release: () => void = () => {}
+  let held = false
+  const get = env.state.get
+  env.state.get = async ref => {
+    if (ref.key === 'selection' && !held) {
+      held = true
+      await new Promise<void>(resolve => (release = resolve))
+    }
+    return get(ref)
+  }
+  const four = [RUNNING, entry('A', 'queued'), entry('B', 'queued'), entry('C', 'queued')]
+  const six = [...four, entry('D', 'queued'), entry('E', 'queued')]
+  const first = runTodo(hooks, $, { entries: four })
+  const second = runTodo(hooks, $, { entries: six })
+  await settle()
+  // The second call has not started its write: the first is still inside its call.
+  expect(values.todo).toEqual(four)
+  release()
+  await Promise.all([first, second])
+  expect(opens.map(o => o.rows)).toEqual([3, 5, 7])
+  expect(values.todo).toEqual(six)
+})
+
+test('a write to the Claude list while the pane shows a human item, or is shut, asks the pane for nothing; one that empties the list leaves the item\'s pane open', async () => {
+  reset()
+  const { hooks } = wire()
+  const { $, opens, closes, open } = backlogEnv([made(1)], [], null, [RUNNING])
+  await endSession(hooks, $)
+  await runTodo(hooks, $, { entries: SIX })
+  await settle()
+  expect(opens).toEqual([])
+  pressKey(await bandAt(hooks, $, 120), 'title-1')
+  await settle()
+  await runTodo(hooks, $, { entries: [RUNNING, entry('Next', 'queued')] })
+  await runTodo(hooks, $, { entries: [] })
+  await settle()
+  expect(opens.map(o => o.title)).toEqual(['Items for you'])
+  expect(closes).toEqual([])
+  expect(open).toEqual(['human-items'])
+})
+
+test('with the pane on the Claude list, removing a human item, emptying the human list and the end of an undo window each leave the pane open on the Claude list', async () => {
+  reset()
+  const { hooks } = wire()
+  const timers: Timer[] = []
+  const { $, values, clock, opens, closes, open } = backlogEnv([made(1, { detail: '' }), made(2, { detail: '' }), made(3, { detail: '' })], [], null, SIX, timers)
+  await endSession(hooks, $)
+  pressKey(await bandAt(hooks, $, 120), 'claude-header')
+  await settle()
+  pressKey(await bandAt(hooks, $, 120), 'done-1')
+  await settle()
+  await tickAt(timers, clock, 3000)
+  await runTool(hooks, $, { action: 'remove', id: 1 })
+  await settle()
+  await runTool(hooks, $, { action: 'remove', id: 2 })
+  await runTool(hooks, $, { action: 'remove', id: 3 })
+  await settle()
+  expect(opens).toHaveLength(1)
+  expect(closes).toEqual([])
+  expect(open).toEqual(['human-items'])
+  expect(values.selection).toBe('claude-todo')
+  expect(linesOf(await paneTree(hooks, $))[0]).toBe('Claude TODO 1 in flight, 5 queued')
+})
+
+test('with the pane on the Claude list, a tool call that changes no item, a read of the Claude list and a write that restates it leave the pane on the Claude list', async () => {
+  reset()
+  const { hooks } = wire()
+  const { $, values, opens, closes } = backlogEnv([made(1), made(2)], [], null, SIX)
+  await endSession(hooks, $)
+  pressKey(await bandAt(hooks, $, 120), 'claude-header')
+  await settle()
+  // Each call is answered, none refused: a refused call never reaches the pane's follow-up.
+  const answers = [
+    await runTool(hooks, $, { action: 'list' }),
+    await runTool(hooks, $, { action: 'update', id: 1, title: 'Item 1' }),
+    await runTodo(hooks, $, {}),
+    await runTodo(hooks, $, { entries: SIX }),
+  ]
+  expect(answers.map(answer => Object.keys(answer as object))).toEqual([['result'], ['result'], ['result'], ['result']])
+  expect((answers[1] as { result: string }).result).toBe('no change to #1')
+  await settle()
+  expect(opens).toHaveLength(1)
+  expect(closes).toEqual([])
+  expect(values.selection).toBe('claude-todo')
+})
+
+test('a /clear with the pane on the Claude list closes it', async () => {
+  reset()
+  const { hooks } = wire()
+  const { $, closes, open } = backlogEnv([made(1)], [], null, SIX)
+  await endSession(hooks, $)
+  pressKey(await bandAt(hooks, $, 120), 'claude-header')
+  await settle()
+  await (hooks['session.end'] as Handler)($ as never, { reason: 'clear' } as never, next(false) as never)
+  await settle()
+  expect(closes).toEqual(['human-items'])
+  expect(open).toEqual([])
+})
+
+test('a session end of any reason closes the pane while it shows the Claude list, since a resume rebuilds that list from its transcript and the pane\'s rows would no longer match it', async () => {
+  for (const reason of ['resume', 'prompt_input_exit', 'logout', 'other']) {
+    reset()
+    const { hooks } = wire()
+    const { $, closes, open } = backlogEnv([made(1)], [], null, SIX)
+    await endSession(hooks, $)
+    pressKey(await bandAt(hooks, $, 120), 'claude-header')
+    await settle()
+    expect(open, reason).toEqual(['human-items'])
+    await (hooks['session.end'] as Handler)($ as never, { reason } as never, next(false) as never)
+    await settle()
+    expect(closes, reason).toEqual(['human-items'])
+    expect(open, reason).toEqual([])
+  }
+})
+
+test('a session end that is not a /clear leaves a pane on a human item open, as it did', async () => {
+  for (const reason of ['resume', 'prompt_input_exit']) {
+    reset()
+    const { hooks } = wire()
+    const { $, closes, open } = backlogEnv([made(1), made(2)], [], null, SIX)
+    await endSession(hooks, $)
+    pressKey(await bandAt(hooks, $, 120), 'title-1')
+    await settle()
+    await (hooks['session.end'] as Handler)($ as never, { reason } as never, next(false) as never)
+    await settle()
+    expect(closes, reason).toEqual([])
+    expect(open, reason).toEqual(['human-items'])
+  }
+})
+
+test('a refused write of the Claude list\'s selection leaves the pane drawing the stored selection, and the band, drawn again, showing the stored selection\'s item as the shown one', async () => {
+  reset()
+  const { hooks } = wire()
+  const open = ['human-items']
+  const { env, $, values, closes, asked } = backlogEnv([made(1), made(2), made(3)], open, 1, SIX)
+  await endSession(hooks, $)
+  const set = env.state.set
+  env.state.set = (ref, value) => (ref.key === 'selection' ? Promise.reject(new Error('selection write refused')) : set(ref, value))
+  pressKey(await bandAt(hooks, $, 120), 'claude-header')
+  await settle()
+  expect(values.selection).toBe(1)
+  expect(asked).toContain('ui.render')
+  expect(flat(await paneTree(hooks, $))).toContain(ITEM_ONE)
+  // The record the press set is dropped: the band's first item is the shown one, so a press on its title closes the pane instead of switching to it.
+  pressKey(await bandAt(hooks, $, 120), 'title-1')
+  await settle()
+  expect(closes).toEqual(['human-items'])
+})
+
+test('opening the backlog from a closed pane leaves a band drawn before the pane next draws without a dock beside it; the backlog\'s draw as a dock records that placement and asks for the band once', async () => {
+  reset()
+  const { hooks } = wire()
+  const open: string[] = []
+  const { $, asked } = backlogEnv([made(1), made(2)], open, null, [RUNNING])
+  await dockedPane(hooks, $, open, asked)
+  // The mod closes the docked pane by a press on the item it shows, and opens the backlog from closed: the surface may seat the pane anew.
+  pressKey(await bandAt(hooks, $, 52), 'title-1')
+  await settle()
+  expect(open).toEqual([])
+  pressKey(await bandAt(hooks, $, 120), 'claude-header')
+  await settle()
+  expect(open).toEqual(['human-items'])
+  expect(await columnDrawn(hooks, $)).toBe(false)
+  asked.length = 0
+  await paneAt(hooks, $, 'dock')
+  expect(asked).toEqual(['ui.render'])
+  expect(await columnDrawn(hooks, $)).toBe(true)
+  await paneAt(hooks, $, 'dock')
+  expect(asked).toEqual(['ui.render'])
+})
+
+test('with the pane docked at a band of 52, switching it from a human item to the backlog and from the backlog to a human item before it draws again each leave the band showing both lists, and ask for no redraw', async () => {
+  reset()
+  const { hooks } = wire()
+  const open: string[] = []
+  const { $, opens, asked } = backlogEnv([made(1), made(2)], open, null, [RUNNING])
+  await dockedPane(hooks, $, open, asked)
+  asked.length = 0
+  const before = opens.length
+  pressKey(await bandAt(hooks, $, 52), 'claude-header')
+  await settle()
+  expect(opens.slice(before).map(o => o.title)).toEqual(['Claude TODO'])
+  expect(await columnDrawn(hooks, $)).toBe(true)
+  pressKey(await bandAt(hooks, $, 52), 'title-2')
+  await settle()
+  expect(opens.slice(before).map(o => o.title)).toEqual(['Claude TODO', 'Items for you'])
+  expect(await columnDrawn(hooks, $)).toBe(true)
+  pressKey(await bandAt(hooks, $, 56), 'claude-row-0')
+  await settle()
+  expect(opens.slice(before).map(o => o.title)).toEqual(['Claude TODO', 'Items for you', 'Claude TODO'])
+  expect(await columnDrawn(hooks, $)).toBe(true)
+  expect(asked).toEqual([])
+})
+
+test('the backlog\'s draw reported as a dock records that placement when the pane was switched to it from an item drawn inline: a band drawn after it shows both lists, and that draw asks for the band once', async () => {
+  reset()
+  const { hooks } = wire()
+  const open: string[] = []
+  const { $, asked } = backlogEnv([made(1), made(2)], open, null, [RUNNING])
+  await freshDock(hooks, $, open, asked)
+  pressKey(await bandAt(hooks, $, 80), 'title-1')
+  await settle()
+  await paneAt(hooks, $, 'inline')
+  pressKey(await bandAt(hooks, $, 120), 'claude-header')
+  await settle()
+  expect(await columnDrawn(hooks, $)).toBe(false)
+  expect(asked).toEqual([])
+  await paneAt(hooks, $, 'dock')
+  expect(asked).toEqual(['ui.render'])
+  expect(await columnDrawn(hooks, $)).toBe(true)
+  await paneAt(hooks, $, 'dock')
+  expect(asked).toEqual(['ui.render'])
 })

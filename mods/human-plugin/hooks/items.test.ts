@@ -414,6 +414,14 @@ test('the pane\'s item is the selected one, with none selected the first; a sele
   expect(selectedItem([], 1)).toBe(undefined)
 })
 
+test('the Claude list\'s view names no human item, whatever the list holds, while no selection still names the first', () => {
+  let store = EMPTY
+  for (const title of ['a', 'b', 'c']) store = added(store, title).store
+  expect(selectedItem(store.items, 'claude-todo')).toBe(undefined)
+  expect(selectedItem([], 'claude-todo')).toBe(undefined)
+  expect(selectedItem(store.items, null)?.id).toBe(1)
+})
+
 test('an added item is not a reply', () => {
   expect(added(EMPTY, 'Pick a db').store.items[0]?.replied).toBe(false)
 })
