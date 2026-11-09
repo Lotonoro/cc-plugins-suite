@@ -1,5 +1,5 @@
 import { expect, test } from 'claude-code/testing'
-import { EMPTY, act, carryNext, clearAll, listText, mergeRestored, normalizeItem, normalizeStore, parseInput, selectedItem, successorOf, type Ctx, type ToolInput } from './items'
+import { EMPTY, act, carryNext, clearAll, displayColumns, listText, mergeRestored, normalizeItem, normalizeStore, parseInput, selectedItem, successorOf, type Ctx, type ToolInput } from './items'
 import { expire, press, reply, turnsOf } from './done'
 import type { Item, Store } from '../types'
 
@@ -488,6 +488,16 @@ test('a done label is capped at 24 display columns: 24 ASCII is accepted, 25 ref
   expect(parseInput({ action: 'add', title: 'Pick', done: 'a'.repeat(25) })).toEqual({ ok: false, reason })
   expect(parseInput({ action: 'update', id: 1, done: '中'.repeat(12) })).toMatchObject({ ok: true, value: { doneLabel: '中'.repeat(12) } })
   expect(parseInput({ action: 'update', id: 1, done: '中'.repeat(13) })).toEqual({ ok: false, reason })
+})
+
+test('the display-column measure the label limit uses is exported: a wide character counts two columns, any other one, a surrogate pair as one character', () => {
+  expect(displayColumns('')).toBe(0)
+  expect(displayColumns('abc')).toBe(3)
+  expect(displayColumns('中文')).toBe(4)
+  expect(displayColumns('a中b')).toBe(4)
+  expect(displayColumns('😀')).toBe(2)
+  expect(displayColumns('✓ ↶ […]')).toBe(7)
+  expect(displayColumns('中'.repeat(12))).toBe(displayColumns('x'.repeat(24)))
 })
 
 test('an update with done: \'\' clears the label; on a plain to-do with none it changes nothing, and an add refuses it', () => {

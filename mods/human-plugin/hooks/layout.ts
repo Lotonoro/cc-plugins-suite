@@ -1,4 +1,5 @@
 import type { Item, TodoItem } from '../types'
+import { displayColumns } from './items'
 import { inDisplayOrder } from './todo'
 
 export type BandRow = { kind: 'item'; item: Item } | { kind: 'more'; blocking: number; more: number; first: Item }
@@ -20,17 +21,20 @@ const summaryOf = (folded: readonly Item[]): BandRow => {
 // The band's rows within `maxRows` lines: the blocking items first, then the rest, each group in id order, each row counted by `lines`.
 // When they do not all fit, the last row is the summary of what is folded: the blocking items (`blocking`) apart from the rest (`more`),
 // and the first folded item (`first`), which the summary opens. That row is held back from the items and counted with them, so the rows
-// never exceed `maxRows` lines unless the summary alone is taller.
+// never exceed `maxRows` lines: when not even the summary fits, no row draws. Each row is counted once, and each summary tried once.
 export const bandRows = (items: readonly Item[], maxRows: number, lines: (row: BandRow) => number = oneLine): BandRow[] => {
   const sorted = [...items].sort(bandOrder)
   const all = sorted.map((item): BandRow => ({ kind: 'item', item }))
-  if (rowsHeight(all, lines) <= maxRows) return all
+  // The lines of the first k rows, for each k.
+  const above = [0]
+  for (const row of all) above.push((above[above.length - 1] ?? 0) + lines(row))
+  if ((above[all.length] ?? 0) <= maxRows) return all
   if (maxRows <= 0) return []
   for (let shown = sorted.length - 1; shown >= 0; shown--) {
     const summary = summaryOf(sorted.slice(shown))
-    if (rowsHeight(all.slice(0, shown), lines) + lines(summary) <= maxRows) return [...all.slice(0, shown), summary]
+    if ((above[shown] ?? 0) + lines(summary) <= maxRows) return [...all.slice(0, shown), summary]
   }
-  return [summaryOf(sorted)]
+  return []
 }
 
 const isInFlight = (item: TodoItem): boolean => item.state === 'in_flight'
@@ -89,3 +93,137 @@ export const claudeRows = (todo: readonly TodoItem[], height: number): ClaudeRow
   if (queued.length <= room) return [...rows, ...queued.map((item): ClaudeRow => ({ kind: 'item', item }))]
   return [...rows, ...queued.slice(0, room - 1).map((item): ClaudeRow => ({ kind: 'item', item })), { kind: 'queued', count: queued.length - (room - 1) }]
 }
+
+// One line of text wrapped into rows of `width` columns, as the surface wraps a Text: word by word at its spaces, a word wider than a row broken across
+// rows, and the spaces kept where they fall. A full row sends the space after it to the next row, and a trailing space after a word that exactly fills a
+// row takes a row of its own. A word that breaks starts on the row it follows, unless starting on the next row breaks it fewer times: the word is placed
+// before the text after it is looked at.
+const wrapLine = (line: string, width: number): string[] => {
+  const rows: string[] = []
+  let row = ''
+  let used = 0
+  const newRow = (): void => {
+    rows.push(row)
+    row = ''
+    used = 0
+  }
+  line.split(' ').forEach((word, k) => {
+    if (k > 0) {
+      if (used >= width) newRow()
+      row += ' '
+      used++
+    }
+    const columns = displayColumns(word)
+    if (columns > width) {
+      // The breaks in the word from here (its first row has `width - used` columns) against from the start of the next row.
+      if (Math.floor((columns - 1) / width) < 1 + Math.floor((columns - (width - used) - 1) / width)) newRow()
+      const chars = [...word]
+      chars.forEach((char, c) => {
+        const w = displayColumns(char)
+        if (used + w > width && used > 0) newRow()
+        row += char
+        used += w
+        if (used === width && c < chars.length - 1) newRow()
+      })
+      return
+    }
+    if (used + columns > width && used > 0 && columns > 0) newRow()
+    row += word
+    used += columns
+  })
+  return [...rows, row]
+}
+
+// A text's rows within `width` columns (at least one), a line break starting a row of its own. A wide character is never split, so a row can be a
+// column short of the width, and a character wider than the width is a row alone.
+export const wrapText = (text: string, width: number): string[] => text.split(/\r?\n/).flatMap(line => wrapLine(line, Math.max(1, width)))
+
+// The texts a band row is drawn from, as ui.ts's builder makes them, for the row layout to measure: the unread mark and the id before the title
+// (`prefix`), the title, and the row's control in each state it reaches. `open` is the open control, empty for a row that draws none (a decision's
+// answers are in the pane); `said` is what the pressed control says before its undo button, a text for each answer it can show; `sent` is the control
+// once the press is sent.
+export type RowTexts = { prefix: string; title: string; open: string; said: readonly string[]; undo: string; sent: string }
+
+// How a row is laid out in one of its states. `place`: its control on its title's line (`beside`), or on lines of its own under the title,
+// indented to the title's start (`below`). `title`: the width of the box the title is set in, the room it wraps in, when it wraps there or is
+// wider than it: the room the id and the control leave it beside a control, the line past the id beside none or under it; null for a title that
+// fits its room on one line, the button itself. `said`: the width of the box a pressed control's words that wrap under the title are set in,
+// the room its undo button leaves them; null for words drawn bare. `widths`: the columns each line the row draws takes.
+export type RowState = { place: 'beside' | 'below'; title: number | null; said: number | null; widths: number[] }
+
+// A row's states: open; pressed, one for each text the pressed control can say, in the order of `said`; and sent.
+export type RowLayout = { open: RowState; pressed: RowState[]; sent: RowState }
+
+// The columns a title keeps beside the id and the control before the control moves below it.
+const TITLE_MIN = 10
+
+// The columns a control takes on its title's line, with the space before it; none for no control.
+const besideColumns = (control: string): number => (control === '' ? 0 : 1 + displayColumns(control))
+
+// A human row laid out in `width` columns, its list's layout width. Its control sits on its title's line when the title keeps ten columns there beside
+// the id and the row's open control, the space before the control counted, whatever the title's length; otherwise it goes under the title, indented to
+// the title's start, and a control wider than the line wraps there. The open control alone decides, in every list and for every state of the row, so a
+// press, an undo or a window's end moves the control to no other line; the one exception is a state whose control would leave the title no column on
+// its first line, as a decision's pressed option label can be as long as it likes, which is drawn under the title. In a list of 64 or more a bounded
+// open control always leaves the title ten, so a row that fits its line keeps its control beside its title as it always did. A title that wraps in its
+// room, or is wider than it, is set in a box of that room, so the surface wraps it where this count does and the control keeps the list's edge, and
+// the words of a pressed control that wrap under the title are set in the room its undo button leaves them. Every title, label and text wraps word
+// by word in what its line has left.
+export const rowLayout = (row: RowTexts, width: number): RowLayout => {
+  const indent = displayColumns(row.prefix)
+  const line = Math.max(1, width - indent)
+  const roomBeside = (control: string): number => width - indent - besideColumns(control)
+  const isBeside = roomBeside(row.open) >= TITLE_MIN
+
+  // The title wrapped in `wide` columns: its rows, and the width of the box it is set in, null when it fits there on one line.
+  const titleIn = (wide: number): { rows: string[]; box: number | null } => {
+    const rows = wrapText(row.title, wide)
+    return { rows, box: rows.length > 1 || displayColumns(rows[0] ?? '') > wide ? wide : null }
+  }
+  const besideState = (control: string): RowState => {
+    const taken = besideColumns(control)
+    const room = Math.max(1, roomBeside(control))
+    const {
+      rows: [first = '', ...rest],
+      box,
+    } = titleIn(room)
+    return {
+      place: 'beside',
+      title: box,
+      said: null,
+      widths: [indent + (box !== null && taken > 0 ? room : displayColumns(first)) + taken, ...rest.map(text => indent + displayColumns(text))],
+    }
+  }
+  const belowState = (words: string, undo: string): RowState => {
+    const { rows, box } = titleIn(line)
+    const title = rows.map(text => indent + displayColumns(text))
+    if (words === '') return { place: 'below', title: box, said: null, widths: title }
+    const room = Math.max(1, line - displayColumns(undo))
+    const [first = '', ...rest] = wrapText(words, room)
+    const boxed = rest.length > 0 && undo !== ''
+    return {
+      place: 'below',
+      title: box,
+      said: boxed ? room : null,
+      widths: [...title, indent + (boxed ? room : displayColumns(first)) + displayColumns(undo), ...rest.map(text => indent + displayColumns(text))],
+    }
+  }
+  // `control`: the text on the title's line; `words` and `undo`: the text under the title and the undo button beside its first line.
+  const stateFor = (control: string, words: string, undo: string): RowState => (isBeside && roomBeside(control) >= 1 ? besideState(control) : belowState(words, undo))
+
+  return {
+    open: stateFor(row.open, row.open, ''),
+    pressed: row.said.map(said => stateFor(`${said}${row.undo}`, said, row.undo)),
+    sent: stateFor(row.sent, row.sent, ''),
+  }
+}
+
+// The lines a row takes in a list of `width` columns: its tallest state's, so a press, an undo or a window's end never changes which rows the band folds.
+export const rowLines = (row: RowTexts, width: number): number => {
+  const { open, pressed, sent } = rowLayout(row, width)
+  return Math.max(...[open, ...pressed, sent].map(state => state.widths.length))
+}
+
+// The lines the header takes in a list of `width` columns: one at least, more when the count, which wraps word by word in the columns the chip leaves,
+// does not fit them. The chip never shrinks.
+export const headerLines = (chip: string, count: string, width: number): number => wrapText(count, width - displayColumns(chip)).length

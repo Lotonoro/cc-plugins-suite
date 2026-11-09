@@ -1,7 +1,8 @@
 import type { On, PromptComposeInput, SessionAppendInput, UiPane } from 'claude-code'
 import { expect, mock, test, type Engine } from 'claude-code/testing'
 import { STEERING } from './steering'
-import { TOOL } from './items'
+import { TOOL, displayColumns } from './items'
+import { wrapText } from './layout'
 import { TODO_TOOL } from './todo'
 import { correctionText } from './restatement'
 
@@ -825,4 +826,173 @@ test('the Claude column drawn alone, with no human items, keeps its whole box: 4
     expect((tree as Drawn).children?.[0]?.props, `${columns}`).toMatchObject({ width: claude })
     expect(JSON.stringify(tree), `${columns}`).not.toContain('padding')
   }
+})
+
+// The band's rows as the terminal's element table gives them: nodes of `{ type, props, children }`, a Text's children its strings.
+type El = { type?: string; props?: { key?: string; width?: number; flexShrink?: number; paddingLeft?: number; paddingRight?: number; flexDirection?: string; label?: string }; children?: (El | string)[] }
+const elementsOf = (node: El | string | undefined, type: string): El[] =>
+  node === undefined || typeof node === 'string' ? [] : [...(node.type === type ? [node] : []), ...(node.children ?? []).flatMap(child => elementsOf(child, type))]
+// What a subtree shows: its text and its buttons' labels, in drawing order.
+const shownOf = (node: El | string | undefined): string =>
+  node === undefined ? '' : typeof node === 'string' ? node : node.type === 'Button' ? String(node.props?.label) : (node.children ?? []).map(shownOf).join('')
+const rowElement = (tree: unknown, id: number): El | undefined => elementsOf(tree as El, 'Box').find(box => box.props?.key === `item-${id}`)
+// A row's cells: its title's line (the row itself, or its first cell when the control sits under the title) and, under the title, the control's cell.
+const cellsOf = (row: El): { line: (El | string)[]; under: El | undefined } =>
+  row.props?.flexDirection === 'column' ? { line: (row.children?.[0] as El).children ?? [], under: row.children?.[1] as El } : { line: row.children ?? [], under: undefined }
+
+// A row the sweep checks: its id, its title as drawn, its open control, and the control as it reads in the state the row is in (none for a decision still
+// open, which draws no control in the band).
+type SweepRow = { id: number; title: string; open: string; control: string }
+
+// Each row of a band drawn through the terminal's table at `layout` columns of room: the title whole and set in a box of the room it wraps in when it
+// wraps there or is wider than it (the button itself otherwise), the control whole on the line the open control's room gives it (beside the title while the
+// title keeps ten columns there, and under it otherwise; a state whose own control would leave the title no column goes under it), a pressed control's words
+// under the title in the box the undo button leaves them, and the row's pieces within the list.
+const checkSweepRows = (tree: unknown, layout: number, rows: SweepRow[], where: string): void => {
+  for (const { id, title, open, control } of rows) {
+    const name = `${where}, #${id}`
+    const row = rowElement(tree, id)
+    expect(row, name).toBeDefined()
+    const { line, under } = cellsOf(row as El)
+    const [prefix, titleCell, ...rest] = line
+    const prefixColumns = displayColumns(shownOf(prefix))
+    expect(prefixColumns, name).toBe(String(id).length + 4)
+    const room = (text: string): number => layout - prefixColumns - (text === '' ? 0 : 1 + displayColumns(text))
+    // The title is whole.
+    expect(shownOf(titleCell), name).toBe(title)
+    if (control === '') {
+      expect(rest, name).toEqual([])
+      expect(under, name).toBeUndefined()
+    } else {
+      const wantBeside = room(open) >= 10 && room(control) >= 1
+      expect(under === undefined, name).toBe(wantBeside)
+      // The control is whole: after its space at the end of the title's line, or alone under the title, indented to the title's start.
+      if (wantBeside) expect(shownOf(rest[0]), name).toBe(` ${control}`)
+      else {
+        expect(rest, name).toEqual([])
+        expect(under?.props?.paddingLeft, name).toBe(prefixColumns)
+        expect(shownOf(under), name).toBe(control)
+        const words = control.replace(/\[↶ \d+s\]$/, '')
+        if (words !== control) {
+          // A pressed control's words wrap beside the undo button in a box of the room it leaves them, and are bare when they fit.
+          const wide = layout - prefixColumns - displayColumns('[↶ 3s]')
+          const wrapped = wrapText(words, wide).length > 1
+          const wordsCell = ((under?.children?.[0] as El).children?.[0] ?? undefined) as El | undefined
+          if (wrapped) expect(wordsCell?.props, name).toMatchObject({ width: wide, flexShrink: 0 })
+          else expect(wordsCell?.type, name).toBe('Text')
+        }
+      }
+    }
+    // The title wraps in the room beside its control, or in the line under it or with none: a box of that room when it wraps there or is wider than it.
+    const beside = control !== '' && under === undefined
+    const titleRoom = beside ? room(control) : layout - prefixColumns
+    const [first = '', ...more] = wrapText(title, titleRoom)
+    if (more.length > 0 || displayColumns(first) > titleRoom) expect(titleCell, name).toMatchObject({ type: 'Box', props: { width: titleRoom, flexShrink: 0 } })
+    else expect(titleCell, name).toMatchObject({ type: 'Button' })
+  }
+}
+
+// An id's four kinds of row as the sweep adds them, the decision first (the pane shows the first item), then a plain to-do, a to-do labelled at the maximum
+// width and a yes/no, each with a title that wraps in any list.
+const SWEEP_TITLE = 'Review the deliberately long wrapping title of the first plain to-do item here and then some more words so that it wraps'
+const SWEEP_LABEL = 'Go with sqlite for cache'
+const SWEEP_OPTION = 'Use sqlite for the cache'
+
+// Ids up to `to` taken by items that are then removed, so the next add gets id `to`.
+const skipIds = async ($: Engine, from: number, to: number): Promise<void> => {
+  for (let id = from; id < to; id++) await $.tool.call({ tool: TOOL, action: 'add', title: 'skipped' })
+  for (let id = from; id < to; id++) await $.tool.call({ tool: TOOL, action: 'remove', id })
+}
+
+test('the band drawn through the terminal\'s table, with every kind of control at an id of one to three digits, open, pressed, replied and sent, sets each box at the width the width rule gives and each row as the layout places it, in lists of 20 to 155 columns', async ($, on) => {
+  on('prompt.submit', (_$, e) => ({ text: e.text }))
+  const clock = mock.clock(on)
+  mock.store(on)
+  on('ui.panes', () => ({ value: [] }))
+  await $.tool.call({ tool: TODO_TOOL, entries: [{ title: 'Build it', state: 'in_flight' }, { title: 'Test it', state: 'queued' }] })
+  const tall = { ...BAND_PROPS, maxRows: 400, scroll: { offset: 0, bodyRows: 400 } }
+  const band = await $.ui.mount({ plugin: 'human-plugin', surface: 'terminal', component: 'AbovePrompt', props: tall })
+  const pane = await $.ui.mount({ plugin: 'human-plugin', surface: 'terminal', component: 'Pane', requestId: 'human-items', props: { title: 'Items for you', isFocused: true, bodyColumns: 80, placement: 'inline', scroll: { offset: 0, bodyRows: 20 }, view: {} } })
+  const widths = [20, 21, 22, 23, 24, 31, 40, 52, 56, 63, 64, 70, 95, 96, 97, 105, 120, 155]
+  let next = 1
+  for (const first of [1, 10, 100]) {
+    await skipIds($, next, first)
+    const [decision, plain, labelled, yesno] = [first, first + 1, first + 2, first + 3] as const
+    await $.tool.call({ tool: TOOL, action: 'add', title: SWEEP_TITLE, options: [{ label: SWEEP_OPTION, recommended: true }, { label: 'Use postgres' }] })
+    await $.tool.call({ tool: TOOL, action: 'add', title: SWEEP_TITLE })
+    await $.tool.call({ tool: TOOL, action: 'add', title: SWEEP_TITLE, done: SWEEP_LABEL })
+    await $.tool.call({ tool: TOOL, action: 'add', title: SWEEP_TITLE, yesno: true })
+    next = first + 4
+    const rows = (controls: [string, string, string, string]): SweepRow[] =>
+      [
+        { id: decision, title: `${SWEEP_TITLE} […]`, open: '', control: controls[0] },
+        { id: plain, title: SWEEP_TITLE, open: '[✓]', control: controls[1] },
+        { id: labelled, title: SWEEP_TITLE, open: `[✓ ${SWEEP_LABEL}]`, control: controls[2] },
+        { id: yesno, title: SWEEP_TITLE, open: '[✓] [✗]', control: controls[3] },
+      ]
+    const check = async (phase: string, controls: [string, string, string, string]): Promise<void> => {
+      for (const columns of widths) {
+        await band.redraw({ ...tall, bodyColumns: columns })
+        const tree = await band.drawn()
+        const where = `${phase}, ids from ${first}, band of ${columns}`
+        // Two lists from 96 columns, each box at the width rule's, the human one padded on its right and the Claude one on its left; below that the human
+        // list alone, with no width and no padding of its own.
+        const column = Math.max(32, Math.floor(columns / 3))
+        const twoLists = columns >= 96
+        if (twoLists) {
+          const { human, column: claude } = boxes(tree)
+          expect((tree as Drawn).props?.width, where).toBe(columns)
+          expect(human?.props, where).toMatchObject({ width: columns - column, paddingRight: 1 })
+          expect(claude?.props, where).toMatchObject({ width: column, paddingLeft: 1 })
+        } else {
+          expect((tree as Drawn).props?.width, where).toBeUndefined()
+          expect((tree as Drawn).props?.paddingRight, where).toBeUndefined()
+        }
+        checkSweepRows(tree, twoLists ? columns - column - 1 : columns, rows(controls), where)
+      }
+    }
+    const UNDO3 = '[↶ 3s]'
+    await check('open', ['', '[✓]', `[✓ ${SWEEP_LABEL}]`, '[✓] [✗]'])
+    // The three band controls pressed, and the decision's option pressed in the pane: each says its answer in full beside its undo button.
+    await band.press({ key: `done-${plain}` })
+    await band.press({ key: `done-${labelled}` })
+    await band.press({ key: `yes-${yesno}` })
+    await pane.press({ key: `answer-${decision}-0` })
+    await check('pressed', [`✓ ${SWEEP_OPTION} ${UNDO3}`, `✓ ${UNDO3}`, `✓ ${SWEEP_LABEL} ${UNDO3}`, `✓ yes ${UNDO3}`])
+    // The decision's press undone and replaced by a reply typed in the pane, which a pressed control names as `✓ replied`.
+    await band.press({ key: `done-${decision}` })
+    await pane.input({ key: `reply-${decision}`, text: 'Not yet' })
+    await check('replied', [`✓ replied ${UNDO3}`, `✓ ${UNDO3}`, `✓ ${SWEEP_LABEL} ${UNDO3}`, `✓ yes ${UNDO3}`])
+    // The windows end: every press is sent.
+    await clock.advance(3000)
+    await check('sent', ['✓ sent', '✓ sent', '✓ sent', '✓ sent'])
+    for (let id = first; id < next; id++) await $.tool.call({ tool: TOOL, action: 'remove', id })
+  }
+})
+
+test('a band mounted at 105 columns lays its rows out in the 69 columns its list of 70 keeps: a title that wraps beside its control is a box of the room the id and the control leave, and a press narrows it', async ($, on) => {
+  on('prompt.submit', (_$, e) => ({ text: e.text }))
+  mock.clock(on)
+  mock.store(on)
+  on('ui.panes', () => ({ value: [] }))
+  await $.tool.call({ tool: TOOL, action: 'add', term: 'Mr Longest Term Ever', title: 'Review the deliberately long wrapping title of the first plain to-do item here' })
+  await $.tool.call({ tool: TOOL, action: 'add', title: 'Second to-do with a labelled control and a wrapping title too', done: 'Approve the migration ok' })
+  await $.tool.call({ tool: TOOL, action: 'add', title: 'Is the third item a yes or no question that wraps', yesno: true })
+  await $.tool.call({ tool: TOOL, action: 'add', title: 'Pick a decision with options that wraps as well', options: [{ label: 'Alpha', recommended: true }, { label: 'Beta' }] })
+  await $.tool.call({ tool: TODO_TOOL, entries: [{ title: 'Writing the probe step', state: 'in_flight' }, { title: 'Second step in flight', state: 'in_flight' }, { title: 'Queued one', state: 'queued' }] })
+  const band = await $.ui.mount({ plugin: 'human-plugin', surface: 'terminal', component: 'AbovePrompt', props: { ...BAND_PROPS, bodyColumns: 105 } })
+  const titleBox = async (id: number): Promise<El | string | undefined> => cellsOf(rowElement(await band.drawn(), id) as El).line[1]
+  const tree = await band.drawn()
+  expect(boxes(tree).human?.props).toMatchObject({ width: 70, paddingRight: 1 })
+  expect(boxes(tree).column?.props).toMatchObject({ width: 35, paddingLeft: 1 })
+  // #1: the unread mark and the id take 5 and `[✓]` with its space 4, leaving the title 60 of the 69. #2: `[✓ Approve the migration ok]` and its space take 29,
+  // leaving 35. #3 and #4 fit their lines: the buttons themselves.
+  expect(await titleBox(1)).toMatchObject({ type: 'Box', props: { width: 60, flexShrink: 0 } })
+  expect(await titleBox(2)).toMatchObject({ type: 'Box', props: { width: 35, flexShrink: 0 } })
+  expect(await titleBox(3)).toMatchObject({ type: 'Button', props: { key: 'title-3' } })
+  expect(await titleBox(4)).toMatchObject({ type: 'Button', props: { key: 'title-4' } })
+  // Pressed, #2's control names its label beside the undo button (`✓ Approve the migration ok [↶ 3s]` and its space take 34), leaving its title 30.
+  await band.press({ key: 'done-2' })
+  expect(await titleBox(2)).toMatchObject({ type: 'Box', props: { width: 30, flexShrink: 0 } })
+  expect(shownOf(rowElement(await band.drawn(), 2))).toContain('✓ Approve the migration ok [↶ 3s]')
 })

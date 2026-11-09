@@ -121,7 +121,9 @@ const DONE_MAX = 24
 const WIDE: readonly (readonly [number, number])[] = [
   [0x1100, 0x115f], [0x2e80, 0xa4cf], [0xac00, 0xd7a3], [0xf900, 0xfaff], [0xfe30, 0xfe4f], [0xff00, 0xff60], [0xffe0, 0xffe6], [0x1f300, 0x1faff],
 ]
-const columns = (text: string): number =>
+// The columns a text takes on screen, a wide character counting two: the measure the label and term limits are checked in, and the one the band's
+// layout (layout.ts) wraps by.
+export const displayColumns = (text: string): number =>
   [...text].reduce((sum, ch) => {
     const cp = ch.codePointAt(0) ?? 0
     return sum + (WIDE.some(([lo, hi]) => cp >= lo && cp <= hi) ? 2 : 1)
@@ -134,7 +136,7 @@ const TERM_MAX = 20
 // `refusal` as the reason, when it is over `max` columns.
 const lineOf = (raw: string, max: number, refusal: string): { ok: true; value: string } | { ok: false; reason: string } => {
   const line = raw.replace(/\s+/g, ' ').trim()
-  return columns(line) > max ? { ok: false, reason: refusal } : { ok: true, value: line }
+  return displayColumns(line) > max ? { ok: false, reason: refusal } : { ok: true, value: line }
 }
 
 // The label a plain to-do's ✓ carries: what a press means, one line (whitespace is drawn as a space). Undefined when none was given, and

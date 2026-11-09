@@ -2,8 +2,25 @@ import type { ButtonProps, BoxProps, ElementConstructor, InputProps, MarkdownPro
 import type { Item, Store, TodoItem, Turn } from '../types'
 import { labelOf, oneLine, orderedOptions, replyText, turnsOf } from './done'
 import { briefParts } from './fences'
-import { outcomeOf, parseInput, selectedItem, type ToolInput } from './items'
-import { bandRows, bandWidths, claudeRows, columnHeight, humanFoldRows, rowsHeight, type BandWidths, type ClaudeRow, type ListWidth } from './layout'
+import { displayColumns, outcomeOf, parseInput, selectedItem, type ToolInput } from './items'
+import {
+  bandRows,
+  bandWidths,
+  claudeRows,
+  columnHeight,
+  headerLines,
+  humanFoldRows,
+  rowLayout,
+  rowLines,
+  rowsHeight,
+  wrapText,
+  type BandRow,
+  type BandWidths,
+  type ClaudeRow,
+  type ListWidth,
+  type RowState,
+  type RowTexts,
+} from './layout'
 import { tablesAsLists } from './tables'
 import { GLYPH, HEADING, bandCountsText } from './todo'
 
@@ -33,8 +50,9 @@ export type Handlers = {
 }
 
 // What the band draws with: the rows the surface has, the time now, and the undo window's length. `selected`: the item the pane
-// shows, if any. `claude`: the Claude list and the columns the band is laid out in, which the Claude column is drawn from; without it the
-// band is the human list alone.
+// shows, if any. `claude`: the Claude list and the columns the band is laid out in, which the Claude column is drawn from. It also gives the human
+// list its width, which its rows are laid out in; without it the band is the human list alone and has no width to lay its rows out in: they are drawn
+// on one line each, as they always were, and counted so.
 export type View = { maxRows: number; now: number; windowMs: number; selected?: number | null; claude?: { items: readonly TodoItem[]; columns: number } }
 
 const CHECK = { color: 'green' }
@@ -61,79 +79,138 @@ const answers = (t: Table, h: Handlers, item: Item): RenderElement =>
     ),
   })
 
+// The texts a band row is drawn from. The drawing (doneControl, itemRow) and the row layout (rowTexts, layout.ts) take them from here, so a
+// label that changes moves the drawing and the width the layout measures together.
+const SENT = '✓ sent'
+const YES = '[✓]'
+const NO = '[✗]'
+const undoLabel = (seconds: number): string => `[↶ ${seconds}s]`
+
+// The unread mark and the id before a title. The id and the control keep their natural width: in a narrow row only the title wraps, in the room
+// they leave it, so `#11` never breaks into a column.
+const prefixOf = (item: Item): string => `${item.unread ? '• ' : '  '}#${item.id} `
+
+// The open control's text: none for a decision, whose answers are in the pane alone; a labelled to-do's press sends its label as the answer,
+// what the press means as the agent reads it (done.ts).
+const openText = (item: Item): string => (item.options.length > 0 ? '' : item.yesno ? `${YES} ${NO}` : item.doneLabel === null ? '[✓]' : `[✓ ${item.doneLabel}]`)
+
+// The mark a pressed control opens with. A reply is a check whatever its text, even a yes/no's `no`.
+const markOf = (item: Item): string => (!item.replied && item.yesno && item.answer === 'no' ? '✗' : '✓')
+
+// What a pressed control says before its undo button: its mark, then the answer's text. The band names no reply text: a reply can be long, so the
+// pane draws it whole (`inPane`).
+const saying = (item: Item, inPane: boolean): string =>
+  `${markOf(item)} ${item.replied ? (inPane ? `replied: ${item.answer ?? ''} ` : 'replied ') : item.answer === null ? '' : `${item.answer} `}`
+
+// The answers a press can carry for the item's kind: a decision's options, a yes/no's two, a labelled to-do's label, or none for a plain to-do.
+const answersOf = (item: Item): (string | null)[] => (item.options.length > 0 ? item.options.map(option => option.label) : item.yesno ? ['yes', 'no'] : [item.doneLabel])
+
+// What a pressed control can say in the band, one text for each answer its kind carries, the reply's, and the item's own now (an answer its kind no
+// longer offers, when the item changed under a running window).
+const sayings = (item: Item): string[] => [
+  ...new Set([...answersOf(item).map(answer => saying({ ...item, answer, replied: false }, false)), saying({ ...item, replied: true }, false), saying(item, false)]),
+]
+
+// A decision with options is marked `[…]`: its answers are in the pane alone. A row with its buttons on the line (a to-do's `[✓]`, a yes/no's marks)
+// needs no marker, and its title still opens the pane.
+const titleLabel = (item: Item): string => (item.options.length > 0 ? `${item.title} […]` : item.title)
+
+// The texts of an item's band row for the row layout, built from the drawing's own: the undo button at its widest, the first second of a window of
+// `windowMs`, when it counts the whole of it.
+export const rowTexts = (item: Item, windowMs: number): RowTexts => ({
+  prefix: prefixOf(item),
+  title: titleLabel(item),
+  open: openText(item),
+  said: sayings(item),
+  undo: undoLabel(Math.ceil(windowMs / 1000)),
+  sent: SENT,
+})
+
 // A yes/no question's two marks, yes then no, each drawn as the done check is.
 const marks = (t: Table, h: Handlers, item: Item): RenderElement =>
   t.Box({
     children: [
-      t.Button({ key: `yes-${item.id}`, plain: true, label: '[✓]', onPress: () => h.done(item.id, 'yes') }),
+      t.Button({ key: `yes-${item.id}`, plain: true, label: YES, onPress: () => h.done(item.id, 'yes') }),
       t.Text({ children: [' '] }),
-      t.Button({ key: `no-${item.id}`, plain: true, label: '[✗]', onPress: () => h.done(item.id, 'no') }),
+      t.Button({ key: `no-${item.id}`, plain: true, label: NO, onPress: () => h.done(item.id, 'no') }),
     ],
   })
+
+// The states of an item's done control: its press sent and awaiting the agent, its undo window running, or neither (open). The drawing (doneControl)
+// and the layout state the row is drawn in (stateOf) both read them from here.
+const isSent = (item: Item): boolean => item.state === 'done-pending'
+const isPressed = (item: Item): item is Item & { pressedAt: number } => item.state === 'done-waiting' && item.pressedAt !== null
 
 // The done control: a press on an open item starts the undo window, and the same control cancels it while it runs. A decision
 // with options has its answers in the pane only: in the band, answering means opening the item. A yes/no question has its yes and
 // no marks in the band too. Null when there is no control.
 // A sent item keeps the button its undo window had, inert, so the window's ending moves no other button in the focus ring. The
 // labels are drawn plain: the terminal would wrap a non-plain label in brackets of its own, as `[ [✓] ]`, in the pane too. The pane's
-// controls sit bare, as the band's do.
-const doneControl = (t: Table, h: Handlers, item: Item, view: View, inPane: boolean): RenderElement | null => {
-  if (item.state === 'done-pending') {
-    return t.Button({ key: `done-${item.id}`, plain: true, dimColor: true, label: '✓ sent', onPress: () => undefined })
-  }
-  if (item.state === 'done-waiting' && item.pressedAt !== null) {
+// controls sit bare, as the band's do. `wrapAt`: the width of the box a pressed control's words are set in when they wrap beside the undo
+// button under the title (rowLayout); null for words drawn bare.
+const doneControl = (t: Table, h: Handlers, item: Item, view: View, inPane: boolean, wrapAt: number | null = null): RenderElement | null => {
+  if (isSent(item)) return t.Button({ key: `done-${item.id}`, plain: true, dimColor: true, label: SENT, onPress: () => undefined })
+  if (isPressed(item)) {
     const left = Math.max(0, Math.ceil((item.pressedAt + view.windowMs - view.now) / 1000))
-    // A reply is a check whatever its text, even a yes or no's `no`. The band names no text: a reply can be long, so the pane draws it whole.
-    const said = item.replied ? (inPane ? `✓ replied: ${item.answer ?? ''} ` : '✓ replied ') : `${item.yesno && item.answer === 'no' ? '✗' : '✓'} ${item.answer === null ? '' : `${item.answer} `}`
+    const words = t.Text({ ...CHECK, bold: true, children: [saying(item, inPane)] })
     return t.Box({
       children: [
-        t.Text({ ...CHECK, bold: true, children: [said] }),
+        wrapAt === null ? words : t.Box({ width: wrapAt, flexShrink: 0, children: [words] }),
         // The undo button keeps its width when a long answer's text wraps beside it.
-        t.Box({ flexShrink: 0, children: [t.Button({ key: `done-${item.id}`, plain: true, label: `[↶ ${left}s]`, onPress: () => h.done(item.id, null) })] }),
+        t.Box({ flexShrink: 0, children: [t.Button({ key: `done-${item.id}`, plain: true, label: undoLabel(left), onPress: () => h.done(item.id, null) })] }),
       ],
     })
   }
   if (item.options.length > 0) return inPane ? answers(t, h, item) : null
   if (item.yesno) return marks(t, h, item)
-  // A labelled to-do's press sends its label as the answer: what the press means, as the agent reads it (done.ts).
-  return t.Button({
-    key: `done-${item.id}`,
-    plain: true,
-    label: item.doneLabel === null ? '[✓]' : `[✓ ${item.doneLabel}]`,
-    onPress: () => h.done(item.id, item.doneLabel),
-  })
+  return t.Button({ key: `done-${item.id}`, plain: true, label: openText(item), onPress: () => h.done(item.id, item.doneLabel) })
 }
 
 // The one rule for a blank brief: whitespace alone is no brief, in the title, the pane's rows and the pane's draw.
 const hasBrief = (item: Item): boolean => item.detail.trim() !== ''
 
-// The `[…]` marks a row whose answers are in the pane alone: a decision with options. A row with its buttons on the line (a to-do's
-// `[✓]`, a yes/no's marks) needs no marker, and its title still opens the pane.
-const titleLabel = (item: Item): string => (item.options.length > 0 ? `${item.title} […]` : item.title)
+// The state of its row's layout an item is drawn in, in a list laid out in `width` columns.
+const stateOf = (item: Item, width: number, windowMs: number): RowState => {
+  const built = rowTexts(item, windowMs)
+  const layout = rowLayout(built, width)
+  // The pressed state that says the answer the item has now (sayings makes one for it).
+  return isSent(item) ? layout.sent : isPressed(item) ? (layout.pressed[built.said.indexOf(saying(item, false))] ?? layout.open) : layout.open
+}
 
-// `isShown`: whether the pane shows this item, so a press on it closes the pane.
-const itemRow = (t: Table, h: Handlers, item: Item, view: View, isShown: boolean): RenderElement => {
-  const control = doneControl(t, h, item, view, false)
-  // The id and the control keep their natural width: in a narrow row only the title shrinks and wraps, so `#11` never breaks into a column.
+// A band row. `isShown`: whether the pane shows this item, so a press on it closes the pane. `width`: the columns the row is laid out in (layout.ts),
+// null for a band with no width, which draws the row on one line. The control follows the title on its line, or sits under the title, indented to the
+// title's start, when the title would keep too few columns beside it (rowLayout). A title that wraps in its room, or is wider than it, is set in a box
+// of that room, beside its control or under it: a bare title is laid out at the width of the whole list, past the id and the control beside it.
+const itemRow = (t: Table, h: Handlers, item: Item, view: View, isShown: boolean, width: number | null): RenderElement => {
+  const prefix = t.Box({ flexShrink: 0, children: [t.Text({ bold: item.blocking, dimColor: !item.blocking, children: [prefixOf(item)] })] })
+  const title = t.Button({ key: `title-${item.id}`, plain: true, label: titleLabel(item), onPress: () => h.pick(item.id, isShown) })
+  const state = width === null ? null : stateOf(item, width, view.windowMs)
+  const titleCell = state === null || state.title === null ? title : t.Box({ width: state.title, flexShrink: 0, children: [title] })
+  const control = doneControl(t, h, item, view, false, state?.said ?? null)
+  if (state !== null && state.place === 'below') {
+    return t.Box({
+      key: `item-${item.id}`,
+      flexDirection: 'column',
+      children: [t.Box({ children: [prefix, titleCell] }), ...(control === null ? [] : [t.Box({ paddingLeft: displayColumns(prefixOf(item)), children: [control] })])],
+    })
+  }
   return t.Box({
     key: `item-${item.id}`,
-    children: [
-      t.Box({ flexShrink: 0, children: [t.Text({ bold: item.blocking, dimColor: !item.blocking, children: [`${item.unread ? '• ' : '  '}#${item.id} `] })] }),
-      t.Button({ key: `title-${item.id}`, plain: true, label: titleLabel(item), onPress: () => h.pick(item.id, isShown) }),
-      ...(control === null ? [] : [t.Box({ flexShrink: 0, children: [t.Text({ children: [' '] }), control] })]),
-    ],
+    children: [prefix, titleCell, ...(control === null ? [] : [t.Box({ flexShrink: 0, children: [t.Text({ children: [' '] }), control] })])],
   })
 }
 
-// The summary row: what the band leaves out, as a button that opens the pane on the first folded item. Blocking items that did not
-// fit are named apart from the rest, and the row is set in a warning box while any is folded: they are the asks the band could not show.
-const summaryRow = (t: Table, h: Handlers, row: { blocking: number; more: number; first: Item }): RenderElement => {
-  const text = [row.blocking > 0 ? `+${row.blocking} blocking` : '', row.more > 0 ? `+${row.more} more` : ''].filter(part => part !== '').join(' · ')
-  return t.Box({
+// The summary row's text: what the band leaves out. Blocking items that did not fit are named apart from the rest.
+const summaryText = (row: { blocking: number; more: number }): string =>
+  `${[row.blocking > 0 ? `+${row.blocking} blocking` : '', row.more > 0 ? `+${row.more} more` : ''].filter(part => part !== '').join(' · ')} […]`
+
+// The summary row: a button that opens the pane on the first folded item. The row is set in a warning box while a blocking item is folded: they
+// are the asks the band could not show.
+const summaryRow = (t: Table, h: Handlers, row: { blocking: number; more: number; first: Item }): RenderElement =>
+  t.Box({
     backgroundColor: row.blocking > 0 ? 'warning' : undefined,
-    children: [t.Button({ key: 'band-more', plain: true, dimColor: row.blocking === 0, label: `${text} […]`, onPress: () => h.more(row.first.id) })],
+    children: [t.Button({ key: 'band-more', plain: true, dimColor: row.blocking === 0, label: summaryText(row), onPress: () => h.more(row.first.id) })],
   })
-}
 
 // A call to the mod's own tool, as its transcript row carries it.
 export type ToolCall = { input: unknown; output?: unknown; isRunning: boolean; isErrored: boolean }
@@ -204,27 +281,47 @@ const claudeColumn = (t: Table, todo: readonly TodoItem[], width: ListWidth, hei
     children: [t.Text({ wrap: 'truncate-end', children: [`${HEADING} ${bandCountsText(todo)}`] }), ...claudeRows(todo, height).map(row => claudeRow(t, row))],
   })
 
+// The header's two cells: the chip, the line that asks for the person's attention (filled `warning` while the agent is stuck on an open blocking
+// item, `permission` otherwise), and the count after it in plain text: the open items, and the sent ones by their own count.
+const headerTexts = (store: Store): { chip: string; count: string } => {
+  const pending = store.items.filter(it => it.state === 'done-pending').length
+  return { chip: ` ${chipText(store.term)} `, count: ` ${store.items.filter(it => it.state === 'open').length} open${pending > 0 ? `, ${pending} sent` : ''} ` }
+}
+
 // The band above the prompt: a header with the count, then the rows that fit. When items are folded, the summary row is the way into
 // the pane for them. The pane is also opened by a title, and closed by its own close or a press on the item it shows. On a band wide
-// enough, and with a Claude list to show, the Claude column is drawn beside the human list at the band's right edge (layout.ts).
+// enough, and with a Claude list to show, the Claude column is drawn beside the human list at the band's right edge (layout.ts). The human list's
+// rows are laid out in its layout width, and the fold counts the lines they take, the header's too; the Claude column fills down to the same count.
 export const band = (t: Table, h: Handlers, store: Store, view: View): RenderElement => {
   const open = store.items.filter(it => it.state === 'open')
-  const pending = store.items.filter(it => it.state === 'done-pending').length
   const todo = view.claude?.items ?? []
   const widths: BandWidths = view.claude === undefined ? { human: null, claude: null } : bandWidths(view.claude.columns, store.items.length, todo)
+  // The columns the human rows are laid out in; null for a band with no width to lay them out in, which draws them on one line each.
+  const fit = widths.human === null ? null : widths.human.layout
   // The column's fixed lines (its header and every in-flight row) can make the band taller than `maxRows` beside the human list.
   const columnLines = widths.human !== null && widths.claude !== null ? columnHeight(todo) : 0
-  const rows = bandRows(store.items, Math.max(0, humanFoldRows(view.maxRows, columnLines) - 1))
+  // The lines of a row, the summary's too, each counted once: the fold and the Claude column's height both take them from here.
+  const counted = new Map<BandRow, number>()
+  const lines = (row: BandRow): number => {
+    const known = counted.get(row)
+    if (known !== undefined) return known
+    const n = fit === null ? 1 : row.kind === 'item' ? rowLines(rowTexts(row.item, view.windowMs), fit) : wrapText(summaryText(row), fit).length
+    counted.set(row, n)
+    return n
+  }
+  const { chip, count } = headerTexts(store)
+  const top = fit === null ? 1 : headerLines(chip, count, fit)
+  const rows = bandRows(store.items, Math.max(0, humanFoldRows(view.maxRows, columnLines) - top), lines)
   const shownId = selectedItem(store.items, view.selected ?? null)?.id
   // The header is a filled chip, the line that asks for the person's attention: `warning` while the agent is stuck on an open blocking
-  // item, `permission` otherwise. The count after it is plain text: the open items, and the sent ones by their own count.
+  // item, `permission` otherwise. The count after it is plain text.
   const header = t.Box({
     children: [
-      t.Box({ flexShrink: 0, children: [t.Text({ bold: true, color: 'inverseText', backgroundColor: open.some(it => it.blocking) ? 'warning' : 'permission', children: [` ${chipText(store.term)} `] })] }),
-      t.Text({ children: [` ${open.length} open${pending > 0 ? `, ${pending} sent` : ''} `] }),
+      t.Box({ flexShrink: 0, children: [t.Text({ bold: true, color: 'inverseText', backgroundColor: open.some(it => it.blocking) ? 'warning' : 'permission', children: [chip] })] }),
+      t.Text({ children: [count] }),
     ],
   })
-  const body = rows.map(row => (row.kind === 'item' ? itemRow(t, h, row.item, view, row.item.id === shownId) : summaryRow(t, h, row)))
+  const body = rows.map(row => (row.kind === 'item' ? itemRow(t, h, row.item, view, row.item.id === shownId, fit) : summaryRow(t, h, row)))
   if (view.claude === undefined || widths.claude === null) return t.Box({ flexDirection: 'column', children: [header, ...body] })
   // Two boxes at the band's width, the Claude column last: alone it keeps its width and stays at the right edge, with nothing drawn to its left.
   const humanList =
@@ -242,7 +339,7 @@ export const band = (t: Table, h: Handlers, store: Store, view: View): RenderEle
     flexDirection: 'row',
     justifyContent: 'flex-end',
     width: view.claude.columns,
-    children: [...humanList, claudeColumn(t, todo, widths.claude, widths.human === null ? 0 : 1 + rowsHeight(rows))],
+    children: [...humanList, claudeColumn(t, todo, widths.claude, widths.human === null ? 0 : top + rowsHeight(rows, lines))],
   })
 }
 
