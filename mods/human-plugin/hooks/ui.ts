@@ -4,8 +4,8 @@ import { labelOf, oneLine, orderedOptions, replyText, turnsOf } from './done'
 import { briefParts } from './fences'
 import { outcomeOf, parseInput, selectedItem, type ToolInput } from './items'
 import {
-  bandRows,
   backlogTail,
+  bandRows,
   bandWidths,
   claudeRows,
   columnHeight,

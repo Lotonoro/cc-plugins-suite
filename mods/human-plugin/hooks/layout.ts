@@ -1,6 +1,6 @@
 import type { Item, TodoItem } from '../types'
 import { DONE_MAX, VARIATION_SELECTOR_16, columnsByCodePoint, displayColumns } from './items'
-import { SEPARATOR, inDisplayOrder } from './todo'
+import { etaTail, inDisplayOrder } from './todo'
 
 export type BandRow = { kind: 'item'; item: Item } | { kind: 'more'; blocking: number; more: number; first: Item }
 
@@ -202,11 +202,14 @@ const TITLE_MIN = 10
 // The columns a backlog row's head keeps before its ETA tail is cut: the glyph, its space and the title floor. A head shorter than this keeps only its own width.
 const HEAD_MIN = 2 + TITLE_MIN
 
+// The columns of the tail's separator, read from the tail's own format.
+const SEPARATOR_COLUMNS = displayColumns(etaTail({ title: '', state: 'queued', eta: '' }))
+
 // A backlog row's ETA tail (` · ` and the ETA) cut to the room a `body`-column row leaves beside its `head`, which keeps its own width up to HEAD_MIN: whole when it fits, otherwise
 // cut at its end with an ellipsis. Empty when the room keeps no character of the ETA, since a bare ellipsis or separator says nothing; the head then takes the whole body.
 export const backlogTail = (head: string, tail: string, body: number): string => {
   const cut = cutToColumns(tail, Math.max(0, body - Math.min(displayColumns(head), HEAD_MIN)))
-  return cut === tail || displayColumns(cut.slice(0, -ELLIPSIS.length)) > displayColumns(SEPARATOR) ? cut : ''
+  return cut === tail || displayColumns(cut.slice(0, -ELLIPSIS.length)) > SEPARATOR_COLUMNS ? cut : ''
 }
 
 // A human row laid out in `width` columns, its list's layout width, as one line: its prefix, its title and a control column reserved at the widest of the

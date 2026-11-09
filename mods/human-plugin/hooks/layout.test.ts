@@ -858,6 +858,7 @@ test('a backlog tail is whole while the head keeps its minimum beside it, and cu
 
 test('a backlog tail is ` · ship it after the re…` at body 36, absent at bodies 13 to 16, and the CJK tail is ` · 日…` at a room of 6 and absent at 5', () => {
   expect(backlogTail(LONG_HEAD, ' · ship it after the review pass!', 36)).toBe(' · ship it after the re…')
+  expect(backlogTail(LONG_HEAD, ' · ship it after the review pass!', 17)).toBe(' · s…')
   for (const body of [13, 14, 15, 16]) expect(backlogTail(LONG_HEAD, ' · ship it after the review pass!', body), `body ${body}`).toBe('')
   expect(backlogTail(LONG_HEAD, ` · ${'日'.repeat(30)}`, 18)).toBe(' · 日…')
   expect(backlogTail(LONG_HEAD, ` · ${'日'.repeat(30)}`, 17)).toBe('')
@@ -873,7 +874,8 @@ test('a backlog tail measures at most the room (body less the smaller of the hea
           const room = Math.max(0, body - Math.min(head, 12))
           const label = `body ${body} head ${head} tail ${tail}`
           if (displayColumns(tail) <= room) expect(text, label).toBe(tail)
-          else if (text !== '') {
+          else if (room < 3 + displayColumns(unit) + 1) expect(text, label).toBe('')
+          else {
             expect(displayColumns(text), label).toBeLessThanOrEqual(room)
             expect(text.endsWith('…'), label).toBe(true)
             expect(displayColumns(text.slice(0, -1)), label).toBeGreaterThan(3)
