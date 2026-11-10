@@ -1,5 +1,5 @@
 import type { Item, TodoItem } from '../types'
-import { displayColumns, unitsOf } from './columns'
+import { displayColumns, isCutPoint, unitsOf } from './columns'
 import { DONE_MAX } from './items'
 import { etaTail, inDisplayOrder } from './todo'
 
@@ -146,23 +146,22 @@ const wrapLine = (line: string, width: number): string[] => {
 export const wrapText = (text: string, width: number): string[] => text.split(/\r?\n/).flatMap(line => wrapLine(line, Math.max(1, width)))
 
 const ELLIPSIS = '…'
-const ZERO_WIDTH_JOINER = '\u200d'
 
-// A text cut at its end to `room` columns: whole when it fits, otherwise the longest start that leaves a column for the ellipsis, in whole units (a measured
-// sequence is never split), and never ending on a joiner (which would join the ellipsis to what was kept), then the ellipsis. Nothing where the room has no column.
+// A text cut at its end to `room` columns: whole when it fits, otherwise the longest start that ends at a cut point (columns.ts) and leaves a column for the ellipsis, then the
+// ellipsis. That start never splits a measured sequence, separates a mark from its letter or ends on a joiner (which would join the ellipsis to what was kept), so a run of
+// unmeasured parts joined by U+200D is kept whole or dropped. Nothing where the room has no column.
 export const cutToColumns = (text: string, room: number): string => {
   if (room < 1) return ''
   const units = unitsOf(text)
   if (units.reduce((total, { columns }) => total + columns, 0) <= room) return text
   let kept = 0
+  // The columns of the units before the one at `k`: the width of a start that ends there.
   let used = 0
-  // A mark that draws no column, such as a combining accent, never stops the cut, so it stays with the unit before it.
-  for (const { columns } of units) {
-    if (used + columns > room - 1) break
-    used += columns
-    kept++
+  for (const [k, unit] of units.entries()) {
+    if (used > room - 1) break
+    if (isCutPoint(units[k - 1], unit)) kept = k
+    used += unit.columns
   }
-  while (kept > 0 && units[kept - 1]?.text.endsWith(ZERO_WIDTH_JOINER)) kept--
   return `${units.slice(0, kept).map(({ text: unit }) => unit).join('')}${ELLIPSIS}`
 }
 
