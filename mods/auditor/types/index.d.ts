@@ -24,7 +24,12 @@ export type OpenReview = {
   delivered?: boolean
   // Set when the review has had its one follow-up, asking a reviewer that wrote its note as its answer to send it. Absent means it has had none, as in a state stored before the mark existed.
   followedUp?: boolean
+  // Where the review's brief was decided to go, which the review's log reads: the stored reviewer, or a spawn and why (no reviewer yet, or the reason the last reviewer was let go). Set by the brief's delivery, when it decides; absent while it has not, as in a state stored before the field existed. The log of a review whose dispatch failed or was given back reads it as absent: its brief is not known to have reached a reviewer.
+  briefTo?: BriefTo
 }
+
+// Where a brief goes: the stored reviewer, or a spawn because none was ever let go (`no reviewer yet`) or because of the latest let-go's reason.
+export type BriefTo = 'stored' | 'spawn: no reviewer yet' | `spawn: ${LetGoReason}`
 
 // Why the reviewer is failing: a review ended without an answer, none could be handed to a reviewer, a spawn did not start in time, or a state stored before causes existed. Every place that sets `failing` sets one of these, or adds a row for its own cause to the words in button.ts in the same change.
 export type FailCause = 'no answer' | 'not dispatched' | 'no start' | 'unknown'

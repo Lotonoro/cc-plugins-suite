@@ -7065,3 +7065,156 @@ describe('the reason the last reviewer was let go', () => {
     expect(seen.conversation.reviewer).toBeUndefined()
   })
 })
+
+// What the review log says of the brief's wake-up line, of where the brief went and why, and of the follow-up.
+describe('the fields of the review log that audit the brief', () => {
+  const SHELL = { id: 'sh1', type: 'shell', status: 'running', description: 'npm test' }
+  const requestPast = async ($: any): Promise<void> => {
+    STEP_USAGE = { ...USAGE, input_tokens: 80_001 }
+    try {
+      await step($, '', 'ag1')
+    } finally {
+      STEP_USAGE = null
+    }
+  }
+  // Review 1 is briefed and settles quiet; review 2 is then briefed, and the log of the second is the one read.
+  const secondReview = async ($: any): Promise<void> => {
+    await workerTurn($)
+    await turnEnded($, 'ag1', 'Nothing to note.')
+    await workerTurn($, 'Second.')
+  }
+
+  test('a brief that says nothing will wake the worker logs nothing_wakes true, one that names what will, or none, logs false', ON, async ($, on) => {
+    const seen = engine(on)
+    const rounds = [QUIET_STOP, { ...stop, background_tasks: [SHELL], session_crons: [] }, stop]
+    for (const [i, facts] of rounds.entries()) {
+      await $.prompt.submit(COMPOSER(`ask ${i}`))
+      await $.classic.Stop(facts)
+      await turnEnded($, 'ag1', 'Nothing to note.')
+    }
+    expect(seen.spawns[0].prompt).toContain('Nothing will wake the worker')
+    expect(seen.sends[0].text).toContain('Will wake the worker')
+    expect(logOf(seen, LOG_1)).toMatchObject({ nothing_wakes: true })
+    expect(logOf(seen, LOG_2)).toMatchObject({ nothing_wakes: false })
+    expect(logOf(seen, `${DIR}/0003.json`)).toMatchObject({ nothing_wakes: false })
+  })
+
+  test('a review whose reviewer wrote its note as its answer logs followed_up true, any other false', ON, async ($, on) => {
+    const seen = engine(on)
+    await workerTurn($)
+    await $.turn.complete(TURN_END('ag1', FRAMED(1, 'a.ts:4 swallows it.')))
+    await $.turn.complete(TURN_END('ag1', 'Sent.'))
+    expect(logOf(seen, LOG_1)).toMatchObject({ status: 'complete', followed_up: true })
+    await workerTurn($, 'Second.')
+    await turnEnded($, 'ag1', 'Nothing to note.')
+    expect(logOf(seen, LOG_2)).toMatchObject({ status: 'complete', followed_up: false })
+  })
+
+  test('the first brief of a conversation goes to a spawn because there was no reviewer yet, and the next goes to the stored reviewer', ON, async ($, on) => {
+    const seen = engine(on)
+    await secondReview($)
+    await turnEnded($, 'ag1', 'Nothing to note.')
+    expect(logOf(seen, LOG_1)).toMatchObject({ brief_to: 'spawn: no reviewer yet' })
+    expect(logOf(seen, LOG_2)).toMatchObject({ brief_to: 'stored' })
+  })
+
+  test('a brief after a rotation goes to a spawn because of the rotation', ON, async ($, on) => {
+    const seen = engine(on, { reviewerIds: ['ag1', 'ag2'] })
+    await workerTurn($)
+    await requestPast($)
+    await turnEnded($, 'ag1', 'Nothing to note.')
+    await workerTurn($, 'Second.')
+    await turnEnded($, 'ag2', 'Nothing to note.')
+    expect(logOf(seen, LOG_2)).toMatchObject({ brief_to: 'spawn: rotation' })
+  })
+
+  test('a brief the stored reviewer refused goes to a spawn because of the refusal', ON, async ($, on) => {
+    const seen = engine(on, { sendFails: 'ag1', reviewerIds: ['ag1', 'ag2'] })
+    await secondReview($)
+    await turnEnded($, 'ag2', 'Nothing to note.')
+    expect(logOf(seen, LOG_2)).toMatchObject({ status: 'complete', brief_to: 'spawn: refused brief' })
+  })
+
+  test('a brief after a /clear goes to a spawn because the session ended', ON, async ($, on) => {
+    const seen = engine(on, { reviewerIds: ['ag1', 'ag2'] })
+    await workerTurn($)
+    await turnEnded($, 'ag1', 'Nothing to note.')
+    await $.session.end({ reason: 'clear', sessionId: 's1' } as any)
+    await workerTurn($, 'Second.')
+    await turnEnded($, 'ag2', 'Nothing to note.')
+    expect(logOf(seen, LOG_2)).toMatchObject({ brief_to: 'spawn: session end' })
+  })
+
+  test('a brief after the auditor was switched off and on goes to a spawn because of the switch', ON, async ($, on) => {
+    const seen = engine(on, { reviewerIds: ['ag1', 'ag2'] })
+    await workerTurn($)
+    await turnEnded($, 'ag1', 'Nothing to note.')
+    await $.command.run({ command: 'auditor', args: 'off' } as any)
+    await $.command.run({ command: 'auditor', args: 'on' } as any)
+    await workerTurn($, 'Second.')
+    await turnEnded($, 'ag2', 'Nothing to note.')
+    expect(logOf(seen, LOG_2)).toMatchObject({ brief_to: 'spawn: switch off' })
+  })
+
+  test('a brief whose spawn landed after a switch off goes, after the switch on, to a spawn because the landing was stale', ON, async ($, on) => {
+    const held = heldSpawn()
+    const seen = engine(on, { spawnHold: held.hold, reviewerIds: ['ag1', 'ag2'] })
+    const ending = workerTurn($)
+    await held.reached
+    await $.command.run({ command: 'auditor', args: 'off' } as any)
+    held.land()
+    await ending
+    await drained()
+    await $.command.run({ command: 'auditor', args: 'on' } as any)
+    await workerTurn($, 'Second.')
+    await turnEnded($, 'ag2', 'Nothing to note.')
+    expect(logOf(seen, LOG_2)).toMatchObject({ brief_to: 'spawn: stale landing' })
+  })
+
+  test('a log carries no route older than its own review: a legacy open review, stored without one, logs brief_to null', ON, async ($, on) => {
+    const seed = { dispatches: 1, reviewer: { id: 'ag1', model: 'm' }, reviewerIds: ['ag1'], review: { number: 1, record: ['USER: x'], dispatchedAt: 1, nothingWakes: false } }
+    const seen = engine(on, { stateSeed: seed })
+    await turnEnded($, 'ag1', 'Nothing to note.')
+    expect(logOf(seen, LOG_1)).toMatchObject({ status: 'complete', nothing_wakes: false, followed_up: false, brief_to: null })
+  })
+
+  test('an incomplete review whose reviewer gave no answer carries the three fields', ON, async ($, on) => {
+    const seen = engine(on)
+    await $.prompt.submit(COMPOSER('fix the parser'))
+    await $.classic.Stop(QUIET_STOP)
+    await turnFailed($, 'ag1')
+    expect(logOf(seen, LOG_1)).toMatchObject({ status: 'incomplete', nothing_wakes: true, followed_up: false, brief_to: 'spawn: no reviewer yet' })
+  })
+
+  test('a review dropped by a switch off or a session end after its brief went out carries its route, the wake-up line and the follow-up', ON, async ($, on) => {
+    const seen = engine(on, { reviewerIds: ['ag1', 'ag2'] })
+    await $.prompt.submit(COMPOSER('fix the parser'))
+    await $.classic.Stop(QUIET_STOP)
+    await $.command.run({ command: 'auditor', args: 'off' } as any)
+    expect(logOf(seen, LOG_1)).toMatchObject({ status: 'incomplete', reason: 'the auditor was switched off', nothing_wakes: true, followed_up: false, brief_to: 'spawn: no reviewer yet' })
+    await $.command.run({ command: 'auditor', args: 'on' } as any)
+    await $.prompt.submit(COMPOSER('more'))
+    await $.classic.Stop(stop)
+    await $.session.end({ reason: 'clear', sessionId: 's1' } as any)
+    expect(logOf(seen, LOG_2)).toMatchObject({ status: 'incomplete', reason: 'session ended: clear', nothing_wakes: false, followed_up: false, brief_to: 'spawn: switch off' })
+  })
+
+  test('a review whose dispatch failed before any brief went out carries the three fields, brief_to null', ON, async ($, on) => {
+    const seen = engine(on, { sendThrows: 'ag1', stateSeed: { reviewer: { id: 'ag1', model: 'm' }, reviewerIds: ['ag1'] } })
+    await $.prompt.submit(COMPOSER('fix the parser'))
+    await $.classic.Stop(QUIET_STOP)
+    expect(logOf(seen, LOG_1)).toMatchObject({ status: 'incomplete', nothing_wakes: true, followed_up: false, brief_to: null })
+  })
+
+  test('a refused spawn that fails its dispatch logs brief_to null', ON, async ($, on) => {
+    const seen = engine(on, { spawn: { deny: 'no' } })
+    await workerTurn($)
+    expect(logOf(seen, LOG_1)).toMatchObject({ status: 'incomplete', nothing_wakes: false, followed_up: false, brief_to: null })
+  })
+
+  test('a review given back because the stopped session refused its brief logs brief_to null', ON, async ($, on) => {
+    const seen = engine(on, { sendFails: 'ag1', refusal: 'Teammate "auditor-reviewer" was not messaged: the session was stopped and nobody has sent input since.' })
+    await secondReview($)
+    expect(logOf(seen, LOG_2)).toMatchObject({ status: 'incomplete', reason: 'given back: the session was stopped', nothing_wakes: false, followed_up: false, brief_to: null })
+  })
+})

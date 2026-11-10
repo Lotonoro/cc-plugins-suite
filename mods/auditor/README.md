@@ -118,7 +118,13 @@ Then start a new session. The reviewer is on as soon as the plugin is loaded.
   instruction you gave many turns ago. Search results come back as short snippets around each match, and a whole
   transcript line only when the reviewer asks for it.
 - **Setting.** `log` (default off) writes one JSON file per review, with its note, timing and token use, to
-  `~/.claude/auditor/<session id>/`. It is declared under `userConfig` in `.claude-plugin/plugin.json`.
+  `~/.claude/auditor/<session id>/`; a review that did not complete is logged too, with its reason. The file also says
+  whether the review's brief told the reviewer that nothing will wake the agent (`nothing_wakes`), whether the review
+  had its follow-up (`followed_up`), and where the brief went (`brief_to`): `stored` for the reviewer already running,
+  or `spawn:` with why, either `no reviewer yet` or the reason the last reviewer was let go (`rotation`, `switch off`,
+  `session end`, `refused brief`, `stale landing`). `brief_to` is null for a review whose dispatch failed or was given
+  back, since its brief is not known to have reached a reviewer. It is declared under `userConfig` in
+  `.claude-plugin/plugin.json`.
 
 ## The stall nudge
 
