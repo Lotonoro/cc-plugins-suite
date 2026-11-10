@@ -2,7 +2,7 @@ import { expect, test } from 'claude-code/testing'
 import { register, wireHooks } from './register'
 import { offer, reset, setOnChange, startTurn, takeHeld, endTurn } from './turns'
 import { EMPTY, TOOL, act, normalizeStore } from './items'
-import { NO_ETA, TODO_TOOL, fillTodo } from './todo'
+import { NO_ETA, TODO_TOOL, fillTodo, readTodo } from './todo'
 import { REMINDER_TEXT } from './reminder'
 import { TODO_SPEC, TOOL_SPEC } from './steering'
 import { paneRows } from './ui'
@@ -3729,6 +3729,60 @@ test('the pane on the Claude list draws a header line with the counts in the lon
   expect(rows.map(shapeOf)).toEqual([ROW_SHAPE, ROW_SHAPE, ROW_SHAPE])
   expect(flat(tree)).not.toContain('"type":"Button"')
   expect(flat(tree)).not.toContain('"type":"Markdown"')
+})
+
+// A Claude list as an earlier cut stored it: two families, then 👨 U+200D 👩 U+200D and the ellipsis, 29 units under the cap of 30. Every read of the list is normalized (todo.ts), so each view
+// shows the ETA repaired from the next read, and a write or a rebuild stores it so.
+const ZWJ = String.fromCodePoint(0x200d)
+const TWO_FAMILIES = ['👨', '👩', '👧', '👦'].join(ZWJ).repeat(2)
+const SPLIT_ETA = `${TWO_FAMILIES}👨${ZWJ}👩${ZWJ}…`
+const REPAIRED_ETA = `${TWO_FAMILIES}…`
+
+test('a read of a Claude list stored with a split ETA returns the ETA repaired and stores nothing', async () => {
+  const { env, values } = memEnv([], [], null)
+  values.todo = [entry('Build', 'queued', SPLIT_ETA)]
+  expect(await readTodo(env as never)).toEqual([entry('Build', 'queued', REPAIRED_ETA)])
+  expect(values.todo).toEqual([entry('Build', 'queued', SPLIT_ETA)])
+})
+
+test('the tool\'s read of a Claude list stored with a split ETA answers the ETA repaired and stores nothing', async () => {
+  reset()
+  const { hooks } = wire()
+  const { env, values } = memEnv([], [], null)
+  values.todo = [entry('Build', 'queued', SPLIT_ETA)]
+  expect(await runTodo(hooks, env, {})).toEqual({ result: `Claude TODO: 0 in flight, 1 queued\n- queued: Build (ETA: ${REPAIRED_ETA})` })
+  expect(values.todo).toEqual([entry('Build', 'queued', SPLIT_ETA)])
+})
+
+test('a write that gives a split ETA verbatim stores the ETA repaired and answers it so', async () => {
+  reset()
+  const { hooks } = wire()
+  const { env, values } = memEnv([], [], null)
+  expect(await runTodo(hooks, env, { entries: [entry('Build', 'queued', SPLIT_ETA)] })).toEqual({ result: `Claude TODO: 0 in flight, 1 queued\n- queued: Build (ETA: ${REPAIRED_ETA})` })
+  expect(values.todo).toEqual([entry('Build', 'queued', REPAIRED_ETA)])
+})
+
+test('/claude-todo over a Claude list stored with a split ETA prints the ETA repaired', async () => {
+  freshModule()
+  const { hooks } = wire()
+  const { env, values } = memEnv([], [], null)
+  values.todo = [entry('Build', 'queued', SPLIT_ETA)]
+  expect(await claudeTodo(hooks, env)).toEqual({ text: `  Claude TODO: 0 in flight, 1 queued\n  queued:\n    ○ Build · ${REPAIRED_ETA}` })
+})
+
+test('the pane on a Claude list stored with a split ETA draws the ETA repaired', async () => {
+  reset()
+  const { hooks } = wire()
+  const { $ } = backlogEnv([made(1)], [], 'claude-todo', [entry('Build', 'queued', SPLIT_ETA)])
+  await endSession(hooks, $)
+  expect(linesOf(await paneTree(hooks, $))).toEqual(['Claude TODO 0 in flight, 1 queued', `○ Build · ${REPAIRED_ETA}`])
+})
+
+test('a rebuild over a Claude list stored with a split ETA stores that list with the ETA repaired, whatever the transcript gave', async () => {
+  const { env, values } = memEnv([], [], null)
+  values.todo = [entry('Build', 'queued', SPLIT_ETA)]
+  await fillTodo(env as never, [{ title: 'From the transcript', state: 'in_flight', eta: NO_ETA }])
+  expect(values.todo).toEqual([entry('Build', 'queued', REPAIRED_ETA)])
 })
 
 test('with no human items the band draws only the Claude column\'s header and in-flight rows, and a press on its header opens the pane with the queued items too; a second press closes it', async () => {

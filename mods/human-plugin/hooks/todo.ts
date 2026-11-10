@@ -1,6 +1,6 @@
 import { atom, read, update, type EngineInterface } from 'claude-code'
 import type { TodoItem } from '../types'
-import { cutLine } from './cut'
+import { cutLine, repairCut } from './cut'
 import { LINE_BREAK } from './items'
 import { resetCount } from './reminder'
 import type { ToolCall } from './ui'
@@ -21,9 +21,12 @@ export const TITLE_MAX = 80
 export const ETA_MAX = 30
 export const NO_ETA = 'no ETA'
 
-// The ETA to store for any value a call or a stored list gives: its text trimmed and on one line, cut to ETA_MAX; NO_ETA when it is no text or blank.
+// The ETA to store for any value a call or a stored list gives: its text trimmed and on one line, cut to ETA_MAX, and, where it ends in the ellipsis, ended at a cut point
+// (repairCut), which mends an ETA an older cut stored ending on a dangling joiner before the ellipsis. A leftover that ends at a cut point, such as a family of three left of
+// a family of four, cannot be told from the same text written whole and stays. NO_ETA when it is no text or blank. The list is normalized through this on every read, so the
+// repair shows from the next read and is stored at the next write or rebuild.
 export const etaOf = (raw: unknown): string => {
-  const eta = typeof raw === 'string' ? cutLine(raw.trim(), ETA_MAX) : ''
+  const eta = typeof raw === 'string' ? repairCut(cutLine(raw.trim(), ETA_MAX)) : ''
   return eta === '' ? NO_ETA : eta
 }
 

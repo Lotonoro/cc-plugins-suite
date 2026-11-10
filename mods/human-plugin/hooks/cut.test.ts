@@ -1,8 +1,12 @@
 import { expect, test } from 'claude-code/testing'
 import { unitsOf } from './columns'
-import { cutLine, cutText, oneLine } from './cut'
+import { cutLine, cutText, oneLine, repairCut } from './cut'
 
 const pair = String.fromCodePoint(0x1f600)
+const zwj = String.fromCodePoint(0x200d)
+const man = '👨'
+const woman = '👩'
+const girl = '👧'
 const family = '👨‍👩‍👧‍👦'
 const kiss = '\u{1f468}\u{1f3fb}‍❤️‍\u{1f48b}‍\u{1f468}\u{1f3fb}'
 const flag = '🇺🇸'
@@ -86,9 +90,11 @@ const longestKept = (text: string, max: number): string => {
   return text.slice(0, best)
 }
 
+// The texts the cut is tried on: a family, a skin-tone kiss, a flag, a keycap, a joined chain and combining marks, each straddling the cap.
+const cutTexts = [family.repeat(3), `${a(20)}${kiss}b`, `${a(14)}${kiss}bc`, `${x(27)}${flag}y`, `${x(28)}${keycap}y`, `${a(25)}${chain}b`, `${x(28)}e${acute}y`, acute.repeat(31)]
+
 test('for every cap from 0 to 40, the cut is within it, never ends on a joiner, and is the longest prefix at a cut point that fits', () => {
-  const texts = [family.repeat(3), `${a(20)}${kiss}b`, `${a(14)}${kiss}bc`, `${x(27)}${flag}y`, `${x(28)}${keycap}y`, `${a(25)}${chain}b`, `${x(28)}e${acute}y`, acute.repeat(31)]
-  for (const text of texts) {
+  for (const text of cutTexts) {
     for (let max = 0; max <= 40; max++) {
       const out = cutText(text, max)
       expect(out.length).toBeLessThanOrEqual(max)
@@ -99,6 +105,56 @@ test('for every cap from 0 to 40, the cut is within it, never ends on a joiner, 
       }
       expect(out.slice(0, -1).endsWith('\u200d')).toBe(false)
       expect(out).toBe(`${longestKept(text, max)}…`)
+    }
+  }
+})
+
+test('repairCut ends a text that ends in the ellipsis at its last cut point: the run a cut left ending on U+200D goes, and the ellipsis stays', () => {
+  expect(repairCut(`${family.repeat(2)}${man}${zwj}${woman}${zwj}…`)).toBe(`${family.repeat(2)}…`)
+  expect(repairCut(`${a(20)}${man}${zwj}${woman}${zwj}${girl}${zwj}…`)).toBe(`${a(20)}…`)
+  expect(repairCut(`deploy ${pair}${zwj}…`)).toBe('deploy …')
+  expect(repairCut(`${a(5)}${chain}${zwj}…`)).toBe(`${a(5)}…`)
+  expect(repairCut(`${pair}${zwj}…`)).toBe('…')
+})
+
+test('repairCut keeps a text whose text before the ellipsis already ends at a cut point, the leftovers of a cut inside a sequence included', () => {
+  const regional = String.fromCodePoint(0x1f1fa)
+  const vs16 = String.fromCodePoint(0xfe0f)
+  for (const text of [
+    '…',
+    'after tests…',
+    `${family.repeat(2)}…`,
+    `${a(21)}${man}${zwj}${woman}${zwj}${girl}…`,
+    `${a(27)}${man}…`,
+    `${a(24)}${man}${zwj}${woman}…`,
+    `${a(10)}👋…`,
+    `${x(10)}${regional}…`,
+    `${x(10)}1${vs16}…`,
+    `x${acute}…`,
+  ]) {
+    expect(repairCut(text)).toBe(text)
+  }
+})
+
+test('repairCut returns a text with no ellipsis as it is, even one that ends on U+200D', () => {
+  expect(repairCut('~10 min')).toBe('~10 min')
+  expect(repairCut(`ab${zwj}`)).toBe(`ab${zwj}`)
+})
+
+test('every text the cut gives is one repairCut returns as it is, for every cap from 0 to 40', () => {
+  for (const text of cutTexts) {
+    for (let max = 0; max <= 40; max++) {
+      const out = cutText(text, max)
+      expect(repairCut(out)).toBe(out)
+    }
+  }
+})
+
+test('for every prefix of a text followed by the ellipsis, repairCut keeps the longest prefix that ends at a cut point', () => {
+  for (const text of cutTexts) {
+    for (let n = 0; n <= text.length; n++) {
+      const stored = `${text.slice(0, n)}…`
+      expect(repairCut(stored)).toBe(`${longestKept(stored, stored.length)}…`)
     }
   }
 })

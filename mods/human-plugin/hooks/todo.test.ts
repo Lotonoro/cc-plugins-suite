@@ -17,6 +17,15 @@ const LIST: TodoItem[] = [
   { title: 'Build', state: 'in_flight', eta: '~10 min' },
   { title: 'Ship', state: 'queued', eta: NO_ETA },
 ]
+const zwj = String.fromCodePoint(0x200d)
+const family = ['👨', '👩', '👧', '👦'].join(zwj)
+const a = (n: number): string => 'a'.repeat(n)
+// The ETA a write of an entry with `eta` stores.
+const stored = (eta: string): string => {
+  const item = write([{ title: 'Build', state: 'queued', eta }])?.[0]
+  if (item === undefined) throw new Error('the entry was not stored')
+  return item.eta
+}
 
 test('the tool is named claude_todo and its states are queued, in_flight and done', () => {
   expect(TODO_TOOL).toBe(`mcp__human-plugin__${TODO_NAME}`)
@@ -134,7 +143,6 @@ test('a missing, null, non-text or blank ETA is accepted and stored as no ETA', 
 })
 
 test('an ETA of three families of four is stored as two families and the ellipsis', () => {
-  const family = '👨‍👩‍👧‍👦'
   expect(write([{ title: 'Build', state: 'queued', eta: family.repeat(3) }])?.[0]?.eta).toBe(`${family.repeat(2)}…`)
 })
 
@@ -151,6 +159,49 @@ test('an ETA over 30 UTF-16 units is cut to 30, the ellipsis inside the 30; one 
   expect(cut).toBe(`${'y'.repeat(29)}…`)
   expect(cut?.length).toBe(30)
   expect(todoReply(write([{ title: 'Build', state: 'queued', eta: 'y'.repeat(60) }]) ?? [])).toContain(`(ETA: ${'y'.repeat(29)}…)`)
+})
+
+test('an ETA a cut left split, two families then 👨 U+200D 👩 U+200D and the ellipsis, is stored as two families and the ellipsis, written or read back', () => {
+  const split = `${family.repeat(2)}👨${zwj}👩${zwj}…`
+  expect(split.length).toBe(29)
+  expect(stored(split)).toBe(`${family.repeat(2)}…`)
+  expect(normalizeTodo([{ title: 'Build', state: 'queued', eta: split }])).toEqual([{ title: 'Build', state: 'queued', eta: `${family.repeat(2)}…` }])
+})
+
+test('an ETA that ends on a dangling joiner before the ellipsis is stored cut back to the run before it', () => {
+  expect(stored(`${a(20)}👨${zwj}👩${zwj}👧${zwj}…`)).toBe(`${a(20)}…`)
+  expect(stored(`deploy 😀${zwj}…`)).toBe('deploy …')
+})
+
+test('an ETA that ends at a cut point is stored as given: the leftovers of a cut inside a sequence, and every ending that is whole', () => {
+  for (const eta of [`${a(21)}👨${zwj}👩${zwj}👧…`, `${a(27)}👨…`, `${a(24)}👨${zwj}👩…`, 'after tests…', '~10 min', '…', `${family.repeat(2)}…`]) {
+    expect(stored(eta)).toBe(eta)
+  }
+})
+
+test('each ETA the cut stores is stored unchanged when written again', () => {
+  const x = (n: number): string => 'x'.repeat(n)
+  const kiss = String.fromCodePoint(0x1f468, 0x1f3fb, 0x200d, 0x2764, 0xfe0f, 0x200d, 0x1f48b, 0x200d, 0x1f468, 0x1f3fb)
+  const keycap = String.fromCodePoint(0x31, 0xfe0f, 0x20e3)
+  const chain = ['😀', '😀', '😀'].join(zwj)
+  const acute = String.fromCodePoint(0x301)
+  const thai = String.fromCodePoint(0xe01, 0xe48)
+  for (const eta of [
+    family.repeat(3),
+    `${a(20)}${kiss}b`,
+    `${a(14)}${kiss}bc`,
+    `${x(27)}🇺🇸y`,
+    `${x(28)}${keycap}y`,
+    `${a(25)}${chain}b`,
+    `${a(21)}${chain}bc`,
+    `${x(28)}e${acute}y`,
+    `${x(28)}${thai}y`,
+    acute.repeat(31),
+    `${acute.repeat(30)}abc`,
+  ]) {
+    const once = stored(eta)
+    expect(stored(once)).toBe(once)
+  }
 })
 
 test('a stored entry with no ETA, or one that is not text, reads back as no ETA; a stored one is normalised as a write would', () => {
