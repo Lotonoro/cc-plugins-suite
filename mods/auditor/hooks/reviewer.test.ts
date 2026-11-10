@@ -339,7 +339,7 @@ describe('letting a reviewer go', () => {
     expect(letGo(at, 'rotation', 'ag1', 80_000)).toEqual({ next: at, released: undefined })
   })
 
-  for (const reason of ['switch off', 'session end'] as const) {
+  for (const reason of ['switch off', 'session end', 'failed review'] as const) {
     test(`a ${reason} lets the stored reviewer go whatever its context: its id returned, its context cleared, its marks kept and the reason noted`, () => {
       const gone = letGo(stored(), reason, 'ag1')
       expect(gone.released).toBe('ag1')

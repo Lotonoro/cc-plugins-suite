@@ -34,8 +34,8 @@ export type BriefTo = 'stored' | 'spawn: no reviewer yet' | `spawn: ${LetGoReaso
 // Why the reviewer is failing: a review ended without an answer, none could be handed to a reviewer, a spawn did not start in time, a stored reviewer did not finish its review in time, or a state stored before causes existed. Every place that sets `failing` sets one of these, or adds a row for its own cause to the words in button.ts in the same change.
 export type FailCause = 'no answer' | 'not dispatched' | 'no start' | 'no finish' | 'unknown'
 
-// Why a reviewer was let go, which `letGo` in reviewer.ts decides: its context passed the rotation limit, the toggle switched off, the session ended, its brief was refused, its spawn landed after it was no longer wanted, its spawn rejected after the spawn hook had learned its id, or its review lapsed without its turn ending.
-export type LetGoReason = 'rotation' | 'switch off' | 'session end' | 'refused brief' | 'stale landing' | 'rejected spawn' | 'lapsed'
+// Why a reviewer was let go, which `letGo` in reviewer.ts decides: its context passed the rotation limit, the toggle switched off, the session ended, its brief was refused, its spawn landed after it was no longer wanted, its spawn rejected after the spawn hook had learned its id, its review lapsed without its turn ending, or its review failed (ended incomplete, other than by an aborted turn, or could not be dispatched).
+export type LetGoReason = 'rotation' | 'switch off' | 'session end' | 'refused brief' | 'stale landing' | 'rejected spawn' | 'lapsed' | 'failed review'
 
 // The last completed review: when it closed (the clock's time) and whether it gave a note.
 export type LastReview = { at: number; note: boolean }

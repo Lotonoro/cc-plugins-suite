@@ -115,7 +115,8 @@ Then start a new session. The reviewer is on as soon as the plugin is loaded.
   it is bounded in size and age, reset on `/clear` and on switching on, and kept while the auditor is off. The retired
   reviewer is stopped, so it does not stay idle for the rest of the session. So is a reviewer forgotten on a `/clear`,
   one whose brief was refused, one whose spawn failed after it was named, one whose review never finished (see above),
-  or one the toggle switched off. A session
+  one whose review failed (its turn ended with no answer or an error, or its brief could not be delivered; a turn you
+  aborted with Esc is not one, and keeps its reviewer), or one the toggle switched off. A session
   that is exiting (`/exit`, ctrl+c, ctrl+d, or a `-p` run that finished) ends the reviewer with it, so no stop is
   attempted then. Should one review alone outgrow 100,000 tokens, the reviewer compacts, keeping your instructions and
   where you gave them.
@@ -131,7 +132,7 @@ Then start a new session. The reviewer is on as soon as the plugin is loaded.
   whether the review's brief told the reviewer that nothing will wake the agent (`nothing_wakes`), whether the review
   had its follow-up (`followed_up`), and where the brief went (`brief_to`): `stored` for the reviewer already running,
   or `spawn:` with why, either `no reviewer yet` or the reason the last reviewer was let go (`rotation`, `switch off`,
-  `session end`, `refused brief`, `stale landing`, `rejected spawn`, `lapsed`). `brief_to` is null for a review given back, or
+  `session end`, `refused brief`, `stale landing`, `rejected spawn`, `lapsed`, `failed review`). `brief_to` is null for a review given back, or
   whose dispatch failed before its brief went out, since its brief did not reach a reviewer. It is declared under
   `userConfig` in `.claude-plugin/plugin.json`.
 

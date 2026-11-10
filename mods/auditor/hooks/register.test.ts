@@ -2819,7 +2819,7 @@ describe('the transcript tool', () => {
 
   // A failed review's notice starts a worker turn, and that turn's end dispatches the next review: here neither dispatches.
   test('a failed review\'s notice, and a turn no composer started, dispatch nothing: the record keeps the failed entries', ON, async ($, on) => {
-    const seen = engine(on)
+    const seen = engine(on, { reviewerIds: ['ag1', 'ag2'] })
     otherMods(on)
     await workerTurn($)
     await mainTurnEnd($)
@@ -2840,8 +2840,9 @@ describe('the transcript tool', () => {
     expect(seen.conversation.record.blocks.length).toBe(3)
     await $.prompt.submit(COMPOSER('retry'))
     await workerTurn($)
-    expect(seen.sends.map(s => s.to)).toEqual(['ag1'])
-    expect(seen.sends[0].text).toContain('Review 2. Its record holds entries 1-5,')
+    // The failed review let its reviewer go, so the retry spawns a fresh one.
+    expect({ spawns: seen.spawns.length, sends: seen.sends.length }).toEqual({ spawns: 2, sends: 0 })
+    expect(seen.spawns[1].prompt).toContain('Review 2. Its record holds entries 1-5,')
   })
 
   test('a finished notice after a successful review starts a turn that records nothing and dispatches nothing', ON, async ($, on) => {
@@ -2858,17 +2859,17 @@ describe('the transcript tool', () => {
   })
 
   test('each failure of a run is logged with its reason, toasts nothing, and leaves the footer reading auditor failing', ON, async ($, on) => {
-    const seen = engine(on)
+    const seen = engine(on, { reviewerIds: ['ag1', 'ag2'] })
     otherMods(on)
     await $.prompt.submit(COMPOSER('first'))
     await $.classic.Stop(stop)
     await turnFailed($, 'ag1')
     await $.prompt.submit(COMPOSER('retry'))
     await workerTurn($)
-    expect(seen.sends.length).toBe(1)
+    expect(seen.spawns.length).toBe(2)
     // The record tool serves only an open review, so it is read while review 2 is open, before its failure.
-    expect(await entriesOf($, { which: 'record' }, 'ag1')).toBe(RECORD_OF(2, 'USER: first', 'USER: retry', 'ASSISTANT: working'))
-    await turnFailed($, 'ag1')
+    expect(await entriesOf($, { which: 'record' }, 'ag2')).toBe(RECORD_OF(2, 'USER: first', 'USER: retry', 'ASSISTANT: working'))
+    await turnFailed($, 'ag2')
     expect(seen.toasts).toEqual([])
     expect(debugLines(seen, TURN_FAILURE).length).toBe(2)
     await buttonReads(await mountMode($), 'failing')
@@ -2913,14 +2914,14 @@ describe('the transcript tool', () => {
   })
 
   test('a helper\'s prompt that joins a composer turn leaves it the composer\'s, so after a failure the turn\'s end dispatches', ON, async ($, on) => {
-    const seen = engine(on)
+    const seen = engine(on, { reviewerIds: ['ag1', 'ag2'] })
     await $.prompt.submit(COMPOSER('first'))
     await $.classic.Stop(stop)
     await turnFailed($, 'ag1')
     await $.prompt.submit(HELPER)
     await workerTurn($)
-    expect(seen.sends.map(s => s.to)).toEqual(['ag1'])
-    expect(seen.sends[0].text).toContain('Review 2. Its record holds entries 1-3,')
+    expect(seen.sends).toEqual([])
+    expect(seen.spawns[1].prompt).toContain('Review 2. Its record holds entries 1-3,')
   })
 
   test('a composer prompt typed into a notice turn starts the record there, so the review covers what follows', ON, async ($, on) => {
@@ -5955,7 +5956,7 @@ describe('the reviewer\'s memory', () => {
     test('a spawn\'s brief and a re-brief each carry every entry, with its review number and text', ON, async ($, on) => {
       const seen = engine(on, { stateSeed: stored([entry(4, 'a.ts:4 first.'), entry(5, 'a.ts:5 second.')], 6) })
       await $.classic.Stop(stop)
-      await turnEnded($, 'ag1', '')
+      await turnEnded($, 'ag1', 'Nothing to note.')
       await $.prompt.submit(COMPOSER('again'))
       await $.classic.Stop(stop)
       for (const brief of [seen.spawns[0].prompt, seen.sends[0].text]) {
@@ -6242,7 +6243,7 @@ describe('the reviewer\'s memory', () => {
       await memoryCall($, SETTLE, 9, 'refused')
       expect(seen.conversation.record.blocks.join('')).not.toContain(MEMORY)
       expect(await entriesOf($, { which: 'live' })).toBe(NONE_SINCE(2))
-      await turnEnded($, 'ag1', '')
+      await turnEnded($, 'ag1', 'Nothing to note.')
       await $.prompt.submit(COMPOSER('carry on'))
       await $.classic.Stop(stop)
       // Review 3's brief, the second send to the reviewer, carries the entry settled in review 2; the worker's prompts and notes carry none of it.
@@ -6257,7 +6258,7 @@ describe('the reviewer\'s memory', () => {
       await memoryCall($, SETTLE, 2, 'countered at line 8')
       const settledLine = 'Review 2 (settled, last touched in review 6; the reason: countered at line 8): a.ts:2 first.'
       expect(await printed($)).toBe(`auditor memory holds 2 entries, 1 in flight and 1 settled:\n\n${inFlight(4, 'a.ts:4 second.')}\n\n${settledLine}`)
-      await turnEnded($, 'ag1', '')
+      await turnEnded($, 'ag1', 'Nothing to note.')
       await $.prompt.submit(COMPOSER('again'))
       await $.classic.Stop(stop)
       expect(memoryOf(seen.sends[0].text).split('\n\n').slice(1)).toEqual([inFlight(4, 'a.ts:4 second.'), settledLine])
@@ -7313,12 +7314,108 @@ describe('a rejected spawn', () => {
     await $.prompt.submit(COMPOSER('first'))
     await $.classic.Stop(stop)
     await drained()
-    expect(seen.stops).toEqual([])
+    // The failed review lets the learned id go instead, as the reviewer it stood in as.
+    expect(seen.stops).toEqual([{ task_id: 'ag1', spawns: 1 }])
+    expect(seen.conversation.lastLetGo).toBe('failed review')
     expect(JSON.stringify(seen.logs)).toContain('spawn bookkeeping failed')
     expect(logOf(seen, LOG_1)).toMatchObject({ status: 'incomplete', reason: NO_SPAWN })
   })
 })
 
+
+// A review that ends failed or incomplete lets its stored reviewer go, unless the reviewer's turn was aborted.
+describe('a failed or incomplete review', () => {
+  // Review 1 is dispatched to the spawned reviewer ag1 and the next worker turn is the composer's; a reviewer spawned since is ag2.
+  const afterwards = async ($: any, seen: any) => {
+    expect(seen.conversation.reviewer).toBeUndefined()
+    expect(seen.stops).toEqual([{ task_id: 'ag1', spawns: 1 }])
+    expect(seen.conversation.lastLetGo).toBe('failed review')
+    await $.prompt.submit(COMPOSER('second'))
+    await workerTurn($, 'Second.')
+    expect(seen.sends).toEqual([])
+    expect(seen.spawns.length).toBe(2)
+    expect(seen.conversation.reviewer).toMatchObject({ id: 'ag2' })
+    expect(seen.conversation.review.briefTo).toBe('spawn: failed review')
+  }
+
+  test('whose reviewer ends its turn with an empty answer lets that reviewer go: stopped, not stored, the no-answer cause, and the next dispatch spawns', ON, async ($, on) => {
+    const seen = engine(on, { reviewerIds: ['ag1', 'ag2'] })
+    await $.prompt.submit(COMPOSER('first'))
+    await $.classic.Stop(stop)
+    await turnEnded($, 'ag1', '')
+    await drained()
+    expect(seen.conversation.failing).toBe('no answer')
+    expect(logOf(seen, LOG_1)).toMatchObject({ status: 'incomplete', reason: 'reviewer ended its turn with an empty answer' })
+    await afterwards($, seen)
+  })
+
+  test('whose reviewer ends its turn with an error reason lets that reviewer go: stopped, not stored, the no-answer cause, and the next dispatch spawns', ON, async ($, on) => {
+    const seen = engine(on, { reviewerIds: ['ag1', 'ag2'] })
+    await $.prompt.submit(COMPOSER('first'))
+    await $.classic.Stop(stop)
+    await turnFailed($, 'ag1')
+    await drained()
+    expect(seen.conversation.failing).toBe('no answer')
+    expect(logOf(seen, LOG_1)).toMatchObject({ status: 'incomplete', reason: 'reviewer turn ended with reason error, isAborted false' })
+    await afterwards($, seen)
+  })
+
+  test('whose brief delivery throws lets the stored reviewer go: stopped, not stored, the not-dispatched cause, and the next dispatch spawns', ON, async ($, on) => {
+    const seen = engine(on, { sendThrows: 'ag1', reviewerIds: ['ag1', 'ag2'] })
+    await $.prompt.submit(COMPOSER('first'))
+    await $.classic.Stop(stop)
+    await turnEnded($, 'ag1', 'Nothing to note.')
+    await $.prompt.submit(COMPOSER('more'))
+    await workerTurn($, 'More.')
+    await drained()
+    expect(seen.conversation.failing).toBe('not dispatched')
+    expect(logOf(seen, LOG_2)).toMatchObject({ status: 'incomplete' })
+    expect(seen.conversation.reviewer).toBeUndefined()
+    expect(seen.stops).toEqual([{ task_id: 'ag1', spawns: 1 }])
+    expect(seen.conversation.lastLetGo).toBe('failed review')
+    // The one send is the brief that threw.
+    expect(seen.sends.length).toBe(1)
+    await $.prompt.submit(COMPOSER('third'))
+    await workerTurn($, 'Third.')
+    expect(seen.sends.length).toBe(1)
+    expect(seen.spawns.length).toBe(2)
+    expect(seen.conversation.review.briefTo).toBe('spawn: failed review')
+  })
+
+  test('whose reviewer\'s turn ended aborted fails with the no-answer cause and keeps that reviewer', ON, async ($, on) => {
+    const seen = engine(on, { reviewerIds: ['ag1', 'ag2'] })
+    await $.prompt.submit(COMPOSER('first'))
+    await $.classic.Stop(stop)
+    await $.turn.complete({ ...TURN_END('ag1', ''), isAborted: true, reason: 'aborted' })
+    await drained()
+    expect(seen.conversation.failing).toBe('no answer')
+    expect(seen.conversation.reviewer).toMatchObject({ id: 'ag1' })
+    expect(seen.conversation.lastLetGo).toBeUndefined()
+    expect(seen.stops).toEqual([])
+  })
+
+  test('that completes keeps its reviewer and notes no let-go', ON, async ($, on) => {
+    const seen = engine(on, { reviewerIds: ['ag1', 'ag2'] })
+    await $.prompt.submit(COMPOSER('first'))
+    await $.classic.Stop(stop)
+    await turnEnded($, 'ag1', 'Nothing to note.')
+    await drained()
+    expect(seen.conversation.failing).toBeUndefined()
+    expect(seen.conversation.reviewer).toMatchObject({ id: 'ag1' })
+    expect(seen.conversation.lastLetGo).toBeUndefined()
+    expect(seen.stops).toEqual([])
+  })
+
+  test('whose reviewer is past the rotation limit is let go as a rotation, once', ON, async ($, on) => {
+    const seen = engine(on, { reviewerIds: ['ag1', 'ag2'], stateSeed: { reviewer: { id: 'ag1', model: 'm' }, reviewerIds: ['ag1'], reviewerContext: 80_001 } })
+    await $.prompt.submit(COMPOSER('first'))
+    await $.classic.Stop(stop)
+    await turnFailed($, 'ag1')
+    await drained()
+    expect(seen.conversation.lastLetGo).toBe('rotation')
+    expect(seen.stops).toEqual([{ task_id: 'ag1', spawns: 0 }])
+  })
+})
 
 describe('an open review whose stored reviewer never ends its turn', () => {
   const REASON = 'reviewer did not finish in 10 minutes'

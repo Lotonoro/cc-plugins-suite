@@ -64,8 +64,8 @@ type Scope = Pick<CoreEngineInterface, 'state' | 'ui' | 'clock' | 'fs' | 'env' |
 type Ending = { status: 'complete'; note: string | null } | { status: 'incomplete'; reason: string }
 // Held notes taken for an attach, and the `epoch` at the take.
 type TakenNotes = { notes: readonly PendingNote[]; epoch: number }
-// `retired`: the reviewer the take retired, when it did. `epoch`: the epoch at the take.
-type Taken = { review: OpenReview; model: string | null; retired: string | undefined; epoch: number }
+// `released`: the reviewer the take let go, when it did (a rotation or a failed review). `epoch`: the epoch at the take.
+type Taken = { review: OpenReview; model: string | null; released: string | undefined; epoch: number }
 type Closed = { review: OpenReview; model: string | null; turnEnd: TurnEnd | null }
 type Finished = { answer: string; reason: string; isAborted: boolean; durationMs: number; usage?: TurnUsage }
 // `epoch`: the epoch at the plan; `at`: the clock's time at the plan.
@@ -265,7 +265,7 @@ const stopFailed = ($: Pick<Scope, 'ui'>, err: unknown): void => {
   else recordFailed($, 'reviewer stop', err)
 }
 
-// Stops a reviewer the auditor lets go (`letGo`: one a take rotated out, one a session end forgot, one a refused brief dropped, one whose spawn rejected after its id was learned, one whose review lapsed, or one the toggle switched off or whose spawn landed after it), so it does not sit idle for the rest of the session; each caller says when it issues it. The engine call is not awaited, so no caller's settle or dispatch waits on it; the helper resolves once the stop is issued. Any failure, the state read included, is logged and leaves the reviewer idle, and the caller goes on; the engine's no-session-bound error is the expected failure where no session is bound, and is logged as one plain line. Where a respawn can follow (`mayRespawn`), an id the state holds as the current reviewer is not stopped: a fresh reviewer can come back under a forgotten id, and the stop would end it. A session end spawns none, and when its reset failed the state still names the reviewer it forgot, so it passes false.
+// Stops a reviewer the auditor lets go (`letGo`: one a take rotated out or a failed review ended, one a session end forgot, one a refused brief dropped, one whose spawn rejected after its id was learned, one whose review lapsed, or one the toggle switched off or whose spawn landed after it), so it does not sit idle for the rest of the session; each caller says when it issues it. The engine call is not awaited, so no caller's settle or dispatch waits on it; the helper resolves once the stop is issued. Any failure, the state read included, is logged and leaves the reviewer idle, and the caller goes on; the engine's no-session-bound error is the expected failure where no session is bound, and is logged as one plain line. Where a respawn can follow (`mayRespawn`), an id the state holds as the current reviewer is not stopped: a fresh reviewer can come back under a forgotten id, and the stop would end it. A session end spawns none, and when its reset failed the state still names the reviewer it forgot, so it passes false.
 export const stopReviewer = async ($: Pick<Scope, 'state' | 'tool' | 'ui'>, id: string | undefined, mayRespawn: boolean): Promise<void> => {
   if (id === undefined) return
   try {
@@ -282,7 +282,7 @@ export const stopReviewer = async ($: Pick<Scope, 'state' | 'tool' | 'ui'>, id: 
   }
 }
 
-// The release step of a let-go whose stop follows its change at once: applies `decide`, a state change that makes its let-go through `letGo` and returns the decision, then stops the reviewer it released, unless `stops` is false. Resolves with the conversation after and the id released; a change that throws throws, with nothing stopped. A let-go whose stop must wait for other work applies `letGo` in its own change and stops afterwards: a rotation is let go in the change that takes the review and stopped after the review's log (`takeReview`, `settle`), a lapse in the dispatch's change and stopped after its log (`dispatchIdle`), and a refused brief and a stale landing are let go in the delivery's changes and stopped as it goes on (`deliverBrief`); a rejected spawn goes through the step itself (`releaseRejected`).
+// The release step of a let-go whose stop follows its change at once: applies `decide`, a state change that makes its let-go through `letGo` and returns the decision, then stops the reviewer it released, unless `stops` is false. Resolves with the conversation after and the id released; a change that throws throws, with nothing stopped. A let-go whose stop must wait for other work applies `letGo` in its own change and stops afterwards: a rotation or a failed review is let go in the change that takes the review and stopped after the review's log (`takeReview`, `settle`, `failReview`), a lapse in the dispatch's change and stopped after its log (`dispatchIdle`), and a refused brief and a stale landing are let go in the delivery's changes and stopped as it goes on (`deliverBrief`); a rejected spawn goes through the step itself (`releaseRejected`).
 const release = async ($: Scope, decide: (c: Conversation) => Release, mayRespawn: boolean, stops = true): Promise<{ after: Conversation; released: string | undefined }> => {
   const got: { released?: string } = {}
   const after = await change($, c => {
@@ -294,20 +294,21 @@ const release = async ($: Scope, decide: (c: Conversation) => Release, mayRespaw
   return { after, released: got.released }
 }
 
-// Takes the open review if `ready`, judged on the conversation the change reads; where `back` holds for the review taken, its entries are put back in the record in the same change. Where `mark` holds instead, the review is not taken but marked as followed up (`followedUp`), in the same change: it stays open with its entries held, and its reviewer is not retired. The dispatch failure never asks for a mark.
-const takeReview = async ($: Pick<Scope, 'state'>, ready: (r: OpenReview, c: Conversation) => boolean, back: (r: OpenReview) => boolean, mark: (r: OpenReview) => boolean = () => false): Promise<Taken | undefined> => {
+// Takes the open review if `ready`, judged on the conversation the change reads; where `back` holds for the review taken, its entries are put back in the record in the same change. Where `mark` holds instead, the review is not taken but marked as followed up (`followedUp`), in the same change: it stays open with its entries held, and its reviewer is not let go. Where `fails` holds for the review taken, its reviewer is let go in the same change (`failed review`) unless a rotation already let it go. The dispatch failure never asks for a mark.
+const takeReview = async ($: Pick<Scope, 'state'>, ready: (r: OpenReview, c: Conversation) => boolean, back: (r: OpenReview) => boolean, mark: (r: OpenReview) => boolean = () => false, fails: (r: OpenReview) => boolean = () => false): Promise<Taken | undefined> => {
   const got: { taken?: Taken } = {}
   await change($, c => {
     got.taken = undefined
     const open = c.review
     if (open === undefined || !ready(open, c)) return c
     if (mark(open)) {
-      got.taken = { review: open, model: c.reviewer?.model || null, retired: undefined, epoch: c.epoch }
+      got.taken = { review: open, model: c.reviewer?.model || null, released: undefined, epoch: c.epoch }
       return { ...c, review: { ...open, followedUp: true } }
     }
-    // A reviewer past ROTATE_AT is let go in the same change that ends its review (`letGo`); the caller stops it.
-    const { next, released: retired } = letGo(c, 'rotation', c.reviewer?.id, ROTATE_AT)
-    got.taken = { review: open, model: c.reviewer?.model || null, retired, epoch: c.epoch }
+    // A reviewer past ROTATE_AT, or one whose review failed, is let go in the same change that ends its review (`letGo`); the caller stops it.
+    const rotated = letGo(c, 'rotation', c.reviewer?.id, ROTATE_AT)
+    const { next, released } = rotated.released === undefined && fails(open) ? letGo(c, 'failed review', c.reviewer?.id) : rotated
+    got.taken = { review: open, model: c.reviewer?.model || null, released, epoch: c.epoch }
     return { ...next, review: undefined, record: back(open) ? withEntriesFirst(open.record, c.record) : c.record }
   })
   return got.taken
@@ -435,18 +436,19 @@ const holdOrRelease = async ($: Scope, refusal: Refusal): Promise<Decided | unde
 // `unsent`: this settle follows a follow-up that could not be sent, whose attempt already put the answer in the debug log.
 const settle = async ($: Scope, log: boolean, agentId: string, done: Finished, unsent = false): Promise<void> => {
   const outcomeOf = (r: OpenReview): Outcome => settleOutcome({ note: r.note, number: r.number, followedUp: r.followedUp === true, reason: done.reason, answer: done.answer })
-  const taken = await takeReview($, (_r, c) => standingOf(c, agentId) === 'current', r => outcomeOf(r).status === 'incomplete', r => outcomeOf(r).status === 'follow-up')
+  // An incomplete review lets its reviewer go unless its turn was aborted: an abort is the user's Esc, and a cold respawn after it is what the stopped-session refusal already costs.
+  const taken = await takeReview($, (_r, c) => standingOf(c, agentId) === 'current', r => outcomeOf(r).status === 'incomplete', r => outcomeOf(r).status === 'follow-up', r => outcomeOf(r).status === 'incomplete' && !done.isAborted)
   if (taken === undefined) {
     $.ui.log(`${PLUGIN}: the reviewer ended a turn with no review in progress; not recorded`, { to: 'debug' })
     return
   }
-  const { review, model, retired, epoch } = taken
+  const { review, model, released, epoch } = taken
   const outcome = outcomeOf(review)
   if (outcome.status === 'follow-up') {
     await followUp($, log, agentId, done, review.number, epoch)
     return
   }
-  // The stop is issued last whatever the close or dispatch does: a retired reviewer is never left running by a throw.
+  // The stop is issued last whatever the close or dispatch does: a reviewer let go is never left running by a throw.
   try {
     const turnEnd: TurnEnd = { at: await $.clock.now(), answer: done.answer, reason: done.reason, durationMs: done.durationMs, usage: usageOf(done.usage) }
     const sessionId = await $.session.id()
@@ -468,7 +470,7 @@ const settle = async ($: Scope, log: boolean, agentId: string, done: Finished, u
     // An idle worker gets the next brief at once; a busy one's turn end dispatches. midTurn is read through a change (currentConversation), since a plain get answers the dispatch's starting moment and misses a prompt that entered while this settle ran, a note's own among them.
     if (!(await currentConversation($)).midTurn) await dispatchIdle($, log)
   } finally {
-    await stopReviewer($, retired, true)
+    await stopReviewer($, released, true)
   }
 }
 
@@ -791,16 +793,16 @@ const giveBack = async ($: Scope, sessionId: string, log: boolean, plan: Plan): 
   $.ui.log(`${PLUGIN}: review ${plan.number}'s brief was refused while the session was stopped, so the review is given back until the user's next prompt`, { to: 'debug' })
 }
 
-// A dispatch error marks the reviewer failing (`markFailed`) whether or not its review is still open; only an open review is logged.
+// A dispatch error marks the reviewer failing (`markFailed`) whether or not its review is still open; only an open review is logged, and only its reviewer is let go.
 const failReview = async ($: Scope, sessionId: string, log: boolean, plan: Plan, reason: string): Promise<void> => {
-  const taken = await takeReview($, r => r.number === plan.number, () => true)
-  // As in settle, the stop is issued last whatever the bookkeeping does: a retired reviewer is never left running by a throw.
+  const taken = await takeReview($, r => r.number === plan.number, () => true, () => false, () => true)
+  // As in settle, the stop is issued last whatever the bookkeeping does: a reviewer let go is never left running by a throw.
   try {
     await markFailed($, reason, plan.epoch, 'not dispatched')
     if (taken === undefined) return
     await logIncomplete($, sessionId, log, taken.review, taken.model, reason)
   } finally {
-    await stopReviewer($, taken?.retired, true)
+    await stopReviewer($, taken?.released, true)
   }
 }
 
