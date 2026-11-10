@@ -150,14 +150,15 @@ export const land = (c: Conversation, brief: string, number: number, epoch: numb
 // What a let-go decided: the conversation after it, and the id of the reviewer to stop (absent when none was let go).
 export type Release = { next: Conversation; released: string | undefined }
 
-// The reasons whose let-go clears the stored reviewer and its context. A refused brief's reviewer is cleared by the spawn that replaces it (`spawning`), and a stale landing's spawn was never the stored one.
+// The reasons whose let-go clears the stored reviewer and its context. A refused brief's reviewer is cleared by the spawn that replaces it (`spawning`), and a stale landing's spawn was never the stored one. A rejected spawn's learned id clears it only where it is that id (`letGo`).
 const CLEARING: readonly LetGoReason[] = ['rotation', 'switch off', 'session end']
 
-// The one decision to let a reviewer go, for `reason`. `id` is the reviewer let go: the stored one's for a rotation, a switch off and a session end, the refused one's for a refused brief, the landed one's for a stale landing. The reviewer's id and name still mark its traffic and rows. A rotation lets go only once the reviewer's context passed `rotateAt`, and a stale landing whose id is the stored reviewer's lets nothing go, since it is not stale after all. A let-go of an id notes its reason (`lastLetGo`), which a later one replaces; `released` is the id for the caller to stop, in the change that applies `next`.
+// The one decision to let a reviewer go, for `reason`. `id` is the reviewer let go: the stored one's for a rotation, a switch off and a session end, the refused one's for a refused brief, the landed one's for a stale landing, the one the spawn hook learned for a rejected spawn (cleared from the stored reviewer only when it is that one, since a later spawn may have stored another). The reviewer's id and name still mark its traffic and rows. A rotation lets go only once the reviewer's context passed `rotateAt`, and a stale landing whose id is the stored reviewer's lets nothing go, since it is not stale after all. A let-go of an id notes its reason (`lastLetGo`), which a later one replaces; `released` is the id for the caller to stop, in the change that applies `next`.
 export const letGo = (c: Conversation, reason: LetGoReason, id: string | undefined, rotateAt = 0): Release => {
   if (reason === 'rotation' && c.reviewerContext <= rotateAt) return { next: c, released: undefined }
   if (reason === 'stale landing' && c.reviewer?.id === id) return { next: c, released: undefined }
-  const cleared: Conversation = CLEARING.includes(reason) ? { ...c, reviewer: undefined, reviewerContext: 0 } : c
+  const clears = CLEARING.includes(reason) || (reason === 'rejected spawn' && id !== undefined && c.reviewer?.id === id)
+  const cleared: Conversation = clears ? { ...c, reviewer: undefined, reviewerContext: 0 } : c
   return id === undefined ? { next: cleared, released: undefined } : { next: { ...cleared, lastLetGo: reason }, released: id }
 }
 

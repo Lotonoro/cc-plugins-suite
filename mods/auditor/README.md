@@ -107,9 +107,10 @@ Then start a new session. The reviewer is on as soon as the plugin is loaded.
   not raise a settled finding again without new evidence. The memory is the reviewer's own, never sent to the agent:
   it is bounded in size and age, reset on `/clear` and on switching on, and kept while the auditor is off. The retired
   reviewer is stopped, so it does not stay idle for the rest of the session. So is a reviewer forgotten on a `/clear`,
-  one whose brief was refused, or one the toggle switched off. A session that is exiting (`/exit`, ctrl+c, ctrl+d, or
-  a `-p` run that finished) ends the reviewer with it, so no stop is attempted then. Should one review alone outgrow
-  100,000 tokens, the reviewer compacts, keeping your instructions and where you gave them.
+  one whose brief was refused, one whose spawn failed after it was named, or one the toggle switched off. A session
+  that is exiting (`/exit`, ctrl+c, ctrl+d, or a `-p` run that finished) ends the reviewer with it, so no stop is
+  attempted then. Should one review alone outgrow 100,000 tokens, the reviewer compacts, keeping your instructions and
+  where you gave them.
 - **What the reviewer reads.** A record of the agent's turns since the previous review: your prompts, the agent's
   replies and every tool call with its result. The review's brief also lists the paths the record edits: one line,
   each path once in the order it was first edited, at most 20, with a count of any left out. It lists only what the
@@ -122,9 +123,9 @@ Then start a new session. The reviewer is on as soon as the plugin is loaded.
   whether the review's brief told the reviewer that nothing will wake the agent (`nothing_wakes`), whether the review
   had its follow-up (`followed_up`), and where the brief went (`brief_to`): `stored` for the reviewer already running,
   or `spawn:` with why, either `no reviewer yet` or the reason the last reviewer was let go (`rotation`, `switch off`,
-  `session end`, `refused brief`, `stale landing`). `brief_to` is null for a review given back, or whose dispatch failed
-  before its brief went out, since its brief did not reach a reviewer. It is declared under `userConfig` in
-  `.claude-plugin/plugin.json`.
+  `session end`, `refused brief`, `stale landing`, `rejected spawn`). `brief_to` is null for a review given back, or
+  whose dispatch failed before its brief went out, since its brief did not reach a reviewer. It is declared under
+  `userConfig` in `.claude-plugin/plugin.json`.
 
 ## The stall nudge
 

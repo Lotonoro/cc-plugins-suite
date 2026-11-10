@@ -3,6 +3,7 @@ import { LOOKUP_TIMEOUT_MS, lineCommand, searchCommand } from './transcript'
 import { MEMORY, MEMORY_ACTION, MEMORY_FIELD, REVIEW_ENDED, printMemory, renderMemory } from './memory'
 import { followUpText } from './notes'
 import { PRICED_MODEL } from './pricing'
+import { learn } from './reviewer'
 import type { MemoryEntry } from '../types/index'
 import { REVIEWER_PROMPT } from './prompt'
 import * as register from './register'
@@ -34,6 +35,8 @@ type Opts = {
   spawn?: unknown
   // The reviewer spawn throws this message rather than answering.
   spawnThrows?: string
+  // The reviewer spawn throws this message after its hook learned the agent's id: the spawn hook's write is staged by applying `learn` to the first conversation read after the throw, since the test's hooks sit beneath the plugin's and cannot throw above it.
+  spawnThrowsAfterLearning?: string
   spawnNoId?: boolean
   reviewerIds?: string[]
   agents?: { id: string; name?: string; type?: string; status?: string; description?: string; teammateId?: string; spawnedBy?: string }[]
@@ -134,6 +137,7 @@ const engine = (on: any, opts: Opts = {}) => {
   current.seed = opts.stateSeed
   // The reviewer's spawns take the ids in reviewerIds in order, then ag1.
   let reviewerSpawns = 0
+  const learnedOnThrow: { pending?: (c: any) => any } = {}
   const reviewerId = (): string => opts.reviewerIds?.[reviewerSpawns++] ?? 'ag1'
   on('classic.Stop', () => ({}))
   on('classic.PostToolBatch', () => ({}))
@@ -205,6 +209,12 @@ const engine = (on: any, opts: Opts = {}) => {
   })
   let getHeld = false
   on('state.get', async (_$: any, e: any, next: any) => {
+    if (e.key === 'conversation' && learnedOnThrow.pending !== undefined && seen.conversation !== undefined) {
+      const answer = await next(e)
+      const learns = learnedOnThrow.pending
+      learnedOnThrow.pending = undefined
+      return { ...answer, value: { ...answer.value, value: learns(answer.value.value) } }
+    }
     if (e.key === 'conversation' && opts.getHold !== undefined && !getHeld && opts.getHold.when(seen.conversation)) {
       getHeld = true
       opts.getHold.reached?.()
@@ -240,6 +250,11 @@ const engine = (on: any, opts: Opts = {}) => {
     const type = e.subagent_type ?? e.subagentType
     if (type === 'auditor:reviewer') {
       if (opts.spawnThrows !== undefined) throw new Error(opts.spawnThrows)
+      if (opts.spawnThrowsAfterLearning !== undefined) {
+        const id = reviewerId()
+        learnedOnThrow.pending = c => learn(c, e.prompt, id, 'm', 'auditor-reviewer')
+        throw new Error(opts.spawnThrowsAfterLearning)
+      }
       const reviewersSpawned = seen.spawns.filter(s => typeOf(s) === 'auditor:reviewer').length
       if (opts.spawnThrowsFrom !== undefined && reviewersSpawned >= opts.spawnThrowsFrom) throw new Error('spawn down')
       if (opts.spawnDeniesFrom !== undefined && reviewersSpawned >= opts.spawnDeniesFrom) return { deny: opts.spawnDenyReason ?? 'spawn refused' }
@@ -7222,5 +7237,66 @@ describe('the fields of the review log that audit the brief', () => {
     const seen = engine(on, { sendFails: 'ag1', refusal: 'Teammate "auditor-reviewer" was not messaged: the session was stopped and nobody has sent input since.' })
     await secondReview($)
     expect(logOf(seen, LOG_2)).toMatchObject({ status: 'incomplete', reason: 'given back: the session was stopped', nothing_wakes: false, followed_up: false, brief_to: null })
+  })
+})
+
+
+// A reviewer spawn that rejects after its hook learned the agent's id: the id is let go and stopped. The engine skips a test hook that throws and rejects the call with this reason.
+const NO_SPAWN = 'no implementation for agent.spawn'
+describe('a rejected spawn', () => {
+  test('whose hook learned an id stops that id, stores no reviewer, notes rejected spawn, and the next dispatch spawns fresh', ON, async ($, on) => {
+    const opts: Opts = { spawnThrowsAfterLearning: 'spawn broke', reviewerIds: ['ag1', 'ag2'] }
+    const seen = engine(on, opts)
+    await $.prompt.submit(COMPOSER('first'))
+    await $.classic.Stop(stop)
+    await drained()
+    expect(seen.stops).toEqual([{ task_id: 'ag1', spawns: 1 }])
+    expect(seen.conversation.reviewer).toBeUndefined()
+    expect(seen.conversation).toMatchObject({ reviewerContext: 0, lastLetGo: 'rejected spawn', spawnsInFlight: [], briefsInFlight: [] })
+    expect(seen.conversation.reviewerIds).toEqual(['ag1'])
+    expect(logOf(seen, LOG_1)).toMatchObject({ status: 'incomplete', reason: NO_SPAWN, brief_to: null })
+    opts.spawnThrowsAfterLearning = undefined
+    await $.prompt.submit(COMPOSER('second'))
+    await $.classic.Stop(stop)
+    expect(seen.sends).toEqual([])
+    expect(seen.spawns.length).toBe(2)
+    expect(seen.conversation.reviewer).toMatchObject({ id: 'ag2' })
+    expect(seen.conversation.review.briefTo).toBe('spawn: rejected spawn')
+  })
+
+  test('whose id was learned has a late turn end that settles nothing', ON, async ($, on) => {
+    const opts: Opts = { spawnThrowsAfterLearning: 'spawn broke', reviewerIds: ['ag1', 'ag2'] }
+    const seen = engine(on, opts)
+    await $.prompt.submit(COMPOSER('first'))
+    await $.classic.Stop(stop)
+    opts.spawnThrowsAfterLearning = undefined
+    await $.prompt.submit(COMPOSER('second'))
+    await $.classic.Stop(stop)
+    await turnEnded($, 'ag1', 'Nothing to note.')
+    expect(seen.conversation.review).toMatchObject({ number: 2 })
+    expect(logOf(seen, LOG_2)).toBeUndefined()
+    await turnEnded($, 'ag2', 'Nothing to note.')
+    expect(logOf(seen, LOG_2)).toMatchObject({ status: 'complete' })
+  })
+
+  test('before any id was learned stops nothing, notes no reason, and fails the review as before', ON, async ($, on) => {
+    const seen = engine(on, { spawnThrows: 'spawn broke' })
+    await $.prompt.submit(COMPOSER('first'))
+    await $.classic.Stop(stop)
+    await drained()
+    expect(seen.stops).toEqual([])
+    expect(seen.conversation.lastLetGo).toBeUndefined()
+    expect(logOf(seen, LOG_1)).toMatchObject({ status: 'incomplete', reason: NO_SPAWN, brief_to: null })
+    expect(seen.conversation.failing).toBe('not dispatched')
+  })
+
+  test('whose let-go cannot be written is logged and leaves the spawn\'s error the one the review logs', ON, async ($, on) => {
+    const seen = engine(on, { spawnThrowsAfterLearning: 'spawn broke', writeRefusedWhen: c => c.lastLetGo === 'rejected spawn' })
+    await $.prompt.submit(COMPOSER('first'))
+    await $.classic.Stop(stop)
+    await drained()
+    expect(seen.stops).toEqual([])
+    expect(JSON.stringify(seen.logs)).toContain('spawn bookkeeping failed')
+    expect(logOf(seen, LOG_1)).toMatchObject({ status: 'incomplete', reason: NO_SPAWN })
   })
 })

@@ -261,7 +261,7 @@ const stopFailed = ($: Pick<Scope, 'ui'>, err: unknown): void => {
   else recordFailed($, 'reviewer stop', err)
 }
 
-// Stops a reviewer the auditor lets go (`letGo`: one a take rotated out, one a session end forgot, one a refused brief dropped, or one the toggle switched off or whose spawn landed after it), so it does not sit idle for the rest of the session; each caller says when it issues it. The engine call is not awaited, so no caller's settle or dispatch waits on it; the helper resolves once the stop is issued. Any failure, the state read included, is logged and leaves the reviewer idle, and the caller goes on; the engine's no-session-bound error is the expected failure where no session is bound, and is logged as one plain line. Where a respawn can follow (`mayRespawn`), an id the state holds as the current reviewer is not stopped: a fresh reviewer can come back under a forgotten id, and the stop would end it. A session end spawns none, and when its reset failed the state still names the reviewer it forgot, so it passes false.
+// Stops a reviewer the auditor lets go (`letGo`: one a take rotated out, one a session end forgot, one a refused brief dropped, one whose spawn rejected after its id was learned, or one the toggle switched off or whose spawn landed after it), so it does not sit idle for the rest of the session; each caller says when it issues it. The engine call is not awaited, so no caller's settle or dispatch waits on it; the helper resolves once the stop is issued. Any failure, the state read included, is logged and leaves the reviewer idle, and the caller goes on; the engine's no-session-bound error is the expected failure where no session is bound, and is logged as one plain line. Where a respawn can follow (`mayRespawn`), an id the state holds as the current reviewer is not stopped: a fresh reviewer can come back under a forgotten id, and the stop would end it. A session end spawns none, and when its reset failed the state still names the reviewer it forgot, so it passes false.
 export const stopReviewer = async ($: Pick<Scope, 'state' | 'tool' | 'ui'>, id: string | undefined, mayRespawn: boolean): Promise<void> => {
   if (id === undefined) return
   try {
@@ -278,7 +278,7 @@ export const stopReviewer = async ($: Pick<Scope, 'state' | 'tool' | 'ui'>, id: 
   }
 }
 
-// The release step of a let-go whose stop follows its change at once: applies `decide`, a state change that makes its let-go through `letGo` and returns the decision, then stops the reviewer it released, unless `stops` is false. Resolves with the conversation after and the id released; a change that throws throws, with nothing stopped. A let-go whose stop must wait for other work applies `letGo` in its own change and stops afterwards: a rotation is let go in the change that takes the review and stopped after the review's log (`takeReview`, `settle`), and a refused brief and a stale landing are let go in the delivery's changes and stopped as it goes on (`deliverBrief`).
+// The release step of a let-go whose stop follows its change at once: applies `decide`, a state change that makes its let-go through `letGo` and returns the decision, then stops the reviewer it released, unless `stops` is false. Resolves with the conversation after and the id released; a change that throws throws, with nothing stopped. A let-go whose stop must wait for other work applies `letGo` in its own change and stops afterwards: a rotation is let go in the change that takes the review and stopped after the review's log (`takeReview`, `settle`), and a refused brief and a stale landing are let go in the delivery's changes and stopped as it goes on (`deliverBrief`); a rejected spawn goes through the step itself (`releaseRejected`).
 const release = async ($: Scope, decide: (c: Conversation) => Release, mayRespawn: boolean, stops = true): Promise<{ after: Conversation; released: string | undefined }> => {
   const got: { released?: string } = {}
   const after = await change($, c => {
@@ -627,6 +627,10 @@ const knownReviewerName = async ($: Pick<Scope, 'state' | 'agent' | 'ui'>, name:
   return listed !== 'other'
 }
 
+// Lets go the id the spawn hook learned for `brief`'s spawn (`learn` keeps it on the spawn's entry in `spawnsInFlight`) once that spawn rejected: it is no longer stored, so no brief goes to it and its turn end settles nothing, and it is stopped. Only the id on the spawn's own entry is let go: a spawn that rejected before its hook saw an id lets go and stops nothing. It runs before the finally takes the entry out. A failed write is logged and stops nothing, so the spawn's error is the one its dispatch fails with.
+const releaseRejected = ($: Scope, brief: string): Promise<unknown> =>
+  release($, c => letGo(c, 'rejected spawn', c.spawnsInFlight.find(s => s.brief === brief)?.id), true).catch((err: unknown) => recordFailed($, 'spawn bookkeeping', err))
+
 // Takes `brief`'s entry out of `spawnsInFlight`. A failed write is logged and leaves the entry, which blocks no adoption past SPAWN_TIMEOUT_MS (`adopt`).
 const releaseSpawn = async ($: Pick<Scope, 'state' | 'ui'>, brief: string): Promise<void> => {
   await change($, c => ({ ...c, spawnsInFlight: c.spawnsInFlight.filter(s => s.brief !== brief) })).catch((err: unknown) => recordFailed($, 'spawn bookkeeping', err))
@@ -715,6 +719,7 @@ const deliverBrief = async ($: Scope, plan: Plan): Promise<boolean> => {
       })
       .catch(async (err: unknown) => {
         await unroute($, plan.epoch, number)
+        await releaseRejected($, brief)
         throw err
       })
     if (started.deny !== undefined) {

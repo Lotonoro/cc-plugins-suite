@@ -362,10 +362,21 @@ describe('letting a reviewer go', () => {
     expect(letGo(c, 'stale landing', 'ag1')).toEqual({ next: c, released: undefined })
   })
 
+  test('a rejected spawn notes its reason and returns the learned id, and clears the stored reviewer when it is that id', () => {
+    const c = stored({ reviewerContext: 7 })
+    expect(letGo(c, 'rejected spawn', 'ag1')).toEqual({ next: { ...c, reviewer: undefined, reviewerContext: 0, lastLetGo: 'rejected spawn' }, released: 'ag1' })
+  })
+
+  test('a rejected spawn whose id is not the stored reviewer\'s leaves the stored reviewer', () => {
+    const c = stored({ reviewerContext: 7 })
+    expect(letGo(c, 'rejected spawn', 'ag9')).toEqual({ next: { ...c, lastLetGo: 'rejected spawn' }, released: 'ag9' })
+  })
+
   test('with no id to let go, nothing is released and the last reason stays; a clearing reason still clears', () => {
     const c = conversation({ reviewerContext: 3, lastLetGo: 'rotation' })
     expect(letGo(c, 'switch off', undefined)).toEqual({ next: { ...c, reviewer: undefined, reviewerContext: 0 }, released: undefined })
     expect(letGo(c, 'refused brief', undefined)).toEqual({ next: c, released: undefined })
+    expect(letGo(stored(), 'rejected spawn', undefined)).toEqual({ next: stored(), released: undefined })
   })
 
   test('a later let-go replaces the reason', () => {
