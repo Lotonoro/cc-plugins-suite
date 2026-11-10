@@ -380,7 +380,16 @@ test('a joined sequence is one unit and a joiner is never the last thing kept: t
     expect(got, `${room}`).toBe(`${FAMILY.repeat(4)}…`)
     expect(displayColumns(got), `${room}`).toBe(9)
   }
-  expect(cutToColumns(`${face}${JOINER}${face}${JOINER}xx`, 5)).toBe(`${face}${JOINER}${face}…`)
+  expect(cutToColumns(`${face}${JOINER}${face}${JOINER}xx`, 5)).toBe('…')
+})
+
+test('a run of unmeasured parts joined by a joiner is kept whole or dropped, never cut inside: three grinning faces joined, then `xx`, are the run and an ellipsis at 7 and `…` at 6, and with `ab` before them `ab…` at 8 and `ab`, the run and an ellipsis at 9', () => {
+  const run = cps(0x1f600, 0x200d, 0x1f600, 0x200d, 0x1f600)
+  expect(displayColumns(run)).toBe(6)
+  expect(cutToColumns(`${run}xx`, 7)).toBe(`${run}…`)
+  expect(cutToColumns(`${run}xx`, 6)).toBe('…')
+  expect(cutToColumns(`ab${run}xx`, 8)).toBe('ab…')
+  expect(cutToColumns(`ab${run}xx`, 9)).toBe(`ab${run}…`)
 })
 
 test('a code point and the U+FE0F after it are kept together or dropped together, as tmux draws the pair one glyph two columns wide: ten ❤ U+FE0F are seven hearts and an ellipsis at 15 and at 16, eight at 17 and at 18, nine at 19, and whole at 20', () => {
@@ -449,9 +458,10 @@ const SAMPLES = [
   `${cps(0x2764, 0xfe0f, 0x200d, 0x1f525)} on fire ${HEART}`,
   `${cps(0x261d, 0x1f3fd)} up ${cps(0x1faf1, 0x1f3fb, 0x200d, 0x1faf2, 0x1f3fc)} shake`,
   `${FAMILY.repeat(3)} and ${cps(0x1f1fa, 0x1f1f8)}`,
+  `${cps(0x1f600, 0x200d, 0x1f600)}ab${cps(0x1f600, 0x200d, 0x1f600, 0x200d, 0x1f600)}cd ${cps(0x1f600, 0x200d, 0x1f600)} ef`,
 ]
 
-test('whatever the text and the room, the cut is the longest start of the text, in whole units, not ending on a joiner, that leaves a column for the ellipsis, and it measures at most the room', () => {
+test('whatever the text and the room, the cut is the longest start of the text that ends at a cut point and leaves a column for the ellipsis, and it measures at most the room', () => {
   for (const text of SAMPLES) {
     for (let room = -1; room <= 45; room++) {
       const where = `${JSON.stringify(text)} in ${room}`
@@ -466,14 +476,14 @@ test('whatever the text and the room, the cut is the longest start of the text, 
       }
       expect(got.endsWith('…'), where).toBe(true)
       expect(displayColumns(got), where).toBeLessThanOrEqual(room)
-      // The longest start that ends between units, fits the room less the ellipsis and does not end on a joiner, found by trying every start.
+      // The longest start that ends at a cut point and fits the room less the ellipsis, found by trying every start: the empty start, and one that ends between units, not
+      // on a joiner, before a unit that draws a column.
       let want = ''
       let start = ''
-      for (const { text: unit } of unitsOf(text)) {
-        if (displayColumns(start) <= room - 1 && !start.endsWith(JOINER)) want = start
+      for (const [k, { text: unit, columns }] of unitsOf(text).entries()) {
+        if (displayColumns(start) <= room - 1 && (k === 0 || (!start.endsWith(JOINER) && columns > 0))) want = start
         start += unit
       }
-      if (displayColumns(start) <= room - 1 && !start.endsWith(JOINER)) want = start
       expect(got, where).toBe(`${want}…`)
     }
   }
