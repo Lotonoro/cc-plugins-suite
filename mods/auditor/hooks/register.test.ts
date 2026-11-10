@@ -6457,8 +6457,9 @@ describe('the review facts', () => {
       await noteSent($, BODY)
       expect(seen.conversation).toMatchObject({ notes: 1, pendingNotes: [{ number: 1, text: BODY }] })
       expect((await rowsOf($)).at(-1)).toBe('1 note held for your next prompt')
+      seen.clock = NOON
       await $.turn.complete(TURN_END('ag1', 'Sent.'))
-      expect(await reviewsRow($)).toMatch(/^1 review · 1 note · last at \d\d:\d\d, note sent$/)
+      expect(await reviewsRow($)).toBe('1 review · 1 note · last at 14:32, note sent')
       await $.prompt.submit(COMPOSER('carry on'))
       expect(seen.conversation.pendingNotes).toEqual([])
       expect((await rowsOf($)).some(r => r.includes('held'))).toBe(false)
