@@ -93,6 +93,15 @@ describe('whitespace inside an entry', () => {
     expect(changeMemory([entry(3, 'a.ts:3 first.')], 9, call(REMOVE, 3, 'fixed.\n\nRead at line 14.'))).toMatchObject({ logged: 'memory entry for review 3 removed: a.ts:3 first.; why: fixed. Read at line 14.' })
   })
 
+  test('a note is folded before it is clipped, so whitespace does not cost it its tail', () => {
+    const body = `${'n'.repeat(1_000)}${'\n\n'.repeat(750)}tail`
+    expect(withNote([], 1, body)[0]?.text).toBe(`${'n'.repeat(1_000)} tail`)
+  })
+
+  test('a removal logs a note with line breaks on one line', () => {
+    expect(changeMemory([entry(3, 'a.ts:3 first.\n\nSecond.')], 9, call(REMOVE, 3, 'fixed.'))).toMatchObject({ logged: 'memory entry for review 3 removed: a.ts:3 first. Second.; why: fixed.' })
+  })
+
   test('the why limit counts the folded why', () => {
     expect('memory' in changeMemory([entry(3)], 9, call(SETTLE, 3, `${'w'.repeat(200)}\n\n\n\n${'w'.repeat(199)}`))).toBe(true)
     expect(changeMemory([entry(3)], 9, call(SETTLE, 3, `${'w'.repeat(200)}\n\n${'w'.repeat(200)}`))).toEqual({ refusal: 'why is 401 characters, over the 400 allowed, so the memory was not changed' })

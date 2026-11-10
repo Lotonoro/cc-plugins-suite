@@ -23,14 +23,14 @@ export const REVIEW_ENDED = "auditor's review ended before this change, so the m
 
 const HEADING = 'The notes earlier reviews delivered to the worker follow. They are your own memory of this conversation, and are never sent to the worker again:'
 
-// The memory with one more entry: the note's body, clipped, under its review number, in flight and touched at that number.
-export const withNote = (memory: readonly MemoryEntry[], number: number, body: string): MemoryEntry[] => [...memory, { number, text: clip(body, ENTRY_CHARS) }]
+// Text on one line: every run of whitespace, line breaks included, becomes one space, so a blank line inside a note or a reason never starts a paragraph that reads as an entry of its own.
+const folded = (text: string): string => text.replace(/\s+/g, ' ').trim()
+
+// The memory with one more entry: the note's body, folded to one line and then clipped, under its review number, in flight and touched at that number.
+export const withNote = (memory: readonly MemoryEntry[], number: number, body: string): MemoryEntry[] => [...memory, { number, text: clip(folded(body), ENTRY_CHARS) }]
 
 // The review that last touched an entry: a settle's, else the one that booked it.
 const touchedOf = (entry: MemoryEntry): number => entry.touched ?? entry.number
-
-// Text on one line: every run of whitespace, line breaks included, becomes one space, so a blank line inside a note or a reason never starts a paragraph that reads as an entry of its own.
-const folded = (text: string): string => text.replace(/\s+/g, ' ').trim()
 
 // One entry as the brief and the printout state it, on one line: its review number, its kind, its last touch, a settled one's reason, then its note.
 const lineOf = (entry: MemoryEntry): string =>
@@ -96,7 +96,7 @@ export const changeMemory = (memory: readonly MemoryEntry[], open: number | unde
   const why = folded(given)
   if (sizeOf(why) > WHY_CHARS) return refused(`${MEMORY_FIELD.why} is ${sizeOf(why)} characters, over the ${WHY_CHARS} allowed`)
   if (action === MEMORY_ACTION.remove) {
-    return { memory: memory.filter(e => e !== target), answer: `Review ${review}'s entry is removed.`, logged: `memory entry for review ${review} removed: ${clip(target.text, MEMORY_LOG_CHARS)}; why: ${clip(why, MEMORY_LOG_CHARS)}` }
+    return { memory: memory.filter(e => e !== target), answer: `Review ${review}'s entry is removed.`, logged: `memory entry for review ${review} removed: ${clip(folded(target.text), MEMORY_LOG_CHARS)}; why: ${clip(why, MEMORY_LOG_CHARS)}` }
   }
   if (review === open) return refused(`review ${review} is this review's own entry, which the worker has not answered yet, and a ${MEMORY_ACTION.settle} needs the worker's counter`)
   const settled: MemoryEntry = { number: target.number, text: target.text, kind: 'settled', touched: open, why }

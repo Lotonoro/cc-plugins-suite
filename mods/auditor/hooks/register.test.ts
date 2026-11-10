@@ -5269,7 +5269,7 @@ describe('a note held after an interrupt', () => {
     await drained()
     expect(seen.toasts).toEqual([ESCALATED_TOAST])
     expect(pushes(seen)).toEqual(['auditor escalated: Escalation: auth belongs in middleware.'])
-    expect(seen.conversation.memory).toEqual([{ number: 1, text: escalation }])
+    expect(seen.conversation.memory).toEqual([{ number: 1, text: 'Escalation: auth belongs in middleware. Worker: handlers.' }])
     await $.turn.complete(TURN_END('ag1', 'Sent.'))
     await $.prompt.submit(COMPOSER('more'))
     await $.classic.Stop(stop)
