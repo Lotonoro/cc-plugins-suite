@@ -5,7 +5,7 @@ import { MEMORY, MEMORY_ACTION, MEMORY_FIELD, MEMORY_LOG_CHARS, REVIEW_ENDED, WH
 import type { MemoryChange } from './memory'
 import { answerOf, buttonOf } from './button'
 import type { Figures } from './button'
-import { MAIN, admitSend, decideRefusal, followUpText, frameNote, marksOf, readSend, settleOutcome } from './notes'
+import { MAIN, admitSend, decideRefusal, followUpText, frameNote, isStoppedRefusal, marksOf, readSend, settleOutcome } from './notes'
 import type { Decided, Outcome, Refusal, Sent, Verdict } from './notes'
 import { REVIEWER_PROMPT } from './prompt'
 import { clip, entryBlock, pageOf, renumberBlock, toolLine } from './record'
@@ -39,6 +39,8 @@ const PUSH_CHARS = 180
 const ROTATE_AT = 80_000
 // How long a reviewer spawn may stay in flight before it is given up (`spawnsInFlight`).
 const SPAWN_TIMEOUT_MS = 10 * 60 * 1000
+// The reason a review the stopped session refused is logged incomplete with (`giveBack`).
+const GIVEN_BACK = 'given back: the session was stopped'
 // The reason a review is logged incomplete with when no spawn stood a reviewer in for it in SPAWN_TIMEOUT_MS (`dispatchIdle`).
 const SPAWN_LAPSED = `reviewer spawn did not settle in ${SPAWN_TIMEOUT_MS / 60_000} minutes`
 // What a compaction of the reviewer's own conversation keeps: the facts its judgement rests on, not the reviews that found nothing. Neither its notes nor its disputes: the memory every brief carries is their one record.
@@ -500,8 +502,8 @@ const briefOf = (number: number, entries: number, lastMessage: string, wake: Wak
   lastMessage === '' ? '(none)' : lastMessage,
 ].join('\n')
 
-// After a failed review only a turn the user's own prompt started dispatches: a notice, a peer's message or a plugin's own prompt does not.
-const eligible = (c: Conversation): boolean => !c.off && c.review === undefined && c.record.blocks.length > 0 && !(c.failing && c.turnStart !== 'user')
+// A review is dispatched only with no review open and entries to cover. After an Esc, while the interrupt mark is set or a note is held, none is: the engine refuses every message from the session to an agent until the user types again, and the user's next plain prompt clears both. After a failed review only a turn the user's own prompt started dispatches: a notice, a peer's message or a plugin's own prompt does not.
+const eligible = (c: Conversation): boolean => !c.off && c.review === undefined && c.record.blocks.length > 0 && !c.interrupted && c.pendingNotes.length === 0 && !(c.failing && c.turnStart !== 'user')
 
 // The brief a SendMessage's message or an Agent call's prompt is, when it is exactly one in flight: the plugin's own call, which the record leaves out.
 const briefCalled = (c: Conversation, tool: string, input: Record<string, unknown>): string | undefined => {
@@ -541,7 +543,7 @@ const dispatchIdle = async ($: Scope, log: boolean): Promise<void> => {
   if (plan === undefined) return
   if (bound !== undefined && bound.aged + bound.evicted > 0) $.ui.log(`${PLUGIN}: review ${plan.number}'s dispatch aged out ${bound.aged} and evicted ${bound.evicted} memory entries`, { to: 'debug' })
   try {
-    await deliverBrief($, plan)
+    if (await deliverBrief($, plan)) await giveBack($, sessionId, log, plan)
   } catch (err) {
     await unflightBrief($, plan.brief)
     recordFailed($, 'review dispatch', err)
@@ -630,13 +632,15 @@ const sendToReviewer = async ($: Scope, to: string, text: string, epoch: number,
   return { status: 'delivered' }
 }
 
-const deliverBrief = async ($: Scope, plan: Plan): Promise<void> => {
+// Delivers the plan's brief to a reviewer, stored or spawned. Resolves true when the engine refused the brief in its stopped-session state, by either transport, so the caller gives the review back (`giveBack`); the stored reviewer is kept then, and no spawn is made after its refusal.
+const deliverBrief = async ($: Scope, plan: Plan): Promise<boolean> => {
   const { send, brief, number } = plan
   // The plan's review must still be the open one, at the plan's epoch (`epoch`); otherwise its brief goes to no reviewer, stored or spawned.
   const ours = (c: Conversation): boolean => c.epoch === plan.epoch && c.review?.number === number
   if (send !== undefined) {
     const sent = await sendToReviewer($, send, brief, plan.epoch, number)
-    if (sent.status !== 'refused') return
+    if (sent.status !== 'refused') return false
+    if (isStoppedRefusal(sent.reason)) return true
     // The stored reviewer did not take the brief, so it is no longer the reviewer: this dispatch spawns one.
     $.ui.log(`${PLUGIN}: the reviewer's send was refused, so a new reviewer is spawned: ${sent.reason}`, { to: 'debug' })
   }
@@ -650,7 +654,7 @@ const deliverBrief = async ($: Scope, plan: Plan): Promise<void> => {
   })
   if (spawned.dropped) {
     await stopReviewer($, send, true)
-    return
+    return false
   }
   // However the spawn settles, the finally takes its entry out of `spawnsInFlight`, with what the spawn hook kept on it, and stops the refused stored reviewer (`send` is set only when its send was refused).
   try {
@@ -661,7 +665,9 @@ const deliverBrief = async ($: Scope, plan: Plan): Promise<void> => {
       prompt: brief,
     })
     if (started.deny !== undefined) {
-      throw new Error(`reviewer spawn refused: ${started.deny}`)
+      if (!isStoppedRefusal(started.deny)) throw new Error(`reviewer spawn refused: ${started.deny}`)
+      await unflightBrief($, brief)
+      return true
     }
     // The landing's one change, under the plan's epoch (`epoch`): `land` decides the id and whether the spawn stands in as the reviewer (`spawnsInFlight`).
     const landed: { id?: string; stale: boolean; stood: boolean } = { stale: false, stood: false }
@@ -675,17 +681,33 @@ const deliverBrief = async ($: Scope, plan: Plan): Promise<void> => {
     // A stale landing with no id stops nothing. No catch takes its brief out of flight, so it leaves here.
     if (landed.id === undefined && landed.stale) {
       await unflightBrief($, brief)
-      return
+      return false
     }
     if (landed.id === undefined) {
       throw new Error('reviewer spawn returned no agent id')
     }
     // A stale spawn, or one whose review closed since under no reviewer of its own (`dispatchIdle` gave it up), is let go.
     if (!landed.stood) await stopReviewer($, landed.id, true)
+    return false
   } finally {
     await releaseSpawn($, brief)
     await stopReviewer($, send, true)
   }
+}
+
+// A review whose brief the stopped session refused is given back: its entries go to the front of the record, the interrupt mark is set so nothing is dispatched until the user's next plain prompt, and the review is logged incomplete with its own reason; its number is not reused. It fails nothing and stops no reviewer. Only while the plan's review is still the open one, at the plan's epoch: a reset has already dropped and logged it.
+const giveBack = async ($: Scope, sessionId: string, log: boolean, plan: Plan): Promise<void> => {
+  const got: { review?: OpenReview; model: string | null } = { model: null }
+  await change($, c => {
+    got.review = undefined
+    if (c.epoch !== plan.epoch || c.review?.number !== plan.number) return c
+    got.review = c.review
+    got.model = c.reviewer?.model || null
+    return { ...c, review: undefined, record: withEntriesFirst(c.review.record, c.record), interrupted: true }
+  })
+  if (got.review === undefined) return
+  await logIncomplete($, sessionId, log, got.review, got.model, GIVEN_BACK)
+  $.ui.log(`${PLUGIN}: review ${plan.number}'s brief was refused while the session was stopped, so the review is given back until the user's next prompt`, { to: 'debug' })
 }
 
 // A dispatch error marks the reviewer failing (`markFailed`) whether or not its review is still open; only an open review is logged.
@@ -1188,7 +1210,7 @@ export const register: Register = (on, options) => {
         // An aborted turn has no Stop, so its end clears the stall fact the last Stop left and sets the interrupt mark; every turn end resets the last-tool-call guard and the addresses messaged in the turn.
         await change($, c => ({ ...c, midTurn: false, lastAsked: false, messaged: [], ...(e.isAborted ? { wake: null, interrupted: true } : {}), ...(last === null ? {} : { lastMessage: last }) }))
         if (e.isAborted) await appendEntry($, INTERRUPTED)
-        // Stop and this turn end both dispatch: a turn with no Stop (an abort), or a reviewer settling between Stop and this end, is dispatched nowhere else.
+        // Stop and this turn end both dispatch: a turn with no Stop, or a reviewer settling between Stop and this end, is dispatched nowhere else. An aborted turn's end dispatches nothing, since it has just set the interrupt mark (`eligible`).
         await atTurnEnd($, () => dispatchAtTurnEnd($, log))
       } else if (await reviewerAgent($, e.agentId)) {
         await settle($, log, e.agentId, e)

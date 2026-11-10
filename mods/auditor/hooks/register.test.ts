@@ -76,6 +76,8 @@ type Opts = {
   // From the reviewer spawn numbered `spawnThrowsFrom` (1-based) on, the spawn throws; from `spawnDeniesFrom` on, it is refused.
   spawnThrowsFrom?: number
   spawnDeniesFrom?: number
+  // The reason a denied reviewer spawn gives: 'spawn refused' when not given.
+  spawnDenyReason?: string
   // Once the reviewer spawn numbered `writesFailFromSpawn` (1-based) has been made, every conversation write is refused.
   writesFailFromSpawn?: number
   // With `listFailsAt`, the agent list call with that number (1 for the first) rejects and the rest answer.
@@ -236,7 +238,7 @@ const engine = (on: any, opts: Opts = {}) => {
       if (opts.spawnThrows !== undefined) throw new Error(opts.spawnThrows)
       const reviewersSpawned = seen.spawns.filter(s => typeOf(s) === 'auditor:reviewer').length
       if (opts.spawnThrowsFrom !== undefined && reviewersSpawned >= opts.spawnThrowsFrom) throw new Error('spawn down')
-      if (opts.spawnDeniesFrom !== undefined && reviewersSpawned >= opts.spawnDeniesFrom) return { deny: 'spawn refused' }
+      if (opts.spawnDeniesFrom !== undefined && reviewersSpawned >= opts.spawnDeniesFrom) return { deny: opts.spawnDenyReason ?? 'spawn refused' }
       const hold = heldAt(opts.spawnHold, reviewersSpawned)
       if (hold !== undefined) {
         hold.reached?.()
@@ -658,11 +660,13 @@ describe('auditor', () => {
     expect(seen.prompts).toEqual(['carry on', 'more'])
   })
 
-  test('an aborted turn with no Stop briefs its reviewer with that turn\'s last message', ON, async ($, on) => {
+  test('an aborted turn\'s last message is the one its next review is briefed with when the turn after it ends with no Stop and no answer', ON, async ($, on) => {
     const seen = engine(on)
     await $.prompt.submit(COMPOSER('first'))
     await step($, 'working')
     await $.turn.complete({ answer: 'Partial reply.', durationMs: 1, isAborted: true, turnId: 't1', reason: 'aborted' } as any)
+    await $.prompt.submit(COMPOSER('second'))
+    await $.turn.complete({ answer: '', durationMs: 1, isAborted: false, turnId: 't2', reason: 'answer' } as any)
     expect(seen.spawns.length).toBe(1)
     expect(seen.spawns[0].prompt).toContain('Worker last message:\nPartial reply.')
   })
@@ -672,7 +676,9 @@ describe('auditor', () => {
     await $.prompt.submit(COMPOSER('first'))
     await step($, 'working')
     await $.turn.complete({ answer: '', durationMs: 1, isAborted: true, turnId: 't1', reason: 'aborted' } as any)
-    expect(await entriesOf($, { which: 'record' })).toBe(RECORD_OF(1, 'USER: first', 'ASSISTANT: working', 'INTERRUPTED: the user stopped this turn before it finished.'))
+    await $.prompt.submit(COMPOSER('second'))
+    await $.classic.Stop(stop)
+    expect(await entriesOf($, { which: 'record' })).toBe(RECORD_OF(1, 'USER: first', 'ASSISTANT: working', 'INTERRUPTED: the user stopped this turn before it finished.', 'USER: second'))
   })
 
   test('an escalation toasts once, inside the reviewer\'s turn as its note is delivered, whether or not the worker has read it', ON, async ($, on) => {
@@ -714,6 +720,8 @@ describe('auditor', () => {
     await step($, 'working')
     await $.turn.complete({ answer: '', durationMs: 1, isAborted: true, turnId: 't2', reason: 'aborted' } as any)
     await reviewed($, HANDBACK('Nothing to note.'), 'ag1')
+    await $.prompt.submit(COMPOSER('third'))
+    await $.turn.complete({ answer: '', durationMs: 1, isAborted: false, turnId: 't3', reason: 'answer' } as any)
     expect(seen.sends.length).toBe(1)
     expect(seen.sends[0].text).toContain('Worker last message:\n(none: the user interrupted the turn)')
   })
@@ -1855,13 +1863,6 @@ describe('auditor', () => {
     expect(seen.sends[0].text).toContain('Review 2. Its record holds entries 1-1,')
   })
 
-  test('a worker turn that ends with no Stop, aborted, briefs the reviewer with entries pending', ON, async ($, on) => {
-    const seen = engine(on)
-    await $.prompt.submit(COMPOSER('carry on'))
-    await $.turn.complete({ answer: '', durationMs: 1, isAborted: true, turnId: 't1', reason: 'aborted' } as any)
-    expect(seen.spawns.map(typeOf)).toEqual(['auditor:reviewer'])
-  })
-
   test('a Stop that briefed the reviewer is followed by one brief only at the worker\'s turn end', ON, async ($, on) => {
     const seen = engine(on)
     await $.prompt.submit(COMPOSER('fix the parser'))
@@ -2227,6 +2228,8 @@ describe('the stall nudge', () => {
     await mainTurnEnd($)
     await $.prompt.submit(COMPOSER('second'))
     await $.turn.complete({ answer: '', durationMs: 1, isAborted: true, turnId: 't2', reason: 'aborted' } as any)
+    await $.prompt.submit(COMPOSER('third'))
+    await $.turn.complete({ answer: '', durationMs: 1, isAborted: false, turnId: 't3', reason: 'answer' } as any)
     expect(seen.sends.map(s => s.to)).toEqual(['ag1'])
     expect(seen.sends[0].text).not.toContain('wake the worker:')
   })
@@ -5189,22 +5192,22 @@ describe('a note held after an interrupt', () => {
     expect(debugLines(seen, 'did not say nothing will wake the worker').length).toBe(1)
   })
 
-  test('a refused brief after an Esc holds nothing: the review fails, as it does without an Esc', ON, async ($, on) => {
-    const seen = engine(on, { sendFails: 'ag1', refusal: STOPPED_TEAMMATE, spawnDeniesFrom: 2 })
+  test('a brief refused for another reason holds nothing: the review fails', ON, async ($, on) => {
+    const seen = engine(on, { sendFails: 'ag1', spawnDeniesFrom: 2 })
     await workerTurn($)
     await $.turn.complete(TURN_END('ag1', 'Nothing to note.'))
     await $.prompt.submit(COMPOSER('more'))
     await step($, 'working')
-    await abort($)
+    await $.classic.Stop(stop)
     expect(seen.sends.map(s => s.to)).toEqual(['ag1'])
     expect(seen.conversation.failing).toBe('not dispatched')
     expect(seen.conversation.pendingNotes).toEqual([])
     expect(logOf(seen, LOG_2)).toMatchObject({ status: 'incomplete' })
   })
 
-  test('at the hold, an escalation raises its toast and push once, and a fresh reviewer\'s brief carries the note', ON, async ($, on) => {
+  test('at the hold, an escalation raises its toast and push once, and the next review\'s brief carries the note', ON, async ($, on) => {
     const escalation = 'Escalation: auth belongs in middleware.\nWorker: handlers.'
-    const seen = engine(on, { noteFailsAt: [1], refusal: STOPPED_MAIN, sendFails: 'ag1', reviewerIds: ['ag1', 'ag2'] })
+    const seen = engine(on, { noteFailsAt: [1], refusal: STOPPED_MAIN })
     await workerTurn($)
     await noteSent($, escalation)
     await drained()
@@ -5214,8 +5217,8 @@ describe('a note held after an interrupt', () => {
     await $.turn.complete(TURN_END('ag1', 'Sent.'))
     await $.prompt.submit(COMPOSER('more'))
     await $.classic.Stop(stop)
-    expect(seen.spawns.length).toBe(2)
-    expect(seen.spawns[1].prompt).toContain(`Review 1 (in flight, last touched in review 1): ${escalation}`)
+    expect(seen.sends.length).toBe(1)
+    expect(seen.sends[0].text).toContain(`Review 1 (in flight, last touched in review 1): ${escalation}`)
     expect(seen.toasts).toEqual([ESCALATED_TOAST])
   })
 
@@ -5287,9 +5290,8 @@ describe('a note held after an interrupt', () => {
     expect(seen.appends).toEqual([])
     expect(transcriptLines(seen)).toEqual([])
     expect(debugLines(seen, 'attached the held notes of reviews 1 beside').length).toBe(1)
+    // No review was dispatched while the note was held; the turn end after the prompts dispatches review 2, whose record holds them.
     await mainTurnEnd($)
-    // Review 2 was dispatched before the prompts; its settle dispatches review 3, whose record holds them.
-    await $.turn.complete(TURN_END('ag1', 'Nothing to note.'))
     expect(await entriesOf($, { which: 'record' })).toContain(`PROMPT (plugin): ${WRITTEN}`)
   })
 
@@ -5331,6 +5333,189 @@ describe('a note held after an interrupt', () => {
     expect(seen.conversation.pendingNotes).toEqual([])
     await $.prompt.submit(COMPOSER('fresh'))
     expect(seen.contexts).toEqual([undefined])
+  })
+})
+
+describe('after an Esc, no review is dispatched until the user types a plain prompt', () => {
+  const STOPPED_MAIN = 'The main conversation was not messaged: the session was stopped and nobody has sent input since.'
+  const STOPPED_TEAMMATE = 'Teammate "auditor-reviewer" was not messaged: the session was stopped and nobody has sent input since.'
+  const STOPPED_SPAWN = 'Agent "auditor-reviewer" was not spawned: the session was stopped and nobody has sent input since.'
+  const GIVEN_BACK = 'given back: the session was stopped'
+  const INTERRUPTION = 'INTERRUPTED: the user stopped this turn before it finished.'
+  const abort = ($: any) => $.turn.complete({ answer: '', durationMs: 1, isAborted: true, turnId: 't1', reason: 'aborted' } as any)
+  // Review 1 is dispatched at the worker's Stop; the user then prompts and presses Esc.
+  const interrupted = async ($: any) => {
+    await workerTurn($)
+    await $.prompt.submit(COMPOSER('carry on'))
+    await abort($)
+  }
+  const SLASH = { text: '/status', wait: false, origin: { kind: 'composer' as const }, command: { name: 'status', args: '' } }
+  const bodiesOf = (seen: any): string[] => seen.conversation.record.blocks
+  const switchTo = ($: any, args: string) => $.command.run({ command: 'auditor', args } as any)
+
+  test('an aborted worker turn end dispatches nothing and leaves its entries in the record', ON, async ($, on) => {
+    const seen = engine(on)
+    await $.prompt.submit(COMPOSER('first'))
+    await step($, 'working')
+    await abort($)
+    expect(seen.spawns).toEqual([])
+    expect(seen.sends).toEqual([])
+    expect(seen.conversation.review).toBeUndefined()
+    expect(seen.conversation.failing).toBeUndefined()
+    expect(bodiesOf(seen).length).toBe(3)
+  })
+
+  test('a settle while the interrupt mark is set dispatches nothing and leaves the record\'s entries in place', ON, async ($, on) => {
+    const seen = engine(on)
+    await interrupted($)
+    await $.turn.complete(TURN_END('ag1', 'Nothing to note.'))
+    expect(logOf(seen, LOG_1)).toMatchObject({ status: 'complete' })
+    expect(seen.spawns.length).toBe(1)
+    expect(seen.sends).toEqual([])
+    expect(seen.conversation.review).toBeUndefined()
+    expect(bodiesOf(seen).length).toBe(2)
+  })
+
+  test('a settle while a note is held and the interrupt mark is unset dispatches nothing', ON, async ($, on) => {
+    const seen = engine(on, { noteFailsAt: [1], refusal: STOPPED_MAIN })
+    await workerTurn($)
+    await step($, 'more work')
+    await noteSent($, 'a.ts:4 after the Esc.')
+    expect(seen.conversation.interrupted).toBe(false)
+    expect(seen.conversation.pendingNotes.length).toBe(1)
+    await $.turn.complete(TURN_END('ag1', 'Sent.'))
+    expect(seen.spawns.length).toBe(1)
+    expect(seen.sends).toEqual([])
+    expect(seen.conversation.review).toBeUndefined()
+    expect(bodiesOf(seen).length).toBe(1)
+  })
+
+  test('the next plain prompt after an Esc, then its turn end, dispatches one review whose record holds the aborted turn\'s entries followed by the new turn\'s', ON, async ($, on) => {
+    const seen = engine(on)
+    await interrupted($)
+    await $.turn.complete(TURN_END('ag1', 'Nothing to note.'))
+    await $.prompt.submit(COMPOSER('now'))
+    expect(seen.sends).toEqual([])
+    await step($, 'working again')
+    await $.classic.Stop(stop)
+    expect(seen.sends.length).toBe(1)
+    expect(await entriesOf($, { which: 'record' })).toBe(RECORD_OF(2, 'USER: carry on', INTERRUPTION, 'USER: now', 'ASSISTANT: working again'))
+  })
+
+  test('a slash command leaves the gate shut: its turn end dispatches nothing, and the next plain prompt opens it', ON, async ($, on) => {
+    const seen = engine(on)
+    await interrupted($)
+    await $.turn.complete(TURN_END('ag1', 'Nothing to note.'))
+    await $.prompt.submit(SLASH)
+    await $.classic.Stop(stop)
+    await mainTurnEnd($)
+    expect(seen.sends).toEqual([])
+    expect(seen.conversation.interrupted).toBe(true)
+    await $.prompt.submit(COMPOSER('now'))
+    await $.classic.Stop(stop)
+    expect(seen.sends.length).toBe(1)
+  })
+
+  test('switching the auditor on opens the gate', ON, async ($, on) => {
+    const seen = engine(on)
+    await switchTo($, 'off')
+    await $.prompt.submit(COMPOSER('first'))
+    await abort($)
+    await switchTo($, 'on')
+    await workerTurn($)
+    expect(seen.spawns.length).toBe(1)
+  })
+
+  test('a /clear opens the gate', ON, async ($, on) => {
+    const seen = engine(on)
+    await interrupted($)
+    await $.session.end({ reason: 'clear', sessionId: 's1' } as any)
+    await workerTurn($)
+    expect(seen.spawns.length).toBe(2)
+  })
+
+  describe('a brief the stopped session refuses is given back', () => {
+    // Review 2's brief goes to the stored reviewer, which the engine refuses.
+    const refusedBrief = async ($: any, on: any, opts: Parameters<typeof engine>[1]) => {
+      const seen = engine(on, { sendFails: 'ag1', refusal: STOPPED_TEAMMATE, ...opts })
+      await workerTurn($)
+      await $.turn.complete(TURN_END('ag1', 'Nothing to note.'))
+      await $.prompt.submit(COMPOSER('more'))
+      await step($, 'working')
+      await $.classic.Stop(stop)
+      return seen
+    }
+
+    test('by the stored reviewer: nothing is spawned or failed, the entries are back at the front, the mark is set, the reviewer is kept, and the log reads incomplete with the reason', ON, async ($, on) => {
+      const seen = await refusedBrief($, on, {})
+      expect(seen.sends.map((s: any) => s.to)).toEqual(['ag1'])
+      expect(seen.spawns.length).toBe(1)
+      expect(seen.conversation.failing).toBeUndefined()
+      expect(seen.conversation.review).toBeUndefined()
+      expect(seen.conversation.interrupted).toBe(true)
+      expect(seen.conversation.reviewer).toMatchObject({ id: 'ag1' })
+      expect(seen.conversation.briefsInFlight.filter((b: string) => b.includes('Review 2.'))).toEqual([])
+      expect(bodiesOf(seen).length).toBe(2)
+      expect(seen.stops).toEqual([])
+      expect(logOf(seen, LOG_2)).toMatchObject({ status: 'incomplete', reason: GIVEN_BACK, number: 2, record_entries: 2, note_delivered: false })
+      expect(debugLines(seen, 'review failed')).toEqual([])
+    })
+
+    test('the next plain prompt\'s turn end then dispatches one review, numbered after the given-back one', ON, async ($, on) => {
+      const seen = await refusedBrief($, on, {})
+      await $.prompt.submit(COMPOSER('again'))
+      await $.classic.Stop(stop)
+      expect(seen.sends.length).toBe(2)
+      expect(seen.sends[1].text).toContain('Review 3. Its record holds entries 1-3,')
+      expect(seen.spawns.length).toBe(1)
+    })
+
+    test('by a spawn denied with that wording: nothing is failed, the entries are back, the mark is set, and the log reads incomplete with the reason', ON, async ($, on) => {
+      const seen = engine(on, { spawnDeniesFrom: 1, spawnDenyReason: STOPPED_SPAWN })
+      await $.prompt.submit(COMPOSER('first'))
+      await $.classic.Stop(stop)
+      expect(seen.spawns.length).toBe(1)
+      expect(seen.conversation.failing).toBeUndefined()
+      expect(seen.conversation.review).toBeUndefined()
+      expect(seen.conversation.interrupted).toBe(true)
+      expect(seen.conversation.briefsInFlight).toEqual([])
+      expect(seen.conversation.spawnsInFlight).toEqual([])
+      expect(bodiesOf(seen).length).toBe(1)
+      expect(logOf(seen, LOG_1)).toMatchObject({ status: 'incomplete', reason: GIVEN_BACK, note_delivered: false })
+      expect(debugLines(seen, 'review failed')).toEqual([])
+    })
+
+    test('by a spawn denied with that wording after the stored reviewer refused the brief for another reason: nothing is failed, and the reviewer it refused is stopped as it is today', ON, async ($, on) => {
+      const seen = await refusedBrief($, on, { refusal: 'refused', spawnDeniesFrom: 2, spawnDenyReason: STOPPED_SPAWN })
+      expect(seen.conversation.failing).toBeUndefined()
+      expect(seen.conversation.interrupted).toBe(true)
+      expect(logOf(seen, LOG_2)).toMatchObject({ status: 'incomplete', reason: GIVEN_BACK })
+      expect(seen.stops.map((s: any) => s.task_id)).toEqual(['ag1'])
+    })
+
+    test('with the auditor switched off while the refusal was out: nothing is put back, and the one log is the switch\'s', ON, async ($, on) => {
+      const release = gate()
+      const reached = gate()
+      const seen = engine(on, { sendFails: 'ag1', refusal: STOPPED_TEAMMATE, sendHold: { until: release.until, reached: reached.open } })
+      await workerTurn($)
+      await $.turn.complete(TURN_END('ag1', 'Nothing to note.'))
+      await $.prompt.submit(COMPOSER('more'))
+      const stopping = $.classic.Stop(stop)
+      await reached.until
+      await switchTo($, 'off')
+      release.open()
+      await stopping
+      expect(seen.conversation.interrupted).toBe(false)
+      expect(seen.conversation.record.blocks).toEqual([])
+      expect(logOf(seen, LOG_2)).toMatchObject({ status: 'incomplete', reason: 'the auditor was switched off' })
+    })
+
+    test('a brief refused for any other reason behaves as today: a new reviewer is spawned, and a denied spawn fails the review', ON, async ($, on) => {
+      const seen = await refusedBrief($, on, { refusal: 'refused', reviewerIds: ['ag1', 'ag2'] })
+      expect(seen.spawns.length).toBe(2)
+      expect(seen.conversation.reviewer).toMatchObject({ id: 'ag2' })
+      expect(seen.conversation.interrupted).toBe(false)
+    })
   })
 })
 

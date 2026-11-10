@@ -59,7 +59,13 @@ earlier one, confirm a fix, or correct the wording of a message when nothing wou
 - **A note after an Esc.** Once you interrupt a turn, Claude Code refuses a message to the agent until you type
   again. A note the reviewer sends in that state is held, and reaches the agent with your next message, with no row of
   its own; a slash command does not carry it. An escalation still shows its toast and push when the reviewer gives it.
-  Switching the reviewer off or `/clear` drops a held note.
+  Switching the reviewer off or `/clear` drops a held note. A held note's log reads `note_delivered: false`, though the
+  note rides with that message unless the toggle or `/clear` drops it.
+- **No review after an Esc until you type.** After you interrupt a turn, and while a note is held, no review starts: the turns in between go to the one review that starts after your next plain message and its turn
+  end. A slash command does not end the wait. A review already open runs on and settles as usual. If Claude Code
+  refuses a review's brief with the same stopped-session reply, for example after an Esc while the agent was idle, the
+  review is given back rather than failed: it is logged incomplete with the reason `given back: the session was
+  stopped`, its entries wait for the next review, the reviewer stays, and `auditor failing` does not show.
 - **Nothing else.** Beyond those rows, a review that finds nothing leaves no trace on screen, and neither do the
   reviewer's end-of-run notices or task rows. Two things reach you: an escalation of an unresolved disagreement, as a toast and as a push
   notification on your phone when you are away from the terminal (Claude Code holds it back while you are at it), and
