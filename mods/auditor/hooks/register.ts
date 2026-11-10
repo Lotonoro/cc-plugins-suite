@@ -245,6 +245,11 @@ const withEntriesFirst = (entries: readonly string[], record: TurnRecord): TurnR
 // The conversation as it is now: read through a change, which writes the state back unchanged. A plain get answers the dispatch's starting moment; no read in the dispatch sees the writes made since it began, its own or another dispatch's, except a change.
 const currentConversation = ($: Pick<Scope, 'state'>): Promise<Conversation> => change($, c => c)
 
+const stopFailed = ($: Pick<Scope, 'ui'>, err: unknown): void => {
+  if (NO_SESSION_BOUND.test(reasonOf(err))) $.ui.log(`${PLUGIN}: reviewer stop skipped: no session is bound in this mode`, { to: 'debug' })
+  else recordFailed($, 'reviewer stop', err)
+}
+
 // Stops a reviewer the auditor lets go (one a take retired, one a session end forgot, one a refused brief dropped, or one the toggle switched off or whose spawn landed after it), so it does not sit idle for the rest of the session; each caller says when it issues it. The engine call is not awaited, so no caller's settle or dispatch waits on it; the helper resolves once the stop is issued. Any failure, the state read included, is logged and leaves the reviewer idle, and the caller goes on; the engine's no-session-bound error is the expected failure where no session is bound, and is logged as one plain line. Where a respawn can follow (`mayRespawn`), an id the state holds as the current reviewer is not stopped: a fresh reviewer can come back under a forgotten id, and the stop would end it. A session end spawns none, and when its reset failed the state still names the reviewer it forgot, so it passes false.
 export const stopReviewer = async ($: Pick<Scope, 'state' | 'tool' | 'ui'>, id: string | undefined, mayRespawn: boolean): Promise<void> => {
   if (id === undefined) return
@@ -260,11 +265,6 @@ export const stopReviewer = async ($: Pick<Scope, 'state' | 'tool' | 'ui'>, id: 
   } catch (err) {
     stopFailed($, err)
   }
-}
-
-const stopFailed = ($: Pick<Scope, 'ui'>, err: unknown): void => {
-  if (NO_SESSION_BOUND.test(reasonOf(err))) $.ui.log(`${PLUGIN}: reviewer stop skipped: no session is bound in this mode`, { to: 'debug' })
-  else recordFailed($, 'reviewer stop', err)
 }
 
 // Takes the open review if `ready`, judged on the conversation the change reads; where `back` holds for the review taken, its entries are put back in the record in the same change. Where `mark` holds instead, the review is not taken but marked as followed up (`followedUp`), in the same change: it stays open with its entries held, and its reviewer is not retired. The dispatch failure never asks for a mark.
