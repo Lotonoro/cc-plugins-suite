@@ -5510,11 +5510,41 @@ describe('after an Esc, no review is dispatched until the user types a plain pro
       expect(logOf(seen, LOG_2)).toMatchObject({ status: 'incomplete', reason: 'the auditor was switched off' })
     })
 
-    test('a brief refused for any other reason behaves as today: a new reviewer is spawned, and a denied spawn fails the review', ON, async ($, on) => {
+    test('with the user\'s next plain prompt taken while the refusal was out: the entries are back and the review is logged, but the mark stays unset, so the next turn end dispatches', ON, async ($, on) => {
+      const release = gate()
+      const reached = gate()
+      const seen = engine(on, { sendFails: 'ag1', refusal: STOPPED_TEAMMATE, sendHold: { until: release.until, reached: reached.open } })
+      await workerTurn($)
+      await $.turn.complete(TURN_END('ag1', 'Nothing to note.'))
+      await $.prompt.submit(COMPOSER('more'))
+      await step($, 'working')
+      const stopping = $.classic.Stop(stop)
+      await reached.until
+      await $.prompt.submit(COMPOSER('typed meanwhile'))
+      release.open()
+      await stopping
+      expect(seen.conversation.interrupted).toBe(false)
+      expect(seen.conversation.review).toBeUndefined()
+      expect(seen.conversation.failing).toBeUndefined()
+      expect(bodiesOf(seen).length).toBeGreaterThan(2)
+      expect(logOf(seen, LOG_2)).toMatchObject({ status: 'incomplete', reason: GIVEN_BACK })
+      await $.classic.Stop(stop)
+      expect(seen.sends.length).toBe(2)
+    })
+
+    test('a brief refused for any other reason behaves as today: a new reviewer is spawned', ON, async ($, on) => {
       const seen = await refusedBrief($, on, { refusal: 'refused', reviewerIds: ['ag1', 'ag2'] })
       expect(seen.spawns.length).toBe(2)
       expect(seen.conversation.reviewer).toMatchObject({ id: 'ag2' })
       expect(seen.conversation.interrupted).toBe(false)
+    })
+
+    test('a spawn denied for any other reason fails the review as today: the footer reads failing, the mark stays unset, and nothing is given back', ON, async ($, on) => {
+      const seen = await refusedBrief($, on, { refusal: 'refused', spawnDeniesFrom: 2, spawnDenyReason: 'spawn refused' })
+      expect(seen.conversation.failing).toBe('not dispatched')
+      expect(seen.conversation.interrupted).toBe(false)
+      expect(seen.conversation.review).toBeUndefined()
+      expect(logOf(seen, LOG_2)).toMatchObject({ status: 'incomplete', reason: 'reviewer spawn refused: spawn refused' })
     })
   })
 })

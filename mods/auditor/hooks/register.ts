@@ -703,7 +703,8 @@ const giveBack = async ($: Scope, sessionId: string, log: boolean, plan: Plan): 
     if (c.epoch !== plan.epoch || c.review?.number !== plan.number) return c
     got.review = c.review
     got.model = c.reviewer?.model || null
-    return { ...c, review: undefined, record: withEntriesFirst(c.review.record, c.record), interrupted: true }
+    // The user's prompt taken since this dispatch began (`dispatchesAtPrompt` reached its number) already ended the stopped state and cleared the mark; setting it now would hold the later turns until yet another prompt.
+    return { ...c, review: undefined, record: withEntriesFirst(c.review.record, c.record), ...(plan.number > c.dispatchesAtPrompt ? { interrupted: true } : {}) }
   })
   if (got.review === undefined) return
   await logIncomplete($, sessionId, log, got.review, got.model, GIVEN_BACK)
