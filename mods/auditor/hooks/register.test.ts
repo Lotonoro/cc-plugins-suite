@@ -4864,7 +4864,7 @@ describe('the escalation push', () => {
 
 
 describe('rc regression tests', () => {
-  test('a reviewer its spawn hook stood in is not given up while it reviews past ten minutes: its review settles with its note', ON, async ($, on) => {
+  test('a reviewer its spawn hook stood in is not given up as a spawn that never started: past ten minutes its review lapses as one that never finished', ON, async ($, on) => {
     const seen = engine(on, {
       stateSeed: {
         dispatches: 1,
@@ -4875,6 +4875,24 @@ describe('rc regression tests', () => {
       },
     })
     seen.clock = 1000 + TEN_MINUTES + 1
+    await workerTurn($, 'Second.')
+    await drained()
+    expect(seen.stops.map(s => s.task_id)).toEqual(['ag1'])
+    expect(seen.conversation.failing).toBe('no finish')
+    expect(logOf(seen, LOG_1)).toMatchObject({ status: 'incomplete', reason: 'reviewer did not finish in 10 minutes' })
+  })
+
+  test('a reviewer its spawn hook stood in settles with its note while its review is under ten minutes old', ON, async ($, on) => {
+    const seen = engine(on, {
+      stateSeed: {
+        dispatches: 1,
+        reviewer: { id: 'ag1', model: 'm' },
+        reviewerIds: ['ag1'],
+        review: { number: 1, record: ['[1] USER: fix\n\n'], dispatchedAt: 1000, nothingWakes: false },
+        spawnsInFlight: [{ brief: 'a brief', epoch: 0, number: 1, startedAt: 1000, id: 'ag1', model: 'm' }],
+      },
+    })
+    seen.clock = 1000 + TEN_MINUTES
     await workerTurn($, 'Second.')
     await drained()
     expect(seen.stops).toEqual([])
@@ -7298,5 +7316,106 @@ describe('a rejected spawn', () => {
     expect(seen.stops).toEqual([])
     expect(JSON.stringify(seen.logs)).toContain('spawn bookkeeping failed')
     expect(logOf(seen, LOG_1)).toMatchObject({ status: 'incomplete', reason: NO_SPAWN })
+  })
+})
+
+
+describe('an open review whose stored reviewer never ends its turn', () => {
+  const REASON = 'reviewer did not finish in 10 minutes'
+  // Review 1 is dispatched to the spawned reviewer ag1, then ten minutes and a moment pass; a reviewer spawned since is ag2.
+  const stuck = async ($: any, on: any, opts: Opts = {}) => {
+    const seen = engine(on, { reviewerIds: ['ag1', 'ag2'], ...opts })
+    await $.prompt.submit(COMPOSER('first'))
+    await $.classic.Stop(stop)
+    await mainTurnEnd($)
+    expect(seen.conversation.review).toMatchObject({ number: 1 })
+    seen.clock += TEN_MINUTES + 1
+    return seen
+  }
+
+  test('is given up at the next worker turn end: its entries go back, the failure has the no-finish cause, the reviewer is stopped and not stored, and the log is incomplete with that reason', ON, async ($, on) => {
+    const seen = await stuck($, on)
+    await $.prompt.submit(HELPER)
+    await $.classic.Stop(stop)
+    await drained()
+    expect(seen.conversation.review).toBeUndefined()
+    expect(seen.conversation.failing).toBe('no finish')
+    expect(seen.conversation.reviewer).toBeUndefined()
+    expect(seen.conversation.lastLetGo).toBe('lapsed')
+    expect(seen.conversation.record.blocks.join('')).toContain('USER: first')
+    expect(seen.stops.map(s => s.task_id)).toEqual(['ag1'])
+    expect(logOf(seen, LOG_1)).toMatchObject({ status: 'incomplete', number: 1, reason: REASON })
+    expect(JSON.stringify(seen.logs)).toContain(`review failed: ${REASON}`)
+    expect(seen.spawns.length).toBe(1)
+  })
+
+  test('a review with no stored reviewer lapses as before: the no-start cause, and nothing is stopped', ON, async ($, on) => {
+    const held = heldSpawn()
+    const seen = engine(on, { spawnHold: { ...held.hold, to: 1 }, reviewerIds: ['ag1', 'ag2'] })
+    await $.prompt.submit(COMPOSER('fix'))
+    const stopping = $.classic.Stop(stop)
+    await held.reached
+    seen.clock += TEN_MINUTES + 1
+    await $.prompt.submit(HELPER)
+    await $.classic.Stop(stop)
+    expect(seen.conversation.failing).toBe('no start')
+    expect(logOf(seen, LOG_1)).toMatchObject({ status: 'incomplete', reason: 'reviewer spawn did not settle in 10 minutes' })
+    expect(seen.conversation.lastLetGo).toBeUndefined()
+    held.land()
+    await stopping
+    await drained()
+  })
+
+  test('under ten minutes old stays open, and nothing is dispatched', ON, async ($, on) => {
+    const seen = await stuck($, on)
+    seen.clock -= 100
+    await $.prompt.submit(COMPOSER('second'))
+    await $.classic.Stop(stop)
+    await drained()
+    expect(seen.conversation.review).toMatchObject({ number: 1 })
+    expect(seen.conversation.reviewer).toMatchObject({ id: 'ag1' })
+    expect(seen.conversation.failing).toBeUndefined()
+    expect(seen.stops).toEqual([])
+    expect(seen.spawns.length).toBe(1)
+    expect(seen.sends).toEqual([])
+    expect(logOf(seen, LOG_1)).toBeUndefined()
+  })
+
+  test('has a late turn end that settles nothing, and a late note send that is refused', ON, async ($, on) => {
+    const seen = await stuck($, on)
+    await $.prompt.submit(HELPER)
+    await $.classic.Stop(stop)
+    await drained()
+    const refused = await noteSent($, 'a.ts:4 swallows it.', 'ag1', 1)
+    expect(refused).toMatchObject({ isDelivered: false })
+    await turnEnded($, 'ag1', 'Nothing to note.')
+    expect(logOf(seen, LOG_1)).toMatchObject({ status: 'incomplete', reason: REASON })
+    expect(seen.conversation.failing).toBe('no finish')
+    expect(toMain(seen)).toEqual([])
+  })
+
+  test('shows its cause in the popup', ON, async ($, on) => {
+    otherMods(on)
+    await stuck($, on)
+    await $.prompt.submit(HELPER)
+    await $.classic.Stop(stop)
+    await drained()
+    const drawn = JSON.stringify(await (await mountMode($)).drawn())
+    expect(drawn).toContain('failing: the reviewer did not finish in 10 minutes')
+  })
+
+  test('is followed by a fresh spawn at the next user-started turn end, whose success clears the failure', ON, async ($, on) => {
+    const seen = await stuck($, on)
+    await $.prompt.submit(COMPOSER('second'))
+    await $.classic.Stop(stop)
+    await drained()
+    expect(seen.stops.map(s => s.task_id)).toEqual(['ag1'])
+    expect(seen.spawns.length).toBe(2)
+    expect(seen.conversation.reviewer).toMatchObject({ id: 'ag2' })
+    expect(seen.conversation.review).toMatchObject({ number: 2, briefTo: 'spawn: lapsed' })
+    expect(seen.conversation.failing).toBe('no finish')
+    await turnEnded($, 'ag2', 'Nothing to note.')
+    expect(seen.conversation.failing).toBeUndefined()
+    expect(logOf(seen, LOG_2)).toMatchObject({ status: 'complete', brief_to: 'spawn: lapsed' })
   })
 })

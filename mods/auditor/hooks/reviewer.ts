@@ -1,5 +1,5 @@
 import type { AgentInfo } from 'claude-code'
-import type { Conversation, LetGoReason } from '../types/index'
+import type { Conversation, FailCause, LetGoReason } from '../types/index'
 
 // Every decision about whether an agent, a send, a delivery, a prompt or a row is the reviewer's, as pure functions; register.ts keeps every step on `$` and the plugin's identifying literals, which it passes in. This file imports no value, so nothing here reads state or the engine: a conversation, an event or a list entry in, a decision or the next conversation out.
 
@@ -147,13 +147,23 @@ export const land = (c: Conversation, brief: string, number: number, epoch: numb
   return { next: { ...known, reviewer: { id, model: kept?.id === id && kept.model !== undefined ? kept.model : (started.model ?? '') } }, id, stale, stood }
 }
 
+// How long an open review may go on before it is given up, by whether a reviewer is stored: a spawn that stood none in (`start`) or a stored reviewer that has not ended its turn (`finish`), each in milliseconds from the dispatch.
+export type Limits = { start: number; finish: number }
+
+// Whether the open review lapsed at `now`, and as which failure: `no start` when no reviewer is stored, `no finish` when one is. Each reads its own limit, so changing how long a review may run does not change how long a spawn may take.
+export const lapseOf = (c: Conversation, now: number, limits: Limits): Extract<FailCause, 'no start' | 'no finish'> | undefined => {
+  if (c.review === undefined) return undefined
+  const stored = c.reviewer !== undefined
+  return now - c.review.dispatchedAt > (stored ? limits.finish : limits.start) ? (stored ? 'no finish' : 'no start') : undefined
+}
+
 // What a let-go decided: the conversation after it, and the id of the reviewer to stop (absent when none was let go).
 export type Release = { next: Conversation; released: string | undefined }
 
 // The reasons whose let-go clears the stored reviewer and its context. A refused brief's reviewer is cleared by the spawn that replaces it (`spawning`), and a stale landing's spawn was never the stored one. A rejected spawn's learned id clears it only where it is that id (`letGo`).
-const CLEARING: readonly LetGoReason[] = ['rotation', 'switch off', 'session end']
+const CLEARING: readonly LetGoReason[] = ['rotation', 'switch off', 'session end', 'lapsed']
 
-// The one decision to let a reviewer go, for `reason`. `id` is the reviewer let go: the stored one's for a rotation, a switch off and a session end, the refused one's for a refused brief, the landed one's for a stale landing, the one the spawn hook learned for a rejected spawn (cleared from the stored reviewer only when it is that one, since a later spawn may have stored another). The reviewer's id and name still mark its traffic and rows. A rotation lets go only once the reviewer's context passed `rotateAt`, and a stale landing whose id is the stored reviewer's lets nothing go, since it is not stale after all. A let-go of an id notes its reason (`lastLetGo`), which a later one replaces; `released` is the id for the caller to stop, in the change that applies `next`.
+// The one decision to let a reviewer go, for `reason`. `id` is the reviewer let go: the stored one's for a rotation, a switch off, a session end and a lapse, the refused one's for a refused brief, the landed one's for a stale landing, the one the spawn hook learned for a rejected spawn (cleared from the stored reviewer only when it is that one, since a later spawn may have stored another). The reviewer's id and name still mark its traffic and rows. A rotation lets go only once the reviewer's context passed `rotateAt`, and a stale landing whose id is the stored reviewer's lets nothing go, since it is not stale after all. A let-go of an id notes its reason (`lastLetGo`), which a later one replaces; `released` is the id for the caller to stop, in the change that applies `next`.
 export const letGo = (c: Conversation, reason: LetGoReason, id: string | undefined, rotateAt = 0): Release => {
   if (reason === 'rotation' && c.reviewerContext <= rotateAt) return { next: c, released: undefined }
   if (reason === 'stale landing' && c.reviewer?.id === id) return { next: c, released: undefined }

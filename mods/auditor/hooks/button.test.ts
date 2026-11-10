@@ -119,6 +119,7 @@ describe('rowsOf', () => {
       expect(lastRow({ state: 'failing', cause: 'no answer' })).toEqual({ key: 'state', text: 'failing: the reviewer ended a turn without an answer' })
       expect(lastRow({ state: 'failing', cause: 'not dispatched' })).toEqual({ key: 'state', text: 'failing: a review could not be handed to a reviewer' })
       expect(lastRow({ state: 'failing', cause: 'no start' })).toEqual({ key: 'state', text: 'failing: the reviewer did not start in 10 minutes' })
+      expect(lastRow({ state: 'failing', cause: 'no finish' })).toEqual({ key: 'state', text: 'failing: the reviewer did not finish in 10 minutes' })
       expect(lastRow({ state: 'failing', cause: 'unknown' })).toEqual({ key: 'state', text: 'failing: cause unknown; see the debug log' })
     })
 

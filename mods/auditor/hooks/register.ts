@@ -9,7 +9,7 @@ import { MAIN, admitSend, decideRefusal, followUpText, frameNote, isStoppedRefus
 import type { Decided, Outcome, Refusal, Sent, Verdict } from './notes'
 import { REVIEWER_PROMPT } from './prompt'
 import { clip, editedLines, entryBlock, pageOf, renumberBlock, toolLine } from './record'
-import { adopt, isEndNotice, isHandBack, isNotice, isReviewerEntry, land, learn, learnName, letGo, markers, nameKnown, nameListed, originOf, reviewerNameOf, spawnName, spawning, standingOf } from './reviewer'
+import { adopt, isEndNotice, isHandBack, isNotice, isReviewerEntry, land, lapseOf, learn, learnName, letGo, markers, nameKnown, nameListed, originOf, reviewerNameOf, spawnName, spawning, standingOf } from './reviewer'
 import type { Identity, Release } from './reviewer'
 import { purged, withCompaction, withNoteGiven, withResponse, withReviewDone } from './tally'
 import { DIGEST_CHARS, LOOKUP_TIMEOUT_MS, SEARCH_TERM_CHARS, digestBlocks, digestOf, lineCommand, lookupOf, parseSearch, renderSearch, searchCommand } from './transcript'
@@ -39,10 +39,14 @@ const PUSH_CHARS = 180
 const ROTATE_AT = 80_000
 // How long a reviewer spawn may stay in flight before it is given up (`spawnsInFlight`).
 const SPAWN_TIMEOUT_MS = 10 * 60 * 1000
+// How long a stored reviewer may hold a review open before it is given up (`dispatchIdle`): four times the longest review logged, and its own limit so that changing it does not change how long a spawn may take (`SPAWN_TIMEOUT_MS` also bounds adoption).
+const REVIEW_TIMEOUT_MS = 10 * 60 * 1000
 // The reason a review the stopped session refused is logged incomplete with (`giveBack`).
 const GIVEN_BACK = 'given back: the session was stopped'
 // The reason a review is logged incomplete with when no spawn stood a reviewer in for it in SPAWN_TIMEOUT_MS (`dispatchIdle`).
 const SPAWN_LAPSED = `reviewer spawn did not settle in ${SPAWN_TIMEOUT_MS / 60_000} minutes`
+// The reason a review is logged incomplete with when its stored reviewer had not ended its turn in REVIEW_TIMEOUT_MS (`dispatchIdle`).
+const REVIEW_LAPSED = `reviewer did not finish in ${REVIEW_TIMEOUT_MS / 60_000} minutes`
 // What a compaction of the reviewer's own conversation keeps: the facts its judgement rests on, not the reviews that found nothing. Neither its notes nor its disputes: the memory every brief carries is their one record.
 const REVIEWER_COMPACTION = 'You are the auditor reviewer. Keep: every instruction, rule and preference of the user you have found, with where it was given. Drop: the details of reviews that found nothing to note.'
 // The reason a known reviewer's end-of-run notice is consumed with.
@@ -261,7 +265,7 @@ const stopFailed = ($: Pick<Scope, 'ui'>, err: unknown): void => {
   else recordFailed($, 'reviewer stop', err)
 }
 
-// Stops a reviewer the auditor lets go (`letGo`: one a take rotated out, one a session end forgot, one a refused brief dropped, one whose spawn rejected after its id was learned, or one the toggle switched off or whose spawn landed after it), so it does not sit idle for the rest of the session; each caller says when it issues it. The engine call is not awaited, so no caller's settle or dispatch waits on it; the helper resolves once the stop is issued. Any failure, the state read included, is logged and leaves the reviewer idle, and the caller goes on; the engine's no-session-bound error is the expected failure where no session is bound, and is logged as one plain line. Where a respawn can follow (`mayRespawn`), an id the state holds as the current reviewer is not stopped: a fresh reviewer can come back under a forgotten id, and the stop would end it. A session end spawns none, and when its reset failed the state still names the reviewer it forgot, so it passes false.
+// Stops a reviewer the auditor lets go (`letGo`: one a take rotated out, one a session end forgot, one a refused brief dropped, one whose spawn rejected after its id was learned, one whose review lapsed, or one the toggle switched off or whose spawn landed after it), so it does not sit idle for the rest of the session; each caller says when it issues it. The engine call is not awaited, so no caller's settle or dispatch waits on it; the helper resolves once the stop is issued. Any failure, the state read included, is logged and leaves the reviewer idle, and the caller goes on; the engine's no-session-bound error is the expected failure where no session is bound, and is logged as one plain line. Where a respawn can follow (`mayRespawn`), an id the state holds as the current reviewer is not stopped: a fresh reviewer can come back under a forgotten id, and the stop would end it. A session end spawns none, and when its reset failed the state still names the reviewer it forgot, so it passes false.
 export const stopReviewer = async ($: Pick<Scope, 'state' | 'tool' | 'ui'>, id: string | undefined, mayRespawn: boolean): Promise<void> => {
   if (id === undefined) return
   try {
@@ -278,7 +282,7 @@ export const stopReviewer = async ($: Pick<Scope, 'state' | 'tool' | 'ui'>, id: 
   }
 }
 
-// The release step of a let-go whose stop follows its change at once: applies `decide`, a state change that makes its let-go through `letGo` and returns the decision, then stops the reviewer it released, unless `stops` is false. Resolves with the conversation after and the id released; a change that throws throws, with nothing stopped. A let-go whose stop must wait for other work applies `letGo` in its own change and stops afterwards: a rotation is let go in the change that takes the review and stopped after the review's log (`takeReview`, `settle`), and a refused brief and a stale landing are let go in the delivery's changes and stopped as it goes on (`deliverBrief`); a rejected spawn goes through the step itself (`releaseRejected`).
+// The release step of a let-go whose stop follows its change at once: applies `decide`, a state change that makes its let-go through `letGo` and returns the decision, then stops the reviewer it released, unless `stops` is false. Resolves with the conversation after and the id released; a change that throws throws, with nothing stopped. A let-go whose stop must wait for other work applies `letGo` in its own change and stops afterwards: a rotation is let go in the change that takes the review and stopped after the review's log (`takeReview`, `settle`), a lapse in the dispatch's change and stopped after its log (`dispatchIdle`), and a refused brief and a stale landing are let go in the delivery's changes and stopped as it goes on (`deliverBrief`); a rejected spawn goes through the step itself (`releaseRejected`).
 const release = async ($: Scope, decide: (c: Conversation) => Release, mayRespawn: boolean, stops = true): Promise<{ after: Conversation; released: string | undefined }> => {
   const got: { released?: string } = {}
   const after = await change($, c => {
@@ -546,6 +550,9 @@ const briefCalled = (c: Conversation, tool: string, input: Record<string, unknow
   return typeof text === 'string' && c.briefsInFlight.includes(text) ? text : undefined
 }
 
+// A review given up at a dispatch: the review, its cause and logged reason, the model of the reviewer that held it (null when none did), and the reviewer let go with it, if any.
+type Lapsed = { review: OpenReview; cause: Extract<FailCause, 'no start' | 'no finish'>; reason: string; model: string | null; released: string | undefined }
+
 // The reviewer gets one brief when it has no open review and turns since its last dispatch.
 // Eligibility is judged in the change alone: a get reads the dispatch's starting moment, so a settle's own take of the open review is invisible to it.
 const dispatchIdle = async ($: Scope, log: boolean): Promise<void> => {
@@ -553,14 +560,20 @@ const dispatchIdle = async ($: Scope, log: boolean): Promise<void> => {
   // Read before the review opens, so a failed read leaves none open that no brief went out for; and before the brief goes out, so a /clear while it is in flight leaves a failed review's log in the session it was dispatched in.
   const sessionId = await $.session.id()
   // Set by the change's last run alone: a compare-and-set retry plans again from the state it read.
-  const planned: { plan?: Plan; lapsed?: OpenReview; bound?: { aged: number; evicted: number } } = {}
+  const planned: { plan?: Plan; lapsed?: Lapsed; bound?: { aged: number; evicted: number } } = {}
   await change($, c => {
     planned.plan = undefined
     planned.bound = undefined
-    // The one place a spawn is given up: a review still open with no reviewer stored SPAWN_TIMEOUT_MS after its dispatch has no spawn left that will stand one in, so it fails here, its entries put back.
+    planned.lapsed = undefined
+    // The one place an open review is given up, its entries put back: one still open with no reviewer stored SPAWN_TIMEOUT_MS after its dispatch has no spawn left that will stand one in; one whose stored reviewer has not ended its turn REVIEW_TIMEOUT_MS after it never will, so that reviewer is let go (the caller stops it), and its late turn end, sends and tool calls match no open review.
     const open = c.review
-    planned.lapsed = open !== undefined && c.reviewer === undefined && now - open.dispatchedAt > SPAWN_TIMEOUT_MS ? open : undefined
-    const d: Conversation = planned.lapsed === undefined ? c : { ...c, review: undefined, failing: 'no start', record: withEntriesFirst(planned.lapsed.record, c.record) }
+    const cause = lapseOf(c, now, { start: SPAWN_TIMEOUT_MS, finish: REVIEW_TIMEOUT_MS })
+    let d: Conversation = c
+    if (open !== undefined && cause !== undefined) {
+      const gone = cause === 'no finish' ? letGo(c, 'lapsed', c.reviewer?.id) : { next: c, released: undefined }
+      planned.lapsed = { review: open, cause, reason: cause === 'no finish' ? REVIEW_LAPSED : SPAWN_LAPSED, model: c.reviewer?.model || null, released: gone.released }
+      d = { ...gone.next, review: undefined, failing: cause, record: withEntriesFirst(open.record, c.record) }
+    }
     if (!eligible(d)) return d
     const number = d.dispatches + 1
     const { blocks } = d.record
@@ -572,8 +585,13 @@ const dispatchIdle = async ($: Scope, log: boolean): Promise<void> => {
   })
   const { plan, lapsed, bound } = planned
   if (lapsed !== undefined) {
-    await logIncomplete($, sessionId, log, lapsed, null, SPAWN_LAPSED)
-    $.ui.log(`${PLUGIN}: review failed: ${SPAWN_LAPSED}`, { to: 'debug' })
+    // The stop is issued last whatever the log does: a reviewer let go is never left running by a throw.
+    try {
+      await logIncomplete($, sessionId, log, lapsed.review, lapsed.model, lapsed.reason)
+      $.ui.log(`${PLUGIN}: review failed: ${lapsed.reason}`, { to: 'debug' })
+    } finally {
+      await stopReviewer($, lapsed.released, true)
+    }
   }
   if (plan === undefined) return
   if (bound !== undefined && bound.aged + bound.evicted > 0) $.ui.log(`${PLUGIN}: review ${plan.number}'s dispatch aged out ${bound.aged} and evicted ${bound.evicted} memory entries`, { to: 'debug' })

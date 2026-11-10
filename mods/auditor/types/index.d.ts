@@ -31,11 +31,11 @@ export type OpenReview = {
 // Where a brief goes: the stored reviewer, or a spawn because none was ever let go (`no reviewer yet`) or because of the latest let-go's reason.
 export type BriefTo = 'stored' | 'spawn: no reviewer yet' | `spawn: ${LetGoReason}`
 
-// Why the reviewer is failing: a review ended without an answer, none could be handed to a reviewer, a spawn did not start in time, or a state stored before causes existed. Every place that sets `failing` sets one of these, or adds a row for its own cause to the words in button.ts in the same change.
-export type FailCause = 'no answer' | 'not dispatched' | 'no start' | 'unknown'
+// Why the reviewer is failing: a review ended without an answer, none could be handed to a reviewer, a spawn did not start in time, a stored reviewer did not finish its review in time, or a state stored before causes existed. Every place that sets `failing` sets one of these, or adds a row for its own cause to the words in button.ts in the same change.
+export type FailCause = 'no answer' | 'not dispatched' | 'no start' | 'no finish' | 'unknown'
 
-// Why a reviewer was let go, which `letGo` in reviewer.ts decides: its context passed the rotation limit, the toggle switched off, the session ended, its brief was refused, its spawn landed after it was no longer wanted, or its spawn rejected after the spawn hook had learned its id.
-export type LetGoReason = 'rotation' | 'switch off' | 'session end' | 'refused brief' | 'stale landing' | 'rejected spawn'
+// Why a reviewer was let go, which `letGo` in reviewer.ts decides: its context passed the rotation limit, the toggle switched off, the session ended, its brief was refused, its spawn landed after it was no longer wanted, its spawn rejected after the spawn hook had learned its id, or its review lapsed without its turn ending.
+export type LetGoReason = 'rotation' | 'switch off' | 'session end' | 'refused brief' | 'stale landing' | 'rejected spawn' | 'lapsed'
 
 // The last completed review: when it closed (the clock's time) and whether it gave a note.
 export type LastReview = { at: number; note: boolean }
@@ -87,7 +87,7 @@ export type Conversation = {
   memory: MemoryEntry[]
   // The reviewer's open review, if it has one.
   review?: OpenReview
-  // Each reviewer spawn still in flight, by the brief it was spawned with, the epoch it was spawned under, the number of the review it serves, the clock's time its dispatch started, and the id and resolved model once the spawn hook has seen it: a dispatch whose spawn result names no agent takes its id from here. No reset clears it, so a spawn a reset dropped still finds the id it is stopped by (`deliverBrief`). `learn`, `adopt` and `land` in reviewer.ts read and write it. Its landing takes it out (`releaseSpawn`). A review no reviewer has stood in for `SPAWN_TIMEOUT_MS` after its dispatch fails at the next dispatch (`dispatchIdle`).
+  // Each reviewer spawn still in flight, by the brief it was spawned with, the epoch it was spawned under, the number of the review it serves, the clock's time its dispatch started, and the id and resolved model once the spawn hook has seen it: a dispatch whose spawn result names no agent takes its id from here. No reset clears it, so a spawn a reset dropped still finds the id it is stopped by (`deliverBrief`). `learn`, `adopt` and `land` in reviewer.ts read and write it. Its landing takes it out (`releaseSpawn`). A review no reviewer has stood in for `SPAWN_TIMEOUT_MS` after its dispatch, and one its stored reviewer has not finished `REVIEW_TIMEOUT_MS` after it, fail at the next dispatch (`dispatchIdle`).
   spawnsInFlight: { brief: string; epoch: number; number: number; startedAt: number; id?: string; model?: string }[]
   // Why the last review failed, while none has succeeded since: no review is dispatched until a turn the user's own prompt started ends. Absent means not failing. A state stored before causes existed holds `true` (read as the unknown cause) or `false` (not failing).
   failing?: FailCause | boolean

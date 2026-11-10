@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'claude-code/testing'
 import type { AgentInfo } from 'claude-code'
 import type { Conversation } from '../types/index'
-import { adopt, isEndNotice, isHandBack, isNotice, isReviewerEntry, land, learn, learnName, letGo, markers, nameKnown, nameListed, originOf, reviewerNameOf, spawnName, spawning, standingOf } from './reviewer'
+import { adopt, isEndNotice, isHandBack, isNotice, isReviewerEntry, land, lapseOf, learn, learnName, letGo, markers, nameKnown, nameListed, originOf, reviewerNameOf, spawnName, spawning, standingOf } from './reviewer'
 import type { Identity } from './reviewer'
 
 const ID: Identity = { plugin: 'auditor', name: 'auditor-reviewer', description: 'auditor review' }
@@ -381,5 +381,37 @@ describe('letting a reviewer go', () => {
 
   test('a later let-go replaces the reason', () => {
     expect(letGo(stored({ lastLetGo: 'rotation' }), 'switch off', 'ag1').next.lastLetGo).toBe('switch off')
+  })
+})
+
+describe('the lapse of an open review', () => {
+  const stored = (over: Partial<Conversation> = {}): Conversation => conversation({ reviewer: { id: 'ag1', model: 'm' }, reviewerIds: ['ag1'], ...over })
+  const dispatchedAt = 1
+  const limits = (start: number, finish: number) => ({ start, finish })
+
+  test('a review held by a stored reviewer lapses as never finished once its limit passed, and not before', () => {
+    expect(lapseOf(stored(), dispatchedAt + 600_001, limits(600_000, 600_000))).toBe('no finish')
+    expect(lapseOf(stored(), dispatchedAt + 600_000, limits(600_000, 600_000))).toBeUndefined()
+  })
+
+  test('a review with no stored reviewer lapses as never started once its limit passed, and not before', () => {
+    expect(lapseOf(conversation(), dispatchedAt + 600_001, limits(600_000, 600_000))).toBe('no start')
+    expect(lapseOf(conversation(), dispatchedAt + 600_000, limits(600_000, 600_000))).toBeUndefined()
+  })
+
+  test('each lapse reads its own limit alone', () => {
+    expect(lapseOf(stored(), dispatchedAt + 100, limits(1, 99))).toBe('no finish')
+    expect(lapseOf(stored(), dispatchedAt + 100, limits(99, 1_000))).toBeUndefined()
+    expect(lapseOf(conversation(), dispatchedAt + 100, limits(99, 1_000))).toBe('no start')
+    expect(lapseOf(conversation(), dispatchedAt + 100, limits(1_000, 1))).toBeUndefined()
+  })
+
+  test('no open review never lapses', () => {
+    expect(lapseOf(conversation({ review: undefined }), dispatchedAt + 1_000_000, limits(1, 1))).toBeUndefined()
+  })
+
+  test('letting the stuck reviewer go for the lapse clears it, keeps its markers and notes the reason', () => {
+    const c = stored({ reviewerContext: 5 })
+    expect(letGo(c, 'lapsed', 'ag1')).toEqual({ next: { ...c, reviewer: undefined, reviewerContext: 0, lastLetGo: 'lapsed' }, released: 'ag1' })
   })
 })

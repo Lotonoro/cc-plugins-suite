@@ -43,7 +43,7 @@ earlier one, confirm a fix, or correct the wording of a message when nothing wou
   (`note sent`) or stayed silent (`quiet`); before any review it reads `no reviews yet`. A review that fails is not
   counted. The fourth row appears only when something needs saying: `failing:` with the cause, which is one of `the
   reviewer ended a turn without an answer`, `a review could not be handed to a reviewer`, `the reviewer did not start
-  in 10 minutes` or `cause unknown; see the debug log`; and `N notes held for your next prompt` while notes wait
+  in 10 minutes`, `the reviewer did not finish in 10 minutes` or `cause unknown; see the debug log`; and `N notes held for your next prompt` while notes wait
   for your next message after an Esc (joined to the failing text as `· 1 note held` when both apply). The popup is not
   redrawn while it is open, so the close time is a clock time, not "2 min ago". The reviewer's raw failure reason is in
   the debug log. While the auditor is off it says `off: no reviews, no figures until switched on` and `click to switch
@@ -68,6 +68,13 @@ earlier one, confirm a fix, or correct the wording of a message when nothing wou
   example after an Esc while the agent was idle, the review is given back rather than failed: it is logged incomplete
   with the reason `given back: the session was stopped`, its entries wait for the next review, the reviewer stays, and
   `auditor failing` does not show.
+- **A review that never finishes.** If the reviewer never ends its turn, because it died, was killed from the agent
+  list or hangs, the review is given up at the next turn end of the agent more than 10 minutes after it was
+  dispatched (the longest review logged took 150 seconds): `auditor failing` shows, with the cause `the reviewer did
+  not finish in 10 minutes`, the review is logged incomplete with the reason `reviewer did not finish in 10 minutes`,
+  its entries wait for the next review and the reviewer is stopped. Until that turn end the footer still reads
+  `auditor on`. The next turn that starts from your own prompt spawns a fresh reviewer, and its first successful
+  review clears the failure.
 - **Nothing else.** Beyond those rows, a review that finds nothing leaves no trace on screen, and neither do the
   reviewer's end-of-run notices or task rows. Two things reach you: an escalation of an unresolved disagreement, as a toast and as a push
   notification on your phone when you are away from the terminal (Claude Code holds it back while you are at it), and
@@ -107,7 +114,8 @@ Then start a new session. The reviewer is on as soon as the plugin is loaded.
   not raise a settled finding again without new evidence. The memory is the reviewer's own, never sent to the agent:
   it is bounded in size and age, reset on `/clear` and on switching on, and kept while the auditor is off. The retired
   reviewer is stopped, so it does not stay idle for the rest of the session. So is a reviewer forgotten on a `/clear`,
-  one whose brief was refused, one whose spawn failed after it was named, or one the toggle switched off. A session
+  one whose brief was refused, one whose spawn failed after it was named, one whose review never finished (see above),
+  or one the toggle switched off. A session
   that is exiting (`/exit`, ctrl+c, ctrl+d, or a `-p` run that finished) ends the reviewer with it, so no stop is
   attempted then. Should one review alone outgrow 100,000 tokens, the reviewer compacts, keeping your instructions and
   where you gave them.
@@ -123,7 +131,7 @@ Then start a new session. The reviewer is on as soon as the plugin is loaded.
   whether the review's brief told the reviewer that nothing will wake the agent (`nothing_wakes`), whether the review
   had its follow-up (`followed_up`), and where the brief went (`brief_to`): `stored` for the reviewer already running,
   or `spawn:` with why, either `no reviewer yet` or the reason the last reviewer was let go (`rotation`, `switch off`,
-  `session end`, `refused brief`, `stale landing`, `rejected spawn`). `brief_to` is null for a review given back, or
+  `session end`, `refused brief`, `stale landing`, `rejected spawn`, `lapsed`). `brief_to` is null for a review given back, or
   whose dispatch failed before its brief went out, since its brief did not reach a reviewer. It is declared under
   `userConfig` in `.claude-plugin/plugin.json`.
 

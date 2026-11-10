@@ -49,6 +49,7 @@ const CAUSE_WORDS: Record<FailCause, string> = {
   'no answer': 'the reviewer ended a turn without an answer',
   'not dispatched': 'a review could not be handed to a reviewer',
   'no start': 'the reviewer did not start in 10 minutes',
+  'no finish': 'the reviewer did not finish in 10 minutes',
   unknown: 'cause unknown; see the debug log',
 }
 
