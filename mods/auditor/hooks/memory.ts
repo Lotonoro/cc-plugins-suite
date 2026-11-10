@@ -29,11 +29,14 @@ export const withNote = (memory: readonly MemoryEntry[], number: number, body: s
 // The review that last touched an entry: a settle's, else the one that booked it.
 const touchedOf = (entry: MemoryEntry): number => entry.touched ?? entry.number
 
-// One entry as the brief and the printout state it: its review number, its kind, its last touch, a settled one's reason, then its note.
+// Text on one line: every run of whitespace, line breaks included, becomes one space, so a blank line inside a note or a reason never starts a paragraph that reads as an entry of its own.
+const folded = (text: string): string => text.replace(/\s+/g, ' ').trim()
+
+// One entry as the brief and the printout state it, on one line: its review number, its kind, its last touch, a settled one's reason, then its note.
 const lineOf = (entry: MemoryEntry): string =>
   entry.kind === 'settled'
-    ? `Review ${entry.number} (settled, last touched in review ${touchedOf(entry)}; the reason: ${entry.why}): ${entry.text}`
-    : `Review ${entry.number} (in flight, last touched in review ${touchedOf(entry)}): ${entry.text}`
+    ? `Review ${entry.number} (settled, last touched in review ${touchedOf(entry)}; the reason: ${folded(entry.why)}): ${folded(entry.text)}`
+    : `Review ${entry.number} (in flight, last touched in review ${touchedOf(entry)}): ${folded(entry.text)}`
 
 // The entries in the order they are stated: in flight first, then settled, each kind in stored order.
 const ordered = (memory: readonly MemoryEntry[]): MemoryEntry[] => [...memory.filter(e => e.kind !== 'settled'), ...memory.filter(e => e.kind === 'settled')]
@@ -78,7 +81,7 @@ export type MemoryChange = { memory: MemoryEntry[]; answer: string; logged: stri
 
 const refused = (why: string): MemoryChange => ({ refusal: `${why}, so the memory was not changed` })
 
-// Judges one memory call against `memory` while review `open` is open (undefined when none is): a settle makes the entry settled with the call's `why` as its reason and touches it at `open`, settled before or not; a remove takes it out. Anything else is refused, checked in this order: no open review, the action, the review number, the `why`, then a settle of the entry the open review itself booked, which the worker has not answered.
+// Judges one memory call against `memory` while review `open` is open (undefined when none is): a settle makes the entry settled with the call's `why` as its reason and touches it at `open`, settled before or not; a remove takes it out. Anything else is refused, checked in this order: no open review, the action, the review number, the `why`, folded to one line before it is counted, stored, answered or logged, then a settle of the entry the open review itself booked, which the worker has not answered.
 export const changeMemory = (memory: readonly MemoryEntry[], open: number | undefined, input: MemoryCall): MemoryChange => {
   if (open === undefined) return refused('auditor has no review in progress for this reviewer')
   const action = input[MEMORY_FIELD.action]
@@ -88,8 +91,9 @@ export const changeMemory = (memory: readonly MemoryEntry[], open: number | unde
   if (typeof review !== 'number' || !Number.isInteger(review)) return refused(`${MEMORY_FIELD.review} must be a whole review number`)
   const target = memory.find(e => e.number === review)
   if (target === undefined) return { refusal: `the memory holds no entry for review ${review}, so it was not changed` }
-  const why = input[MEMORY_FIELD.why]
-  if (typeof why !== 'string' || why.trim() === '') return refused(`${MEMORY_FIELD.why} is missing or blank`)
+  const given = input[MEMORY_FIELD.why]
+  if (typeof given !== 'string' || given.trim() === '') return refused(`${MEMORY_FIELD.why} is missing or blank`)
+  const why = folded(given)
   if (sizeOf(why) > WHY_CHARS) return refused(`${MEMORY_FIELD.why} is ${sizeOf(why)} characters, over the ${WHY_CHARS} allowed`)
   if (action === MEMORY_ACTION.remove) {
     return { memory: memory.filter(e => e !== target), answer: `Review ${review}'s entry is removed.`, logged: `memory entry for review ${review} removed: ${clip(target.text, MEMORY_LOG_CHARS)}; why: ${clip(why, MEMORY_LOG_CHARS)}` }

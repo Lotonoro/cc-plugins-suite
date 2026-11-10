@@ -50,12 +50,12 @@ describe('renderMemory', () => {
   })
 
   test('a heading that says the notes were delivered to the worker, are the reviewer\'s own memory and are never sent to the worker, then each entry with its kind, both review numbers and its text', () => {
-    const rendered = renderMemory([entry(3, 'a.ts:3 first.'), entry(5, 'b.ts:5 second.\nMore.')])
+    const rendered = renderMemory([entry(3, 'a.ts:3 first.'), entry(5, 'b.ts:5 second.')])
     const [heading = '', ...rest] = rendered.split('\n\n')
     expect(heading).toContain('notes earlier reviews delivered to the worker')
     expect(heading).toContain('your own memory')
     expect(heading).toContain('never sent to the worker')
-    expect(rest).toEqual(['Review 3 (in flight, last touched in review 3): a.ts:3 first.', 'Review 5 (in flight, last touched in review 5): b.ts:5 second.\nMore.'])
+    expect(rest).toEqual(['Review 3 (in flight, last touched in review 3): a.ts:3 first.', 'Review 5 (in flight, last touched in review 5): b.ts:5 second.'])
   })
 
   test('a settled entry shows its kind, both review numbers and its reason, after every in-flight entry', () => {
@@ -65,6 +65,37 @@ describe('renderMemory', () => {
       'Review 7 (in flight, last touched in review 7): d.ts:7 fourth.',
       'Review 2 (settled, last touched in review 9; the reason: the worker showed the retry at line 40): a.ts:2 note.',
     ])
+  })
+})
+
+describe('whitespace inside an entry', () => {
+  const spread = [entry(3, 'a.ts:3 first.\n\nSecond   paragraph.\r\n\tThird.\n'), settledAt(2, 9, 'the worker showed\n\nthe retry\nat line 40  ')]
+  const folded = [
+    'Review 3 (in flight, last touched in review 3): a.ts:3 first. Second paragraph. Third.',
+    'Review 2 (settled, last touched in review 9; the reason: the worker showed the retry at line 40): a.ts:2 note.',
+  ]
+
+  test('the brief renders each entry as one paragraph with every run of whitespace folded to one space, so the memory has one paragraph per entry', () => {
+    expect(renderMemory(spread).split('\n\n').slice(1)).toEqual(folded)
+  })
+
+  test('the printout folds the same way', () => {
+    expect(printMemory(spread).split('\n\n').slice(1)).toEqual(folded)
+  })
+
+  test('the memory call folds a why before it is stored, answered and logged, so each shows it on one line', () => {
+    const changed = changeMemory([entry(3, 'a.ts:3 first.')], 9, call(SETTLE, 3, 'countered at line 88.\n\nThe cache is\tper request.'))
+    expect(changed).toEqual({
+      memory: [settledAt(3, 9, 'countered at line 88. The cache is per request.', 'a.ts:3 first.')],
+      answer: "Review 3's entry is now settled, with the reason: countered at line 88. The cache is per request.",
+      logged: 'memory entry for review 3 settled: countered at line 88. The cache is per request.',
+    })
+    expect(changeMemory([entry(3, 'a.ts:3 first.')], 9, call(REMOVE, 3, 'fixed.\n\nRead at line 14.'))).toMatchObject({ logged: 'memory entry for review 3 removed: a.ts:3 first.; why: fixed. Read at line 14.' })
+  })
+
+  test('the why limit counts the folded why', () => {
+    expect('memory' in changeMemory([entry(3)], 9, call(SETTLE, 3, `${'w'.repeat(200)}\n\n\n\n${'w'.repeat(199)}`))).toBe(true)
+    expect(changeMemory([entry(3)], 9, call(SETTLE, 3, `${'w'.repeat(200)}\n\n${'w'.repeat(200)}`))).toEqual({ refusal: 'why is 401 characters, over the 400 allowed, so the memory was not changed' })
   })
 })
 

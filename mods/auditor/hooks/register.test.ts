@@ -5274,7 +5274,7 @@ describe('a note held after an interrupt', () => {
     await $.prompt.submit(COMPOSER('more'))
     await $.classic.Stop(stop)
     expect(seen.sends.length).toBe(1)
-    expect(seen.sends[0].text).toContain(`Review 1 (in flight, last touched in review 1): ${escalation}`)
+    expect(seen.sends[0].text).toContain('Review 1 (in flight, last touched in review 1): Escalation: auth belongs in middleware. Worker: handlers.')
     expect(seen.toasts).toEqual([ESCALATED_TOAST])
   })
 
@@ -5933,7 +5933,7 @@ describe('the reviewer\'s memory', () => {
   describe('/auditor memory', () => {
     test('prints a count line, then every stored entry with its review number and text', ON, async ($, on) => {
       engine(on, { stateSeed: stored([entry(4, 'a.ts:4 first.'), entry(5, 'a.ts:5 second.\nMore.')], 6) })
-      expect(await printed($)).toBe(`auditor memory holds 2 entries, 2 in flight and 0 settled:\n\n${inFlight(4, 'a.ts:4 first.')}\n\n${inFlight(5, 'a.ts:5 second.\nMore.')}`)
+      expect(await printed($)).toBe(`auditor memory holds 2 entries, 2 in flight and 0 settled:\n\n${inFlight(4, 'a.ts:4 first.')}\n\n${inFlight(5, 'a.ts:5 second. More.')}`)
     })
 
     test('says so when the memory is empty', ON, async ($, on) => {
