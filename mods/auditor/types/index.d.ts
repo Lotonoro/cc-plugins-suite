@@ -34,8 +34,8 @@ export type BriefTo = 'stored' | 'spawn: no reviewer yet' | `spawn: ${LetGoReaso
 // Why the reviewer is failing: a review ended without an answer, none could be handed to a reviewer, a spawn did not start in time, a stored reviewer did not finish its review in time, or a state stored before causes existed. Every place that sets `failing` sets one of these, or adds a row for its own cause to the words in button.ts in the same change.
 export type FailCause = 'no answer' | 'not dispatched' | 'no start' | 'no finish' | 'unknown'
 
-// Why a reviewer was let go, which `letGo` in reviewer.ts decides: its context passed the rotation limit, the toggle switched off, the session ended, its brief was refused, its spawn landed after it was no longer wanted, its spawn rejected after the spawn hook had learned its id, its review lapsed without its turn ending, or its review failed (ended incomplete, other than by an aborted turn, or could not be dispatched).
-export type LetGoReason = 'rotation' | 'switch off' | 'session end' | 'refused brief' | 'stale landing' | 'rejected spawn' | 'lapsed' | 'failed review'
+// Why a reviewer was let go, which `letGo` in reviewer.ts decides: its context passed the rotation limit, the toggle switched off, the session ended, its brief was refused, its spawn landed after it was no longer wanted, its spawn rejected after the spawn hook had learned its id, its review lapsed without its turn ending, its review failed (ended incomplete, other than by an aborted turn, or could not be dispatched), or it sat idle past its prompt cache's life (`reaped idle`).
+export type LetGoReason = 'rotation' | 'switch off' | 'session end' | 'refused brief' | 'stale landing' | 'rejected spawn' | 'lapsed' | 'failed review' | 'reaped idle'
 
 // The last completed review: when it closed (the clock's time) and whether it gave a note.
 export type LastReview = { at: number; note: boolean }
@@ -74,7 +74,8 @@ export type Conversation = {
   // The session transcript's path from the engine's events; a session end clears it, so a /clear keeps it only if the engine reports it again.
   transcript: string | null
   // The current reviewer, once its spawn result names it or a call it makes is adopted by name. The state-based answer (`standingOf` in reviewer.ts) reads it for `current`: only this id settles a review, calls the reviewer's tools or has its context counted.
-  reviewer?: { id: string; model: string }
+  // `endedAt`: the clock's time of its latest turn end, absent while it has had none since it was stored; the idle timer counts the cache's life from it (`armReap`).
+  reviewer?: { id: string; model: string; endedAt?: number }
   // Every reviewer id this session's spawns have returned, oldest first, kept across /clear. The state-based answer reads it for `former`: an id here that is not the stored reviewer's is a retired, switched-off, forgotten or stale reviewer's, and is still a reviewer's wherever the answer asks for any reviewer: its task row is hidden, its calls stay out of the record, its compaction keeps what a reviewer keeps, and the agent list's entry for it is left out of the stall fact.
   reviewerIds: string[]
   // The team name each of this session's reviewer spawns runs under, as the agent list names it (the engine renames a taken name), kept across /clear: the name decisions in reviewer.ts read them, and a verified end-of-run notice from one of these is consumed.

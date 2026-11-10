@@ -120,6 +120,8 @@ const engine = (on: any, opts: Opts = {}) => {
     conversation: undefined as any,
     registered: [] as any[], commands: [] as any[], registeredTools: [] as any[], runs: [] as any[], logs: [] as any[], reads: [] as string[], writes: [] as { path: string; text: string }[], appends: [] as any[], received: [] as any[], toolCalls: [] as any[], compactions: [] as any[],
     files, clock: 1000,
+    // Each timer the plugin set with $.clock.after, in order: the wait asked and the call that makes it fire. None fires unless a test fires it.
+    timers: [] as { ms: number; fire: () => void }[],
     flights: [] as string[][], clockHold: undefined as { until: Promise<void>; reached: () => void } | undefined, clockCalls: 0, stripBriefs: false,
     session: 's1',
     listCalls: 0, conversations: [] as any[],
@@ -305,9 +307,11 @@ const engine = (on: any, opts: Opts = {}) => {
   })
   // The bottom of a compaction: each one that reaches it is recorded, and answered with the messages it was given, since a compaction leaves at least one.
   on('session.compact', (_$: any, e: any) => (seen.compactions.push(e), { messages: e.messages, usage: opts.compactUsage }))
-  // A timer the plugin sets never fires here (the ledger reader's one-second bound is staged in its own tests).
-  on('clock.after', async () => {
-    await new Promise(() => undefined)
+  // A timer the plugin sets fires only when a test fires it (the ledger reader's one-second bound is staged in its own tests).
+  on('clock.after', async (_$: any, e: any) => {
+    const fired = gate()
+    seen.timers.push({ ms: e.ms, fire: fired.open })
+    await fired.until
     return { value: undefined }
   })
   // The ledger: the figures the status line totals, with the context and rate-limit fields the call always carries.
@@ -7514,5 +7518,286 @@ describe('an open review whose stored reviewer never ends its turn', () => {
     await turnEnded($, 'ag2', 'Nothing to note.')
     expect(seen.conversation.failing).toBeUndefined()
     expect(logOf(seen, LOG_2)).toMatchObject({ status: 'complete', brief_to: 'spawn: lapsed' })
+  })
+})
+
+describe('an idle reviewer', () => {
+  const CACHE_LIFE = 5 * 60 * 1000
+  const STOPPED_TEAMMATE = 'Teammate "auditor-reviewer" was not messaged: the session was stopped and nobody has sent input since.'
+  const NOTE_1 = 'a.ts:4 swallows it.'
+  // The reap timers the plugin has set: those counting the cache's life (the ledger's own one-second bound is another wait).
+  const reaps = (seen: any) => seen.timers.filter((t: any) => t.ms > 1000)
+  const stopped = (seen: any): string[] => seen.stops.map((s: any) => s.task_id)
+  // The reviewer's request, answered with `usage`.
+  const requestWith = async ($: any, usage: unknown, agentId = 'ag1'): Promise<void> => {
+    STEP_USAGE = usage
+    try {
+      await step($, '', agentId)
+    } finally {
+      STEP_USAGE = null
+    }
+  }
+  // Review 1 is dispatched at the worker's Stop and settles with a note, which the memory then holds.
+  const noted = async ($: any, on: any, opts: Opts = {}) => {
+    const seen = engine(on, { reviewerIds: ['ag1', 'ag2'], ...opts })
+    await $.prompt.submit(COMPOSER('first'))
+    await $.classic.Stop(stop)
+    await turnEnded($, 'ag1', NOTE_1)
+    await drained()
+    return seen
+  }
+  // The worker's next turn: a prompt and its Stop, which dispatches review 2.
+  const nextTurn = async ($: any, prompt = 'second') => {
+    await $.prompt.submit(COMPOSER(prompt))
+    await $.classic.Stop(stop)
+    await drained()
+  }
+
+  test('after a complete review it is let go once the cache life has passed: stopped, not stored, and the next dispatch spawns a reviewer whose brief carries the memory', ON, async ($, on) => {
+    const seen = await noted($, on)
+    expect(reaps(seen).length).toBe(1)
+    expect(stopped(seen)).toEqual([])
+    reaps(seen)[0].fire()
+    await drained()
+    expect(stopped(seen)).toEqual(['ag1'])
+    expect(seen.conversation.reviewer).toBeUndefined()
+    expect(seen.conversation.lastLetGo).toBe('reaped idle')
+    await mainTurnEnd($)
+    await nextTurn($)
+    expect(seen.sends).toEqual([])
+    expect(seen.spawns.length).toBe(2)
+    expect(seen.spawns[1].prompt).toContain(NOTE_1)
+    expect(seen.conversation.reviewer).toMatchObject({ id: 'ag2' })
+    expect(seen.conversation.review).toMatchObject({ number: 2, briefTo: 'spawn: reaped idle' })
+    expect(stopped(seen)).toEqual(['ag1'])
+  })
+
+  test('after a review given back because the session was stopped it is let go once the cache life has passed, and the old timer, from before the give-back, changes nothing', ON, async ($, on) => {
+    const seen = engine(on, { sendFails: 'ag1', refusal: STOPPED_TEAMMATE })
+    await workerTurn($)
+    await turnEnded($, 'ag1', NOTE_1)
+    await $.prompt.submit(COMPOSER('more'))
+    await $.classic.Stop(stop)
+    await drained()
+    expect(logOf(seen, LOG_2)).toMatchObject({ status: 'incomplete', reason: 'given back: the session was stopped' })
+    expect(reaps(seen).length).toBe(2)
+    reaps(seen)[0].fire()
+    await drained()
+    expect(stopped(seen)).toEqual([])
+    expect(seen.conversation.reviewer).toMatchObject({ id: 'ag1' })
+    reaps(seen)[1].fire()
+    await drained()
+    expect(stopped(seen)).toEqual(['ag1'])
+    expect(seen.conversation.reviewer).toBeUndefined()
+    expect(seen.conversation.lastLetGo).toBe('reaped idle')
+    await $.prompt.submit(COMPOSER('again'))
+    await $.classic.Stop(stop)
+    await drained()
+    expect(seen.spawns.length).toBe(2)
+    expect(seen.spawns[1].prompt).toContain(NOTE_1)
+    expect(seen.conversation.review).toMatchObject({ number: 3, briefTo: 'spawn: reaped idle' })
+  })
+
+  test('a given-back review times the reviewer from its latest turn end: the cache life less the time since', ON, async ($, on) => {
+    const seen = engine(on, { sendFails: 'ag1', refusal: STOPPED_TEAMMATE })
+    await workerTurn($)
+    await turnEnded($, 'ag1', NOTE_1)
+    await drained()
+    expect(reaps(seen)[0].ms).toBe(CACHE_LIFE)
+    seen.clock += 60_000
+    await $.prompt.submit(COMPOSER('more'))
+    await $.classic.Stop(stop)
+    await drained()
+    expect(reaps(seen).length).toBe(2)
+    expect(reaps(seen)[1].ms).toBeGreaterThan(CACHE_LIFE - 60_100)
+    expect(reaps(seen)[1].ms).toBeLessThanOrEqual(CACHE_LIFE - 60_000)
+  })
+
+  test('a given-back review whose reviewer\'s cache has already expired fires its timer at once', ON, async ($, on) => {
+    const seen = engine(on, { sendFails: 'ag1', refusal: STOPPED_TEAMMATE })
+    await workerTurn($)
+    await turnEnded($, 'ag1', NOTE_1)
+    await drained()
+    seen.clock += CACHE_LIFE + 1
+    await $.prompt.submit(COMPOSER('more'))
+    await $.classic.Stop(stop)
+    await drained()
+    expect(reaps(seen).length).toBe(1)
+    expect(seen.timers.at(-1)?.ms).toBe(0)
+  })
+
+  test('a given-back review whose reviewer has had no turn end is timed from the give-back: the whole cache life', ON, async ($, on) => {
+    const seen = engine(on, { sendFails: 'ag1', refusal: STOPPED_TEAMMATE, stateSeed: { dispatches: 1, reviewer: { id: 'ag1', model: 'm' }, reviewerIds: ['ag1'] } })
+    seen.clock += CACHE_LIFE
+    await workerTurn($)
+    await drained()
+    expect(logOf(seen, `${DIR}/0002.json`)).toMatchObject({ reason: 'given back: the session was stopped' })
+    expect(reaps(seen).map((t: any) => t.ms)).toEqual([CACHE_LIFE])
+  })
+
+  test('after a reviewer turn that ended aborted it is let go once the cache life has passed, and the next user-started dispatch spawns', ON, async ($, on) => {
+    const seen = engine(on, { reviewerIds: ['ag1', 'ag2'] })
+    await $.prompt.submit(COMPOSER('first'))
+    await $.classic.Stop(stop)
+    await $.turn.complete({ ...TURN_END('ag1', ''), isAborted: true, reason: 'aborted' })
+    await drained()
+    expect(reaps(seen).length).toBe(1)
+    expect(seen.conversation.reviewer).toMatchObject({ id: 'ag1' })
+    reaps(seen)[0].fire()
+    await drained()
+    expect(stopped(seen)).toEqual(['ag1'])
+    expect(seen.conversation.reviewer).toBeUndefined()
+    expect(seen.conversation.failing).toBe('no answer')
+    await mainTurnEnd($)
+    await nextTurn($)
+    expect(seen.spawns.length).toBe(2)
+    expect(seen.conversation.review).toMatchObject({ number: 2, briefTo: 'spawn: reaped idle' })
+  })
+
+  test('a reviewer let go for another reason starts no timer', ON, async ($, on) => {
+    const seen = engine(on, { reviewerIds: ['ag1', 'ag2'] })
+    await $.prompt.submit(COMPOSER('first'))
+    await $.classic.Stop(stop)
+    await turnFailed($, 'ag1')
+    await drained()
+    expect(seen.conversation.lastLetGo).toBe('failed review')
+    expect(reaps(seen)).toEqual([])
+  })
+
+  test('a dispatch before the cache life sends to the stored reviewer, and the timer\'s later fire changes nothing: while that review is open and after it settles', ON, async ($, on) => {
+    const seen = await noted($, on)
+    await mainTurnEnd($)
+    await nextTurn($)
+    expect(seen.sends.map((s: any) => s.to)).toEqual(['ag1'])
+    expect(seen.spawns.length).toBe(1)
+    expect(seen.conversation.review).toMatchObject({ number: 2, briefTo: 'stored' })
+    reaps(seen)[0].fire()
+    await drained()
+    expect(stopped(seen)).toEqual([])
+    expect(seen.conversation.reviewer).toMatchObject({ id: 'ag1' })
+    expect(seen.conversation.review).toMatchObject({ number: 2 })
+    await turnEnded($, 'ag1', 'Nothing to note.')
+    await drained()
+    expect(reaps(seen).length).toBe(2)
+    expect(seen.conversation.reviewer).toMatchObject({ id: 'ag1' })
+  })
+
+  test('a timer from before a dispatch changes nothing once that review has settled, and the timer started at its settle lets the reviewer go', ON, async ($, on) => {
+    const seen = await noted($, on)
+    await mainTurnEnd($)
+    await nextTurn($)
+    await turnEnded($, 'ag1', 'Nothing to note.')
+    await drained()
+    reaps(seen)[0].fire()
+    await drained()
+    expect(stopped(seen)).toEqual([])
+    expect(seen.conversation.reviewer).toMatchObject({ id: 'ag1' })
+    reaps(seen)[1].fire()
+    await drained()
+    expect(stopped(seen)).toEqual(['ag1'])
+    expect(seen.conversation.reviewer).toBeUndefined()
+  })
+
+  test('a fire after a /clear changes nothing more: the reviewer was let go and stopped once, by the session end', ON, async ($, on) => {
+    const seen = await noted($, on)
+    await $.session.end({ reason: 'clear', sessionId: 's1' } as any)
+    await drained()
+    expect(stopped(seen)).toEqual(['ag1'])
+    reaps(seen)[0].fire()
+    await drained()
+    expect(stopped(seen)).toEqual(['ag1'])
+    expect(seen.conversation.lastLetGo).toBe('session end')
+  })
+
+  test('a fire after a switch off and on changes nothing more', ON, async ($, on) => {
+    const seen = await noted($, on)
+    await $.command.run({ command: 'auditor', args: 'off' } as any)
+    await $.command.run({ command: 'auditor', args: 'on' } as any)
+    await drained()
+    expect(stopped(seen)).toEqual(['ag1'])
+    reaps(seen)[0].fire()
+    await drained()
+    expect(stopped(seen)).toEqual(['ag1'])
+    expect(seen.conversation.lastLetGo).toBe('switch off')
+  })
+
+  test('a fire after a rotation changes nothing more', ON, async ($, on) => {
+    const seen = await noted($, on)
+    await mainTurnEnd($)
+    await $.prompt.submit(COMPOSER('second'))
+    await $.classic.Stop(stop)
+    await requestWith($, { ...USAGE, input_tokens: 80_001 })
+    await turnEnded($, 'ag1', 'Nothing to note.')
+    await drained()
+    expect(stopped(seen)).toEqual(['ag1'])
+    expect(seen.conversation.lastLetGo).toBe('rotation')
+    reaps(seen)[0].fire()
+    await drained()
+    expect(stopped(seen)).toEqual(['ag1'])
+  })
+
+  test('a fire with a spawn in flight changes nothing', ON, async ($, on) => {
+    const held = heldSpawn(2)
+    const seen = await noted($, on, { sendFails: 'ag1', spawnHold: held.hold })
+    await mainTurnEnd($)
+    await $.prompt.submit(COMPOSER('second'))
+    const dispatching = $.classic.Stop(stop)
+    await held.reached
+    expect(seen.conversation.spawnsInFlight.length).toBe(1)
+    reaps(seen)[0].fire()
+    await drained()
+    expect(stopped(seen)).toEqual([])
+    held.land()
+    await dispatching
+    await drained()
+    expect(stopped(seen)).toEqual(['ag1'])
+    expect(seen.conversation.reviewer).toMatchObject({ id: 'ag2' })
+  })
+
+  describe('a dispatch and the fire racing for the state', () => {
+    const trap = (when: () => boolean) => {
+      const held = gate()
+      const reached = gate()
+      return { hold: { when, until: held.until, reached: reached.open }, reached: reached.until, open: held.open }
+    }
+
+    test('a dispatch whose change lands just before the fire\'s keeps the reviewer, and the fire changes nothing', ON, async ($, on) => {
+      const armed = { on: false }
+      const t = trap(() => armed.on)
+      const seen = await noted($, on, { holdWrite: t.hold })
+      await mainTurnEnd($)
+      await $.prompt.submit(COMPOSER('second'))
+      armed.on = true
+      reaps(seen)[0].fire()
+      await t.reached
+      await $.classic.Stop(stop)
+      t.open()
+      await drained()
+      expect(seen.sends.map((s: any) => s.to)).toEqual(['ag1'])
+      expect(seen.spawns.length).toBe(1)
+      expect(stopped(seen)).toEqual([])
+      expect(seen.conversation.reviewer).toMatchObject({ id: 'ag1' })
+      expect(seen.conversation.review).toMatchObject({ number: 2, briefTo: 'stored' })
+    })
+
+    test('a dispatch whose change lands just after the fire\'s spawns fresh, and the review is never left open with no reviewer', ON, async ($, on) => {
+      const t = trap(() => current.seen?.conversation?.lastMessage === 'raced')
+      const seen = await noted($, on, { holdWrite: t.hold })
+      await mainTurnEnd($)
+      await $.prompt.submit(COMPOSER('second'))
+      const dispatching = $.classic.Stop({ ...stop, last_assistant_message: 'raced' })
+      await t.reached
+      reaps(seen)[0].fire()
+      await drained()
+      expect(stopped(seen)).toEqual(['ag1'])
+      t.open()
+      await dispatching
+      await drained()
+      expect(seen.sends).toEqual([])
+      expect(seen.spawns.length).toBe(2)
+      expect(seen.conversation.reviewer).toMatchObject({ id: 'ag2' })
+      expect(seen.conversation.review).toMatchObject({ number: 2, briefTo: 'spawn: reaped idle' })
+      expect(stopped(seen)).toEqual(['ag1'])
+    })
   })
 })

@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'claude-code/testing'
 import type { AgentInfo } from 'claude-code'
 import type { Conversation } from '../types/index'
-import { adopt, isEndNotice, isHandBack, isNotice, isReviewerEntry, land, lapseOf, learn, learnName, letGo, markers, nameKnown, nameListed, originOf, reviewerNameOf, spawnName, spawning, standingOf } from './reviewer'
+import { adopt, idleTimerOf, isEndNotice, isHandBack, isNotice, isReviewerEntry, land, lapseOf, learn, learnName, letGo, markers, nameKnown, nameListed, originOf, reapIdle, reviewerNameOf, spawnName, spawning, standingOf, withTurnEnd } from './reviewer'
 import type { Identity } from './reviewer'
 
 const ID: Identity = { plugin: 'auditor', name: 'auditor-reviewer', description: 'auditor review' }
@@ -339,7 +339,7 @@ describe('letting a reviewer go', () => {
     expect(letGo(at, 'rotation', 'ag1', 80_000)).toEqual({ next: at, released: undefined })
   })
 
-  for (const reason of ['switch off', 'session end', 'failed review'] as const) {
+  for (const reason of ['switch off', 'session end', 'failed review', 'reaped idle'] as const) {
     test(`a ${reason} lets the stored reviewer go whatever its context: its id returned, its context cleared, its marks kept and the reason noted`, () => {
       const gone = letGo(stored(), reason, 'ag1')
       expect(gone.released).toBe('ag1')
@@ -414,4 +414,54 @@ describe('the lapse of an open review', () => {
     const c = stored({ reviewerContext: 5 })
     expect(letGo(c, 'lapsed', 'ag1')).toEqual({ next: { ...c, reviewer: undefined, reviewerContext: 0, lastLetGo: 'lapsed' }, released: 'ag1' })
   })
+})
+
+describe('the reviewer\'s latest turn end', () => {
+  test('is noted on the stored reviewer whose turn ended, and on no other', () => {
+    const c = conversation({ reviewer: { id: 'ag1', model: 'm' } })
+    expect(withTurnEnd(c, 'ag1', 50).reviewer).toEqual({ id: 'ag1', model: 'm', endedAt: 50 })
+    expect(withTurnEnd(c, 'ag9', 50)).toBe(c)
+    expect(withTurnEnd(conversation(), 'ag1', 50)).toEqual(conversation())
+  })
+
+  test('goes with the reviewer when it is let go', () => {
+    expect(letGo(withTurnEnd(conversation({ reviewer: { id: 'ag1', model: 'm' } }), 'ag1', 50), 'reaped idle', 'ag1').next.reviewer).toBeUndefined()
+  })
+})
+
+describe('the reap of an idle reviewer', () => {
+  // Dispatch 4 was the last; no review is open and no spawn is in flight, at epoch 2.
+  const idle = (over: Partial<Conversation> = {}): Conversation =>
+    conversation({ review: undefined, dispatches: 4, reviewer: { id: 'ag1', model: 'm' }, reviewerIds: ['ag1'], reviewerNames: ['n'], reviewerContext: 7, ...over })
+  const timer = { id: 'ag1', dispatches: 4, epoch: 2 }
+
+  test('a stored reviewer with no open review and no spawn in flight has a timer identity: its id, the dispatch count and the epoch', () => {
+    expect(idleTimerOf(idle())).toEqual(timer)
+  })
+
+  test('no timer identity while a review is open, a spawn is in flight or no reviewer is stored', () => {
+    expect(idleTimerOf(idle({ review: conversation().review }))).toBeUndefined()
+    expect(idleTimerOf(idle({ spawnsInFlight: [spawn()] }))).toBeUndefined()
+    expect(idleTimerOf(idle({ reviewer: undefined }))).toBeUndefined()
+  })
+
+  test('the fire lets the same idle reviewer go: its id returned, its context cleared, its marks kept and the reason noted', () => {
+    const gone = reapIdle(idle(), timer)
+    expect(gone.released).toBe('ag1')
+    expect(gone.next).toMatchObject({ reviewer: undefined, reviewerContext: 0, reviewerIds: ['ag1'], reviewerNames: ['n'], lastLetGo: 'reaped idle' })
+  })
+
+  const unchanged: [string, Conversation][] = [
+    ['a review is open', idle({ review: conversation().review })],
+    ['a spawn is in flight', idle({ spawnsInFlight: [spawn()] })],
+    ['another reviewer is stored', idle({ reviewer: { id: 'ag2', model: 'm' } })],
+    ['no reviewer is stored', idle({ reviewer: undefined })],
+    ['a dispatch was made since', idle({ dispatches: 5 })],
+    ['the epoch moved', idle({ epoch: 3 })],
+  ]
+  for (const [when, c] of unchanged) {
+    test(`the fire changes nothing when ${when}`, () => {
+      expect(reapIdle(c, timer)).toEqual({ next: c, released: undefined })
+    })
+  }
 })

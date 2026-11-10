@@ -9,8 +9,8 @@ import { MAIN, admitSend, decideRefusal, followUpText, frameNote, isStoppedRefus
 import type { Decided, Outcome, Refusal, Sent, Verdict } from './notes'
 import { REVIEWER_PROMPT } from './prompt'
 import { clip, editedLines, entryBlock, pageOf, renumberBlock, toolLine } from './record'
-import { adopt, isEndNotice, isHandBack, isNotice, isReviewerEntry, land, lapseOf, learn, learnName, letGo, markers, nameKnown, nameListed, originOf, reviewerNameOf, spawnName, spawning, standingOf } from './reviewer'
-import type { Identity, Release } from './reviewer'
+import { adopt, idleTimerOf, isEndNotice, isHandBack, isNotice, isReviewerEntry, land, lapseOf, learn, learnName, letGo, markers, nameKnown, nameListed, originOf, reapIdle, reviewerNameOf, spawnName, spawning, standingOf, withTurnEnd } from './reviewer'
+import type { Identity, IdleTimer, Release } from './reviewer'
 import { purged, withCompaction, withNoteGiven, withResponse, withReviewDone } from './tally'
 import { DIGEST_CHARS, LOOKUP_TIMEOUT_MS, SEARCH_TERM_CHARS, digestBlocks, digestOf, lineCommand, lookupOf, parseSearch, renderSearch, searchCommand } from './transcript'
 
@@ -41,6 +41,8 @@ const ROTATE_AT = 80_000
 const SPAWN_TIMEOUT_MS = 10 * 60 * 1000
 // How long a stored reviewer may hold a review open before it is given up (`dispatchIdle`): four times the longest review logged, and its own limit so that changing it does not change how long a spawn may take (`SPAWN_TIMEOUT_MS` also bounds adoption).
 const REVIEW_TIMEOUT_MS = 10 * 60 * 1000
+// How long a reviewer may sit idle before it is let go (`armReap`): the life of its prompt cache, after which a brief to it re-writes its whole context where a fresh spawn writes only its prompt and the brief.
+const CACHE_LIFE_MS = 5 * 60 * 1000
 // The reason a review the stopped session refused is logged incomplete with (`giveBack`).
 const GIVEN_BACK = 'given back: the session was stopped'
 // The reason a review is logged incomplete with when no spawn stood a reviewer in for it in SPAWN_TIMEOUT_MS (`dispatchIdle`).
@@ -265,7 +267,7 @@ const stopFailed = ($: Pick<Scope, 'ui'>, err: unknown): void => {
   else recordFailed($, 'reviewer stop', err)
 }
 
-// Stops a reviewer the auditor lets go (`letGo`: one a take rotated out or a failed review ended, one a session end forgot, one a refused brief dropped, one whose spawn rejected after its id was learned, one whose review lapsed, or one the toggle switched off or whose spawn landed after it), so it does not sit idle for the rest of the session; each caller says when it issues it. The engine call is not awaited, so no caller's settle or dispatch waits on it; the helper resolves once the stop is issued. Any failure, the state read included, is logged and leaves the reviewer idle, and the caller goes on; the engine's no-session-bound error is the expected failure where no session is bound, and is logged as one plain line. Where a respawn can follow (`mayRespawn`), an id the state holds as the current reviewer is not stopped: a fresh reviewer can come back under a forgotten id, and the stop would end it. A session end spawns none, and when its reset failed the state still names the reviewer it forgot, so it passes false.
+// Stops a reviewer the auditor lets go (`letGo`: one a take rotated out or a failed review ended, one a session end forgot, one a refused brief dropped, one whose spawn rejected after its id was learned, one whose review lapsed, one that sat idle past its cache's life, or one the toggle switched off or whose spawn landed after it), so it does not sit idle for the rest of the session; each caller says when it issues it. The engine call is not awaited, so no caller's settle or dispatch waits on it; the helper resolves once the stop is issued. Any failure, the state read included, is logged and leaves the reviewer idle, and the caller goes on; the engine's no-session-bound error is the expected failure where no session is bound, and is logged as one plain line. Where a respawn can follow (`mayRespawn`), an id the state holds as the current reviewer is not stopped: a fresh reviewer can come back under a forgotten id, and the stop would end it. A session end spawns none, and when its reset failed the state still names the reviewer it forgot, so it passes false.
 export const stopReviewer = async ($: Pick<Scope, 'state' | 'tool' | 'ui'>, id: string | undefined, mayRespawn: boolean): Promise<void> => {
   if (id === undefined) return
   try {
@@ -282,7 +284,7 @@ export const stopReviewer = async ($: Pick<Scope, 'state' | 'tool' | 'ui'>, id: 
   }
 }
 
-// The release step of a let-go whose stop follows its change at once: applies `decide`, a state change that makes its let-go through `letGo` and returns the decision, then stops the reviewer it released, unless `stops` is false. Resolves with the conversation after and the id released; a change that throws throws, with nothing stopped. A let-go whose stop must wait for other work applies `letGo` in its own change and stops afterwards: a rotation or a failed review is let go in the change that takes the review and stopped after the review's log (`takeReview`, `settle`, `failReview`), a lapse in the dispatch's change and stopped after its log (`dispatchIdle`), and a refused brief and a stale landing are let go in the delivery's changes and stopped as it goes on (`deliverBrief`); a rejected spawn goes through the step itself (`releaseRejected`).
+// The release step of a let-go whose stop follows its change at once: applies `decide`, a state change that makes its let-go through `letGo` and returns the decision, then stops the reviewer it released, unless `stops` is false. Resolves with the conversation after and the id released; a change that throws throws, with nothing stopped. A let-go whose stop must wait for other work applies `letGo` in its own change and stops afterwards: a rotation or a failed review is let go in the change that takes the review and stopped after the review's log (`takeReview`, `settle`, `failReview`), a lapse in the dispatch's change and stopped after its log (`dispatchIdle`), and a refused brief and a stale landing are let go in the delivery's changes and stopped as it goes on (`deliverBrief`); a rejected spawn (`releaseRejected`) and an idle reap (`reap`) go through the step itself.
 const release = async ($: Scope, decide: (c: Conversation) => Release, mayRespawn: boolean, stops = true): Promise<{ after: Conversation; released: string | undefined }> => {
   const got: { released?: string } = {}
   const after = await change($, c => {
@@ -292,6 +294,36 @@ const release = async ($: Scope, decide: (c: Conversation) => Release, mayRespaw
   })
   if (stops) await stopReviewer($, got.released, mayRespawn)
   return { after, released: got.released }
+}
+
+// Starts the timer that lets a reviewer go once its prompt cache has expired, for the reviewer `c` stores when it is idle (`idleTimerOf`); `c` is the conversation a settle or a give-back has just written. It fires CACHE_LIFE_MS after the reviewer's latest turn end (`endedAt`), or after now where it has had none since it was stored; a settle's turn end is now. The timer is only its closure: nothing is stored and nothing is cancelled, and its fire judges again (`reapIdle`) in one change through the release step, so a dispatch, a reset or a rotation since the start makes it change nothing. A failed fire is logged. A hot reload cancels a pending timer, which leaves its reviewer idle until its next review settles.
+const armReap = async ($: Scope, c: Conversation, fromTurnEnd = false): Promise<void> => {
+  const timer = idleTimerOf(c)
+  if (timer === undefined) return
+  const wait = await waitOf($, c.reviewer?.endedAt, fromTurnEnd)
+  try {
+    $.clock.after(wait, () => {
+      reap($, timer).catch((err: unknown) => recordFailed($, 'idle reap', err))
+    })
+  } catch (err) {
+    // A timer that cannot be set leaves the reviewer idle until its next review; the settle or give-back that set it goes on.
+    recordFailed($, 'idle reap timer', err)
+  }
+}
+
+// How long the cache has left: CACHE_LIFE_MS less the time since `endedAt` where a turn end is counted from, whole where the reviewer has had none or its clock cannot be read (it is then reaped later than it could be, never while warm).
+const waitOf = async ($: Pick<Scope, 'clock' | 'ui'>, endedAt: number | undefined, fromTurnEnd: boolean): Promise<number> => {
+  if (!fromTurnEnd || endedAt === undefined) return CACHE_LIFE_MS
+  try {
+    return Math.min(CACHE_LIFE_MS, Math.max(0, endedAt + CACHE_LIFE_MS - (await $.clock.now())))
+  } catch (err) {
+    recordFailed($, 'idle reap clock read', err)
+    return CACHE_LIFE_MS
+  }
+}
+
+const reap = async ($: Scope, timer: IdleTimer): Promise<void> => {
+  await release($, c => reapIdle(c, timer), true)
 }
 
 // Takes the open review if `ready`, judged on the conversation the change reads; where `back` holds for the review taken, its entries are put back in the record in the same change. Where `mark` holds instead, the review is not taken but marked as followed up (`followedUp`), in the same change: it stays open with its entries held, and its reviewer is not let go. Where `fails` holds for the review taken, its reviewer is let go in the same change (`failed review`) unless a rotation already let it go. The dispatch failure never asks for a mark.
@@ -330,9 +362,10 @@ const appendEntry = async ($: Pick<Scope, 'state'>, body: string): Promise<void>
 const inEpoch = (epoch: number, fn: (c: Conversation) => Conversation) => (c: Conversation): Conversation => (c.epoch !== epoch ? c : fn(c))
 
 // A review that fails: the footer reads `auditor failing` until a review succeeds, with the cause in the popup (`cause`) and the raw reason in the debug log. A review taken or planned under an older epoch (`epoch`) does not fail.
-const markFailed = async ($: Pick<Scope, 'state' | 'ui'>, reason: string, epoch: number, cause: FailCause): Promise<void> => {
-  await change($, inEpoch(epoch, c => ({ ...c, failing: cause })))
+const markFailed = async ($: Pick<Scope, 'state' | 'ui'>, reason: string, epoch: number, cause: FailCause, also: (c: Conversation) => Conversation = c => c): Promise<Conversation> => {
+  const after = await change($, inEpoch(epoch, c => also({ ...c, failing: cause })))
   $.ui.log(`${PLUGIN}: review failed: ${reason}`, { to: 'debug' })
+  return after
 }
 
 // Whether a prompt is the user's own: typed at the terminal, sent from a Remote Control client, or a headless run's.
@@ -456,7 +489,9 @@ const settle = async ($: Scope, log: boolean, agentId: string, done: Finished, u
     if (outcome.status === 'incomplete') {
       // settleOutcome fails an answer only when it is empty.
       const reason = done.reason === 'answer' ? 'reviewer ended its turn with an empty answer' : `reviewer turn ended with reason ${done.reason}, isAborted ${done.isAborted}`
-      await markFailed($, reason, epoch, 'no answer')
+      const failed = await markFailed($, reason, epoch, 'no answer', c => withTurnEnd(c, agentId, turnEnd.at))
+      // A reviewer kept (its turn was aborted) idles from here.
+      if (failed.epoch === epoch) await armReap($, failed)
       await logReview($, sessionId, log, closed, { status: 'incomplete', reason })
       // Its restored entries wait for the worker's next turn end.
       return
@@ -465,8 +500,9 @@ const settle = async ($: Scope, log: boolean, agentId: string, done: Finished, u
     if (outcome.logAnswer && !unsent) $.ui.log(`${PLUGIN}: review ${review.number} sent no note, and its final answer was: ${done.answer}`, { to: 'debug' })
     await logReview($, sessionId, log, closed, { status: 'complete', note: outcome.note })
     // The failure clears under the take's epoch (`epoch`), and a moved epoch dispatches nothing.
-    const after = await change($, inEpoch(epoch, c => ({ ...withReviewDone(c, turnEnd.at, outcome.note !== null), failing: undefined })))
+    const after = await change($, inEpoch(epoch, c => ({ ...withTurnEnd(withReviewDone(c, turnEnd.at, outcome.note !== null), agentId, turnEnd.at), failing: undefined })))
     if (after.epoch !== epoch) return
+    await armReap($, after)
     // An idle worker gets the next brief at once; a busy one's turn end dispatches. midTurn is read through a change (currentConversation), since a plain get answers the dispatch's starting moment and misses a prompt that entered while this settle ran, a note's own among them.
     if (!(await currentConversation($)).midTurn) await dispatchIdle($, log)
   } finally {
@@ -780,7 +816,7 @@ const deliverBrief = async ($: Scope, plan: Plan): Promise<boolean> => {
 // A review whose brief the stopped session refused is given back: its entries go to the front of the record, the interrupt mark is set so nothing is dispatched until the user's next plain prompt, and the review is logged incomplete with its own reason; its number is not reused. It fails nothing and stops no reviewer. Only while the plan's review is still the open one, at the plan's epoch: a reset has already dropped and logged it.
 const giveBack = async ($: Scope, sessionId: string, log: boolean, plan: Plan): Promise<void> => {
   const got: { review?: OpenReview; model: string | null } = { model: null }
-  await change($, c => {
+  const after = await change($, c => {
     got.review = undefined
     if (c.epoch !== plan.epoch || c.review?.number !== plan.number) return c
     got.review = c.review
@@ -789,6 +825,8 @@ const giveBack = async ($: Scope, sessionId: string, log: boolean, plan: Plan): 
     return { ...c, review: undefined, record: withEntriesFirst(c.review.record, c.record), ...(plan.number > c.dispatchesAtPrompt ? { interrupted: true } : {}) }
   })
   if (got.review === undefined) return
+  // The reviewer stays, idle since its latest turn end (or since now, had it none), so it is timed from there.
+  await armReap($, after, true)
   await logIncomplete($, sessionId, log, withoutRoute(got.review), got.model, GIVEN_BACK)
   $.ui.log(`${PLUGIN}: review ${plan.number}'s brief was refused while the session was stopped, so the review is given back until the user's next prompt`, { to: 'debug' })
 }

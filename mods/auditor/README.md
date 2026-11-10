@@ -112,7 +112,10 @@ Then start a new session. The reviewer is on as soon as the plugin is loaded.
   only the notes in its memory, which keeps its judgement independent. The memory also records the disputes the
   reviewer settled, where the agent countered a finding and the reviewer had no new evidence, so a later reviewer does
   not raise a settled finding again without new evidence. The memory is the reviewer's own, never sent to the agent:
-  it is bounded in size and age, reset on `/clear` and on switching on, and kept while the auditor is off. The retired
+  it is bounded in size and age, reset on `/clear` and on switching on, and kept while the auditor is off. A reviewer is
+  also stopped once it has sat idle for five minutes, the life of its prompt cache: after that a brief would only
+  re-write its whole context, where a fresh reviewer writes just its prompt and the brief, so the next review starts
+  fresh with the memory. A dispatch within the five minutes keeps it. The retired
   reviewer is stopped, so it does not stay idle for the rest of the session. So is a reviewer forgotten on a `/clear`,
   one whose brief was refused, one whose spawn failed after it was named, one whose review never finished (see above),
   one whose review failed (its turn ended with no answer or an error, or its brief could not be delivered; a turn you
@@ -132,7 +135,7 @@ Then start a new session. The reviewer is on as soon as the plugin is loaded.
   whether the review's brief told the reviewer that nothing will wake the agent (`nothing_wakes`), whether the review
   had its follow-up (`followed_up`), and where the brief went (`brief_to`): `stored` for the reviewer already running,
   or `spawn:` with why, either `no reviewer yet` or the reason the last reviewer was let go (`rotation`, `switch off`,
-  `session end`, `refused brief`, `stale landing`, `rejected spawn`, `lapsed`, `failed review`). `brief_to` is null for a review given back, or
+  `session end`, `refused brief`, `stale landing`, `rejected spawn`, `lapsed`, `failed review`, `reaped idle`). `brief_to` is null for a review given back, or
   whose dispatch failed before its brief went out, since its brief did not reach a reviewer. It is declared under
   `userConfig` in `.claude-plugin/plugin.json`.
 
@@ -170,6 +173,8 @@ other note.
 - The prices are written into the plugin for the reviewer's model. A change to Anthropic's list prices reaches the
   figure only when the plugin is updated, and a `modelPricing` setting that changes what `/cost` charges does not
   change it.
+- A plugin reload while a reviewer sits idle cancels the timer that would stop it. That reviewer stays until its next
+  review settles and starts a new timer, or a `/clear`, a switch or the session end lets it go.
 - The footer redraws when the auditor's own count moves, which it does at every reviewer response, and the session's
   cost is read at each redraw. Between redraws the share can lag the session's cost, which `/auditor` always reads
   fresh.

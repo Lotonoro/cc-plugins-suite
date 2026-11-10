@@ -161,9 +161,9 @@ export const lapseOf = (c: Conversation, now: number, limits: Limits): Extract<F
 export type Release = { next: Conversation; released: string | undefined }
 
 // The reasons whose let-go clears the stored reviewer and its context. A refused brief's reviewer is cleared by the spawn that replaces it (`spawning`), and a stale landing's spawn was never the stored one. A rejected spawn's learned id clears it only where it is that id (`letGo`).
-const CLEARING: readonly LetGoReason[] = ['rotation', 'switch off', 'session end', 'lapsed', 'failed review']
+const CLEARING: readonly LetGoReason[] = ['rotation', 'switch off', 'session end', 'lapsed', 'failed review', 'reaped idle']
 
-// The one decision to let a reviewer go, for `reason`. `id` is the reviewer let go: the stored one's for a rotation, a switch off, a session end, a lapse and a failed review, the refused one's for a refused brief, the landed one's for a stale landing, the one the spawn hook learned for a rejected spawn (cleared from the stored reviewer only when it is that one, since a later spawn may have stored another). The reviewer's id and name still mark its traffic and rows. A rotation lets go only once the reviewer's context passed `rotateAt`, and a stale landing whose id is the stored reviewer's lets nothing go, since it is not stale after all. A let-go of an id notes its reason (`lastLetGo`), which a later one replaces; `released` is the id for the caller to stop, in the change that applies `next`.
+// The one decision to let a reviewer go, for `reason`. `id` is the reviewer let go: the stored one's for a rotation, a switch off, a session end, a lapse, a failed review and an idle reap, the refused one's for a refused brief, the landed one's for a stale landing, the one the spawn hook learned for a rejected spawn (cleared from the stored reviewer only when it is that one, since a later spawn may have stored another). The reviewer's id and name still mark its traffic and rows. A rotation lets go only once the reviewer's context passed `rotateAt`, and a stale landing whose id is the stored reviewer's lets nothing go, since it is not stale after all. A let-go of an id notes its reason (`lastLetGo`), which a later one replaces; `released` is the id for the caller to stop, in the change that applies `next`.
 export const letGo = (c: Conversation, reason: LetGoReason, id: string | undefined, rotateAt = 0): Release => {
   if (reason === 'rotation' && c.reviewerContext <= rotateAt) return { next: c, released: undefined }
   if (reason === 'stale landing' && c.reviewer?.id === id) return { next: c, released: undefined }
@@ -171,6 +171,22 @@ export const letGo = (c: Conversation, reason: LetGoReason, id: string | undefin
   const cleared: Conversation = clears ? { ...c, reviewer: undefined, reviewerContext: 0 } : c
   return id === undefined ? { next: cleared, released: undefined } : { next: { ...cleared, lastLetGo: reason }, released: id }
 }
+
+// What an idle-reap timer was started under: the stored reviewer's id, and the dispatch count and epoch at its start. The timer is nothing but this closure, checked again when it fires (`reapIdle`).
+export type IdleTimer = { id: string; dispatches: number; epoch: number }
+
+// The identity a reviewer left stored and idle has: no review open and no spawn in flight, else undefined. The one condition the timer is started under and the fire is judged by.
+export const idleTimerOf = (c: Conversation): IdleTimer | undefined =>
+  c.reviewer === undefined || c.review !== undefined || c.spawnsInFlight.length > 0 ? undefined : { id: c.reviewer.id, dispatches: c.dispatches, epoch: c.epoch }
+
+// Whether a timer's fire lets its reviewer go: only while that reviewer is still the stored one and still idle, with no dispatch and no reset since the timer started; otherwise the fire changes nothing. A dispatch whose change landed first has opened a review, and one that lands after the fire finds no reviewer to send to and spawns.
+export const reapIdle = (c: Conversation, timer: IdleTimer): Release => {
+  const now = idleTimerOf(c)
+  return now !== undefined && now.id === timer.id && now.dispatches === timer.dispatches && now.epoch === timer.epoch ? letGo(c, 'reaped idle', timer.id) : { next: c, released: undefined }
+}
+
+// The conversation with the stored reviewer `id`'s latest turn end noted at `at`, which the idle timer counts from; unchanged where `id` is not the stored reviewer.
+export const withTurnEnd = (c: Conversation, id: string, at: number): Conversation => (c.reviewer?.id === id ? { ...c, reviewer: { ...c.reviewer, endedAt: at } } : c)
 
 // The reviewer markers a /clear keeps: they mark traffic, not a review.
 export const markers = (c: Conversation): Pick<Conversation, 'reviewerIds' | 'reviewerNames'> => ({ reviewerIds: c.reviewerIds, reviewerNames: c.reviewerNames })
