@@ -14,18 +14,29 @@ earlier one, confirm a fix, or correct the wording of a message when nothing wou
 ## What you see
 
 ```
-⏵⏵ auto mode on · (shift+tab to cycle) · auditor is on
+⏵⏵ auto mode on · (shift+tab to cycle) · auditor on ($12, 3%)
 ```
 
 - **The toggle** sits on the footer's mode row, after Claude Code's mode labels and a dim ` · ` separator. It reads
-  `auditor is on` while the reviewer runs, and `auditor is failing` while its reviews fail. Click it to switch:
-  `auditor is off` stops the reviewer for this session at once: a review already running is stopped, the reviewer
+  `auditor on` while the reviewer runs, and `auditor failing` while its reviews fail; once the reviewer has spent
+  anything, the label adds its cost and its share of the session's cost in parentheses (`auditor on ($12, 3%)`).
+  Click it to switch: `auditor off` stops the reviewer for this session at once: a review already running is stopped, the reviewer
   sends nothing more, no new review starts and nothing is recorded; a note it sent just before may still arrive, and a note held for your next prompt after an Esc is dropped. It stays off across `/clear`. Clicking it again,
-  `auditor is on`, resumes the reviewer, and the next review covers only what happens from then on. `/auditor off` and
-  `/auditor on` do the same from anywhere, mid-turn too, and bare `/auditor` says which it is: the Claude mobile app
-  draws no footer, but runs the command and shows its answer. `/auditor memory` prints the reviewer's memory of the
+  `auditor on`, resumes the reviewer, and the next review covers only what happens from then on. `/auditor off` and
+  `/auditor on` do the same from anywhere, mid-turn too, and bare `/auditor` says which it is and what it has cost, the
+  button's label and the popup's rows: the Claude mobile app draws no footer, but runs the command and shows its answer. `/auditor memory` prints the reviewer's memory of the
   notes it delivered, the findings still in flight and the ones it settled, from any surface, the phone included.
   Every new session starts on. To stop it for good, disable the plugin with `/plugin`.
+- **The hover popup.** Pointing at the button shows, above it and without moving the footer, what the label rounds: the
+  reviewer's cost since it was switched on, to the cent, the session's cost and the share, then what a click does:
+
+  ```
+  auditor $12.40 since on · session $410.27 · 3% · API list prices
+  click to switch off
+  ```
+
+  While the auditor is off it says `off: no reviews, no figures until switched on` and `click to switch on`. When the
+  reviewer's cost cannot be priced, the label drops its figures and the popup says `cost unknown: no price for <model>`.
 - **Notes** reach the agent as a message from the reviewer, headed `auditor, review N:`, never as your words. Each
   shows in your transcript as Claude Code's grey collapsed `› Message from @auditor-reviewer` row. An idle agent
   takes its note at once, in a turn of its own, which the reviewer then reviews too, so the agent and the reviewer
@@ -40,7 +51,7 @@ earlier one, confirm a fix, or correct the wording of a message when nothing wou
 - **Nothing else.** Beyond those rows, a review that finds nothing leaves no trace on screen, and neither do the
   reviewer's end-of-run notices or task rows. Two things reach you: an escalation of an unresolved disagreement, as a toast and as a push
   notification on your phone when you are away from the terminal (Claude Code holds it back while you are at it), and
-  the toggle reading `auditor is failing` while reviews fail, until one succeeds; the debug log has the cause. In an
+  the toggle reading `auditor failing` while reviews fail, until one succeeds; the debug log has the cause. In an
   interactive session without agent teams (measured on Claude Code 2.1.312), the reviewer's hand-back arrives as a
   prompt and is dropped there, and Claude Code shows `Prompt dropped by a hook: reviewer bookkeeping`.
 
@@ -60,7 +71,13 @@ Then start a new session. The reviewer is on as soon as the plugin is loaded.
 
 - **Cost.** A review starts when the agent ends a turn and no review is running; turns that end during a review go to
   the next one together. Each review is one Haiku run that reads the record and whatever files or earlier context it
-  needs. The `log` setting records each review's token use, if you want a figure.
+  needs. The button shows what the reviewers have spent: every response of every reviewer this session spawned, and each
+  compaction of a reviewer's own conversation, priced at Haiku 5.5's API list prices whatever your billing (a
+  subscription pays no such amount; the figure is what the same tokens cost on the API), and its share of the session's
+  cost, the figure `/cost` totals. The count starts at zero when the session or the conversation begins (`/clear`
+  included, which starts a new conversation) and each time the auditor is switched on, and switching it off empties it.
+  It keeps counting while the auditor is `failing`. The `log` setting records each review's token use, if you want
+  per-review figures.
 - **A fresh reviewer.** One reviewer serves the session and remembers its earlier reviews. Once its context passes
   80,000 tokens, which keeps it under Haiku's higher price tier, the next review goes to a fresh reviewer; every
   brief, a fresh reviewer's included, carries the reviewer's memory of the notes delivered, and it finds your
@@ -103,6 +120,19 @@ other note.
 - A review takes minutes, so a note can land a turn or two after the step it is about.
 - `/clear` starts a new transcript, so the reviewer cannot find instructions given before it, just as the agent has
   lost them.
+- The share is the reviewer's count over the session's cost, and the count restarts when the auditor is switched on
+  while the session's cost does not, so after time off the share reads lower than the reviewer's share of the spend
+  since it came back on.
+- The session's cost counts the agent's own subagents and the teammates that run inside the session. A teammate in a
+  terminal pane of its own is a separate session with its own cost, which the share does not include.
+- A response of a reviewer that lands before the plugin has recorded the reviewer's id is not counted. None was seen
+  in eight reviewers spawned while measuring it.
+- The prices are written into the plugin for the reviewer's model. A change to Anthropic's list prices reaches the
+  figure only when the plugin is updated, and a `modelPricing` setting that changes what `/cost` charges does not
+  change it.
+- The footer redraws when the auditor's own count moves, which it does at every reviewer response, and the session's
+  cost is read at each redraw. Between redraws the share can lag the session's cost, which `/auditor` always reads
+  fresh.
 
 ## Development checks
 

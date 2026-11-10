@@ -1,7 +1,8 @@
 import { describe, expect, test } from 'claude-code/testing'
 import { LOOKUP_TIMEOUT_MS, lineCommand, searchCommand } from './transcript'
-import { MEMORY, MEMORY_ACTION, MEMORY_FIELD, REVIEW_ENDED, renderMemory } from './memory'
+import { MEMORY, MEMORY_ACTION, MEMORY_FIELD, REVIEW_ENDED, printMemory, renderMemory } from './memory'
 import { followUpText } from './notes'
+import { PRICED_MODEL } from './pricing'
 import type { MemoryEntry } from '../types/index'
 import { REVIEWER_PROMPT } from './prompt'
 import * as register from './register'
@@ -83,6 +84,10 @@ type Opts = {
   sessionIdHold?: { until: Promise<void>; reached?: () => void; from?: number; to?: number }
   // Each $.tool.call of `tool`, in the order the calls arrive, waits for its gate in `untils` before the engine answers it.
   toolHolds?: { tool: string; untils: Promise<void>[] }
+  // What the session's cost ledger answers ($.session.usage): the dollars (100 when not given), no `cost` at all, or a non-finite figure. A rejection or no answer cannot be staged here: the reader's own tests stage them.
+  ledger?: number | 'absent' | 'nan'
+  // The `usage` the bottom of every compaction reports, as core does when it made a summarizing request.
+  compactUsage?: { input_tokens: number; output_tokens: number; cache_read_input_tokens: number; cache_creation_input_tokens: number }
 }
 
 // The hold that covers the reviewer spawn numbered `n` (1-based), when one does.
@@ -116,6 +121,8 @@ const engine = (on: any, opts: Opts = {}) => {
     // The conversation writes attempted so far, and the attempt number (1-based) that is refused.
     stateWriteAttempts: 0,
     stateWritesFailAt: undefined as number | undefined,
+    // The cost ledger reads made so far.
+    ledgerReads: 0,
   }
   current.seen = seen
   current.seed = opts.stateSeed
@@ -276,7 +283,19 @@ const engine = (on: any, opts: Opts = {}) => {
     return { turnId: e.turnId, index: e.index, answer: STEP, toolUses: [], stopReason: 'end_turn', usage: STEP_USAGE }
   })
   // The bottom of a compaction: each one that reaches it is recorded, and answered with the messages it was given, since a compaction leaves at least one.
-  on('session.compact', (_$: any, e: any) => (seen.compactions.push(e), { messages: e.messages }))
+  on('session.compact', (_$: any, e: any) => (seen.compactions.push(e), { messages: e.messages, usage: opts.compactUsage }))
+  // A timer the plugin sets never fires here (the ledger reader's one-second bound is staged in its own tests).
+  on('clock.after', async () => {
+    await new Promise(() => undefined)
+    return { value: undefined }
+  })
+  // The ledger: the figures the status line totals, with the context and rate-limit fields the call always carries.
+  on('session.usage', () => {
+    seen.ledgerReads++
+    const ledger = opts.ledger ?? 100
+    const base = { startedAt: 0, context: { window: 1_000_000 }, rateLimits: [] }
+    return { value: ledger === 'absent' ? base : { ...base, cost: { usd: ledger === 'nan' ? Number.NaN : ledger } } }
+  })
   return seen
 }
 
@@ -459,11 +478,16 @@ const mountMode = ($: any, surface = 'terminal') => $.ui.mount({ plugin: 'audito
 const otherMods = (on: any, text = 'drawn by Claude Code') => on('ui.render', () => ({ type: 'Text', props: {}, children: [text] }))
 // Core's own drawing, which next(e) answers as an opaque node when no mod draws beneath: its words are the mode labels, not in the tree.
 const coreDraws = (on: any) => on('ui.render', () => ({ type: 'engine', ref: 0 }))
+// Whether the footer draws the dim separator before the button: a Text of exactly ` · `, which the popup's rows (they hold that sign inside longer words) do not make.
+const separated = async (ui: any): Promise<boolean> => JSON.stringify(await ui.drawn()).includes('"children":[" · "]')
 // The button as drawn: its label says whether the reviewer is on, off or failing.
 const buttonReads = async (ui: any, state: 'on' | 'off' | 'failing') => {
-  expect(await ui.find({ key: 'auditor-toggle' })).toMatchObject({ props: { plain: true, label: `auditor is ${state}` } })
+  expect(await ui.find({ key: 'auditor-toggle' })).toMatchObject({ props: { plain: true, label: `auditor ${state}` } })
 }
 
+
+// Whether two dollar figures agree to a billionth: the kit's expect has no toBeCloseTo.
+const closeTo = (actual: number, expected: number): boolean => Math.abs(actual - expected) < 1e-9
 
 describe('auditor', () => {
   test('a fresh install with no settings reviews a worker turn', async ($, on) => {
@@ -2811,7 +2835,7 @@ describe('the transcript tool', () => {
     expect(seen.conversation.record.blocks.length).toBe(0)
   })
 
-  test('each failure of a run is logged with its reason, toasts nothing, and leaves the footer reading auditor is failing', ON, async ($, on) => {
+  test('each failure of a run is logged with its reason, toasts nothing, and leaves the footer reading auditor failing', ON, async ($, on) => {
     const seen = engine(on)
     otherMods(on)
     await $.prompt.submit(COMPOSER('first'))
@@ -2828,7 +2852,7 @@ describe('the transcript tool', () => {
     await buttonReads(await mountMode($), 'failing')
   })
 
-  test('a successful review ends the failing run, and the next failure is logged and reads auditor is failing again', ON, async ($, on) => {
+  test('a successful review ends the failing run, and the next failure is logged and reads auditor failing again', ON, async ($, on) => {
     const seen = engine(on)
     otherMods(on)
     await $.prompt.submit(COMPOSER('first'))
@@ -2968,7 +2992,7 @@ describe('the reviewer\'s task rows', () => {
 })
 
 describe('the session mode button', () => {
-  test('the footer shows auditor is on by default, on the terminal and the desktop app', ON, async ($, on) => {
+  test('the footer shows auditor on by default, on the terminal and the desktop app', ON, async ($, on) => {
     engine(on)
     otherMods(on)
     for (const surface of ['terminal', 'desktop'] as const) {
@@ -2983,7 +3007,7 @@ describe('the session mode button', () => {
     otherMods(on, 'auto mode on')
     const ui = await mountMode($)
     expect(await ui.find({ type: 'Text', text: 'auto mode on' })).toBeDefined()
-    expect(await ui.find({ type: 'Text', text: ' · ' })).toBeDefined()
+    expect(await separated(ui)).toBe(true)
     await buttonReads(ui, 'on')
   })
 
@@ -2991,7 +3015,7 @@ describe('the session mode button', () => {
     engine(on)
     coreDraws(on)
     const ui = await mountMode($)
-    expect(await ui.find({ type: 'Text', text: ' · ' })).toBeDefined()
+    expect(await separated(ui)).toBe(true)
     await buttonReads(ui, 'on')
   })
 
@@ -2999,7 +3023,7 @@ describe('the session mode button', () => {
     engine(on)
     coreDraws(on)
     const ui = await $.ui.mount({ plugin: 'auditor', surface: 'terminal', component: 'SessionMode', props: { modes: [] } })
-    expect(await ui.find({ type: 'Text', text: ' · ' })).toBeUndefined()
+    expect(await separated(ui)).toBe(false)
     await buttonReads(ui, 'on')
   })
 
@@ -3007,7 +3031,7 @@ describe('the session mode button', () => {
     engine(on)
     on('ui.render', () => ({ type: 'Markdown', props: { text: '**plan** mode' } }))
     const ui = await $.ui.mount({ plugin: 'auditor', surface: 'terminal', component: 'SessionMode', props: { modes: [] } })
-    expect(await ui.find({ type: 'Text', text: ' · ' })).toBeDefined()
+    expect(await separated(ui)).toBe(true)
     await buttonReads(ui, 'on')
   })
 
@@ -3016,7 +3040,7 @@ describe('the session mode button', () => {
     otherMods(on, '')
     const ui = await $.ui.mount({ plugin: 'auditor', surface: 'terminal', component: 'SessionMode', props: { modes: [] } })
     await buttonReads(ui, 'on')
-    expect(await ui.find({ type: 'Text', text: ' · ' })).toBeUndefined()
+    expect(await separated(ui)).toBe(false)
   })
 
   test('a label drawn beneath the button, with no mode label of Claude Code\'s own, is separated from it, never glued', ON, async ($, on) => {
@@ -3025,7 +3049,7 @@ describe('the session mode button', () => {
     const ui = await $.ui.mount({ plugin: 'auditor', surface: 'terminal', component: 'SessionMode', props: { modes: [] } })
     const drawn = JSON.stringify(await ui.drawn())
     expect(drawn.indexOf('"children":["cache ▰▰▰▰▱ 3:12"]')).toBeLessThan(drawn.indexOf('"children":[" · "]'))
-    expect(drawn.indexOf('"children":[" · "]')).toBeLessThan(drawn.indexOf('"label":"auditor is on"'))
+    expect(drawn.indexOf('"children":[" · "]')).toBeLessThan(drawn.indexOf('"label":"auditor on"'))
     await buttonReads(ui, 'on')
   })
 
@@ -4610,6 +4634,8 @@ describe('the reviewer\'s compaction', () => {
 describe('the /auditor command', () => {
   // The command's answer to `args`; bare when none is given.
   const run = async ($: any, args = ''): Promise<string | undefined> => (await $.command.run({ command: 'auditor', args })).text
+  // The answer's first line: the label the footer draws. The popup's rows follow it (see the cost tests).
+  const label = async ($: any, args = ''): Promise<string | undefined> => (await run($, args))?.split('\n')[0]
 
   test('the command is registered as immediate, with an on, off or memory argument hint', ON, async ($, on) => {
     const seen = engine(on)
@@ -4620,7 +4646,7 @@ describe('the /auditor command', () => {
   test('bare, the command says whether the reviewer is on, as the footer button does', ON, async ($, on) => {
     engine(on)
     otherMods(on)
-    expect(await run($)).toBe('auditor is on')
+    expect(await label($)).toBe('auditor on')
     await buttonReads(await mountMode($), 'on')
   })
 
@@ -4629,7 +4655,7 @@ describe('the /auditor command', () => {
     otherMods(on)
     await $.prompt.submit(COMPOSER('fix the parser'))
     await $.tool.call(WORKER_CALL('Bash', { command: 'ls' }))
-    expect(await run($, 'off')).toBe('auditor is off')
+    expect(await label($, 'off')).toBe('auditor off')
     await $.tool.call(WORKER_CALL('Bash', { command: 'pwd' }))
     await workerTurn($)
     expect(seen.spawns.length).toBe(0)
@@ -4641,10 +4667,10 @@ describe('the /auditor command', () => {
   test('on after off starts an empty record: the next turn end dispatches a review whose record holds only the entries after the switch', ON, async ($, on) => {
     const seen = engine(on)
     await $.prompt.submit(COMPOSER('before off'))
-    expect(await run($, 'off')).toBe('auditor is off')
+    expect(await label($, 'off')).toBe('auditor off')
     await $.prompt.submit(COMPOSER('while off'))
     await $.tool.call(WORKER_CALL('Bash', { command: 'ls' }))
-    expect(await run($, 'on')).toBe('auditor is on')
+    expect(await label($, 'on')).toBe('auditor on')
     await $.prompt.submit(COMPOSER('after on'))
     await workerTurn($)
     expect(seen.spawns.length).toBe(1)
@@ -4653,26 +4679,26 @@ describe('the /auditor command', () => {
 
   test('off twice is idempotent: each answers off, the argument is read whatever its case or spacing, and nothing is dispatched', ON, async ($, on) => {
     const seen = engine(on)
-    expect(await run($, 'off')).toBe('auditor is off')
-    expect(await run($, ' OFF ')).toBe('auditor is off')
+    expect(await label($, 'off')).toBe('auditor off')
+    expect(await label($, ' OFF ')).toBe('auditor off')
     await workerTurn($)
     expect(seen.spawns.length).toBe(0)
-    expect(await run($)).toBe('auditor is off')
+    expect(await label($)).toBe('auditor off')
   })
 
   test('an argument that is neither on, off nor memory is refused with its usage, and changes nothing', ON, async ($, on) => {
     engine(on)
     expect(await run($, 'bogus')).toBe('Usage: /auditor [on|off|memory]')
-    expect(await run($)).toBe('auditor is on')
+    expect(await label($)).toBe('auditor on')
   })
 
-  test('after a failed review, bare reads auditor is failing, and a switch off and then on clears the failure', ON, async ($, on) => {
+  test('after a failed review, bare reads auditor failing, and a switch off and then on clears the failure', ON, async ($, on) => {
     engine(on)
     await workerTurn($)
     await turnFailed($, 'ag1')
-    expect(await run($)).toBe('auditor is failing')
-    expect(await run($, 'off')).toBe('auditor is off')
-    expect(await run($, 'on')).toBe('auditor is on')
+    expect(await label($)).toBe('auditor failing')
+    expect(await label($, 'off')).toBe('auditor off')
+    expect(await label($, 'on')).toBe('auditor on')
   })
 })
 
@@ -5954,5 +5980,384 @@ describe('the prompt on the memory', () => {
 
   test('a countered finding with no entry is judged as it would be with no memory', () => {
     expect(section()).toContain('A finding the worker countered that has no entry, because its entry aged out or was evicted, is judged as it would be with no memory: you may raise it once more if the worker\'s counter does not hold.')
+  })
+})
+
+describe('the auditor\'s cost', () => {
+  const HAIKU = 'claude-haiku-5-5'
+  const PINNED = { model: HAIKU, agentId: 'ag1' }
+  const billed = (over: Record<string, unknown> = {}) => ({ input_tokens: 0, output_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0, model: HAIKU, ...over })
+  // A response that costs `n` dollars at the standard rates: output is $0.50 per million tokens.
+  const worth = (n: number) => billed({ output_tokens: Math.round(n * 2_000_000) })
+  const request = async ($: any, usage: unknown, agentId = 'ag1'): Promise<void> => {
+    STEP_USAGE = usage
+    try {
+      await step($, '', agentId)
+    } finally {
+      STEP_USAGE = null
+    }
+  }
+  const labelOf = async ($: any): Promise<string> => (await (await mountMode($)).find({ key: 'auditor-toggle' })).props.label
+  const run = async ($: any, args = ''): Promise<string | undefined> => (await $.command.run({ command: 'auditor', args })).text
+  const ONE_MESSAGE = [{ role: 'user' as const, text: 'fix the parser', toolUses: [] }]
+  const compacting = (agentId: string) => ({ trigger: 'auto' as const, messages: ONE_MESSAGE, agentId }) as any
+
+  test('the reviewer\'s model is the one pricing.ts has rates for', ON, async ($, on) => {
+    const seen = engine(on)
+    await $.session.start({ cwd: '/', surface: null, isInteractive: true })
+    expect(seen.registered[0].model).toBe(PRICED_MODEL)
+  })
+
+  test('each reviewer response adds its price to the tally, output included, and the label shows the dollars and the share of the ledger', ON, async ($, on) => {
+    const seen = engine(on, { spawn: PINNED, ledger: 100 })
+    otherMods(on)
+    await workerTurn($)
+    await request($, worth(0.5))
+    await request($, worth(0.25))
+    expect(closeTo(seen.conversation.spent, 0.75)).toBe(true)
+    expect(await labelOf($)).toBe('auditor on ($0.75, 0.8%)')
+  })
+
+  test('with nothing spent yet the label reads auditor on and the ledger is not read', ON, async ($, on) => {
+    const seen = engine(on)
+    otherMods(on)
+    expect(await labelOf($)).toBe('auditor on')
+    expect(seen.ledgerReads).toBe(0)
+  })
+
+  test('a tally of $50 against a ledger of $100 is 50%: the ledger counts the reviewer, so the share is not over the ledger plus the tally', ON, async ($, on) => {
+    engine(on, { ledger: 100 })
+    otherMods(on)
+    await workerTurn($)
+    await request($, worth(50))
+    expect(await labelOf($)).toBe('auditor on ($50, 50%)')
+  })
+
+  test('a tally over the ledger reads 100%, never more', ON, async ($, on) => {
+    engine(on, { ledger: 10 })
+    otherMods(on)
+    await workerTurn($)
+    await request($, worth(50))
+    expect(await labelOf($)).toBe('auditor on ($50, 100%)')
+  })
+
+  test('a response over 100,000 tokens of prompt is priced whole at the higher rates, and a large output under it is not', ON, async ($, on) => {
+    const seen = engine(on)
+    await workerTurn($)
+    await request($, billed({ cache_read_input_tokens: 100_001, output_tokens: 1_000_000 }))
+    expect(closeTo(seen.conversation.spent, 100_001 * 0.05 / 1_000_000 + 2.5)).toBe(true)
+    await $.session.end({ reason: 'clear', sessionId: 's1' } as any)
+    await workerTurn($)
+    await request($, billed({ cache_read_input_tokens: 99_999, output_tokens: 1_000_000 }))
+    expect(closeTo(seen.conversation.spent, 99_999 * 0.01 / 1_000_000 + 0.5)).toBe(true)
+  })
+
+  test('a response reporting the pinned id with a date suffix is priced as the pinned model', ON, async ($, on) => {
+    const seen = engine(on)
+    await workerTurn($)
+    await request($, billed({ model: `${HAIKU}-20261001`, output_tokens: 1_000_000 }))
+    expect(seen.conversation).toMatchObject({ unpriced: null })
+    expect(closeTo(seen.conversation.spent, 0.5)).toBe(true)
+  })
+
+  test('a response reporting any other id leaves the cost unknown: the label drops the figures, the popup names the model, and later responses do not make it known', ON, async ($, on) => {
+    const seen = engine(on, { ledger: 100 })
+    otherMods(on)
+    await workerTurn($)
+    await request($, worth(1))
+    await request($, billed({ model: 'haiku', output_tokens: 10 }))
+    await request($, worth(1))
+    expect(seen.conversation).toMatchObject({ unpriced: 'haiku' })
+    const ui = await mountMode($)
+    await buttonReads(ui, 'on')
+    expect(await ui.find({ type: 'Text', text: 'cost unknown: no price for haiku' })).toBeDefined()
+  })
+
+  test('a late response of a reviewer retired before it landed adds to the tally and leaves the current reviewer\'s tracked context alone', ON, async ($, on) => {
+    const seen = engine(on, { reviewerIds: ['ag1', 'ag2'], spawn: undefined })
+    await workerTurn($)
+    await request($, billed({ input_tokens: 80_001 }))
+    await reviewed($, HANDBACK('Nothing to note.'), 'ag1')
+    await workerTurn($, 'Second.')
+    expect(seen.conversation.reviewer.id).toBe('ag2')
+    await request($, billed({ input_tokens: 5_000 }), 'ag2')
+    const before = seen.conversation
+    await request($, worth(1), 'ag1')
+    expect(closeTo(seen.conversation.spent, before.spent + 1)).toBe(true)
+    expect(seen.conversation.reviewerContext).toBe(before.reviewerContext)
+  })
+
+  test('a follow-up turn\'s response of the current reviewer counts like any other', ON, async ($, on) => {
+    const seen = engine(on)
+    await workerTurn($)
+    await request($, worth(0.1))
+    await request($, worth(0.2))
+    expect(closeTo(seen.conversation.spent, 0.3)).toBe(true)
+    expect(seen.conversation.reviewerContext).toBe(0)
+  })
+
+  test('a response from an agent that is not a reviewer adds nothing', ON, async ($, on) => {
+    const seen = engine(on)
+    await workerTurn($)
+    await request($, worth(5), 'sub1')
+    await step($, 'the worker answers')
+    expect(seen.conversation.spent).toBe(0)
+  })
+
+  test('a reviewer compaction with usage adds it at the reviewer\'s model, and one without adds nothing', ON, async ($, on) => {
+    const withUsage = engine(on, { spawn: PINNED, compactUsage: { input_tokens: 100_000, output_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 } })
+    await workerTurn($)
+    await $.session.compact(compacting('ag1'))
+    expect(closeTo(withUsage.conversation.spent, 0.01)).toBe(true)
+  })
+
+  test('a reviewer compaction without usage leaves the tally unchanged', ON, async ($, on) => {
+    const seen = engine(on, { spawn: PINNED })
+    await workerTurn($)
+    await request($, worth(1))
+    await $.session.compact(compacting('ag1'))
+    expect(closeTo(seen.conversation.spent, 1)).toBe(true)
+  })
+
+  test('a compaction of the worker\'s own conversation adds nothing', ON, async ($, on) => {
+    const seen = engine(on, { spawn: PINNED, compactUsage: { input_tokens: 100_000, output_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 } })
+    await workerTurn($)
+    await $.session.compact({ trigger: 'manual' as const, messages: ONE_MESSAGE } as any)
+    expect(seen.conversation.spent).toBe(0)
+  })
+
+  test('switching off empties the tally, a response landing while off adds nothing, and switching on starts from zero', ON, async ($, on) => {
+    const seen = engine(on)
+    otherMods(on)
+    await workerTurn($)
+    await request($, worth(2))
+    await run($, 'off')
+    expect(seen.conversation).toMatchObject({ spent: 0, unpriced: null })
+    expect(await labelOf($)).toBe('auditor off')
+    await request($, worth(2))
+    expect(seen.conversation.spent).toBe(0)
+    await run($, 'on')
+    expect(seen.conversation.spent).toBe(0)
+    expect(await labelOf($)).toBe('auditor on')
+  })
+
+  test('switching off clears an unknown cost too', ON, async ($, on) => {
+    const seen = engine(on)
+    await workerTurn($)
+    await request($, billed({ model: 'haiku' }))
+    await run($, 'off')
+    await run($, 'on')
+    expect(seen.conversation.unpriced).toBeNull()
+  })
+
+  test('the toggle button purges the tally the same way', ON, async ($, on) => {
+    const seen = engine(on)
+    otherMods(on)
+    await workerTurn($)
+    await request($, worth(2))
+    const ui = await mountMode($)
+    await ui.press({ key: 'auditor-toggle' })
+    expect(seen.conversation.spent).toBe(0)
+  })
+
+  test('failing keeps the figures', ON, async ($, on) => {
+    engine(on, { ledger: 100 })
+    otherMods(on)
+    await workerTurn($)
+    await request($, worth(2))
+    await turnFailed($, 'ag1')
+    expect(await labelOf($)).toBe('auditor failing ($2.00, 2%)')
+  })
+
+  test('a /clear or a resume empties the tally', ON, async ($, on) => {
+    const seen = engine(on)
+    for (const reason of ['clear', 'resume'] as const) {
+      await workerTurn($)
+      await request($, worth(2))
+      expect(seen.conversation.spent).toBeGreaterThan(0)
+      await $.session.end({ reason, sessionId: 's1' } as any)
+      expect(seen.conversation.spent).toBe(0)
+    }
+  })
+
+  test('a session start of any source keeps a non-zero tally unchanged', ON, async ($, on) => {
+    const seen = engine(on)
+    await workerTurn($)
+    await request($, worth(2))
+    const spent = seen.conversation.spent
+    for (const source of ['startup', 'resume', 'clear', 'compact', 'fork']) {
+      await $.classic.SessionStart({ source, transcript_path: '/tmp/w.jsonl' } as any)
+      expect(seen.conversation.spent).toBe(spent)
+    }
+  })
+
+  test('a conversation stored before the tally existed reads with a zero tally', ON, async ($, on) => {
+    const seen = engine(on, { stateSeed: { dispatches: 3, off: false, epoch: 1 } })
+    otherMods(on)
+    expect(await labelOf($)).toBe('auditor on')
+    await workerTurn($)
+    await request($, worth(1))
+    expect(closeTo(seen.conversation.spent, 1)).toBe(true)
+  })
+
+  describe('the ledger reader', () => {
+    test('a ledger with no cost leaves the share unknown: the label shows the dollars alone', ON, async ($, on) => {
+      const seen = engine(on, { ledger: 'absent' })
+      otherMods(on)
+      await workerTurn($)
+      await request($, worth(5))
+      expect(await labelOf($)).toBe('auditor on ($5.00)')
+      expect(debugLines(seen, 'session cost read')).toEqual([])
+    })
+
+    test('a non-finite figure leaves the share unknown', ON, async ($, on) => {
+      const seen = engine(on, { ledger: 'nan' })
+      otherMods(on)
+      await workerTurn($)
+      await request($, worth(5))
+      expect(await labelOf($)).toBe('auditor on ($5.00)')
+      expect(debugLines(seen, 'session cost read')).toEqual([])
+    })
+
+    test('a negative figure leaves the share unknown', ON, async ($, on) => {
+      const seen = engine(on, { ledger: -3 })
+      otherMods(on)
+      await workerTurn($)
+      await request($, worth(5))
+      expect(await labelOf($)).toBe('auditor on ($5.00)')
+      expect(debugLines(seen, 'session cost read')).toEqual([])
+    })
+
+    // The reader with a hand-made `$`: the test engine cannot make a hook's call reject, so the rejection and the silence are staged here.
+    const dollar = (usage: () => Promise<unknown>, after: (ms: number, fn: () => void) => { cancel: () => void }) => {
+      const logs: string[] = []
+      const $ = { session: { usage }, clock: { after }, ui: { log: (text: string) => logs.push(text) } } as any
+      return { $, logs }
+    }
+    const never = () => ({ cancel: () => undefined })
+
+    test('a rejected call reads unknown and is logged with its cause and stack', async () => {
+      const { $, logs } = dollar(() => Promise.reject(new Error('ledger unavailable')), never)
+      expect(await register.readLedger($)).toBeUndefined()
+      expect(logs.length).toBe(1)
+      expect(logs[0]).toContain('auditor: session cost read failed')
+      expect(logs[0]).toContain('ledger unavailable')
+    })
+
+    test('a call that does not answer when the one-second timer fires reads unknown, is logged, and cancels nothing it did not set', async () => {
+      let fired = 0
+      let cancelled = 0
+      const { $, logs } = dollar(() => new Promise(() => undefined), (ms, fn) => {
+        expect(ms).toBe(1000)
+        fired++
+        fn()
+        return { cancel: () => { cancelled++ } }
+      })
+      expect(await register.readLedger($)).toBeUndefined()
+      expect({ fired, cancelled }).toEqual({ fired: 1, cancelled: 1 })
+      expect(logs.length).toBe(1)
+      expect(logs[0]).toContain('no answer within 1000 ms')
+    })
+
+    test('an answer cancels the timer and reads the dollars', async () => {
+      let cancelled = 0
+      const { $, logs } = dollar(async () => ({ cost: { usd: 12.5 } }), () => ({ cancel: () => { cancelled++ } }))
+      expect(await register.readLedger($)).toBe(12.5)
+      expect(cancelled).toBe(1)
+      expect(logs).toEqual([])
+    })
+
+    test('a timer that cannot be set reads unknown and is logged', async () => {
+      const { $, logs } = dollar(async () => ({ cost: { usd: 1 } }), () => { throw new Error('clock unavailable') })
+      expect(await register.readLedger($)).toBeUndefined()
+      expect(logs.length).toBe(1)
+      expect(logs[0]).toContain('clock unavailable')
+    })
+  })
+
+  describe('the popup', () => {
+    // The popup's texts, in the order the tree draws them.
+    const rowsDrawn = async (ui: any): Promise<string[]> => {
+      const drawn = JSON.stringify(await ui.drawn())
+      return [...drawn.matchAll(/"key":"(cost|press)"[^]*?"children":\["([^"]+)"\]/g)].map(m => m[2] ?? '')
+    }
+
+    test('on: the cost row, then the press row, in order', ON, async ($, on) => {
+      engine(on, { ledger: 410.27 })
+      otherMods(on)
+      await workerTurn($)
+      await request($, worth(12.4))
+      const ui = await mountMode($)
+      expect(await rowsDrawn(ui)).toEqual(['auditor $12.40 since on · session $410.27 · 3% · API list prices', 'click to switch off'])
+    })
+
+    test('with the share unknown the cost row has no session figure', ON, async ($, on) => {
+      engine(on, { ledger: 'absent' })
+      otherMods(on)
+      await workerTurn($)
+      await request($, worth(12.4))
+      expect(await rowsDrawn(await mountMode($))).toEqual(['auditor $12.40 since on · API list prices', 'click to switch off'])
+    })
+
+    test('off: no reviews, no figures, then click to switch on', ON, async ($, on) => {
+      engine(on)
+      otherMods(on)
+      await run($, 'off')
+      expect(await rowsDrawn(await mountMode($))).toEqual(['off: no reviews, no figures until switched on', 'click to switch on'])
+    })
+
+    test('the popup is out of the flow and shown on hover only, and never has more than four rows', ON, async ($, on) => {
+      engine(on)
+      otherMods(on)
+      const ui = await mountMode($)
+      const drawn = JSON.stringify(await ui.drawn())
+      for (const part of ['"position":"absolute"', '"display":"none"', '"bottom":1', '"right":0', '"hover":{"display":"flex"}']) expect(drawn).toContain(part)
+      expect((await rowsDrawn(ui)).length).toBeLessThanOrEqual(4)
+    })
+
+    test('a press on the button still switches the auditor, and the popup changes nothing on press', ON, async ($, on) => {
+      const seen = engine(on)
+      otherMods(on)
+      const ui = await mountMode($)
+      await ui.press({ key: 'auditor-toggle' })
+      expect(seen.conversation.off).toBe(true)
+      await buttonReads(ui, 'off')
+    })
+  })
+
+  describe('/auditor', () => {
+    test('bare answers the label the footer draws, then the popup rows', ON, async ($, on) => {
+      engine(on, { ledger: 410.27 })
+      otherMods(on)
+      await workerTurn($)
+      await request($, worth(12.4))
+      const answer = await run($)
+      expect(answer).toBe('auditor on ($12, 3%)\nauditor $12.40 since on · session $410.27 · 3% · API list prices\nclick to switch off')
+      expect(answer?.split('\n')[0]).toBe(await labelOf($))
+    })
+
+    test('on and off answer the new state the same way', ON, async ($, on) => {
+      engine(on)
+      otherMods(on)
+      expect(await run($, 'off')).toBe('auditor off\noff: no reviews, no figures until switched on\nclick to switch on')
+      expect(await run($, 'on')).toBe('auditor on\nauditor $0.00 since on · API list prices\nclick to switch off')
+    })
+
+    test('failing and an unknown cost read as the footer does', ON, async ($, on) => {
+      engine(on)
+      otherMods(on)
+      await workerTurn($)
+      await request($, billed({ model: 'haiku' }))
+      await turnFailed($, 'ag1')
+      expect(await run($)).toBe('auditor failing\ncost unknown: no price for haiku\nclick to switch off')
+    })
+
+    test('the usage line and the memory print are unchanged, and the description names the cost', ON, async ($, on) => {
+      const seen = engine(on)
+      await $.session.start({ cwd: '/', surface: null, isInteractive: true })
+      expect(await run($, 'bogus')).toBe('Usage: /auditor [on|off|memory]')
+      expect(await run($, 'memory')).toBe(printMemory([]))
+      expect(seen.commands.find(c => c.name === 'auditor').description).toMatch(/cost/)
+    })
   })
 })

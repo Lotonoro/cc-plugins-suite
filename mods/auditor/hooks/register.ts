@@ -3,12 +3,15 @@ import { update } from 'claude-code'
 import type { Conversation, OpenReview, PendingNote, ReviewUsage, TurnEnd, TurnRecord, TurnStart, Wake } from '../types/index'
 import { MEMORY, MEMORY_ACTION, MEMORY_FIELD, MEMORY_LOG_CHARS, REVIEW_ENDED, WHY_CHARS, bounded, changeMemory, printMemory, renderMemory, withNote } from './memory'
 import type { MemoryChange } from './memory'
+import { answerOf, buttonOf } from './button'
+import type { Figures } from './button'
 import { MAIN, admitSend, decideRefusal, followUpText, frameNote, marksOf, readSend, settleOutcome } from './notes'
 import type { Decided, Outcome, Refusal, Sent, Verdict } from './notes'
 import { REVIEWER_PROMPT } from './prompt'
 import { clip, entryBlock, pageOf, renumberBlock, toolLine } from './record'
 import { adopt, forget, isEndNotice, isHandBack, isNotice, isReviewerEntry, land, learn, learnName, markers, nameKnown, nameListed, originOf, retire, reviewerNameOf, spawnName, spawning, standingOf } from './reviewer'
 import type { Identity } from './reviewer'
+import { purged, withCompaction, withResponse } from './tally'
 import { DIGEST_CHARS, LOOKUP_TIMEOUT_MS, SEARCH_TERM_CHARS, digestBlocks, digestOf, lineCommand, lookupOf, parseSearch, renderSearch, searchCommand } from './transcript'
 
 const PLUGIN = 'auditor'
@@ -18,6 +21,7 @@ const REVIEWER_TYPE = `${PLUGIN}:reviewer`
 const REVIEW_DESCRIPTION = 'auditor review'
 // The literals `reviewer.ts` tests against; the plugin's identity stays with this file.
 const IDENTITY: Identity = { plugin: PLUGIN, name: REVIEWER, description: REVIEW_DESCRIPTION }
+// The model pricing.ts has rates for (`PRICED_MODEL`); a test holds the two together.
 const REVIEWER_MODEL = 'claude-haiku-5-5'
 const REVIEWER_EFFORT = 'high'
 const CONV = { plugin: 'auditor', key: 'conversation' } as const
@@ -46,6 +50,8 @@ const UNCHECKED = 'auditor could not check this message, so it was not sent'
 const INTERRUPTED = 'INTERRUPTED: the user stopped this turn before it finished.'
 const NONE_INTERRUPTED = '(none: the user interrupted the turn)'
 const EMPTY_RECORD: TurnRecord = { blocks: [] }
+// How long the session's cost ledger may take to answer before the figures read as unknown.
+const LEDGER_TIMEOUT_MS = 1000
 
 type Scope = Pick<CoreEngineInterface, 'state' | 'ui' | 'clock' | 'fs' | 'env' | 'session' | 'prompt' | 'agent' | 'process' | 'tool'>
 // A complete review's `note`: the body the gate let through for it, or null for a quiet review.
@@ -59,13 +65,13 @@ type Finished = { answer: string; reason: string; isAborted: boolean; durationMs
 // `epoch`: the epoch at the plan; `at`: the clock's time at the plan.
 type Plan = { number: number; brief: string; send: string | undefined; epoch: number; at: number }
 
-const fresh = (): Conversation => ({ dispatches: 0, off: false, epoch: 0, midTurn: false, pendingNotes: [], interrupted: false, lastMessage: '', transcript: null, record: EMPTY_RECORD, subagents: {}, briefsInFlight: [], failing: false, turnStart: null, reviewerIds: [], reviewerNames: [], reviewerContext: 0, memory: [], spawnsInFlight: [], wake: null, lastAsked: false, messaged: [], nudged: false, dispatchesAtPrompt: 0 })
+const fresh = (): Conversation => ({ dispatches: 0, off: false, epoch: 0, midTurn: false, pendingNotes: [], interrupted: false, lastMessage: '', transcript: null, record: EMPTY_RECORD, subagents: {}, briefsInFlight: [], failing: false, turnStart: null, reviewerIds: [], reviewerNames: [], reviewerContext: 0, memory: [], spawnsInFlight: [], wake: null, lastAsked: false, messaged: [], nudged: false, dispatchesAtPrompt: 0, spent: 0, unpriced: null })
 
-// The toggle, by the footer button or `/auditor`. Off stops the auditor at once: the open review is dropped with its note slot, the held notes are dropped and the reviewer is let go (`toggle` stops it), so the gate refuses every reviewer send from then on; a note let through before the switch may still arrive. Its ids still mark its traffic and rows, and its late turn end matches no reviewer. On starts an empty record, an empty memory and a fresh run, so no entry from the off period or before it is briefed, no memory entry about work the reviewer never saw is briefed either, a failure before it no longer holds the reviewer back, and an interrupt mark from before it holds no note refused for another reason. Either clears the stall guard. A switch moves the epoch (`epoch`); setting the state it already has changes nothing.
+// The toggle, by the footer button or `/auditor`. Off stops the auditor at once: the open review is dropped with its note slot, the held notes are dropped and the reviewer is let go (`toggle` stops it), so the gate refuses every reviewer send from then on; a note let through before the switch may still arrive. Its ids still mark its traffic and rows, and its late turn end matches no reviewer. On starts an empty record, an empty memory and a fresh run, so no entry from the off period or before it is briefed, no memory entry about work the reviewer never saw is briefed either, a failure before it no longer holds the reviewer back, and an interrupt mark from before it holds no note refused for another reason. Either empties the tally (`purged`), so off shows no figures and on starts them from zero, and clears the stall guard. A switch moves the epoch (`epoch`); setting the state it already has changes nothing.
 const switched = (c: Conversation, off: boolean): Conversation => {
   if (c.off === off) return c
   const moved = { ...c, epoch: c.epoch + 1, nudged: false, dispatchesAtPrompt: c.dispatches }
-  return off ? { ...forget(moved), off: true, review: undefined, pendingNotes: [] } : { ...moved, off: false, record: EMPTY_RECORD, memory: [], failing: false, interrupted: false }
+  return off ? { ...purged(forget(moved)), off: true, review: undefined, pendingNotes: [] } : { ...purged(moved), off: false, record: EMPTY_RECORD, memory: [], failing: false, interrupted: false }
 }
 
 // What the footer label and `/auditor` say: off by the toggle, failing until a review succeeds, else on.
@@ -81,6 +87,37 @@ const wordsOf = (node: unknown, engine: string): string => {
   if (el.type === 'engine') return engine
   const own = LEAF_WORDS.map(prop => el.props?.[prop]).filter((word): word is string => typeof word === 'string')
   return own.join('') + wordsOf(el.children, engine)
+}
+
+// The session's total cost in US dollars from the engine's ledger (`/cost`'s figure), or undefined when it cannot be known: no `cost` (the host keeps no ledger), a figure that is not finite and non-negative, a rejected call, or no answer within LEDGER_TIMEOUT_MS. The last two are logged. The one reader of the ledger: the footer and `/auditor` both go through `figuresOf`.
+// Exported for its test, which calls it with a hand-made `$`: the test engine cannot make a hook's call reject.
+export const readLedger = async ($: Pick<Scope, 'session' | 'clock' | 'ui'>): Promise<number | undefined> => {
+  let late: () => void = () => undefined
+  const timeout = new Promise<null>(resolve => {
+    late = () => resolve(null)
+  })
+  let timer: { cancel: () => void } | undefined
+  try {
+    timer = $.clock.after(LEDGER_TIMEOUT_MS, late)
+    const usage = await Promise.race([$.session.usage(), timeout])
+    if (usage === null) {
+      recordFailed($, 'session cost read', new Error(`no answer within ${LEDGER_TIMEOUT_MS} ms`))
+      return undefined
+    }
+    const usd = usage.cost?.usd
+    return typeof usd === 'number' && Number.isFinite(usd) && usd >= 0 ? usd : undefined
+  } catch (err) {
+    recordFailed($, 'session cost read', err)
+    return undefined
+  } finally {
+    timer?.cancel()
+  }
+}
+
+// What the button's words read for a conversation: its state and tally, and the session total where there is a share to show (off shows no figures, and nothing spent or an unknown cost has no share, so the ledger is not read for them).
+const figuresOf = async ($: Pick<Scope, 'session' | 'clock' | 'ui'>, c: Conversation): Promise<Figures> => {
+  const showsShare = !c.off && c.unpriced === null && c.spent > 0
+  return { state: stateOf(c), spent: c.spent, unpriced: c.unpriced, total: showsShare ? await readLedger($) : undefined }
 }
 
 const firstLine = (text: string): string => text.split('\n', 1)[0] ?? ''
@@ -248,7 +285,7 @@ const appendEntry = async ($: Pick<Scope, 'state'>, body: string): Promise<void>
 // Applies `fn` only while the conversation is still at the epoch the caller read (`epoch`).
 const inEpoch = (epoch: number, fn: (c: Conversation) => Conversation) => (c: Conversation): Conversation => (c.epoch !== epoch ? c : fn(c))
 
-// A review that ends without an answer fails: the footer reads `auditor is failing` until a review succeeds, and the reason goes to the debug log. A review taken or planned under an older epoch (`epoch`) does not fail.
+// A review that ends without an answer fails: the footer reads `auditor failing` until a review succeeds, and the reason goes to the debug log. A review taken or planned under an older epoch (`epoch`) does not fail.
 const markFailed = async ($: Pick<Scope, 'state' | 'ui'>, reason: string, epoch: number): Promise<void> => {
   await change($, inEpoch(epoch, c => ({ ...c, failing: true })))
   $.ui.log(`${PLUGIN}: review failed: ${reason}`, { to: 'debug' })
@@ -757,7 +794,7 @@ export const register: Register = (on, options) => {
 
   on('session.start', async ($, e, next) => {
     // The footer button's twin for every surface: a phone draws no footer, but its typed commands run here and their answer shows there.
-    await $.command.register({ name: 'auditor', description: 'Turn the auditor reviewer on or off for this session, say which it is, or print its memory of the notes delivered', argumentHint: '[on|off|memory]', immediate: true })
+    await $.command.register({ name: 'auditor', description: 'Turn the auditor reviewer on or off for this session, say which it is and what it has cost, or print its memory of the notes delivered', argumentHint: '[on|off|memory]', immediate: true })
     await $.tool.register({
       name: 'entries',
       description: "Returns the calling auditor reviewer's record for its open review, or the entries the worker recorded after that review's dispatch, as they are at the call, one page at a time from entry `from`.",
@@ -847,13 +884,20 @@ export const register: Register = (on, options) => {
     if (wanted === 'memory') return { text: printMemory((await readConversation($)).memory) }
     if (wanted !== '' && wanted !== 'on' && wanted !== 'off') return { text: 'Usage: /auditor [on|off|memory]' }
     const after = wanted === '' ? await readConversation($) : await toggle($, log, () => wanted === 'off')
-    return { text: `auditor is ${stateOf(after)}` }
+    return { text: answerOf(await figuresOf($, after)) }
   })
 
   // A compaction of a reviewer's own conversation keeps what its judgement rests on; the worker's is left as it is.
+  // Its own summarizing request is the auditor's spend, counted when core reports it (`withCompaction`).
   on('session.compact', async ($, e, next) => {
     if (e.agentId === undefined || standingOf(await readConversation($), e.agentId) === 'neither') return next(e)
-    return next({ ...e, instructions: e.instructions === undefined ? REVIEWER_COMPACTION : `${e.instructions}\n\n${REVIEWER_COMPACTION}` })
+    const result = await next({ ...e, instructions: e.instructions === undefined ? REVIEWER_COMPACTION : `${e.instructions}\n\n${REVIEWER_COMPACTION}` })
+    try {
+      if (result.skip === undefined) await change($, c => withCompaction(c, result.usage))
+    } catch (err) {
+      recordFailed($, 'compaction cost', err)
+    }
+    return result
   })
 
   // A known reviewer's verified end-of-run notice is consumed where it arrives, so no "Teammate … finished" row is drawn and the worker spends no turn on it; a reviewer from before a /clear included. Any other verified delivery from a known reviewer is logged and passed on, so a shape no one has measured is seen, not swallowed. A note never arrives here: it reaches the worker as a peer prompt. The sender is the delivery's verified team name, never words in its body, since a consumed delivery is gone.
@@ -1065,15 +1109,18 @@ export const register: Register = (on, options) => {
     return { result: judged.answer }
   })
 
-  // The worker's own model replies go into the record. The reviewer's request is not one of them: its usage is the reviewer's context, which rotation reads.
+  // The worker's own model replies go into the record. A reviewer's request is not one of them: its usage is the tally's (`withResponse`), every reviewer's, a retired one's late response included, and the current reviewer's context, which rotation reads. The read gates the write, so a worker's subagent steps write nothing.
   on('turn.step', async function* ($, e, next) {
     const result = yield* next(e)
     try {
       if (e.agentId === undefined) {
         if (result.answer !== '') await appendEntry($, `ASSISTANT: ${result.answer}`)
-      } else if (await reviewerAgent($, e.agentId)) {
+      } else if (result.usage !== null && standingOf(await readConversation($), e.agentId) !== 'neither') {
         const { usage } = result
-        if (usage !== null) await change($, c => ({ ...c, reviewerContext: usage.input_tokens + usage.cache_read_input_tokens + usage.cache_creation_input_tokens }))
+        await change($, c => {
+          const counted = withResponse(c, usage)
+          return standingOf(c, e.agentId) === 'current' ? { ...counted, reviewerContext: usage.input_tokens + usage.cache_read_input_tokens + usage.cache_creation_input_tokens } : counted
+        })
       }
     } catch (err) {
       recordFailed($, 'turn record', err)
@@ -1084,7 +1131,7 @@ export const register: Register = (on, options) => {
   // The toggle sits among the footer's mode labels, where terminal and desktop draw it, and switches the reviewer off or on for this session (`switched`).
   on('ui.render', { component: 'SessionMode' }, async ($, e, next) => {
     const { Box, Button, Text } = $.ui.resolve(e)
-    const conversation = await readConversation($)
+    const figures = await figuresOf($, await readConversation($))
     const press = async (): Promise<void> => {
       await toggle($, log, c => !c.off)
     }
@@ -1097,7 +1144,7 @@ export const register: Register = (on, options) => {
       children: [
         beneath,
         ...separator,
-        Button({ key: TOGGLE, plain: true, dimColor: true, label: `auditor is ${stateOf(conversation)}`, onPress: press }),
+        buttonOf({ Box, Button, Text }, TOGGLE, figures, press),
       ],
     })
   })
