@@ -8,7 +8,7 @@ import type { Figures } from './button'
 import { MAIN, admitSend, decideRefusal, followUpText, frameNote, isStoppedRefusal, marksOf, readSend, settleOutcome } from './notes'
 import type { Decided, Outcome, Refusal, Sent, Verdict } from './notes'
 import { REVIEWER_PROMPT } from './prompt'
-import { clip, entryBlock, pageOf, renumberBlock, toolLine } from './record'
+import { clip, editedLines, entryBlock, pageOf, renumberBlock, toolLine } from './record'
 import { adopt, forget, isEndNotice, isHandBack, isNotice, isReviewerEntry, land, learn, learnName, markers, nameKnown, nameListed, originOf, retire, reviewerNameOf, spawnName, spawning, standingOf } from './reviewer'
 import type { Identity } from './reviewer'
 import { purged, withCompaction, withNoteGiven, withResponse, withReviewDone } from './tally'
@@ -502,12 +502,13 @@ const asksUser = (tool: string, input: Record<string, unknown>): boolean => tool
 // The addresses a worker tool call messages, appended to those the turn already named: a SendMessage's `to`. A refused or failed send woke no one, so it names none.
 const sentTo = (messaged: readonly string[], tool: string, input: Record<string, unknown>, failed: boolean): string[] => (tool === 'SendMessage' && !failed && typeof input['to'] === 'string' ? [...messaged, input['to']] : [...messaged])
 
-// What the review is told: the reviewer's memory first when it holds any (`renderMemory`), the same for every reviewer, then its number, the entries its record covers, how to fetch them and the entries recorded since, the wake-up line, and the worker's last message.
-const briefOf = (number: number, entries: number, lastMessage: string, wake: Wake | null, memory: string): string => [
+// What the review is told: the reviewer's memory first when it holds any (`renderMemory`), the same for every reviewer, then its number, the entries its record covers, how to fetch them and the entries recorded since, the paths the record edits when it edits any, the wake-up line, and the worker's last message.
+const briefOf = (number: number, blocks: readonly string[], lastMessage: string, wake: Wake | null, memory: string): string => [
   ...(memory === '' ? [] : [memory, '']),
   'The worker finished a turn.',
-  `Review ${number}. Its record holds entries 1-${entries}, everything recorded since the previous review was dispatched. Fetch it with the ${ENTRIES} tool, which: 'record', page by page as each page's header says.`,
+  `Review ${number}. Its record holds entries 1-${blocks.length}, everything recorded since the previous review was dispatched. Fetch it with the ${ENTRIES} tool, which: 'record', page by page as each page's header says.`,
   `The worker may have kept working since this dispatch. Its later entries come from the same tool, which: 'live', read as they are at each call.`,
+  ...editedLines(blocks),
   ...wakeLines(wake),
   'Worker last message:',
   lastMessage === '' ? '(none)' : lastMessage,
@@ -543,7 +544,7 @@ const dispatchIdle = async ($: Scope, log: boolean): Promise<void> => {
     // The memory is bounded in the dispatch's own change, before the brief is built, so the brief carries it as it stands after the bound.
     const { memory, aged, evicted } = bounded(d.memory, number)
     planned.bound = { aged, evicted }
-    planned.plan = { number, brief: briefOf(number, blocks.length, d.lastMessage, d.wake, renderMemory(memory)), send: d.reviewer?.id, epoch: d.epoch, at: now }
+    planned.plan = { number, brief: briefOf(number, blocks, d.lastMessage, d.wake, renderMemory(memory)), send: d.reviewer?.id, epoch: d.epoch, at: now }
     return { ...d, memory, dispatches: number, review: blankReview(number, now, blocks, wakesNothing(d.wake)), record: EMPTY_RECORD }
   })
   const { plan, lapsed, bound } = planned

@@ -111,9 +111,12 @@ Then start a new session. The reviewer is on as soon as the plugin is loaded.
   a `-p` run that finished) ends the reviewer with it, so no stop is attempted then. Should one review alone outgrow
   100,000 tokens, the reviewer compacts, keeping your instructions and where you gave them.
 - **What the reviewer reads.** A record of the agent's turns since the previous review: your prompts, the agent's
-  replies and every tool call with its result. It also reads files on disk, and it can search the whole session's
-  transcript to find an instruction you gave many turns ago. Search results come back as short snippets around each
-  match, and a whole transcript line only when the reviewer asks for it.
+  replies and every tool call with its result. The review's brief also lists the paths the record edits: one line,
+  each path once in the order it was first edited, at most 20, with a count of any left out. It lists only what the
+  `Edit`, `Write` and `NotebookEdit` tools wrote, from calls that succeeded, so a file changed through a shell command
+  is not on it. The reviewer also reads files on disk, and it can search the whole session's transcript to find an
+  instruction you gave many turns ago. Search results come back as short snippets around each match, and a whole
+  transcript line only when the reviewer asks for it.
 - **Setting.** `log` (default off) writes one JSON file per review, with its note, timing and token use, to
   `~/.claude/auditor/<session id>/`. It is declared under `userConfig` in `.claude-plugin/plugin.json`.
 

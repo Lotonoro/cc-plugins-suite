@@ -40,6 +40,8 @@ type Opts = {
   listFails?: boolean
   // What a tool answers, by name: `isError` fails the call and `deny` refuses it, and the record counts either as a failed call.
   tools?: Record<string, { text: string; isError?: boolean; deny?: string }>
+  // A call that fails whatever its tool's answer says, picked by its input.
+  failsCall?: (call: any) => boolean
   // The canned answer of every host command; the fields not given keep a clean run's values.
   run?: { stdout?: string; exitCode?: number; isStdoutTruncated?: boolean }
   sendFails?: string
@@ -199,7 +201,7 @@ const engine = (on: any, opts: Opts = {}) => {
     if (e.tool === 'TaskStop' && opts.stopRefuses !== undefined) return { deny: opts.stopRefuses }
     if (e.tool === opts.toolThrows) return Promise.reject(new Error('tool unavailable'))
     const answer = tools[e.tool] ?? { text: `ran ${e.tool}` }
-    return answer.deny === undefined ? { ref: 1, result: null, text: answer.text, isError: answer.isError } : { deny: answer.deny }
+    return answer.deny === undefined ? { ref: 1, result: null, text: answer.text, isError: answer.isError || opts.failsCall?.(e) === true } : { deny: answer.deny }
   })
   let getHeld = false
   on('state.get', async (_$: any, e: any, next: any) => {
@@ -1168,7 +1170,7 @@ describe('auditor', () => {
     await step($, 'I will edit p.ts.')
     await $.tool.call(WORKER_CALL('Edit', { file_path: 'p.ts' }))
     await $.classic.Stop(stop)
-    expect(await entriesOf($, { which: 'record' })).toBe(RECORD_OF(1, 'USER: fix the parser', 'ASSISTANT: I will edit p.ts.', 'TOOL Edit({"file_path":"p.ts"}) -> edited'))
+    expect(await entriesOf($, { which: 'record' })).toBe(RECORD_OF(1, 'USER: fix the parser', 'ASSISTANT: I will edit p.ts.', 'TOOL Edit(file_path="p.ts" {}) -> edited'))
     expect(entryWrites(seen)).toEqual([])
   })
 
@@ -1179,7 +1181,7 @@ describe('auditor', () => {
     await $.tool.call(WORKER_CALL('Edit', { file_path: 'p.ts' }))
     await step($, 'Multi-line\nreply.')
     await $.classic.Stop(stop)
-    expect(await entriesOf($, { which: 'record' })).toBe(RECORD_OF(1, 'USER: fix', 'ASSISTANT: Editing now.', 'TOOL Edit({"file_path":"p.ts"}) -> edited', 'ASSISTANT: Multi-line\nreply.'))
+    expect(await entriesOf($, { which: 'record' })).toBe(RECORD_OF(1, 'USER: fix', 'ASSISTANT: Editing now.', 'TOOL Edit(file_path="p.ts" {}) -> edited', 'ASSISTANT: Multi-line\nreply.'))
   })
 
   test('a reviewer\'s own model requests are not recorded as the worker\'s replies', ON, async ($, on) => {
@@ -1206,7 +1208,7 @@ describe('auditor', () => {
     await $.prompt.submit(COMPOSER('mid-turn'))
     await $.tool.call(WORKER_CALL('Grep', { pattern: 'x' }))
     await $.classic.Stop(stop)
-    expect(await entriesOf($, { which: 'record' })).toBe(RECORD_OF(1, 'USER: first', 'TOOL Edit({"file_path":"p.ts"}) -> edited', 'USER: mid-turn', 'TOOL Grep({"pattern":"x"}) -> hit'))
+    expect(await entriesOf($, { which: 'record' })).toBe(RECORD_OF(1, 'USER: first', 'TOOL Edit(file_path="p.ts" {}) -> edited', 'USER: mid-turn', 'TOOL Grep({"pattern":"x"}) -> hit'))
   })
 
   test('two tool calls that run at once both reach the record', ON, async ($, on) => {
@@ -1217,7 +1219,7 @@ describe('auditor', () => {
       $.tool.call(WORKER_CALL('Grep', { pattern: 'x' })),
     ])
     await $.classic.Stop(stop)
-    expect(await entriesOf($, { which: 'record' })).toBe(RECORD_OF(1, 'USER: fix', 'TOOL Edit({"file_path":"p.ts"}) -> edited', 'TOOL Grep({"pattern":"x"}) -> hit'))
+    expect(await entriesOf($, { which: 'record' })).toBe(RECORD_OF(1, 'USER: fix', 'TOOL Edit(file_path="p.ts" {}) -> edited', 'TOOL Grep({"pattern":"x"}) -> hit'))
   })
 
   test('the record page names its entries and the total at the top, and keeps every entry as its own block', ON, async ($, on) => {
@@ -2378,7 +2380,7 @@ describe('the stall nudge', () => {
 })
 
 describe('the entries tool', () => {
-  const EDIT = 'TOOL Edit({"file_path":"p.ts"}) -> ran Edit'
+  const EDIT = 'TOOL Edit(file_path="p.ts" {}) -> ran Edit'
   const bytes = (text: string) => new TextEncoder().encode(text).length
 
   // Every page of a list, in order: each page's next-page line names the next page's from, and the last page names none. Bounded: a walk longer than the entries, or a next page that does not advance, fails here instead of hanging.
@@ -5488,6 +5490,65 @@ describe('after an Esc, no review is dispatched until the user types a plain pro
     await $.session.end({ reason: 'clear', sessionId: 's1' } as any)
     await workerTurn($)
     expect(seen.spawns.length).toBe(2)
+  })
+
+  describe('the edited paths in the brief', () => {
+    const LINE = 'Paths the record edits, first edit first:'
+    const editedLine = (brief: string): string | undefined => brief.split('\n').find(l => l.startsWith(LINE))
+
+    test('a record with edits, a write, a subagent edit and a failed edit lists the paths that were written, once each, in first-edit order', ON, async ($, on) => {
+      const seen = engine(on, { agents: [{ id: 'sub7', name: '' }], failsCall: call => call.file_path === 'c.ts' })
+      await $.prompt.submit(COMPOSER('fix the parser'))
+      await $.tool.call(WORKER_CALL('Edit', { file_path: 'a.ts', old_string: 'x', new_string: 'y' }))
+      await $.tool.call(WORKER_CALL('Edit', { file_path: 'a.ts', old_string: 'y', new_string: 'z' }))
+      await $.tool.call(WORKER_CALL('Edit', { file_path: 'c.ts', old_string: 'x', new_string: 'y' }))
+      await $.tool.call({ tool: 'Edit', file_path: 'b.ts', old_string: 'x', new_string: 'y', agentId: 'sub7' } as any)
+      await $.tool.call(WORKER_CALL('Write', { file_path: 'a.ts', content: 'w' }))
+      await $.classic.Stop(stop)
+      expect(editedLine(seen.spawns[0].prompt)).toBe(`${LINE} "a.ts", "b.ts".`)
+    })
+
+    test('an edit whose input is longer than 300 characters still lists its path', ON, async ($, on) => {
+      const seen = engine(on)
+      const path = `${'dir/'.repeat(30)}long.ts`
+      await $.prompt.submit(COMPOSER('fix the parser'))
+      await $.tool.call(WORKER_CALL('Edit', { old_string: 'x'.repeat(2000), new_string: 'y'.repeat(2000), file_path: path }))
+      await $.classic.Stop(stop)
+      expect(editedLine(seen.spawns[0].prompt)).toBe(`${LINE} ${JSON.stringify(path)}.`)
+    })
+
+    test('a record with no successful edit has no list line', ON, async ($, on) => {
+      const seen = engine(on, { failsCall: call => call.tool === 'Edit' || call.file_path === 'bad.ts' })
+      await $.prompt.submit(COMPOSER('fix the parser'))
+      await $.tool.call(WORKER_CALL('Edit', { file_path: 'a.ts', old_string: 'x', new_string: 'y' }))
+      await $.tool.call(WORKER_CALL('Read', { file_path: 'r.ts' }))
+      await $.tool.call(WORKER_CALL('Bash', { command: 'echo x > w.ts' }))
+      await $.classic.Stop(stop)
+      expect(seen.spawns[0].prompt).not.toContain(LINE)
+    })
+
+    test('21 edited paths give a line of 20 that says 1 more was left out', ON, async ($, on) => {
+      const seen = engine(on)
+      await $.prompt.submit(COMPOSER('refactor'))
+      for (let i = 1; i <= 21; i++) await $.tool.call(WORKER_CALL('Write', { file_path: `f${i}.ts`, content: 'x' }))
+      await $.classic.Stop(stop)
+      const line = editedLine(seen.spawns[0].prompt) ?? ''
+      expect(line).toBe(`${LINE} ${Array.from({ length: 20 }, (_, i) => `"f${i + 1}.ts"`).join(', ')}. 1 more left out.`)
+    })
+
+    test('a review that fails gives its paths back with its entries, and the next brief lists them', ON, async ($, on) => {
+      const seen = engine(on, { sendFails: 'ag1', refusal: STOPPED_TEAMMATE })
+      await workerTurn($)
+      await $.turn.complete(TURN_END('ag1', 'Nothing to note.'))
+      await $.prompt.submit(COMPOSER('more'))
+      await $.tool.call(WORKER_CALL('Edit', { file_path: 'a.ts', old_string: 'x', new_string: 'y' }))
+      await $.classic.Stop(stop)
+      expect(editedLine(seen.sends[0].text)).toBe(`${LINE} "a.ts".`)
+      await $.prompt.submit(COMPOSER('again'))
+      await $.tool.call(WORKER_CALL('Write', { file_path: 'b.ts', content: 'x' }))
+      await $.classic.Stop(stop)
+      expect(editedLine(seen.sends[1].text)).toBe(`${LINE} "a.ts", "b.ts".`)
+    })
   })
 
   describe('a brief the stopped session refuses is given back', () => {

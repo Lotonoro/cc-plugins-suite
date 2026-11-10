@@ -3,6 +3,16 @@
 const INPUT_CHARS = 300
 const RESULT_CHARS = 500
 
+// How many edited paths a brief lists; any more are counted, not named.
+export const EDITED_PATHS_CAP = 20
+
+// The input key that holds the path each edit tool writes (the engine's typed tool inputs: claude-code-tools/index.d.ts).
+const EDIT_PATH_KEYS: ReadonlyMap<string, string> = new Map([
+  ['Edit', 'file_path'],
+  ['Write', 'file_path'],
+  ['NotebookEdit', 'notebook_path'],
+])
+
 // The marker that states how many characters a clip cut, after the kept text.
 export const cutMark = (cut: number): string => ` …+${cut} characters`
 
@@ -15,10 +25,32 @@ export const clip = (text: string, max: number): string => {
 // `agent` is the subagent's label, already spelled (its id, and its type and name where known); absent for the main loop.
 export type ToolRecord = { tool: string; input: unknown; agent?: string; text: string; isError: boolean }
 
+// A successful edit shows its path ahead of the clipped rest of its input, so no clip cuts the path off, and `editedLines` reads the path from that layout alone. A failed edit, or one with no usable path, shows its whole input like any other call.
 export const toolLine = (call: ToolRecord): string => {
   const who = call.agent === undefined ? '' : `[agent ${call.agent}] `
+  const key = EDIT_PATH_KEYS.get(call.tool)
+  const fields = typeof call.input === 'object' && call.input !== null ? (call.input as Record<string, unknown>) : undefined
+  const path = key === undefined ? undefined : fields?.[key]
+  if (key !== undefined && fields !== undefined && typeof path === 'string' && path !== '' && !call.isError) {
+    const { [key]: _path, ...rest } = fields
+    return `TOOL ${who}${call.tool}(${key}=${JSON.stringify(path)} ${clip(JSON.stringify(rest), INPUT_CHARS)}) -> ${clip(call.text, RESULT_CHARS)}`
+  }
   const input = clip(JSON.stringify(call.input) ?? '', INPUT_CHARS)
   return `TOOL ${who}${call.tool}(${input}) -> ${call.isError ? 'ERROR ' : ''}${clip(call.text, RESULT_CHARS)}`
+}
+
+const EDIT_LINE = new RegExp(`^\\[\\d+\\] TOOL (?:\\[agent [^\\n]*?\\] )?(?:${[...EDIT_PATH_KEYS].map(([tool, key]) => `${tool}\\(${key}`).join('|')})=("(?:[^"\\\\\\n]|\\\\.)*") \\{`)
+
+// The brief's line naming the paths the record edits: each path a successful Edit, Write or NotebookEdit call wrote, once, in first-edit order, at most EDITED_PATHS_CAP of them with a count of those left out. None for a record with no such call. A Bash write is not found: its paths are in shell text.
+export const editedLines = (blocks: readonly string[]): string[] => {
+  const paths = new Set<string>()
+  for (const block of blocks) {
+    const quoted = EDIT_LINE.exec(block)?.[1]
+    if (quoted !== undefined) paths.add(JSON.parse(quoted) as string)
+  }
+  if (paths.size === 0) return []
+  const left = paths.size - EDITED_PATHS_CAP
+  return [`Paths the record edits, first edit first: ${[...paths].slice(0, EDITED_PATHS_CAP).map(path => JSON.stringify(path)).join(', ')}.${left > 0 ? ` ${left} more left out.` : ''}`]
 }
 
 // One entry of the turn record as a block of its own: its number, its text, then a blank line, so the next entry starts a new block.
