@@ -7,7 +7,10 @@ import { PRICED_MODEL, isPriced, priceOf } from './pricing'
 // Adds `usage` priced as `model`. A model that is not priced makes the cost unknown, naming it, and it stays unknown until the tally restarts. Nothing is added while the auditor is off.
 const added = (c: Conversation, usage: ModelUsage, model: string): Conversation => {
   if (c.off || c.unpriced !== null) return c
-  return isPriced(model) ? { ...c, spent: c.spent + priceOf(usage) } : { ...c, unpriced: model }
+  if (!isPriced(model)) return { ...c, unpriced: model }
+  // A usage with a missing count prices as NaN, which would poison the tally for good: it adds nothing.
+  const price = priceOf(usage)
+  return Number.isFinite(price) ? { ...c, spent: c.spent + price } : c
 }
 
 // One reviewer response, at the model it reports.

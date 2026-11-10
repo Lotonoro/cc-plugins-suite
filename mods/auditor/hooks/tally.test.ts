@@ -29,6 +29,13 @@ describe('withResponse', () => {
     expect(closeTo(withResponse(conversation(), under).spent, (10 * 0.1 + 99_000 * 0.01 + 90_000 * 0.5) / 1_000_000)).toBe(true)
   })
 
+  test('a response with a missing count adds nothing, and the tally stays a number', () => {
+    const broken = response({ cache_read_input_tokens: undefined as unknown as number })
+    const after = withResponse(withResponse(conversation(), response()), broken)
+    expect(closeTo(after.spent, priceOf(response()))).toBe(true)
+    expect(withResponse(after, response()).unpriced).toBe(null)
+  })
+
   test('a response reporting the pinned id with a date suffix is priced as the pinned model', () => {
     const r = response({ model: `${PRICED_MODEL}-20261001` })
     expect(withResponse(conversation(), r)).toMatchObject({ unpriced: null })
