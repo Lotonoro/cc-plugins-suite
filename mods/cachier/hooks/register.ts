@@ -929,7 +929,7 @@ const snapshotNow = async ($: Dollar): Promise<Snapshot> => {
     },
     // This session repeats the Keepalive section's refreshes line and balance, and the Advice section's misses line, word for word. Before the
     // first refresh the refreshes line is the fallback here, this section's own.
-    session: [refreshes === '' ? 'This session: no refreshes yet.' : refreshes, balance, ...rundown.advice].filter((line) => line !== ''),
+    session: [refreshes === '' ? 'session: no refreshes yet' : refreshes, balance, ...rundown.advice].filter((line) => line !== ''),
     advice: [sentenceNow(held, view, money), ttlLineNow(held, view, money), ...rundown.advice, ...unitNotes(money, view, rebuildSpend, tally, stats)].filter((line) => line !== ''),
     settings: settingsOf(raw, run, kept, tally, view, money, nowMs, unitPressedNow(unitHeld)),
   }

@@ -111,11 +111,12 @@ const clock = (ms: number): string => {
   return s >= 3600 ? `${Math.floor(s / 3600)}:${mm}:${ss}` : `${mm}:${ss}`
 }
 
-// The sentence on a learned count: the count, the time its refreshes keep the cache warm, and the pauses behind it.
+// The line on a learned count: the count, the time its refreshes keep the cache warm, and the pauses behind it.
 export const learnedLine = (l: Learned, ttlMs: number): string => {
-  const pauses = `${l.within} of your ${l.of} ${l.of === 1 ? 'pause' : 'pauses'}${l.rule === 'hour' ? ' at this hour' : ''}`
-  if (l.count === 0) return `Learned from your pauses: no refreshes, as ${pauses} ended within the ${clock(ttlMs)} TTL.`
-  return `Learned from your pauses: ${l.count === 1 ? '1 refresh' : `${l.count} refreshes`}, which cover ${clock(l.coverMs)}; ${pauses} ended within it.`
+  const label = l.rule === 'hour' ? 'learned (this hour)' : 'learned'
+  const pauses = `${l.within}/${l.of} pauses within`
+  if (l.count === 0) return `${label}: 0 refreshes · ${pauses} ${clock(ttlMs)} TTL`
+  return `${label}: ${l.count === 1 ? '1 refresh' : `${l.count} refreshes`}/pause · covers ${clock(l.coverMs)} · ${pauses}`
 }
 
 // The per-token rates a TTL comparison is priced at: the current model's read and its two write rates.

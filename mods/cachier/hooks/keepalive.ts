@@ -4,7 +4,7 @@
 import type { ModelApiError, ModelForkResult, ModelUsage, PluginOptions } from 'claude-code'
 import type { CacheView, HintCost, KeepaliveState, Spend, Tally, TallyState, Unit } from '../types'
 import { expiredAt, expiryOf } from './countdown'
-import { addSpend, dollars, figureOf, kTokens, NO_KINDS, NO_SPEND, readOf, spendOf, uponOf, writtenOf, type Money } from './prices'
+import { addSpend, cachedOf, dollars, figureOf, NO_KINDS, NO_SPEND, readOf, spendOf, uponOf, writtenOf, type Money } from './prices'
 import { notBelowTtl, refreshIntervalMs, SECONDS_SUFFIX, secs, secsTerse } from './setup'
 
 // Everything off: no config, no pings, nothing shown, no turn bookkeeping. A session's start and end reset to this.
@@ -249,7 +249,7 @@ export type Step =
 type Settled = { heading: Heading; why: string | null; figure: string[]; schedule?: string } & ({ kind: 'ping' } | { kind: 'wait' } | { kind: 'stop'; reason: string })
 
 // The last refresh's read and write, a line of its own after the figures, so a live session can check the served threshold.
-const lastOf = (k: KeepaliveState): string[] => (k.last === null ? [] : [`last refresh read ${k.last.read}, wrote ${k.last.write}`])
+const lastOf = (k: KeepaliveState): string[] => (k.last === null ? [] : [`last refresh: ${k.last.read} read · ${k.last.write} written`])
 
 type KnownView = Extract<CacheView, { kind: 'known' }>
 
@@ -268,38 +268,57 @@ const figuresOf = (view: CacheView, leadMs: number, money: Money, pair: Pair): s
   if (interval === null) return null
   const every = `every ${intervalOf(interval)}`
   const stated = pairing(view, money, pair)
-  return stated === null ? [`${nextPing(view, money)}, ${every}`] : [`${stated.phrase}, ${every}`, ...stated.rebuild]
+  return stated === null ? [`next refresh ${nextPing(view, money)} · ${every}`] : [`${refreshRow(view, money)} · ${every}`, ...rebuildRows(stated.rebuilt)]
 }
 
 // Paused by design: keepalive is on and waits for the next user prompt, because its count or the cache's expiry ended it.
 export const armedOf = (k: KeepaliveState): boolean => k.config !== null && k.stop !== null && ENDED_BY_DESIGN.includes(k.stop)
 
-// Why a stop reads as a clause: the design stops in words, any other stop as it was given.
+// Why a stop reads as a clause in the `/keepalive on` answer: the design stops in words, any other stop as it was given.
 const WHY: Record<string, string> = { 'count used': 'its refreshes for this pause are used up', 'cache expired': 'the cache expired' }
 const whyOf = (stop: string): string => WHY[stop] ?? stop
 
-// The two stop sentences, each written once here: every wording of a stop reads one of them.
+// The answer's two stop sentences, each written once here: every wording of a stop in the answer reads one of them.
 const byDesignSentence = (stop: string): string => `${whyOf(stop)}; it resumes after your next prompt`
 const failureSentence = (stop: string): string => `${stop}; your next prompt restarts it`
+
+// The section's two stop tails, the terse pair beside the sentences: the by-design half names its reason as it is stored, `count used` or
+// `cache expired` included, so those keys are words the user reads.
+const byDesignTerse = (reason: string): string => `${reason} · resumes on next prompt`
+const failureTerse = (stop: string): string => `${stop} · restarts on next prompt`
+
+// The figure of one refresh of a warm cache, which `/keepalive on` and the section each wrap: dollars first where it has them, and the cached tokens.
+const cachedParts = (view: KnownView, money: Money): { usd: string | null; cached: string } => {
+  const usd = pingUsd(view, money)
+  return { usd: usd === null ? null : dollars(usd), cached: cachedOf(view.promptTokens) }
+}
+const cachedFigure = (view: KnownView, money: Money): string => {
+  const { usd, cached } = cachedParts(view, money)
+  return usd === null ? cached : `${usd} (${cached})`
+}
+
+// The section's refresh row on a warm cache: the warm row and the armed row of a pause by design read the same figure.
+const refreshRow = (view: KnownView, money: Money): string => `refresh ${cachedFigure(view, money)}`
 
 // What an enabled keepalive says a refresh would cost when it resumes on an expired cache: the context each refresh reads, not a run's interval.
 const rereadFigure = (view: CacheView, money: Money): string | null => {
   if (view.kind !== 'known') return null
-  const usd = pingUsd(view, money)
-  const read = `${kTokens(view.promptTokens)} cached`
-  return usd === null ? `each refresh reads ${read}` : `each refresh costs ${dollars(usd)} (reads ${read})`
+  const { usd, cached } = cachedParts(view, money)
+  return usd === null ? `each refresh reads ${cached}` : `each refresh costs ${usd} (reads ${cached})`
 }
 
-// A paused-by-design verdict: the stop's by-design sentence, what a refresh would read once it resumes, how often one would be sent
+// The section's rebuild row, empty where no rebuild is priced.
+const rebuildRows = (rebuilt: string | null): string[] => (rebuilt === null ? [] : [`if cold: rebuild ${rebuilt}`])
+
+// A paused-by-design verdict: the reason with its by-design tail, what a refresh would read once it resumes, how often one would be sent
 // wherever the run's lead gives an interval, and while the cache is warm what its rebuild would cost.
 const pausedBy = (view: CacheView, leadMs: number, money: Money, reason: string, pair: Pair): { heading: Heading; why: string; figure: string[] } => {
   const stated = pairing(view, money, pair)
-  const reread = stated === null ? rereadFigure(view, money) : stated.phrase
   const interval = intervalRow(view, leadMs)
   return {
     heading: 'paused',
-    why: byDesignSentence(reason),
-    figure: [...(reread === null ? [] : [reread]), ...(interval === null ? [] : [interval]), ...(stated === null ? [] : stated.rebuild)],
+    why: byDesignTerse(reason),
+    figure: [...(view.kind === 'known' ? [refreshRow(view, money)] : []), ...(interval === null ? [] : [interval]), ...(stated === null ? [] : rebuildRows(stated.rebuilt))],
   }
 }
 
@@ -311,27 +330,27 @@ const settledOf = (k: KeepaliveState, leadMs: number, view: CacheView, liveMs: n
   const figures = figuresOf(view, leadMs, money, pair)
   const running = figures ?? []
   if (armedOf(k)) return { kind: 'wait', ...pausedBy(view, leadMs, money, k.stop ?? '', pair) }
-  if (k.stop !== null) return { kind: 'wait', heading: 'stopped', why: failureSentence(k.stop), figure: running }
+  if (k.stop !== null) return { kind: 'wait', heading: 'stopped', why: failureTerse(k.stop), figure: running }
   const r = readiness(view, leadMs, liveMs, nowMs)
   if (r.kind === 'not-ready' || figures === null) {
     if (view.kind === 'known' && refreshIntervalMs(leadMs, view.ttlMs) === null) {
-      return { kind: 'wait', heading: 'paused', why: notBelowTtl(leadMs, view.ttlMs), figure: pairing(view, money, pair)?.rebuild ?? [] }
+      return { kind: 'wait', heading: 'paused', why: `${notBelowTtl(leadMs, view.ttlMs)} · sends nothing`, figure: rebuildRows(pairing(view, money, pair)?.rebuilt ?? null) }
     }
     // A no-cache view's next reply is what writes a cache, so its line says so; a TTL-unknown or unread view may hold one unseen, so it says nothing of replies.
-    const reply = view.kind === 'no-cache' ? '; there is no cache until the next reply' : ''
-    return { kind: 'wait', heading: 'on, no count', why: null, figure: [`no live cache to count from, nothing scheduled${reply}`] }
+    const reply = view.kind === 'no-cache' ? ' · cache from next reply' : ''
+    return { kind: 'wait', heading: 'on, no count', why: null, figure: [`no live cache · nothing scheduled${reply}`] }
   }
   if (r.expired) return { kind: 'stop', reason: 'cache expired', ...pausedBy(view, leadMs, money, 'cache expired', pair) }
   // A learned count of no pings: nothing is sent, and the run stays on, so a prompt that learns otherwise can still ping.
   if (k.runCount === 0) {
-    return { kind: 'wait', heading: 'paused', why: 'no refreshes this pause: your pauses rarely outlast the cache; it resumes after your next prompt', figure: figures }
+    return { kind: 'wait', heading: 'paused', why: byDesignTerse('0 refreshes this pause (learned: pauses rarely outlast TTL)'), figure: figures }
   }
   if (k.remaining <= 0) return { kind: 'stop', reason: 'count used', ...pausedBy(view, leadMs, money, 'count used', pair) }
   const refreshing = { heading: 'on, refreshing' as const, why: null }
   if (nowMs < r.dueMs) {
-    return { kind: 'wait', ...refreshing, figure: figures, schedule: `next refresh in ${clock(r.dueMs - nowMs)}, ${k.remaining} left` }
+    return { kind: 'wait', ...refreshing, figure: figures, schedule: `next in ${clock(r.dueMs - nowMs)} · ${k.remaining} left` }
   }
-  if (!gap) return { kind: 'wait', ...refreshing, figure: figures, schedule: 'refresh due, waits for the turn to end' }
+  if (!gap) return { kind: 'wait', ...refreshing, figure: figures, schedule: 'refresh due · waits for turn end' }
   return { kind: 'ping', ...refreshing, figure: figures }
 }
 
@@ -343,7 +362,7 @@ export const step = (k: KeepaliveState, view: CacheView, liveMs: number | null, 
   const settled = settledOf(k, k.config.leadMs, view, liveMs, gap, nowMs, money, rebuild)
   const last = lastOf(k)
   if (k.stop === null && k.coldPending) {
-    return { kind: 'wait', heading: 'paused', why: 'until the cache reset is recorded', lines: [...(settled.why === null ? [] : [settled.why]), ...settled.figure, ...last] }
+    return { kind: 'wait', heading: 'paused', why: 'recording cache reset', lines: [...(settled.why === null ? [] : [settled.why]), ...settled.figure, ...last] }
   }
   const lines = [...settled.figure, ...(settled.schedule === undefined ? [] : [settled.schedule]), ...last]
   const verdict = { heading: settled.heading, why: settled.why, lines }
@@ -357,11 +376,11 @@ const pingSpend = (view: KnownView, money: Money): Spend =>
 // A ping's dollars when they are shown: the unit is dollars and the ping has a price. Null shows the ping in tokens.
 const pingUsd = (view: KnownView, money: Money): number | null => (money.unit === 'dollars' ? pingSpend(view, money).usd : null)
 
-// The next refresh's cost as an expired cache states it.
+// The next refresh's figure as an expired cache states it, which the section and the answer each wrap.
 const nextPing = (view: KnownView, money: Money): string => {
   const usd = pingUsd(view, money)
   const read = readOf(view.promptTokens)
-  return usd === null ? `Next refresh: ${read}` : `Next refresh: ${dollars(usd)} (${read})`
+  return usd === null ? read : `${dollars(usd)} (${read})`
 }
 
 const capital = (text: string): string => text.charAt(0).toUpperCase() + text.slice(1)
@@ -370,13 +389,12 @@ const capital = (text: string): string => text.charAt(0).toUpperCase() + text.sl
 // answers `warm` from the expiry owner: keepalive counts a refresh's price, and the pair states it, only while the cache is warm.
 export type Pair = { warm: boolean; rebuild: Spend | null }
 
-// The pair of prices a warm cache states, each half worded once: the hover's label, the rebuild half of it alone as `bare`, the Keepalive
-// section's phrase for the refresh, and its line for the rebuild, which is empty where no rebuild is priced. Null for an expired cache or
-// a view with no figures, which keep the refresh's price alone.
-const pairing = (view: CacheView, money: Money, pair: Pair): { label: string; bare: string | null; phrase: string; rebuild: string[] } | null => {
+// The pair of prices a warm cache states, each half worded once: the hover's label, the rebuild half of it alone as `bare`, the warm
+// refresh's figure, and the rebuild's, null where no rebuild is priced. The figures are bare: the section and the `/keepalive on` answer each
+// wrap them. Null for an expired cache or a view with no figures, which keep the refresh's price alone.
+const pairing = (view: CacheView, money: Money, pair: Pair): { label: string; bare: string | null; figure: string; rebuilt: string | null } | null => {
   if (view.kind !== 'known' || !pair.warm) return null
   const usd = pingUsd(view, money)
-  const tokens = `${kTokens(view.promptTokens)} cached`
   const spend = pair.rebuild
   const written = spend === null ? '' : writtenOf(spend.write5m + spend.write1h)
   const rebuilt = spend !== null && money.unit === 'dollars' && spend.usd !== null ? `${uponOf(spend, money.unit)} (${written})` : written
@@ -384,15 +402,15 @@ const pairing = (view: CacheView, money: Money, pair: Pair): { label: string; ba
   return {
     label: `keep warm ${usd === null ? readOf(view.promptTokens) : dollars(usd)}/refresh${bare === null ? '' : ` · ${bare}`}`,
     bare,
-    phrase: usd === null ? `a refresh reads the warm cache: ${tokens}` : `a refresh reads the warm cache: ${dollars(usd)} (${tokens})`,
-    rebuild: spend === null ? [] : [`if it goes cold, your next prompt rebuilds it: ${rebuilt}`],
+    figure: cachedFigure(view, money),
+    rebuilt: spend === null ? null : rebuilt,
   }
 }
 
 // The interval between refreshes at a lead as its own row of the section: null where the lead sends no refresh.
 const intervalRow = (view: CacheView, leadMs: number): string | null => {
   const interval = view.kind === 'known' ? refreshIntervalMs(leadMs, view.ttlMs) : null
-  return interval === null ? null : `One refresh every ${intervalOf(interval)}.`
+  return interval === null ? null : `every ${intervalOf(interval)}`
 }
 
 // The figure of one refresh at a lead, worked out where it is stated: its label, which the footer and the hover keep, and the lines the
@@ -405,9 +423,9 @@ const figureAt = (view: CacheView, leadMs: number, money: Money, pair: Pair): Fi
   const row = intervalRow(view, leadMs)
   if (view.kind !== 'known' || row === null) return null
   const stated = pairing(view, money, pair)
-  if (stated !== null) return { label: stated.label, lines: [`${capital(stated.phrase)}.`, row, ...stated.rebuild] }
+  if (stated !== null) return { label: stated.label, lines: [refreshRow(view, money), row, ...rebuildRows(stated.rebuilt)] }
   const usd = pingUsd(view, money)
-  return { label: usd === null ? `${readOf(view.promptTokens)}/refresh` : `${dollars(usd)}/refresh`, lines: [`${nextPing(view, money)}.`, row] }
+  return { label: usd === null ? `${readOf(view.promptTokens)}/refresh` : `${dollars(usd)}/refresh`, lines: [`next refresh ${nextPing(view, money)}`, row] }
 }
 
 // The figure keepalive's refreshes show while it runs: what each refresh costs, or the context it reads, and how often. Shown
@@ -543,8 +561,11 @@ export const pastHalfTtlStop = (rtMs: number, raisedMs: number, ttlMs: number): 
 // to whole seconds. A lead is never lowered, so without such a round trip the lead is `leadMs` unchanged.
 export const raisedLeadOf = (leadMs: number, rtMs: number): number => (rtMs > leadMs / 2 ? Math.ceil((2 * rtMs) / 1000) * 1000 : leadMs)
 
-// The details pane's sentence for a raised lead.
-export const raiseNote = (leadMs: number): string => `The lead was raised to ${secs(leadMs)} after a slow refresh.`
+// The details pane's row for a raised lead.
+export const raiseNote = (leadMs: number): string => `lead raised to ${secsTerse(leadMs)} (slow refresh)`
+
+// The `/keepalive on` answer's lead-in to the rebuild figure.
+const REBUILD_LEAD = 'if it goes cold, your next prompt rebuilds it: '
 
 // A count of refreshes, singular for one.
 const refreshesOf = (count: number): string => (count === 1 ? '1 refresh' : `${count} refreshes`)
@@ -553,8 +574,8 @@ const refreshesOf = (count: number): string => (count === 1 ? '1 refresh' : `${c
 // and that the first refresh after a turn can write.
 export const costText = (view: KnownView, leadMs: number, intervalMs: number, count: number, money: Money, pair: Pair): string => {
   const stated = pairing(view, money, pair)
-  const price = stated === null ? nextPing(view, money) : capital(stated.phrase)
-  const rebuild = stated === null ? '' : stated.rebuild.map((line) => `; ${line}`).join('')
+  const price = stated === null ? `Next refresh: ${nextPing(view, money)}` : `A refresh reads the warm cache: ${stated.figure}`
+  const rebuild = stated === null || stated.rebuilt === null ? '' : `; ${REBUILD_LEAD}${stated.rebuilt}`
   return `${price}, every ${intervalOf(intervalMs)} (${view.ttlLabel} TTL less the ${secs(leadMs)} lead)${rebuild}. The first refresh after a turn can also write that turn's new tokens. ${refreshesOf(count)}, then it stops until a prompt.`
 }
 
@@ -568,7 +589,8 @@ export const enableText = (view: CacheView, leadMs: number, count: number, stop:
   if (view.kind !== 'known') return `${head} No live cache to count from yet, so nothing is scheduled until there is one.${tail}`
   const interval = refreshIntervalMs(leadMs, view.ttlMs)
   if (interval === null) {
-    const rebuild = (pairing(view, money, pair)?.rebuild ?? []).map((line) => ` ${capital(line)}.`).join('')
+    const rebuilt = pairing(view, money, pair)?.rebuilt
+    const rebuild = rebuilt === undefined || rebuilt === null ? '' : ` ${capital(REBUILD_LEAD)}${rebuilt}.`
     return `${head} Paused: ${notBelowTtl(leadMs, view.ttlMs)}.${rebuild}${tail}`
   }
   return `${head} ${armed ? `${capital(rereadFigure(view, money) ?? '')}.` : costText(view, leadMs, interval, count, money, pair)}${tail}`
@@ -652,7 +674,7 @@ export const countPing = (
 // A user's prompt starts a new idle stretch: the pause's tally is cleared, and a fork sent before it counts no more into it.
 export const restartPause = (t: TallyState, pauseEpoch: number): TallyState => ({ ...t, pause: ZERO_TALLY, epoch: pauseEpoch })
 
-export const tallyOf = (label: string, t: Tally, unit: Money['unit']): string => `${label}: ${refreshesOf(t.pings)} costing ${figureOf(t.spend, unit)}.`
+export const tallyOf = (label: string, t: Tally, unit: Money['unit']): string => `${label}: ${refreshesOf(t.pings)} · ${figureOf(t.spend, unit)}`
 
 // A fork's usage as a spend: its uncached input, its read, and its write at the TTL of the cache it was sent on, priced at
 // the main thread's model and speed (a fork that reads the cache runs on both, since a switch would have invalidated it).

@@ -11,8 +11,8 @@ const SETTINGS: Setting[] = [
 ]
 const FULL: Snapshot = {
   cache: ['warm · 3:12 left · 5m TTL'],
-  keepalive: { state: 'on, refreshing', lines: ['next refresh in 4:59, 3 left', 'Next refresh: $0.006 (~33k read).'] },
-  session: ['This session: 2 refreshes costing $0.007.', 'Cache misses: 1 (lapse 1), $0.10 rewritten'],
+  keepalive: { state: 'on, refreshing', lines: ['next in 4:59 · 3 left', 'next refresh $0.006 (~33k read)'] },
+  session: ['session: 2 refreshes · $0.007', 'misses: 1 (lapse 1) · $0.10 rewritten'],
   advice: ['A 1-hour cache would have saved $4.74 over 10 pauses: set "promptCacheTtl": "1h" in settings.json.'],
   settings: SETTINGS,
 }
@@ -26,7 +26,7 @@ describe('sectionsOf: the five sections in order, each with its lines', () => {
   test('a section with no line and no state is absent, and no empty line is drawn', () => {
     expect(sectionsOf({ ...EMPTY, cache: ['warm'] }).map((s) => s.title)).toEqual(['Cache', 'Keepalive'])
     expect(sectionsOf({ ...EMPTY, advice: ['a'] }).map((s) => s.title)).toEqual(['Keepalive', 'Advice'])
-    expect(sectionsOf({ ...EMPTY, session: ['This session: no refreshes yet.'] }).map((s) => s.title)).toEqual(['Keepalive', 'This session'])
+    expect(sectionsOf({ ...EMPTY, session: ['session: no refreshes yet'] }).map((s) => s.title)).toEqual(['Keepalive', 'This session'])
   })
 
   test('a section that carries a state is never left out: the Keepalive section is there with no line, and only it carries a state', () => {
@@ -88,7 +88,7 @@ describe('answerOf: the sections as the bare command answers them', () => {
     expect(text.indexOf('Keepalive  on, refreshing')).toBeLessThan(text.indexOf('This session'))
     expect(text.indexOf('This session')).toBeLessThan(text.indexOf('Advice'))
     expect(text.indexOf('Advice')).toBeLessThan(text.indexOf('Settings'))
-    expect(text).toContain('Next refresh: $0.006')
+    expect(text).toContain('next refresh $0.006')
   })
 })
 

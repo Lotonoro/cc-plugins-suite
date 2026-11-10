@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'claude-code/testing'
-import { dollars, figureOf, kTokens, NO_KINDS, NO_SPEND, parsePricing, PRICES, ratesFor, readOf, rewriteOf, spendOf, uponOf, writeReadRatio, writtenOf } from './prices'
+import { dollars, figureOf, kTokens, NO_KINDS, NO_SPEND, parsePricing, PRICES, ratesFor, cachedOf, readOf, rewriteOf, spendOf, uponOf, writeReadRatio, writtenOf } from './prices'
 
 describe('the price table', () => {
   test('a 5 m write costs 1.25 inputs and a 1 h write 2, so on Opus 5.5 they are 25 and 40 reads', () => {
@@ -157,6 +157,12 @@ describe('the figures in the unit shown: dollars, or tokens with read or written
     expect(readOf(0)).toBe('0 read')
     expect(writtenOf(500)).toBe('<1k written')
     expect(writtenOf(50000)).toBe('~50k written')
+  })
+
+  test('the tokens a refresh reads from the warm cache are the count and the word cached', () => {
+    expect(cachedOf(33000)).toBe('~33k cached')
+    expect(cachedOf(0)).toBe('0 cached')
+    expect(cachedOf(500)).toBe('<1k cached')
   })
 
   test('a rewrite is its dollars, or the tokens written with the word tokens', () => {

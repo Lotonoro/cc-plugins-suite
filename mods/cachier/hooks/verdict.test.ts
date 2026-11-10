@@ -160,21 +160,21 @@ describe("pauseOf: the pause from the session's state", () => {
 
   test('the break-even window starts at the TTL and ends at the ping that tips past the rewrite, or where the count runs out', () => {
     // A rewrite is worth 24 pings: the 24th brings them even with it, at 24 × 280 s with a 20 s lead, so the window ends there.
-    expect(breakEvenLine(gap, view, money, { leadMs: 20 * S, count: null, cap: 30 })).toBe("Keepalive pays off if you're back between 5:00 and 1:52:00")
-    expect(breakEvenLine(gap, view, money, { leadMs: 20 * S, count: null, cap: null })).toBe("Keepalive pays off if you're back between 5:00 and 1:52:00")
+    expect(breakEvenLine(gap, view, money, { leadMs: 20 * S, count: null, cap: 30 })).toBe('pays off if back in 5:00–1:52:00')
+    expect(breakEvenLine(gap, view, money, { leadMs: 20 * S, count: null, cap: null })).toBe('pays off if back in 5:00–1:52:00')
     // With 4 pings the cache lapses at 4 × 280 s + 300 s.
-    expect(breakEvenLine(gap, view, money, defaults)).toBe("Keepalive pays off if you're back between 5:00 and 23:40")
+    expect(breakEvenLine(gap, view, money, defaults)).toBe('pays off if back in 5:00–23:40')
     // Keepalive's own run wins over the defaults; a 1h cache counts from its own TTL and write.
-    expect(breakEvenLine({ ...gap, config: { leadMs: 15 * S, count: 3 }, runCount: 3 }, view, money, defaults)).toBe("Keepalive pays off if you're back between 5:00 and 19:15")
-    expect(breakEvenLine(gap, { ...view, ttlMs: 3600 * S, ttlLabel: '1h' }, money, defaults)).toBe("Keepalive pays off if you're back between 1:00:00 and 4:58:40")
+    expect(breakEvenLine({ ...gap, config: { leadMs: 15 * S, count: 3 }, runCount: 3 }, view, money, defaults)).toBe('pays off if back in 5:00–19:15')
+    expect(breakEvenLine(gap, { ...view, ttlMs: 3600 * S, ttlLabel: '1h' }, money, defaults)).toBe('pays off if back in 1:00:00–4:58:40')
     // A rewrite worth 15.67 pings: the run sends 15, which never reach it, so the window runs on to the lapse after the 15th.
     const odd = { 'claude-opus-5-5': { ...PRICES['claude-opus-5-5']!, read: 3e-7 } }
     expect(runCountOf(null, view, { ...money, list: odd }, null)).toBe(15)
-    expect(breakEvenLine(gap, view, { ...money, list: odd }, { leadMs: 20 * S, count: null, cap: null })).toBe("Keepalive pays off if you're back between 5:00 and 1:15:00")
+    expect(breakEvenLine(gap, view, { ...money, list: odd }, { leadMs: 20 * S, count: null, cap: null })).toBe('pays off if back in 5:00–1:15:00')
   })
 
   test('a lead at or past the TTL never pays off; no warm cache or no price draws no line', () => {
-    expect(breakEvenLine(gap, view, money, { leadMs: 300 * S, count: null, cap: 3 })).toBe("Keepalive doesn't pay off on this context")
+    expect(breakEvenLine(gap, view, money, { leadMs: 300 * S, count: null, cap: 3 })).toBe('never pays off on this context')
     expect(breakEvenLine(gap, { kind: 'no-cache' }, money, defaults)).toBe('')
     expect(breakEvenLine(gap, view, { ...money, model: 'claude-nonesuch-1' }, defaults)).toBe('')
   })
@@ -193,21 +193,21 @@ describe("pauseOf: the pause from the session's state", () => {
 
   test('the count line says why a pause sends the count it does: pinned, the break-even count or its cap, or the default with no price', () => {
     const unpriced = { ...money, model: 'claude-nonesuch-1' }
-    expect(countLineOf(2, view, money, null)).toBe('Each pause sends at most 2 refreshes: the count you pinned with /keepalive on.')
-    expect(countLineOf(1, view, money, null)).toBe('Each pause sends at most 1 refresh: the count you pinned with /keepalive on.')
-    expect(countLineOf(null, view, money, null)).toBe('Each pause sends at most 24 refreshes: the break-even count, the most refreshes that cost no more than the rewrite they avoid.')
+    expect(countLineOf(2, view, money, null)).toBe('max 2 refreshes/pause (pinned)')
+    expect(countLineOf(1, view, money, null)).toBe('max 1 refresh/pause (pinned)')
+    expect(countLineOf(null, view, money, null)).toBe('max 24 refreshes/pause (break-even)')
     // A cap above the break-even count does not bind, so the line gives the break-even count.
-    expect(countLineOf(null, view, money, 30)).toBe('Each pause sends at most 24 refreshes: the break-even count, the most refreshes that cost no more than the rewrite they avoid.')
-    expect(countLineOf(null, view, money, 6)).toBe('Each pause sends at most 6 refreshes: keepalive_count, which caps the break-even count of 24.')
-    expect(countLineOf(null, view, unpriced, null)).toBe('Each pause sends at most 3 refreshes: the default, since the price of this model is unknown and keepalive_count is unset.')
-    expect(countLineOf(null, view, unpriced, 7)).toBe('Each pause sends at most 7 refreshes: keepalive_count, since the price of this model is unknown.')
+    expect(countLineOf(null, view, money, 30)).toBe('max 24 refreshes/pause (break-even)')
+    expect(countLineOf(null, view, money, 6)).toBe('max 6 refreshes/pause (keepalive_count cap; break-even 24)')
+    expect(countLineOf(null, view, unpriced, null)).toBe('max 3 refreshes/pause (default: model unpriced, keepalive_count unset)')
+    expect(countLineOf(null, view, unpriced, 7)).toBe('max 7 refreshes/pause (keepalive_count: model unpriced)')
     expect(countLineOf(null, { kind: 'no-cache' }, money, 7)).toBe('')
   })
 
   test("the count line gives its reason, or the count the pause kept when the caller passes that count", () => {
-    expect(countLineOf(null, view, money, null)).toBe('Each pause sends at most 24 refreshes: the break-even count, the most refreshes that cost no more than the rewrite they avoid.')
-    expect(countLineOf(2, view, money, null)).toBe('Each pause sends at most 2 refreshes: the count you pinned with /keepalive on.')
-    expect(countLineOf(null, view, money, null, 3)).toBe('Each pause sends at most 3 refreshes: kept from pause start; recounted next prompt.')
+    expect(countLineOf(null, view, money, null)).toBe('max 24 refreshes/pause (break-even)')
+    expect(countLineOf(2, view, money, null)).toBe('max 2 refreshes/pause (pinned)')
+    expect(countLineOf(null, view, money, null, 3)).toBe('max 3 refreshes/pause (kept from pause start; recounted next prompt)')
   })
 
   test('a running turn, a closed gap, no warm cache, or an unpriced figure leaves nothing to judge', () => {
@@ -225,12 +225,12 @@ describe('sessionBalanceLine: the session\x27s balance against the other keepali
   })
 
   test('a saving, a loss and a tie are worded, with the net and the pauses counted', () => {
-    expect(sessionBalanceLine({ netUsd: 0.15, pauses: 1 }, 'dollars')).toBe('Over 1 pause this session, keepalive saved $0.15 net against the other setting.')
-    expect(sessionBalanceLine({ netUsd: -0.09, pauses: 2 }, 'dollars')).toBe('Over 2 pauses this session, keepalive cost $0.09 net more than the other setting.')
-    expect(sessionBalanceLine({ netUsd: 0, pauses: 2 }, 'dollars')).toBe('Over 2 pauses this session, keepalive cost the same as the other setting.')
+    expect(sessionBalanceLine({ netUsd: 0.15, pauses: 1 }, 'dollars')).toBe('balance vs other setting: saved $0.15 net (1 pause)')
+    expect(sessionBalanceLine({ netUsd: -0.09, pauses: 2 }, 'dollars')).toBe('balance vs other setting: $0.09 net more (2 pauses)')
+    expect(sessionBalanceLine({ netUsd: 0, pauses: 2 }, 'dollars')).toBe('balance vs other setting: even (2 pauses)')
   })
 
   test('in tokens the balance is not stated, and the line says the unit that states it', () => {
-    expect(sessionBalanceLine({ netUsd: -0.09, pauses: 2 }, 'tokens')).toBe('Over 2 pauses this session, the balance is stated in dollars: /keepalive unit dollars.')
+    expect(sessionBalanceLine({ netUsd: -0.09, pauses: 2 }, 'tokens')).toBe('balance vs other setting: $ only, /keepalive unit dollars (2 pauses)')
   })
 })

@@ -258,8 +258,8 @@ describe('footerLine: the pie\'s hover names the keepalive state its colour stan
 
 const SNAPSHOT: Snapshot = {
   cache: ['warm · 3:12 left · 5m TTL'],
-  keepalive: { state: 'off', lines: ['The pie turns amber in the cache\'s last quarter and red in its last tenth: the cache is about to lapse.'] },
-  session: ['This session: no refreshes yet.'],
+  keepalive: { state: 'off', lines: ['pie: amber ≤¼ TTL left, red ≤⅒'] },
+  session: ['session: no refreshes yet'],
   advice: ['A 1-hour cache with keepalive off would have saved $1.20 over 10 recent pauses.'],
   settings: [{ name: 'unit', value: 'dollars', source: 'cost_unit option', change: '/keepalive unit tokens|dollars' }],
 }

@@ -36,7 +36,7 @@ describe('learnedOf: the count that would have cost least, when the history beat
     const h = many([...Array(8).fill(3 * 60 * MIN), 2 * MIN, 40 * MIN])
     const l = learnedOf(h, 10, BE, P)
     expect(l).toMatchObject({ count: 0, rule: 'all', within: 1, of: 10 })
-    expect(learnedLine(l!, P.ttlMs)).toBe('Learned from your pauses: no refreshes, as 1 of your 10 pauses ended within the 5:00 TTL.')
+    expect(learnedLine(l!, P.ttlMs)).toBe('learned: 0 refreshes · 1/10 pauses within 5:00 TTL')
   })
 
   test('half-hour pauses among a few long ones learn the pings that cover the half hour, not break-even', () => {
@@ -44,7 +44,7 @@ describe('learnedOf: the count that would have cost least, when the history beat
     const l = learnedOf(h, 10, BE, P)
     // 6 pings keep the cache warm to 6 × 4:45 + 5:00.
     expect(l).toMatchObject({ count: 6, coverMs: 2010 * S, within: 10, of: 13 })
-    expect(learnedLine(l!, P.ttlMs)).toBe('Learned from your pauses: 6 refreshes, which cover 33:30; 10 of your 13 pauses ended within it.')
+    expect(learnedLine(l!, P.ttlMs)).toBe('learned: 6 refreshes/pause · covers 33:30 · 10/13 pauses within')
   })
 
   test('half-hour pauses alone learn nothing: every count that covers them costs the same, so break-even stands', () => {
@@ -55,7 +55,7 @@ describe('learnedOf: the count that would have cost least, when the history beat
     const h = [...many(Array(12).fill(3 * 60 * MIN), 14), ...many(Array(12).fill(30 * MIN), 9)]
     const afternoon = learnedOf(h, 14, BE, P)!
     expect(afternoon).toMatchObject({ count: 0, rule: 'hour', of: 12 })
-    expect(learnedLine(afternoon, P.ttlMs)).toBe('Learned from your pauses: no refreshes, as 0 of your 12 pauses at this hour ended within the 5:00 TTL.')
+    expect(learnedLine(afternoon, P.ttlMs)).toBe('learned (this hour): 0 refreshes · 0/12 pauses within 5:00 TTL')
     expect(learnedOf(h, 9, BE, P)).toBeNull()
   })
 

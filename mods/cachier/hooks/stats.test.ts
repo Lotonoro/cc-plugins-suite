@@ -204,14 +204,14 @@ describe('the details pane\'s session line, and the bare command', () => {
 
   test('the session line states this session\'s refreshes and their cost, with no pause, raised lead or history in it', () => {
     const t: TallyState = { pause: { pings: 2, spend: r(30000) }, session: { pings: 3, spend: r(60000) }, raisedMs: 16000, epoch: 0 }
-    expect(sessionLineOf(t, TOKENS)).toBe('This session: 3 refreshes costing ~60k read.')
+    expect(sessionLineOf(t, TOKENS)).toBe('session: 3 refreshes · ~60k read')
   })
 
   test('the bare command names what each wasted pause was, with a hint for the larger kind', () => {
     const s: StatsState = { ...INITIAL_STATS, ranOut: { count: 2, spend: r(2000) }, notNeeded: { count: 1, spend: r(1000) } }
-    expect(carries(rundownSections(tally(0, 0), s, TOKENS).keepalive, 'most wasted pauses ran out: your pauses outlast the refreshes')).toBe(true)
+    expect(carries(rundownSections(tally(0, 0), s, TOKENS).keepalive, 'most wasted pauses ran out: pauses outlast refreshes')).toBe(true)
     const other: StatsState = { ...INITIAL_STATS, ranOut: { count: 1, spend: r(1000) }, notNeeded: { count: 3, spend: r(3000) } }
-    expect(carries(rundownSections(tally(0, 0), other, TOKENS).keepalive, 'most wasted pauses were not needed: refreshes fire just before you return')).toBe(true)
+    expect(carries(rundownSections(tally(0, 0), other, TOKENS).keepalive, 'most wasted pauses not needed: refreshes fire just before you return')).toBe(true)
   })
 
   test('the bare command prints no stat that has nothing to report: a session with none has empty sections', () => {
@@ -227,9 +227,9 @@ describe('the details pane\'s session line, and the bare command', () => {
       ranOut: { count: 2, spend: r(2000) },
       notNeeded: { count: 1, spend: r(1000) },
     }, TOKENS)
-    expect(carries(keepalive, '1 write avoided, ~41k written')).toBe(true)
-    expect(carries(keepalive, 'Earlier pauses: 2 wasted, ran out (refreshes ~2k read)')).toBe(true)
-    expect(carries(keepalive, 'Earlier pauses: 1 wasted, not needed (refreshes ~1k read)')).toBe(true)
+    expect(carries(keepalive, '1 write avoided ~41k written')).toBe(true)
+    expect(carries(keepalive, 'earlier: 2 wasted, ran out · refreshes ~2k read')).toBe(true)
+    expect(carries(keepalive, 'earlier: 1 wasted, not needed · refreshes ~1k read')).toBe(true)
   })
 
   test('in tokens, one avoided write is worth as many refreshes as a write costs reads at the current price; an overlap with a lapse miss is named', () => {
@@ -241,8 +241,8 @@ describe('the details pane\'s session line, and the bare command', () => {
       misses: { lapse: { count: 1, spend: w(50008) }, cold: { count: 0, spend: w(0) }, unexplained: { count: 0, spend: w(0) } },
     }
     const priced = rundownSections(ZERO_TALLY_TALLY, s, { ...TOKENS, list: OPUS, model: 'claude-opus-5-5' }).keepalive
-    expect(carries(priced, 'a write is worth about 25 refreshes')).toBe(true)
-    expect(carries(priced, 'is also a wasted ran-out pause: one event, shown under both')).toBe(true)
+    expect(carries(priced, '1 write ≈ 25 refreshes')).toBe(true)
+    expect(carries(priced, '1 lapse miss = a ran-out pause (one event, in both)')).toBe(true)
     const unpriced = rundownSections(ZERO_TALLY_TALLY, s, TOKENS)
     expect(carries([...unpriced.keepalive, ...unpriced.advice], '≈')).toBe(false)
   })
@@ -261,22 +261,22 @@ describe('the counts in dollars', () => {
     expect(out.misses.lapse.count).toBe(1)
     expect(out.misses.lapse.spend.write5m).toBe(20000)
     expect(Math.round((out.misses.lapse.spend.usd ?? -1) * 1e9) / 1e9).toBe(0.1)
-    expect(carries(rundownSections(ZERO_TALLY_TALLY, out, DOLLARS).advice, 'Cache misses: 1 (lapse 1), $0.10 rewritten')).toBe(true)
-    expect(carries(rundownSections(ZERO_TALLY_TALLY, out, TOKENS).advice, 'Cache misses: 1 (lapse 1), ~20k tokens rewritten')).toBe(true)
+    expect(carries(rundownSections(ZERO_TALLY_TALLY, out, DOLLARS).advice, 'misses: 1 (lapse 1) · $0.10 rewritten')).toBe(true)
+    expect(carries(rundownSections(ZERO_TALLY_TALLY, out, TOKENS).advice, 'misses: 1 (lapse 1) · ~20k tokens rewritten')).toBe(true)
   })
 
   test('a miss on a model with no price leaves the dollars unknown, and the line falls back to tokens', () => {
     const fable = (atMs: number, id: string, write: number): Response => ({ ...resp(atMs, id, 0, write), model: 'claude-nonesuch-1', speed: 'standard' })
     const out = foldStatsEvents(INITIAL_STATS, history([opus(T, 'm1', 0, 50000), fable(T + 6 * MIN, 'm2', 20000)]), OPUS).state
     expect(out.misses.lapse.spend).toMatchObject({ write5m: 20000, usd: null, why: 'no price for claude-nonesuch-1' })
-    expect(carries(rundownSections(ZERO_TALLY_TALLY, out, DOLLARS).advice, 'Cache misses: 1 (lapse 1), ~20k tokens rewritten')).toBe(true)
+    expect(carries(rundownSections(ZERO_TALLY_TALLY, out, DOLLARS).advice, 'misses: 1 (lapse 1) · ~20k tokens rewritten')).toBe(true)
   })
 
   test('a saved pause names what the pings cost, what the avoided write would have cost, and the net', () => {
     const pending = { spend: { ...NO_SPEND, read: 38000, usd: 0.0076 }, touchMs: T, ttlMs: TTL, promptMs: T + 400000 }
     const out = foldStatsEvents({ ...INITIAL_STATS, pending }, history([opus(T + 401000, 'm1', 39992, 0)]), OPUS).state
     expect(out.saved.avoided.write5m).toBe(40000)
-    expect(carries(rundownSections(ZERO_TALLY_TALLY, out, DOLLARS).keepalive, 'Earlier pauses: 1 saved (refreshes $0.008; 1 write avoided, $0.20; net $0.19 saved)')).toBe(true)
+    expect(carries(rundownSections(ZERO_TALLY_TALLY, out, DOLLARS).keepalive, 'earlier: 1 saved · refreshes $0.008 · 1 write avoided $0.20 · net $0.19 saved')).toBe(true)
   })
 
   test('a pause at a 1 h TTL is credited with a 1 h write', () => {
@@ -299,7 +299,7 @@ describe('long pauses: the pings that cover a pause, the p90, and the fold', () 
 
   test('the Keepalive lines carry the long pauses: their count, p90, mean and max', () => {
     const s = { ...INITIAL_STATS, lastTtlMs: TTL, longCount: 2, maxMs: 10 * MIN, longGaps: [6 * MIN, 10 * MIN] }
-    expect(carries(rundownSections(tally(0, 0), s, TOKENS).keepalive, 'Long pauses: 2 · p90 10:00 · mean 8:00 · max 10:00')).toBe(true)
+    expect(carries(rundownSections(tally(0, 0), s, TOKENS).keepalive, 'long pauses: 2 · p90 10:00 · mean 8:00 · max 10:00')).toBe(true)
   })
 
   test('a gap exactly the TTL is not long; a gap one second longer is, and records its gap', () => {

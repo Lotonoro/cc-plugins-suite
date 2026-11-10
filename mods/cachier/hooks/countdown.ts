@@ -90,7 +90,7 @@ export const refreshingOf = (on: boolean, reading: Reading | null, refresh: stri
   on && refresh !== null && reading?.state === 'warm'
 
 // What the pie's colours warn of where no refresh is coming, worded in the Keepalive section while the pie is amber or red.
-export const COLOUR_SENTENCE = "The pie turns amber in the cache's last quarter and red in its last tenth: the cache is about to lapse."
+export const COLOUR_SENTENCE = 'pie: amber ≤¼ TTL left, red ≤⅒'
 
 // The keepalive state the pie's hover names: off with keepalive off, else on for the green tone and paused for any other.
 export type PieState = 'on' | 'paused' | 'off'

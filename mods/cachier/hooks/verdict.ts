@@ -68,13 +68,13 @@ export const judge = (j: Judged, p: Pause | null): Judged => (p === null ? j : {
 // since a balance is a sum of prices; the line says which unit states it. Empty before the first judged pause.
 export const sessionBalanceLine = (j: Judged, unit: Unit): string => {
   if (j.pauses === 0) return ''
-  const over = `Over ${j.pauses} ${j.pauses === 1 ? 'pause' : 'pauses'} this session`
-  if (unit === 'tokens') return `${over}, the balance is stated in dollars: /keepalive unit dollars.`
+  const pauses = `(${j.pauses} ${j.pauses === 1 ? 'pause' : 'pauses'})`
+  if (unit === 'tokens') return `balance vs other setting: $ only, /keepalive unit dollars ${pauses}`
   const net = Math.abs(j.netUsd) < EPSILON_USD ? 0 : j.netUsd
   const verdict = verdictOfMargin(net)
-  if (verdict === 'par') return `${over}, keepalive cost the same as the other setting.`
-  if (verdict === 'saving') return `${over}, keepalive saved ${dollars(net)} net against the other setting.`
-  return `${over}, keepalive cost ${dollars(-net)} net more than the other setting.`
+  if (verdict === 'par') return `balance vs other setting: even ${pauses}`
+  if (verdict === 'saving') return `balance vs other setting: saved ${dollars(net)} net ${pauses}`
+  return `balance vs other setting: ${dollars(-net)} net more ${pauses}`
 }
 
 // What a lapse rewrites over the prefix alone: the view's context at its model's write rate for the TTL in force, for the lapse
@@ -154,8 +154,8 @@ export const breakEvenLine = (k: KeepaliveState, view: CacheView, money: Money, 
   // The first ping whose sum reaches the rewrite, by the margin verdictOf counts as par.
   const even = Math.max(1, Math.ceil((rates.lapseUsd - EPSILON_USD) / rates.pingUsd))
   const untilMs = step === null ? 0 : even <= run.count ? even * step : run.count * step + view.ttlMs
-  if (untilMs <= view.ttlMs) return "Keepalive doesn't pay off on this context"
-  return `Keepalive pays off if you're back between ${clockOf(view.ttlMs)} and ${clockOf(untilMs)}`
+  if (untilMs <= view.ttlMs) return 'never pays off on this context'
+  return `pays off if back in ${clockOf(view.ttlMs)}–${clockOf(untilMs)}`
 }
 
 // Why a running run sends a count the reasons no longer give: the count its pause started with, kept until the pause ends.
@@ -168,16 +168,13 @@ export const KEPT_COUNT = 'kept from pause start; recounted next prompt'
 export const countLineOf = (pinned: number | null, view: CacheView, money: Money, cap: number | null, kept: number | null = null): string => {
   if (view.kind !== 'known') return ''
   const n = kept ?? runCountOf(pinned, view, money, cap)
-  const sends = `Each pause sends at most ${n === 1 ? '1 refresh' : `${n} refreshes`}`
-  if (kept !== null) return `${sends}: ${KEPT_COUNT}.`
-  if (pinned !== null) return `${sends}: the count you pinned with /keepalive on.`
+  const max = `max ${n === 1 ? '1 refresh' : `${n} refreshes`}/pause`
+  if (kept !== null) return `${max} (${KEPT_COUNT})`
+  if (pinned !== null) return `${max} (pinned)`
   const even = breakEvenOf(view, money)
-  if (even === null) {
-    const why = cap === null ? 'the default, since the price of this model is unknown and keepalive_count is unset' : 'keepalive_count, since the price of this model is unknown'
-    return `${sends}: ${why}.`
-  }
-  if (cap !== null && cap < even) return `${sends}: keepalive_count, which caps the break-even count of ${even}.`
-  return `${sends}: the break-even count, the most refreshes that cost no more than the rewrite they avoid.`
+  if (even === null) return `${max} (${cap === null ? 'default: model unpriced, keepalive_count unset' : 'keepalive_count: model unpriced'})`
+  if (cap !== null && cap < even) return `${max} (keepalive_count cap; break-even ${even})`
+  return `${max} (break-even)`
 }
 
 // The pause the marker judges, from the session's state: null while a turn runs or the gap is closed, with no warm cache

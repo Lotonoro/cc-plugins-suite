@@ -52,14 +52,19 @@ import { rebuildSpendOf } from './verdict'
 import { refreshIntervalMs } from './setup'
 
 const T = 1_000_000
-const F = 'a refresh reads the warm cache: ~33k cached, every 4 min'
-const REREAD = 'a refresh reads the warm cache: ~33k cached'
-const REBUILD = 'if it goes cold, your next prompt rebuilds it: ~33k written'
+// The figures each surface wraps: the Keepalive section's rows, and the sentences `/keepalive on` answers with.
+const CACHED = '~33k cached'
+const WRITTEN = '~33k written'
+const F = `refresh ${CACHED} · every 4 min`
+const REREAD = `refresh ${CACHED}`
+const REBUILD = `if cold: rebuild ${WRITTEN}`
 // The wording an expired cache keeps.
-const EXPIRED_F = 'Next refresh: ~33k read, every 4 min'
-const EXPIRED_REREAD = 'each refresh reads ~33k cached'
-const INTERVAL = 'One refresh every 4 min.'
-const RESUMES = '; it resumes after your next prompt'
+const EXPIRED_F = 'next refresh ~33k read · every 4 min'
+const EXPIRED_REREAD = `refresh ${CACHED}`
+const INTERVAL = 'every 4 min'
+const RESUMES = ' · resumes on next prompt'
+const ANSWER_WARM = `A refresh reads the warm cache: ${CACHED}`
+const ANSWER_REBUILD = `if it goes cold, your next prompt rebuilds it: ${WRITTEN}`
 const known = { kind: 'known' as const, touchMs: T, ttlMs: 300000, ttlLabel: '5m' as const, promptTokens: 32884, outputTokens: 0, model: 'claude-opus-5-5', speed: 'standard' }
 // The tests below word their figures in tokens, as a session with no price list does; the dollar wording has its own tests.
 const rebuildOf = (v: CacheView, money: Money) => (v.kind === 'known' ? rebuildSpendOf(v, money) : null)
@@ -169,7 +174,7 @@ describe('the idle gap and turn bookkeeping', () => {
     const begun = coldBegun(INITIAL)
     expect(begun).toMatchObject({ coldPending: true, generation: INITIAL.generation + 1 })
     expect(coldLanded(begun)).toMatchObject({ coldPending: false, generation: INITIAL.generation + 2 })
-    expect(step(on(60000, 2, { coldPending: true }), known, null, true, T + 240000)).toMatchObject({ heading: 'paused', why: 'until the cache reset is recorded' })
+    expect(step(on(60000, 2, { coldPending: true }), known, null, true, T + 240000)).toMatchObject({ heading: 'paused', why: 'recording cache reset' })
   })
 
   test('off keeps the turn bookkeeping, drops the config, and bumps the generation', () => {
@@ -190,14 +195,14 @@ describe('step', () => {
         kind: 'wait',
         heading: 'on, no count',
         why: null,
-        lines: ['no live cache to count from, nothing scheduled'],
+        lines: ['no live cache · nothing scheduled'],
       })
     }
     expect(step(on(60000, 2), { kind: 'no-cache' }, null, true, T + 999999999)).toEqual({
       kind: 'wait',
       heading: 'on, no count',
       why: null,
-      lines: ['no live cache to count from, nothing scheduled; there is no cache until the next reply'],
+      lines: ['no live cache · nothing scheduled · cache from next reply'],
     })
   })
 
@@ -205,10 +210,10 @@ describe('step', () => {
     expect(step(on(300000, 2), known, null, true, T)).toEqual({
       kind: 'wait',
       heading: 'paused',
-      why: 'lead 300s ≥ 300s TTL',
+      why: 'lead 300s ≥ 300s TTL · sends nothing',
       lines: [REBUILD],
     })
-    expect(step(on(400000, 2), known, null, true, T)).toMatchObject({ heading: 'paused', why: 'lead 400s ≥ 300s TTL', lines: [REBUILD] })
+    expect(step(on(400000, 2), known, null, true, T)).toMatchObject({ heading: 'paused', why: 'lead 400s ≥ 300s TTL · sends nothing', lines: [REBUILD] })
   })
 
   test('a due refresh is sent with no record of a cost shown: nothing holds it back once the lead has begun', () => {
@@ -216,8 +221,8 @@ describe('step', () => {
   })
 
   test('a ping is due the lead before the TTL after the last touch, and not before', () => {
-    expect(step(on(60000, 2), known, null, true, T + 100000)).toEqual({ kind: 'wait', heading: 'on, refreshing', why: null, lines: [F, REBUILD, 'next refresh in 2:20, 2 left'] })
-    expect(step(on(60000, 2), known, null, true, T + 239999)).toEqual({ kind: 'wait', heading: 'on, refreshing', why: null, lines: [F, REBUILD, 'next refresh in 0:01, 2 left'] })
+    expect(step(on(60000, 2), known, null, true, T + 100000)).toEqual({ kind: 'wait', heading: 'on, refreshing', why: null, lines: [F, REBUILD, 'next in 2:20 · 2 left'] })
+    expect(step(on(60000, 2), known, null, true, T + 239999)).toEqual({ kind: 'wait', heading: 'on, refreshing', why: null, lines: [F, REBUILD, 'next in 0:01 · 2 left'] })
     expect(step(on(60000, 2), known, null, true, T + 240000)).toEqual({ kind: 'ping', heading: 'on, refreshing', why: null, lines: [F, REBUILD] })
   })
 
@@ -226,7 +231,7 @@ describe('step', () => {
       kind: 'wait',
       heading: 'on, refreshing',
       why: null,
-      lines: [F, REBUILD, 'refresh due, waits for the turn to end'],
+      lines: [F, REBUILD, 'refresh due · waits for turn end'],
     })
   })
 
@@ -235,7 +240,7 @@ describe('step', () => {
       kind: 'stop',
       reason: 'cache expired',
       heading: 'paused',
-      why: `the cache expired${RESUMES}`,
+      why: `cache expired${RESUMES}`,
       lines: [EXPIRED_REREAD, INTERVAL],
     })
   })
@@ -245,7 +250,7 @@ describe('step', () => {
       kind: 'stop',
       reason: 'count used',
       heading: 'paused',
-      why: `its refreshes for this pause are used up${RESUMES}`,
+      why: `count used${RESUMES}`,
       lines: [REREAD, INTERVAL, REBUILD],
     })
   })
@@ -255,7 +260,7 @@ describe('step', () => {
     expect(step(stopped, known, null, true, T + 240000)).toEqual({
       kind: 'wait',
       heading: 'stopped',
-      why: 'nothing to fork yet; your next prompt restarts it',
+      why: 'nothing to fork yet · restarts on next prompt',
       lines: [F, REBUILD],
     })
   })
@@ -264,38 +269,38 @@ describe('step', () => {
     expect(step({ ...on(60000, 2), runCount: 0, remaining: 0 }, known, null, true, T + 100000)).toEqual({
       kind: 'wait',
       heading: 'paused',
-      why: `no refreshes this pause: your pauses rarely outlast the cache${RESUMES}`,
+      why: `0 refreshes this pause (learned: pauses rarely outlast TTL)${RESUMES}`,
       lines: [F, REBUILD],
     })
   })
 
   test('a live request start later than the transcript touch moves the due time; an earlier one does not', () => {
-    expect(step(on(60000, 2), known, T + 100000, true, T + 240000).lines).toEqual([F, REBUILD, 'next refresh in 1:40, 2 left'])
+    expect(step(on(60000, 2), known, T + 100000, true, T + 240000).lines).toEqual([F, REBUILD, 'next in 1:40 · 2 left'])
     expect(step(on(60000, 2), known, T - 50000, true, T + 240000).kind).toBe('ping')
   })
 
   test('while keepalive runs, its figures follow the cost as it changes, and a stop names what a refresh reads', () => {
     const k = on(60000, 2)
     const grown = { ...known, promptTokens: 40000 }
-    expect(step(k, grown, null, true, T + 100000).lines[0]).toBe('a refresh reads the warm cache: ~40k cached, every 4 min')
+    expect(step(k, grown, null, true, T + 100000).lines[0]).toBe('refresh ~40k cached · every 4 min')
     expect(step({ ...k, stop: 'count used' }, known, null, true, T).lines).toEqual([REREAD, INTERVAL, REBUILD])
-    expect(step(k, { kind: 'no-cache' }, null, true, T).lines).toEqual(['no live cache to count from, nothing scheduled; there is no cache until the next reply'])
+    expect(step(k, { kind: 'no-cache' }, null, true, T).lines).toEqual(['no live cache · nothing scheduled · cache from next reply'])
   })
 
   test('the last ping is its own line after the figures, so a live session can check the served threshold', () => {
     const k = { ...on(60000, 2), last: { read: 14361, write: 18523 } }
-    expect(step(k, known, null, true, T + 100000).lines).toEqual([F, REBUILD, 'next refresh in 2:20, 2 left', 'last refresh read 14361, wrote 18523'])
+    expect(step(k, known, null, true, T + 100000).lines).toEqual([F, REBUILD, 'next in 2:20 · 2 left', 'last refresh: 14361 read · 18523 written'])
   })
 
   test('a stopped keepalive still names the last ping', () => {
     const k = { ...on(60000, 2, { stop: 'count used' }), last: { read: 0, write: 18000 } }
-    expect(step(k, known, null, true, T)).toMatchObject({ why: `its refreshes for this pause are used up${RESUMES}`, lines: [REREAD, INTERVAL, REBUILD, 'last refresh read 0, wrote 18000'] })
+    expect(step(k, known, null, true, T)).toMatchObject({ why: `count used${RESUMES}`, lines: [REREAD, INTERVAL, REBUILD, 'last refresh: 0 read · 18000 written'] })
   })
 
   // One row per branch of step, in its order: the heading word, the reason line and the lines, each branch with a last refresh sent.
   describe('the twelve branches, each with the heading word, the reason line and the lines it gives', () => {
     const last = { read: 14361, write: 18523 }
-    const LAST = 'last refresh read 14361, wrote 18523'
+    const LAST = 'last refresh: 14361 read · 18523 written'
     const run = (extra: Partial<KeepaliveState>, view: CacheView, gap: boolean, now: number, lead = 60000) =>
       step({ ...on(lead, 2, extra), last }, view, null, gap, now)
     const rows: [string, ReturnType<typeof step>, ReturnType<typeof step>][] = [
@@ -303,52 +308,52 @@ describe('step', () => {
       [
         'a recorded stop by design',
         run({ stop: 'count used' }, known, true, T),
-        { kind: 'wait', heading: 'paused', why: `its refreshes for this pause are used up${RESUMES}`, lines: [REREAD, INTERVAL, REBUILD, LAST] },
+        { kind: 'wait', heading: 'paused', why: `count used${RESUMES}`, lines: [REREAD, INTERVAL, REBUILD, LAST] },
       ],
       [
         'a recorded failure',
         run({ stop: 'API error 529 (overloaded)' }, known, true, T),
-        { kind: 'wait', heading: 'stopped', why: 'API error 529 (overloaded); your next prompt restarts it', lines: [F, REBUILD, LAST] },
+        { kind: 'wait', heading: 'stopped', why: 'API error 529 (overloaded) · restarts on next prompt', lines: [F, REBUILD, LAST] },
       ],
       [
         'a cold mark being written',
         run({ coldPending: true }, known, true, T + 100000),
-        { kind: 'wait', heading: 'paused', why: 'until the cache reset is recorded', lines: [F, REBUILD, LAST] },
+        { kind: 'wait', heading: 'paused', why: 'recording cache reset', lines: [F, REBUILD, LAST] },
       ],
       [
         'a lead at or above the TTL',
         run({}, known, true, T, 300000),
-        { kind: 'wait', heading: 'paused', why: 'lead 300s ≥ 300s TTL', lines: [REBUILD, LAST] },
+        { kind: 'wait', heading: 'paused', why: 'lead 300s ≥ 300s TTL · sends nothing', lines: [REBUILD, LAST] },
       ],
       [
         'no live cache',
         run({}, { kind: 'no-cache' }, true, T),
-        { kind: 'wait', heading: 'on, no count', why: null, lines: ['no live cache to count from, nothing scheduled; there is no cache until the next reply', LAST] },
+        { kind: 'wait', heading: 'on, no count', why: null, lines: ['no live cache · nothing scheduled · cache from next reply', LAST] },
       ],
       [
         'the cache expired',
         run({}, known, true, T + 300000),
-        { kind: 'stop', reason: 'cache expired', heading: 'paused', why: `the cache expired${RESUMES}`, lines: [EXPIRED_REREAD, INTERVAL, LAST] },
+        { kind: 'stop', reason: 'cache expired', heading: 'paused', why: `cache expired${RESUMES}`, lines: [EXPIRED_REREAD, INTERVAL, LAST] },
       ],
       [
         'a learned count of none',
         run({ runCount: 0, remaining: 0 }, known, true, T + 100000),
-        { kind: 'wait', heading: 'paused', why: `no refreshes this pause: your pauses rarely outlast the cache${RESUMES}`, lines: [F, REBUILD, LAST] },
+        { kind: 'wait', heading: 'paused', why: `0 refreshes this pause (learned: pauses rarely outlast TTL)${RESUMES}`, lines: [F, REBUILD, LAST] },
       ],
       [
         'the count used',
         run({ remaining: 0 }, known, true, T + 240000),
-        { kind: 'stop', reason: 'count used', heading: 'paused', why: `its refreshes for this pause are used up${RESUMES}`, lines: [REREAD, INTERVAL, REBUILD, LAST] },
+        { kind: 'stop', reason: 'count used', heading: 'paused', why: `count used${RESUMES}`, lines: [REREAD, INTERVAL, REBUILD, LAST] },
       ],
       [
         'a refresh scheduled',
         run({}, known, true, T + 100000),
-        { kind: 'wait', heading: 'on, refreshing', why: null, lines: [F, REBUILD, 'next refresh in 2:20, 2 left', LAST] },
+        { kind: 'wait', heading: 'on, refreshing', why: null, lines: [F, REBUILD, 'next in 2:20 · 2 left', LAST] },
       ],
       [
         'a refresh due',
         run({}, known, false, T + 240000),
-        { kind: 'wait', heading: 'on, refreshing', why: null, lines: [F, REBUILD, 'refresh due, waits for the turn to end', LAST] },
+        { kind: 'wait', heading: 'on, refreshing', why: null, lines: [F, REBUILD, 'refresh due · waits for turn end', LAST] },
       ],
       ['a refresh sent now', run({}, known, true, T + 240000), { kind: 'ping', heading: 'on, refreshing', why: null, lines: [F, REBUILD, LAST] }],
     ]
@@ -382,8 +387,8 @@ describe('enabledStop follows the cache\'s one expiry owner', () => {
 // with no write pending when it has one, then its lines without the schedule line. Its kind is `wait`, so the tick sends nothing and records no stop.
 describe('a pending cold-mark write keeps the lines the settled verdict gives, apart from its schedule line', () => {
   const last = { read: 14361, write: 18523 }
-  const LAST = 'last refresh read 14361, wrote 18523'
-  const PENDING = 'until the cache reset is recorded'
+  const LAST = 'last refresh: 14361 read · 18523 written'
+  const PENDING = 'recording cache reset'
   const run = (extra: Partial<KeepaliveState>, view: CacheView, gap: boolean, now: number, lead = 60000) =>
     step({ ...on(lead, 2, { coldPending: true, ...extra }), last }, view, null, gap, now)
   const rows: [string, ReturnType<typeof step>, ReturnType<typeof step>][] = [
@@ -393,32 +398,32 @@ describe('a pending cold-mark write keeps the lines the settled verdict gives, a
     [
       'a learned count of none',
       run({ runCount: 0, remaining: 0 }, known, true, T + 100000),
-      { kind: 'wait', heading: 'paused', why: PENDING, lines: [`no refreshes this pause: your pauses rarely outlast the cache${RESUMES}`, F, REBUILD, LAST] },
+      { kind: 'wait', heading: 'paused', why: PENDING, lines: [`0 refreshes this pause (learned: pauses rarely outlast TTL)${RESUMES}`, F, REBUILD, LAST] },
     ],
     [
       'a lead at or above the TTL',
       run({}, known, true, T, 300000),
-      { kind: 'wait', heading: 'paused', why: PENDING, lines: ['lead 300s ≥ 300s TTL', REBUILD, LAST] },
+      { kind: 'wait', heading: 'paused', why: PENDING, lines: ['lead 300s ≥ 300s TTL · sends nothing', REBUILD, LAST] },
     ],
     [
       'an expired cache with its stop unrecorded',
       run({}, known, true, T + 300000),
-      { kind: 'wait', heading: 'paused', why: PENDING, lines: [`the cache expired${RESUMES}`, EXPIRED_REREAD, INTERVAL, LAST] },
+      { kind: 'wait', heading: 'paused', why: PENDING, lines: [`cache expired${RESUMES}`, EXPIRED_REREAD, INTERVAL, LAST] },
     ],
     [
       'a count used with its stop unrecorded',
       run({ remaining: 0 }, known, true, T + 240000),
-      { kind: 'wait', heading: 'paused', why: PENDING, lines: [`its refreshes for this pause are used up${RESUMES}`, REREAD, INTERVAL, REBUILD, LAST] },
+      { kind: 'wait', heading: 'paused', why: PENDING, lines: [`count used${RESUMES}`, REREAD, INTERVAL, REBUILD, LAST] },
     ],
     [
       'a counted view of no cache',
       run({}, { kind: 'no-cache' }, true, T),
-      { kind: 'wait', heading: 'paused', why: PENDING, lines: ['no live cache to count from, nothing scheduled; there is no cache until the next reply', LAST] },
+      { kind: 'wait', heading: 'paused', why: PENDING, lines: ['no live cache · nothing scheduled · cache from next reply', LAST] },
     ],
     [
       'a TTL-unknown view',
       run({}, { kind: 'ttl-unknown' }, true, T),
-      { kind: 'wait', heading: 'paused', why: PENDING, lines: ['no live cache to count from, nothing scheduled', LAST] },
+      { kind: 'wait', heading: 'paused', why: PENDING, lines: ['no live cache · nothing scheduled', LAST] },
     ],
   ]
   for (const [name, got, want] of rows) {
@@ -427,8 +432,10 @@ describe('a pending cold-mark write keeps the lines the settled verdict gives, a
 
   test('no line of the overlay is the schedule line, however the settled verdict reads', () => {
     for (const [, got] of rows) {
-      for (const line of got.lines) expect(line).not.toMatch(/^(next refresh in |refresh due, waits)/)
+      for (const line of got.lines) expect(line).not.toMatch(/^(next in |refresh due · waits)/)
     }
+    // The control: the settled verdict the overlay is laid over does draw the schedule row.
+    expect(step({ ...on(60000, 2), last }, known, null, true, T + 100000).lines).toContain('next in 2:20 · 2 left')
   })
 
   test('with keepalive off or a stop held, a pending write leaves the verdict as it is', () => {
@@ -440,7 +447,7 @@ describe('a pending cold-mark write keeps the lines the settled verdict gives, a
   })
 
   test('a recorded stop is held first: the pending write adds nothing to it', () => {
-    expect(run({ stop: 'count used' }, known, true, T)).toEqual({ kind: 'wait', heading: 'paused', why: `its refreshes for this pause are used up${RESUMES}`, lines: [REREAD, INTERVAL, REBUILD, LAST] })
+    expect(run({ stop: 'count used' }, known, true, T)).toEqual({ kind: 'wait', heading: 'paused', why: `count used${RESUMES}`, lines: [REREAD, INTERVAL, REBUILD, LAST] })
   })
 })
 
@@ -448,13 +455,13 @@ describe('a pending cold-mark write keeps the lines the settled verdict gives, a
 // its TTL. The twelve-branch rows above pin the unrecorded stops and a recorded count used.
 describe('a stop by design names how often a refresh would be sent, wherever the lead is below the TTL', () => {
   const last = { read: 14361, write: 18523 }
-  const LAST = 'last refresh read 14361, wrote 18523'
+  const LAST = 'last refresh: 14361 read · 18523 written'
 
   test('a recorded stop of the cache expired gives the figure, the interval row and the last refresh, as its unrecorded stop does', () => {
     expect(step({ ...on(60000, 2, { stop: 'cache expired' }), last }, known, null, true, T)).toEqual({
       kind: 'wait',
       heading: 'paused',
-      why: `the cache expired${RESUMES}`,
+      why: `cache expired${RESUMES}`,
       lines: [REREAD, INTERVAL, REBUILD, LAST],
     })
   })
@@ -479,20 +486,20 @@ describe('a stop by design names how often a refresh would be sent, wherever the
       kind: 'stop',
       reason: 'cache expired',
       heading: 'paused',
-      why: `the cache expired${RESUMES}`,
+      why: `cache expired${RESUMES}`,
       lines: [EXPIRED_REREAD, INTERVAL, LAST],
     })
     expect(step({ ...none, stop: 'cache expired' }, known, null, true, T + 300000)).toEqual({
       kind: 'wait',
       heading: 'paused',
-      why: `the cache expired${RESUMES}`,
+      why: `cache expired${RESUMES}`,
       lines: [EXPIRED_REREAD, INTERVAL, LAST],
     })
   })
 
   test('the interval row is the interval the figures line gives at the same lead', () => {
-    expect(costOf(on(15000, 3), known)?.lines[1]).toBe('One refresh every 4:45.')
-    expect(step(on(15000, 3, { stop: 'count used' }), known, null, true, T).lines).toEqual([REREAD, 'One refresh every 4:45.', REBUILD])
+    expect(costOf(on(15000, 3), known)?.lines[1]).toBe('every 4:45')
+    expect(step(on(15000, 3, { stop: 'count used' }), known, null, true, T).lines).toEqual([REREAD, 'every 4:45', REBUILD])
   })
 })
 
@@ -519,8 +526,8 @@ describe('enable: a new run starts on, stopped only by its cache', () => {
 
   test('the cost line names the tokens each ping reads, how often, and that a first ping can write', () => {
     const text = costText(known, 60000, 3)
-    expect(text).toContain('warm cache: ~33k cached')
-    expect(text).toContain('if it goes cold, your next prompt rebuilds it: ~33k written')
+    expect(text).toContain(ANSWER_WARM)
+    expect(text).toContain(ANSWER_REBUILD)
     expect(text).toContain('every 4 min')
     expect(text).toContain('5m TTL')
     expect(text).toContain("can also write that turn's new tokens")
@@ -530,8 +537,8 @@ describe('enable: a new run starts on, stopped only by its cache', () => {
 
   test('the toggle text shows the cost when it is known, a waiting message when not, and any stop reached', () => {
     expect(enableText(known, 60000, 3, null)).toContain('every 4 min')
-    expect(enableText(known, 60000, 3, null)).toContain('warm cache: ~33k cached')
-    expect(enableText(known, 60000, 3, null)).toContain('if it goes cold, your next prompt rebuilds it: ~33k written')
+    expect(enableText(known, 60000, 3, null)).toContain(ANSWER_WARM)
+    expect(enableText(known, 60000, 3, null)).toContain(ANSWER_REBUILD)
     expect(enableText(known, 60000, 3, null).startsWith('keepalive on: lead 60 s, 3 refreshes.')).toBe(true)
     expect(enableText(known, 300000, 3, null)).toContain('Paused: lead 300s ≥ 300s TTL')
     expect(enableText({ kind: 'no-cache' }, 60000, 3, null)).toContain('nothing is scheduled until there is one')
@@ -619,7 +626,7 @@ describe('reasonOf and stopFor: how a ping\'s outcome stops keepalive', () => {
 
   test('a reply after the TTL lapses says so, and the details pane names a raised lead in seconds', () => {
     expect(lapsedReason(300000)).toBe('round trip over 300s TTL, no reply yet')
-    expect(raiseNote(16000)).toBe('The lead was raised to 16 s after a slow refresh.')
+    expect(raiseNote(16000)).toBe('lead raised to 16s (slow refresh)')
   })
 })
 
@@ -743,41 +750,41 @@ describe('the debug lines and the tallies', () => {
   test('the details pane names this session in the unit shown, and no pause or raise', () => {
     const sent = { late: false, pauseEpoch: 0 }
     const t = countPing(countPing(INITIAL_TALLY, spent(32884), 16000, sent), null, null, sent)
-    expect(sessionLineOf(t, TOKENS)).toBe('This session: 2 refreshes costing ~33k read.')
-    expect(sessionLineOf(t, DOLLARS)).toBe('This session: 2 refreshes costing $0.007.')
+    expect(sessionLineOf(t, TOKENS)).toBe('session: 2 refreshes · ~33k read')
+    expect(sessionLineOf(t, DOLLARS)).toBe('session: 2 refreshes · $0.007')
   })
 
   test('in dollars, the ping is priced on every surface; a model with no price is worded in tokens', () => {
-    const WARM = 'a refresh reads the warm cache: $0.007 (~33k cached)'
-    const COLD = 'if it goes cold, your next prompt rebuilds it: ~$0.16 (~33k written)'
+    const WARM = 'refresh $0.007 (~33k cached)'
+    const COLD = 'if cold: rebuild ~$0.16 (~33k written)'
     expect(costWith(on(60000, 3), known, DOLLARS, pairOf(known, DOLLARS))).toEqual({
       label: 'keep warm $0.007/refresh · if cold ~$0.16 rebuild',
-      lines: [`A ${WARM.slice(2)}.`, 'One refresh every 4 min.', COLD],
+      lines: [WARM, 'every 4 min', COLD],
     })
     const lines = (k: KeepaliveState, now: number) => stepWith(k, known, null, true, now, DOLLARS, rebuildOf(known, DOLLARS)).lines
-    expect(lines(on(60000, 2), T + 100000)).toEqual([`${WARM}, every 4 min`, COLD, 'next refresh in 2:20, 2 left'])
+    expect(lines(on(60000, 2), T + 100000)).toEqual([`${WARM} · every 4 min`, COLD, 'next in 2:20 · 2 left'])
     expect(lines(on(60000, 2, { remaining: 0 }), T + 240000)).toEqual([WARM, INTERVAL, COLD])
     const fable = { ...known, model: 'claude-nonesuch-1' }
     const unpriced = pairOf(fable, DOLLARS)
     expect(costWith(on(60000, 3), fable, DOLLARS, unpriced)?.label).toBe('keep warm ~33k read/refresh · if cold ~33k tokens rebuild')
-    expect(costWith(on(60000, 3), fable, DOLLARS, unpriced)?.lines.at(-1)).toBe('if it goes cold, your next prompt rebuilds it: ~33k written')
-    expect(costTextWith(fable, 60000, refreshIntervalMs(60000, fable.ttlMs)!, 3, DOLLARS, unpriced)).toContain('A refresh reads the warm cache: ~33k cached, every 4 min')
+    expect(costWith(on(60000, 3), fable, DOLLARS, unpriced)?.lines.at(-1)).toBe(REBUILD)
+    expect(costTextWith(fable, 60000, refreshIntervalMs(60000, fable.ttlMs)!, 3, DOLLARS, unpriced)).toContain(`${ANSWER_WARM}, every 4 min`)
   })
 
   test('the pair reads <$0.001 with no tilde and ~$0.00 at exactly zero, on the hover and in the section', () => {
     const tiny = { ...known, promptTokens: 10 }
     const label = (v: typeof known) => costWith(on(60000, 3), v, DOLLARS, pairOf(v, DOLLARS))
     expect(label(tiny)?.label).toBe('keep warm <$0.001/refresh · if cold <$0.001 rebuild')
-    expect(label(tiny)?.lines.at(-1)).toBe('if it goes cold, your next prompt rebuilds it: <$0.001 (<1k written)')
+    expect(label(tiny)?.lines.at(-1)).toBe('if cold: rebuild <$0.001 (<1k written)')
     const zeroed = { ...known, promptTokens: 0 }
     expect(label(zeroed)?.label).toBe('keep warm $0.00/refresh · if cold ~$0.00 rebuild')
-    expect(label(zeroed)?.lines.at(-1)).toBe('if it goes cold, your next prompt rebuilds it: ~$0.00 (0 written)')
+    expect(label(zeroed)?.lines.at(-1)).toBe('if cold: rebuild ~$0.00 (0 written)')
   })
 
   test('the rebuild counts the last reply\'s output beside the context, in tokens and in dollars', () => {
     const replied = { ...known, promptTokens: 33000, outputTokens: 200 }
     expect(costWith(on(60000, 3), replied, TOKENS, pairOf(replied, TOKENS))?.label).toBe('keep warm ~33k read/refresh · if cold ~33k tokens rebuild')
-    expect(costWith(on(60000, 3), replied, DOLLARS, pairOf(replied, DOLLARS))?.lines.at(-1)).toBe('if it goes cold, your next prompt rebuilds it: ~$0.17 (~33k written)')
+    expect(costWith(on(60000, 3), replied, DOLLARS, pairOf(replied, DOLLARS))?.lines.at(-1)).toBe('if cold: rebuild ~$0.17 (~33k written)')
   })
 })
 
@@ -786,12 +793,12 @@ describe('the footer line and the status line: what each shows', () => {
     expect(costOf(INITIAL, known)).toBeNull()
     expect(costOf(on(60000, 3), known)).toEqual({
       label: 'keep warm ~33k read/refresh · if cold ~33k tokens rebuild',
-      lines: ['A refresh reads the warm cache: ~33k cached.', 'One refresh every 4 min.', REBUILD],
+      lines: [REREAD, INTERVAL, REBUILD],
     })
     // An expired cache keeps the label and the two lines of the refresh alone.
     expect(costOf(on(60000, 3), known, false)).toEqual({
       label: '~33k read/refresh',
-      lines: ['Next refresh: ~33k read.', 'One refresh every 4 min.'],
+      lines: ['next refresh ~33k read', INTERVAL],
     })
     // A run that learned no refreshes for this pause shows no figure: the line says it is paused.
     expect(costOf({ ...on(60000, 3), runCount: 0 }, known)).toBeNull()
@@ -799,17 +806,17 @@ describe('the footer line and the status line: what each shows', () => {
     expect(costOf(on(60000, 3, { stop: 'API error 529 (overloaded)' }), known)).toBeNull()
     expect(costOf(on(400000, 3), known)).toBeNull()
     expect(costOf(on(60000, 3), { kind: 'no-cache' })).toBeNull()
-    expect(costOf(on(15000, 3), known)?.lines[1]).toBe('One refresh every 4:45.')
+    expect(costOf(on(15000, 3), known)?.lines[1]).toBe('every 4:45')
   })
 
   test('offerOf is the figure of the run a press would start: one refresh at its lead, in the unit given; nothing where it sends no refresh or there is no known cache', () => {
     const offer = (v: CacheView, money: Money, lead: number, count: number, warm = true) => offerWith(v, money, lead, count, pairOf(v, money, warm))
     expect(offer(known, TOKENS, 15000, 3)).toEqual({
       label: 'keep warm ~33k read/refresh · if cold ~33k tokens rebuild',
-      lines: ['A refresh reads the warm cache: ~33k cached.', 'One refresh every 4:45.', REBUILD],
+      lines: [REREAD, 'every 4:45', REBUILD],
     })
-    expect(offer(known, DOLLARS, 15000, 3)?.lines[0]).toMatch(/^A refresh reads the warm cache: \$[\d.]+ \(~33k cached\)\.$/)
-    expect(offer(known, TOKENS, 15000, 3, false)).toEqual({ label: '~33k read/refresh', lines: ['Next refresh: ~33k read.', 'One refresh every 4:45.'] })
+    expect(offer(known, DOLLARS, 15000, 3)?.lines[0]).toMatch(/^refresh \$[\d.]+ \(~33k cached\)$/)
+    expect(offer(known, TOKENS, 15000, 3, false)).toEqual({ label: '~33k read/refresh', lines: ['next refresh ~33k read', 'every 4:45'] })
     expect(offer(known, TOKENS, 15000, 0)).toBeNull()
     expect(offer(known, TOKENS, 300000, 3)).toBeNull()
     expect(offer({ kind: 'no-cache' }, TOKENS, 15000, 3)).toBeNull()
@@ -831,9 +838,9 @@ describe('the footer line and the status line: what each shows', () => {
 
   test('the interval a run pings at is minutes and seconds when the seconds are not zero, whole minutes otherwise', () => {
     const at = (lead: number) => costOf(on(lead, 2), known)?.lines[1]
-    expect(at(15000)).toBe('One refresh every 4:45.')
-    expect(at(60000)).toBe('One refresh every 4 min.')
-    expect(at(235000)).toBe('One refresh every 1:05.')
+    expect(at(15000)).toBe('every 4:45')
+    expect(at(60000)).toBe('every 4 min')
+    expect(at(235000)).toBe('every 1:05')
   })
 
   test('failureOf names a stop that is not by design, or a lead at or above the TTL, in one clause; count used and cache expired are by design', () => {
@@ -887,10 +894,10 @@ describe('defaultsOf: the click values from the plugin options', () => {
 
   test('a paused keepalive\'s lines say what a refresh reads and how often: each by-design stop, the enable reply, and a lapsed enable', () => {
     const paused = (stop: string) => step(on(60000, 2, { stop }), known, null, true, T)
-    expect(paused('cache expired')).toMatchObject({ heading: 'paused', why: `the cache expired${RESUMES}`, lines: [REREAD, INTERVAL, REBUILD] })
-    expect(paused('count used')).toMatchObject({ heading: 'paused', why: `its refreshes for this pause are used up${RESUMES}`, lines: [REREAD, INTERVAL, REBUILD] })
+    expect(paused('cache expired')).toMatchObject({ heading: 'paused', why: `cache expired${RESUMES}`, lines: [REREAD, INTERVAL, REBUILD] })
+    expect(paused('count used')).toMatchObject({ heading: 'paused', why: `count used${RESUMES}`, lines: [REREAD, INTERVAL, REBUILD] })
     const lapsed = { ...known, touchMs: T - 400000 }
-    expect(step(on(60000, 2), lapsed, null, true, T)).toMatchObject({ heading: 'paused', why: `the cache expired${RESUMES}` })
+    expect(step(on(60000, 2), lapsed, null, true, T)).toMatchObject({ heading: 'paused', why: `cache expired${RESUMES}` })
     const reply = enableText(lapsed, 60000, 2, 'cache expired')
     expect(reply).toContain('Each refresh reads ~33k cached.')
     expect(reply).not.toMatch(/warm cache|if cold|if it goes cold/)
@@ -903,6 +910,43 @@ describe('defaultsOf: the click values from the plugin options', () => {
 describe('the pair: the warm refresh price and the cold rebuild price, stated while the cache is warm', () => {
   const expired = T + 300000
   const lines = (k: KeepaliveState, now: number, view: CacheView = known) => step(k, view, null, true, now).lines
+
+  test('the section and the /keepalive on answer wrap one figure: the section\'s refresh, next refresh and rebuild rows hold the answer\'s figure, in dollars and in tokens', () => {
+    for (const money of [TOKENS, DOLLARS]) {
+      const rebuild = rebuildOf(known, money)
+      const sectionLines = (k: KeepaliveState, now: number) => stepWith(k, known, null, true, now, money, rebuild).lines
+      const answer = (stop: string | null, warm = true) => enableTextWith(known, 60000, 3, stop, money, pairOf(known, money, warm))
+      const warmRow = sectionLines(on(60000, 2), T + 100000)[0]!.replace(/^refresh | · every 4 min$/g, '')
+      expect(answer(null)).toContain(`A refresh reads the warm cache: ${warmRow},`)
+      // The armed row of a pause by design reads the same figure as the warm row.
+      expect(sectionLines(on(60000, 2, { stop: 'count used' }), T)[0]).toBe(`refresh ${warmRow}`)
+      const rebuilt = sectionLines(on(60000, 2), T + 100000)[1]!.replace(/^if cold: rebuild /, '')
+      expect(answer(null)).toContain(`; if it goes cold, your next prompt rebuilds it: ${rebuilt}.`)
+      const next = sectionLines(on(60000, 2, { stop: 'API error 529 (overloaded)' }), expired)[0]!.replace(/^next refresh | · every 4 min$/g, '')
+      expect(enableTextWith(known, 60000, 3, null, money, pairOf(known, money, false))).toContain(`Next refresh: ${next},`)
+    }
+  })
+
+  test('no row of the section, in any state, holds the old explanatory words, a seconds figure spaced from its s, or a closing full stop', () => {
+    const states: [KeepaliveState, CacheView, number][] = [
+      [on(60000, 2), known, T + 100000],
+      [on(60000, 2), known, T + 240000],
+      [on(60000, 2, { stop: 'count used' }), known, T],
+      [on(60000, 2, { stop: 'cache expired' }), known, expired],
+      [on(60000, 2, { stop: 'API error 529 (overloaded)' }), known, T],
+      [on(60000, 2, { runCount: 0, remaining: 0 }), known, T],
+      [on(300000, 2), known, T],
+      [{ ...on(60000, 2), coldPending: true }, known, T],
+      [on(60000, 2), { kind: 'no-cache' }, T],
+    ]
+    for (const [k, view, now] of states) {
+      const rows = stepWith({ ...k, last: { read: 1, write: 2 } }, view, null, true, now, TOKENS, rebuildOf(view, TOKENS))
+      expect(rows.lines.length + (rows.why === null ? 0 : 1)).toBeGreaterThan(0)
+      for (const row of [...(rows.why === null ? [] : [rows.why]), ...rows.lines]) {
+        expect(row).not.toMatch(/cached tokens|your next prompt|Each pause sends|about to lapse|warm cache|\d s\b|\.$/)
+      }
+    }
+  })
 
   test('an expired cache keeps the wording of the refresh alone, at a lead below the TTL and at a lead at or above it', () => {
     expect(lines(on(60000, 2, { stop: 'count used' }), expired)).toEqual([EXPIRED_REREAD, INTERVAL])
@@ -970,7 +1014,7 @@ describe('the pair: the warm refresh price and the cold rebuild price, stated wh
   test('on an expired cache, at the tick, with no rebuild priced, or on an expired cache while a cold mark write is pending, a lead at or above the TTL adds no line', () => {
     expect(lines(on(300000, 2), T + 300000)).toEqual([])
     expect(stepWith(on(300000, 2), known, null, true, T, TOKENS, null)).toMatchObject({ kind: 'wait', heading: 'paused', lines: [] })
-    expect(step({ ...on(300000, 2), coldPending: true }, known, null, true, T + 300000)).toMatchObject({ why: 'until the cache reset is recorded', lines: ['lead 300s ≥ 300s TTL'] })
+    expect(step({ ...on(300000, 2), coldPending: true }, known, null, true, T + 300000)).toMatchObject({ why: 'recording cache reset', lines: ['lead 300s ≥ 300s TTL · sends nothing'] })
   })
 
   test('the rebuild line at a lead at or above the TTL is present one millisecond before the touch plus the TTL and absent exactly at it', () => {
@@ -990,7 +1034,7 @@ describe('the pair: the warm refresh price and the cold rebuild price, stated wh
 
   test('under a cold mark the counted view is empty, so no refresh price and no rebuild price is stated', () => {
     const none: CacheView = { kind: 'no-cache' }
-    expect(lines(on(60000, 2), T, none)).toEqual(['no live cache to count from, nothing scheduled; there is no cache until the next reply'])
+    expect(lines(on(60000, 2), T, none)).toEqual(['no live cache · nothing scheduled · cache from next reply'])
     expect(costOf(on(60000, 2), none)).toBeNull()
     expect(enableText(none, 60000, 2, null)).not.toMatch(/warm cache|if it goes cold/)
   })

@@ -967,7 +967,7 @@ describe('keepalive', () => {
     expect(debugOf(rec, 'cachier ping').at(-1).usage).toMatchObject({ read: 336000 })
     const text = await toggle($, '')
     expect(text).toContain('Keepalive  on, refreshing')
-    expect(text).toContain('next refresh in')
+    expect(text).toContain('next in ')
     expect(text).toMatch(/Cache warm · (4:\d\d|5:00) left · 5m TTL/)
   })
 
@@ -997,7 +997,7 @@ describe('keepalive', () => {
     await toggle($, 'on 60 2')
     await clock.advance(1000)
     expect(await hint($)).toBe('4:59')
-    expect(await toggle($, '')).toContain('next refresh in 3:59')
+    expect(await toggle($, '')).toContain('next in 3:59')
   })
 
   test('a reread before the clock catches up with a stamp ahead of it keeps the touch the first read gave', { options: { keepalive_lead_s: 60, keepalive_count: 2 } }, async ($, on) => {
@@ -1082,7 +1082,7 @@ describe('keepalive', () => {
     expect(rec.forks.length).toBe(2)
     await clock.advance(600000)
     expect(rec.forks.length).toBe(2)
-    expect(await toggle($, '')).toContain('Keepalive  paused its refreshes for this pause are used up; it resumes after your next prompt')
+    expect(await toggle($, '')).toContain('Keepalive  paused count used · resumes on next prompt')
   })
 
   test('no fork starts during a turn: a due ping waits for the turn to end', async ($, on) => {
@@ -1094,7 +1094,7 @@ describe('keepalive', () => {
     await mainStep($)
     await clock.advance(240000)
     expect(rec.forks).toEqual([])
-    expect(await toggle($, '')).toContain('refresh due, waits for the turn to end')
+    expect(await toggle($, '')).toContain('refresh due · waits for turn end')
     await turnEnd($)
     await clock.advance(1000)
     expect(rec.forks.length).toBe(1)
@@ -1123,7 +1123,7 @@ describe('keepalive', () => {
     await turnEnd($)
     await clock.advance(1000)
     expect(rec.forks).toEqual([])
-    expect(await toggle($, '')).toContain('Keepalive  paused the cache expired; it resumes after your next prompt')
+    expect(await toggle($, '')).toContain('Keepalive  paused cache expired · resumes on next prompt')
   })
 
   test('a failed ping shows its reason and sends no further fork until a user prompt re-arms it with the full count', async ($, on) => {
@@ -1191,7 +1191,7 @@ describe('keepalive', () => {
     await toggle($, 'on 60 2')
     await clock.advance(600000)
     expect(rec.forks).toEqual([])
-    expect(await toggle($, '')).toContain('Keepalive  on, no count no live cache to count from, nothing scheduled')
+    expect(await toggle($, '')).toContain('Keepalive  on, no count no live cache · nothing scheduled')
     // The footer's word and the heading's state name one state: the heading's line is `on, ` and the footer's word.
     const word = await hint($)
     expect(word).toBe('no count')
@@ -1218,7 +1218,7 @@ describe('keepalive', () => {
     await turnEnd($)
     await clock.advance(600000)
     expect(rec.forks).toEqual([])
-    expect(await toggle($, '')).toContain('Keepalive  on, no count no live cache to count from, nothing scheduled')
+    expect(await toggle($, '')).toContain('Keepalive  on, no count no live cache · nothing scheduled')
   })
 
   test('a /clear with keepalive on: the line under the on, no count heading says there is no cache until the next reply, and no sentence', async ($, on) => {
@@ -1230,8 +1230,8 @@ describe('keepalive', () => {
     await clock.advance(1000)
     await toggle($, 'on 60 2')
     const text = await toggle($, '')
-    expect(text).toContain('Keepalive  on, no count no live cache to count from, nothing scheduled; there is no cache until the next reply')
-    expect(text).not.toContain('about to lapse')
+    expect(text).toContain('Keepalive  on, no count no live cache · nothing scheduled · cache from next reply')
+    expect(text).not.toContain('pie: amber')
   })
 
   test('nothing written yet, with keepalive on: the line under the on, no count heading says there is no cache until the next reply', async ($, on) => {
@@ -1241,8 +1241,8 @@ describe('keepalive', () => {
     await clock.advance(1000)
     await toggle($, 'on 60 2')
     const text = await toggle($, '')
-    expect(text).toContain('Keepalive  on, no count no live cache to count from, nothing scheduled; there is no cache until the next reply')
-    expect(text).not.toContain('about to lapse')
+    expect(text).toContain('Keepalive  on, no count no live cache · nothing scheduled · cache from next reply')
+    expect(text).not.toContain('pie: amber')
   })
 
   test('an unread view with keepalive on: the line under the on, no count heading has no clause', async ($, on) => {
@@ -1252,7 +1252,7 @@ describe('keepalive', () => {
     await clock.advance(1000)
     await toggle($, 'on 60 2')
     const text = await toggle($, '')
-    expect(text).toContain('Keepalive  on, no count no live cache to count from, nothing scheduled')
+    expect(text).toContain('Keepalive  on, no count no live cache · nothing scheduled')
     expect(text).not.toContain('there is no cache until the next reply')
   })
 
@@ -1266,7 +1266,7 @@ describe('keepalive', () => {
     await turnEnd($)
     await clock.advance(600000)
     const text = await toggle($, '')
-    expect(text).toContain('Keepalive  on, no count no live cache to count from, nothing scheduled')
+    expect(text).toContain('Keepalive  on, no count no live cache · nothing scheduled')
     expect(text).not.toContain('there is no cache until the next reply')
   })
 
@@ -1279,9 +1279,9 @@ describe('keepalive', () => {
     await mainStep($)
     await turnEnd($)
     await clock.advance(1000)
-    expect(await toggle($, '')).toContain('Keepalive  on, refreshing a refresh reads the warm cache: ~19k cached, every')
+    expect(await toggle($, '')).toContain('Keepalive  on, refreshing refresh ~19k cached · every')
     await clock.advance(1000)
-    expect(await toggle($, '')).toContain('next refresh in')
+    expect(await toggle($, '')).toContain('next in ')
     doc.text = cached().text
     await mainStep($)
     await turnEnd($)
@@ -1302,7 +1302,7 @@ describe('keepalive', () => {
     await $.classic.PostModelSwitch({ from_model: 'a', to_model: 'b', requested_model: 'b', source: 'command', prompt_cache_warm: true, cache_ttl: '5m', context_tokens: 1, estimated_cache_write_usd: 0, pricing: 'catalog' } as any)
     await clock.advance(240000)
     expect(rec.forks).toEqual([])
-    expect(await toggle($, '')).toContain('Keepalive  on, no count The pie turns amber in the cache\'s last quarter and red in its last tenth: the cache is about to lapse. no live cache to count from, nothing scheduled; there is no cache until the next reply')
+    expect(await toggle($, '')).toContain('Keepalive  on, no count pie: amber ≤¼ TTL left, red ≤⅒ no live cache · nothing scheduled · cache from next reply')
   })
 
   test('a compaction leaves the cache cold: no ping is sent until a main-thread write lands', async ($, on) => {
@@ -1316,7 +1316,7 @@ describe('keepalive', () => {
     await $.classic.PostCompact({ trigger: 'manual', compact_summary: 's' } as any)
     await clock.advance(240000)
     expect(rec.forks).toEqual([])
-    expect(await toggle($, '')).toContain('Keepalive  on, no count The pie turns amber in the cache\'s last quarter and red in its last tenth: the cache is about to lapse. no live cache to count from, nothing scheduled; there is no cache until the next reply')
+    expect(await toggle($, '')).toContain('Keepalive  on, no count pie: amber ≤¼ TTL left, red ≤⅒ no live cache · nothing scheduled · cache from next reply')
     await mainStep($)
     await turnEnd($)
     await clock.advance(240000)
@@ -1335,7 +1335,7 @@ describe('keepalive', () => {
     await mainStep($)
     await clock.advance(240000)
     expect(rec.forks).toEqual([])
-    expect(await toggle($, '')).toContain('refresh due, waits for the turn to end')
+    expect(await toggle($, '')).toContain('refresh due · waits for turn end')
   })
 
   test('a ping still running is not joined by a second one from a later tick', async ($, on) => {
@@ -1374,10 +1374,10 @@ describe('keepalive', () => {
     await clock.advance(240000 + 30000)
     expect(rec.forks.length).toBe(1)
     const text = await commandText($, '')
-    expect(text).toContain('\nKeepalive  on, refreshing\n  a refresh reads the warm cache: ~19k cached,\n    every 4 min\n  if it goes cold, your next prompt rebuilds it:\n    ~19k written')
+    expect(text).toContain('\nKeepalive  on, refreshing\n  refresh ~19k cached · every 4 min\n  if cold: rebuild ~19k written')
     expect(text.split('\n').filter((line: string) => line.startsWith('Keepalive'))).toEqual(['Keepalive  on, refreshing'])
     expect(text).not.toContain('refresh due')
-    expect(text).not.toContain('next refresh in')
+    expect(text).not.toContain('next in ')
     release()
     await clock.advance(1000)
   })
@@ -1408,7 +1408,7 @@ describe('keepalive', () => {
     await clock.settle()
     try {
       expect(holding).toBe(true)
-      expect(await toggle($, '')).toContain('Keepalive  paused its refreshes for this pause are used up; it resumes after your next prompt')
+      expect(await toggle($, '')).toContain('Keepalive  paused count used · resumes on next prompt')
       expect(await drawnHint($)).toContain('"color":"success"')
     } finally {
       release()
@@ -1556,7 +1556,7 @@ describe('keepalive: a refresh refused as a rate limit is retried until shortly 
     expect(lastStatus(rec)).toBeUndefined()
     expect(state('touch')).toBe(T0 + 287000)
     expect(state('keepalive')).toMatchObject({ remaining: 1, stop: null })
-    expect(await toggle($, '')).toContain('next refresh in 4:43, 1 left')
+    expect(await toggle($, '')).toContain('next in 4:43 · 1 left')
     expect(debugOf(rec, 'cachier ping').map((l) => l.retry)).toEqual(['allowed', null])
     // The next refresh is due at the expiry from the new touch less the lead (572 s), and none is sent before it.
     await clock.advance(282000)
@@ -1578,9 +1578,9 @@ describe('keepalive: a refresh refused as a rate limit is retried until shortly 
     expect(lastStatus(rec)).toContain("keepalive stopped: API error 429 (rate_limit), no retry before expiry")
     const text = await toggle($, '')
     expect(text).toContain('Keepalive  stopped')
-    expect(text).toContain("API error 429 (rate_limit), no retry before expiry; your next prompt restarts it")
-    expect(text).toContain('This pause: 4 refreshes costing')
-    expect(text).toContain('This session: 4 refreshes costing')
+    expect(text).toContain("API error 429 (rate_limit), no retry before expiry · restarts on next prompt")
+    expect(text).toContain('pause: 4 refreshes · ')
+    expect(text).toContain('session: 4 refreshes · ')
   })
 
   test('at a 60 s lead the same refusals are retried 14 times, and the fifteenth ends the run', async ($, on) => {
@@ -1630,7 +1630,7 @@ describe('keepalive: a refresh refused as a rate limit is retried until shortly 
     expect(rec.forks.length).toBe(2)
     await clock.advance(1500)
     expect(state('keepalive')).toMatchObject({ remaining: 2, stop: null, last: { read: 18551, write: 0 } })
-    expect(await toggle($, '')).toContain('last refresh read 18551, wrote 0')
+    expect(await toggle($, '')).toContain('last refresh: 18551 read · 0 written')
   })
 
   test('with the last count pinned, between attempts the heading reads on, refreshing', async ($, on) => {
@@ -1770,14 +1770,14 @@ describe('keepalive: the queue and the race', () => {
     await $.classic.SessionStart({ source: 'startup', transcript_path: PATH })
     await clock.settle()
     await toggle($, 'on 60 2')
-    expect(await toggle($, '')).toContain('Keepalive  on, no count no live cache to count from')
+    expect(await toggle($, '')).toContain('Keepalive  on, no count no live cache')
     doc.exists = undefined
     doc.text = cached().text
     await mainStep($)
     await turnEnd($)
     await clock.advance(100000)
     expect(rec.forks).toEqual([])
-    expect(await toggle($, '')).toContain('a refresh reads the warm cache: ~19k cached')
+    expect(await toggle($, '')).toContain('refresh ~19k cached')
     expect(rec.toasts).toEqual([])
     await clock.advance(150000)
     expect(rec.forks.length).toBe(1)
@@ -1822,8 +1822,8 @@ describe('keepalive: the queue and the race', () => {
     const switching = $.classic.PostModelSwitch({ from_model: 'a', to_model: 'b', requested_model: 'b', source: 'command', prompt_cache_warm: true, cache_ttl: '5m', context_tokens: 1, estimated_cache_write_usd: 0, pricing: 'catalog' } as any)
     await clock.settle()
     expect(holding).toBe(true)
-    expect(await toggle($, '')).toContain('paused until the cache reset is recorded')
-    expect(await toggle($, '')).toContain('a refresh reads the warm cache: ~19k cached, every 4 min')
+    expect(await toggle($, '')).toContain('paused recording cache reset')
+    expect(await toggle($, '')).toContain('refresh ~19k cached · every 4 min')
     release()
     await switching
     await clock.advance(1000)
@@ -1832,7 +1832,7 @@ describe('keepalive: the queue and the race', () => {
     await mainStep($)
     await turnEnd($)
     await clock.advance(1000)
-    expect(await toggle($, '')).toContain('a refresh reads the warm cache: ~19k cached')
+    expect(await toggle($, '')).toContain('refresh ~19k cached')
   })
 
   test('a cold mark whose write throws before the mark is set keeps the running figure under the pending reason until the next turn begins', async ($, on) => {
@@ -1852,12 +1852,12 @@ describe('keepalive: the queue and the race', () => {
     failing = false
     await clock.advance(1000)
     const held = await toggle($, '')
-    expect(held).toContain('Keepalive  paused until the cache reset is recorded a refresh reads the warm cache: ~19k cached, every 4 min')
-    expect(held).not.toContain('next refresh in')
+    expect(held).toContain('Keepalive  paused recording cache reset refresh ~19k cached · every 4 min')
+    expect(held).not.toContain('next in ')
     expect(lastStatus(rec)).toContain('a state write failed')
     await mainStep($)
     await clock.advance(1000)
-    expect(await toggle($, '')).not.toContain('until the cache reset is recorded')
+    expect(await toggle($, '')).not.toContain('recording cache reset')
   })
 
   test('a cost not yet shown with figures does not hold the first refresh: it is sent when due, and no tick toasts', async ($, on) => {
@@ -2312,7 +2312,7 @@ describe('keepalive: the queue and the race', () => {
     expect(debugOf(rec, 'cachier lead')[0].to_s).toBeGreaterThanOrEqual(16)
     expect(lastStatus(rec) ?? '').not.toContain('keepalive stopped')
     await clock.advance(1000)
-    expect(await toggle($, '')).toContain('The lead was raised to 16 s after a slow refresh.')
+    expect(await toggle($, '')).toContain('lead raised to 16s (slow refresh)')
   })
 
   test('a faster ping after a raise never lowers the lead', async ($, on) => {
@@ -2358,7 +2358,7 @@ describe('keepalive: the queue and the race', () => {
     await clock.advance(8000)
     release()
     await clock.advance(1000)
-    expect(await toggle($, '')).toContain('The lead was raised to 16 s after a slow refresh.')
+    expect(await toggle($, '')).toContain('lead raised to 16s (slow refresh)')
     expect(await toggle($, 'on 30 3')).toContain('lead 30 s')
     await clock.advance(1000)
     expect(await drawnHint($)).not.toContain('lead raised')
@@ -2456,7 +2456,7 @@ describe('keepalive: the queue and the race', () => {
     await clock.advance(1000)
     const pings = debugOf(rec, 'cachier ping')
     expect(pings[pings.length - 1]).toMatchObject({ stale: true, outcome: 'answered' })
-    expect(await toggle($, '')).toContain('This session: 1 refresh costing ~19k read.')
+    expect(await toggle($, '')).toContain('session: 1 refresh · ~19k read')
     expect(debugOf(rec, 'cachier lead')).toEqual([])
   })
 
@@ -2478,8 +2478,8 @@ describe('keepalive: the queue and the race', () => {
     release()
     await clock.advance(1000)
     const status = await toggle($, '')
-    expect(status).not.toContain('This pause:')
-    expect(status).toContain('This session: 1 refresh costing ~19k read.')
+    expect(status).not.toMatch(/(^|\s)pause: /)
+    expect(status).toContain('session: 1 refresh · ~19k read')
   })
 
   test('each ping leaves one debug line: its time, lead, TTL, generation, round trip, usage, and outcome', async ($, on) => {
@@ -2509,12 +2509,12 @@ describe('keepalive: the queue and the race', () => {
     await turnEnd($)
     await clock.advance(241000)
     expect(rec.forks.length).toBe(1)
-    expect(await toggle($, '')).toContain('This pause: 1 refresh costing ~19k read.')
-    expect(await drawnPane($)).toContain('This session: 1 refresh costing ~19k read.')
+    expect(await toggle($, '')).toContain('pause: 1 refresh · ~19k read')
+    expect(await drawnPane($)).toContain('session: 1 refresh · ~19k read')
     await userPrompt($)
     await clock.advance(1000)
-    expect(await drawnPane($)).not.toContain('This pause:')
-    expect(await drawnPane($)).toContain('This session: 1 refresh costing ~19k read.')
+    expect(await drawnPane($)).not.toMatch(/(^|\s)pause: /)
+    expect(await drawnPane($)).toContain('session: 1 refresh · ~19k read')
   })
 
   test('a bridge prompt re-arms an armed keepalive; a peer prompt does not', async ($, on) => {
@@ -2665,7 +2665,7 @@ describe('the low-key UI: the footer line, the click, the gutter, and what the s
     const countdown = /^\d:\d\d$/
     expect(await hintOf(m)).toMatch(countdown)
     expect(JSON.stringify(await m.drawn())).not.toContain('ping')
-    expect(JSON.stringify(await m.drawn())).not.toContain('refresh reads the warm cache')
+    expect(JSON.stringify(await m.drawn())).not.toContain('refresh ~19k cached')
     await pressPie($)
     await clock.advance(1000)
     expect(await hintOf(m)).toMatch(countdown)
@@ -2675,7 +2675,7 @@ describe('the low-key UI: the footer line, the click, the gutter, and what the s
     const running = JSON.stringify(await m.drawn()) + flatOf(await rowsOf(pane))
     await pane.unmount()
     expect(running).toContain('keep warm ~19k read/refresh')
-    expect(running).toContain('a refresh reads the warm cache: ~19k cached')
+    expect(running).toContain('refresh ~19k cached')
     expect(running).toContain('every 4:45')
     expect(running).not.toContain('Turn keepalive')
     expect(running).not.toContain('Click the line')
@@ -2683,7 +2683,7 @@ describe('the low-key UI: the footer line, the click, the gutter, and what the s
     await clock.advance(1000)
     expect(await hintOf(m)).toMatch(countdown)
     expect(JSON.stringify(await m.drawn())).not.toContain('ping')
-    expect(JSON.stringify(await m.drawn())).not.toContain('refresh reads the warm cache')
+    expect(JSON.stringify(await m.drawn())).not.toContain('refresh ~19k cached')
     await m.unmount()
     expect(lastStatus(rec)).toBeUndefined()
   })
@@ -2715,10 +2715,10 @@ describe('the low-key UI: the footer line, the click, the gutter, and what the s
     await clock.advance(285000)
     expect(rec.forks.length).toBe(1)
     await clock.advance(2000)
-    expect(await toggle($, '')).toContain('Keepalive  paused its refreshes for this pause are used up')
+    expect(await toggle($, '')).toContain('Keepalive  paused count used')
     expect(lastStatus(rec)).toBeUndefined()
     const m = await mountHint($)
-    expect(await drawnPane($)).toContain('Keepalive  paused its refreshes for this pause are used up')
+    expect(await drawnPane($)).toContain('Keepalive  paused count used')
     await pressPie($)
     await clock.advance(1000)
     expect(await toggle($, '')).toContain('Keepalive  off')
@@ -2736,7 +2736,7 @@ describe('the low-key UI: the footer line, the click, the gutter, and what the s
     await clock.advance(285000)
     expect(rec.forks.length).toBe(1)
     await clock.advance(2000)
-    expect(await toggle($, '')).toContain('Keepalive  paused its refreshes for this pause are used up')
+    expect(await toggle($, '')).toContain('Keepalive  paused count used')
     await userPrompt($)
     expect(await toggle($, '')).not.toContain('paused')
     expect(await toggle($, '')).toContain('keepalive on')
@@ -2840,10 +2840,10 @@ describe('the low-key UI: the footer line, the click, the gutter, and what the s
     await turnEnd($)
     await clock.advance(1000)
     const drawn = JSON.stringify(await m.drawn()) + (await drawnPane($))
-    expect(await toggle($, '')).toContain('Cache misses: 1 (lapse 1), ~20k tokens rewritten')
+    expect(await toggle($, '')).toContain('misses: 1 (lapse 1) · ~20k tokens rewritten')
     // Off, the line names no refresh figure; the pane's Keepalive section states it is off, and its Cache section the miss.
     expect(await hintOf(m)).not.toContain('refresh')
-    expect(await drawnPane($)).toContain('Cache misses: 1 (lapse 1), ~20k tokens rewritten')
+    expect(await drawnPane($)).toContain('misses: 1 (lapse 1) · ~20k tokens rewritten')
     expect(drawn).toContain('Keepalive  off')
     await m.unmount()
     expect(lastStatus(rec)).toBeUndefined()
@@ -2864,7 +2864,7 @@ describe('the low-key UI: the footer line, the click, the gutter, and what the s
     await mainStep($)
     await turnEnd($)
     await clock.advance(1000)
-    expect(await toggle($, '')).toContain('Cache misses: 1 (switch or compaction 1), ~20k tokens rewritten')
+    expect(await toggle($, '')).toContain('misses: 1 (switch/compaction 1) · ~20k tokens rewritten')
     const misses = debugOf(rec, 'cachier miss')
     expect(misses.map((m: any) => m.cause)).toEqual(['cold'])
     expect(Object.keys(misses[0])).not.toContain('tokens')
@@ -2880,10 +2880,10 @@ describe('the low-key UI: the footer line, the click, the gutter, and what the s
     await mainStep($)
     await turnEnd($)
     await clock.advance(1000)
-    expect(await toggle($, '')).toContain('Cache misses: 1')
+    expect(await toggle($, '')).toContain('misses: 1')
     await $.classic.SessionStart({ source: 'resume', transcript_path: '/other/session.jsonl' })
     await clock.advance(1000)
-    expect(await toggle($, '')).not.toContain('Cache misses')
+    expect(await toggle($, '')).not.toContain('misses:')
   })
 
   test('a model switch during a pinged pause is a cold miss, and the pause is not counted as ran out', { options: { keepalive_lead_s: 60, keepalive_count: 3 } }, async ($, on) => {
@@ -2901,9 +2901,9 @@ describe('the low-key UI: the footer line, the click, the gutter, and what the s
     await turnEnd($)
     await clock.advance(1000)
     const status = await toggle($, '')
-    expect(status).toContain('Cache misses: 1 (switch or compaction 1)')
+    expect(status).toContain('misses: 1 (switch/compaction 1)')
     expect(status).not.toContain('ran out')
-    expect(status).not.toContain('Earlier pauses')
+    expect(status).not.toContain('earlier:')
   })
 
   test('a pause its pings kept warm, ended by a prompt after the cache would have expired, is saved when the first response reads the cache', { options: { keepalive_lead_s: 60, keepalive_count: 3 } }, async ($, on) => {
@@ -3090,7 +3090,7 @@ describe('the low-key UI: the footer line, the click, the gutter, and what the s
     await turnEnd($)
     await clock.advance(1000)
     expect(mounted).not.toBeNull()
-    expect(JSON.stringify(await mounted.drawn())).toContain('refresh reads the warm cache')
+    expect(JSON.stringify(await mounted.drawn())).toContain('refresh ~19k cached')
     await mounted.unmount()
     expect(rec.toasts).toEqual([])
     await clock.advance(300000)
@@ -3242,7 +3242,7 @@ describe('the low-key UI: the footer line, the click, the gutter, and what the s
     expect(rec.forks.length).toBe(1)
     expect(lastStatus(rec)).toContain('keepalive stopped: nothing to fork yet')
     await expectCountdownOnly($, 'stopped')
-    expect(await toggle($, '')).toContain('Keepalive  stopped nothing to fork yet; your next prompt restarts it')
+    expect(await toggle($, '')).toContain('Keepalive  stopped nothing to fork yet · restarts on next prompt')
     doc.fork = ANSWERED
     await userPrompt($)
     await mainStep($)
@@ -3530,7 +3530,7 @@ describe('the details pane: a click on the time opens it at its size, a second c
     expect(rows[0]).toBe('Cache')
     expect(rows.find((row) => row.startsWith('warm · '))).toMatch(/^warm · \d+:\d\d left · 5m TTL$/)
     expect(rows.indexOf('Keepalive  off')).toBeGreaterThan(1)
-    expect(JSON.stringify(rows)).not.toMatch(/The pie is|Earlier pauses|Learned from|Longest pause|Cache misses/)
+    expect(JSON.stringify(rows)).not.toMatch(/earlier:|learned|long pauses:|misses:/)
   })
 
   test('the pie switches keepalive as the command does, and the pane has no switch to press', { options: { keepalive_lead_s: 15, keepalive_count: 3 } }, async ($, on) => {
@@ -4113,16 +4113,16 @@ describe('the words the user reads: no /keepalive answer, status line or pane sa
     said.push(await toggle($, ''))
     // Each state was reached, so the scan below covers it.
     expect(said[0]).toMatch(/Keepalive {2}off/)
-    expect(said[2]).toContain('its refreshes for this pause are used up')
+    expect(said[2]).toContain('count used · resumes on next prompt')
     expect(said[3]).toContain('keepalive stopped: API error 529 (overloaded)')
-    expect(said[4]).toContain('Keepalive  stopped API error 529 (overloaded); your next prompt restarts it')
+    expect(said[4]).toContain('Keepalive  stopped API error 529 (overloaded) · restarts on next prompt')
     expect(said[8]).toContain('"children":["reset · rebuild ~19k tokens"]')
     // The pair says cold only inside the two phrases that name it.
     for (const s of said) expect(s.replace(/if cold|if it goes cold/gi, '')).not.toMatch(/ping|armed|cold|\bpar\b/i)
-    expect(said[0]).toContain('if it goes cold')
-    expect(said[1]).toContain('if it goes cold')
-    expect(said[2]).toContain('if it goes cold')
-    expect(said[10]).toContain('if it goes cold')
+    expect(said[0]).toMatch(/if cold: rebuild|if it goes cold/)
+    expect(said[1]).toMatch(/if cold: rebuild|if it goes cold/)
+    expect(said[2]).toMatch(/if cold: rebuild|if it goes cold/)
+    expect(said[10]).toMatch(/if cold: rebuild|if it goes cold/)
     expect(said.find((s) => s.startsWith('keepalive on: lead 300 s'))).toContain('If it goes cold')
   })
 })
@@ -4167,7 +4167,7 @@ describe('live check 7: a real model switch records a cold miss', () => {
     await clock.advance(1000)
     const misses = debugOf(rec, 'cachier miss')
     expect(misses.map((m: any) => m.cause)).toEqual(['cold'])
-    expect(await toggle($, '')).toContain('Cache miss')
+    expect(await toggle($, '')).toContain('misses:')
   })
 
   test("a reply written after the turn's last read is folded on the next tick, with no further event", async ($, on) => {
@@ -4265,7 +4265,7 @@ describe('long pauses: the debug line, and the pane ping count from the lead in 
     await mainStep($)
     await turnEnd($)
     await clock.advance(1000)
-    expect(await toggle($, '')).toContain('Cache misses: 1 (lapse 1)')
+    expect(await toggle($, '')).toContain('misses: 1 (lapse 1)')
     // The switch to the new path: its reset is refused, so the path is unlearned and the alarm says so.
     refuse = true
     await $.classic.PostModelSwitch({ from_model: 'a', to_model: 'b', requested_model: 'b', source: 'command', prompt_cache_warm: true, cache_ttl: '5m', context_tokens: 1, estimated_cache_write_usd: 0, pricing: 'catalog', transcript_path: PATH2 } as any)
@@ -4287,7 +4287,7 @@ describe('long pauses: the debug line, and the pane ping count from the lead in 
     await toggle($, 'on 60 2')
     await clock.advance(1000)
     expect(rec.forks).toEqual([])
-    expect(await toggle($, '')).toContain('Keepalive  paused the cache expired; it resumes after your next prompt The pie turns amber in the cache\'s last quarter and red in its last tenth: the cache is about to lapse. each refresh reads ~19k cached')
+    expect(await toggle($, '')).toContain('Keepalive  paused cache expired · resumes on next prompt pie: amber ≤¼ TTL left, red ≤⅒ refresh ~19k cached every 4 min')
   })
 
 })
@@ -4413,7 +4413,7 @@ describe('the pair: keeping the cache warm against rebuilding it if it goes cold
     expect(enabled).toContain('A refresh reads the warm cache: $0.004 (~19k cached), every 4:45')
     expect(enabled).toContain('if it goes cold, your next prompt rebuilds it: ~$0.09 (~19k written)')
     const section = (await toggle($, '')).replace(/\n\s*/g, ' ')
-    expect(section).toContain('a refresh reads the warm cache: $0.004 (~19k cached), every 4:45 if it goes cold, your next prompt rebuilds it: ~$0.09 (~19k written) next refresh in')
+    expect(section).toContain('refresh $0.004 (~19k cached) · every 4:45 if cold: rebuild ~$0.09 (~19k written) next in')
     const m = await mountHint($)
     expect(JSON.stringify(await m.drawn())).toContain(WARM)
     await toggle($, 'off')
@@ -4467,7 +4467,9 @@ describe('the pair: keeping the cache warm against rebuilding it if it goes cold
     await clock.advance(1000)
     const drawn = JSON.stringify(await m.drawn()) + (await drawnPane($))
     expect(drawn).toContain('$0.004/refresh')
-    expect(drawn).not.toMatch(/keep warm|warm cache|if cold|if it goes cold/)
+    expect(drawn).not.toMatch(/keep warm|if cold:|cached\) · every/)
+    expect(drawn).toContain('refresh $0.004 (~19k cached)')
+    expect(drawn).toContain('every 4:45')
     await m.unmount()
   })
 
@@ -4488,14 +4490,16 @@ describe('the pair: keeping the cache warm against rebuilding it if it goes cold
     const m = await mountHint($)
     expect(JSON.stringify(await m.drawn())).toContain('if cold ~$0.09 rebuild')
     expect(JSON.stringify(await m.drawn())).not.toContain('keep warm')
-    expect(await toggle($, '')).not.toMatch(/warm cache|if it goes cold|One refresh every/)
+    const off = await toggle($, '')
+    expect(off).not.toMatch(/(^|\s)(refresh [$~]|if cold:|every \d)/)
+    expect(off).toContain('pie: amber ≤¼ TTL left, red ≤⅒')
     expect(await toggle($, 'on 300')).toBe(
       'keepalive on: lead 300 s, 24 refreshes. Paused: lead 300s ≥ 300s TTL. If it goes cold, your next prompt rebuilds it: ~$0.09 (~19k written).',
     )
     const section = (await toggle($, '')).replace(/\n\s*/g, ' ')
     expect(section).toContain('lead 300s ≥ 300s TTL')
-    expect(section).toContain('if it goes cold, your next prompt rebuilds it: ~$0.09 (~19k written)')
-    expect(section).not.toMatch(/\/refresh|Next refresh|each refresh|warm cache/)
+    expect(section).toContain('if cold: rebuild ~$0.09 (~19k written)')
+    expect(section).not.toMatch(/ refresh [$~]| next refresh /)
     await m.unmount()
   })
 
@@ -4511,7 +4515,9 @@ describe('the pair: keeping the cache warm against rebuilding it if it goes cold
     expect(JSON.stringify(await m.drawn())).not.toContain('keep warm')
     expect(latest.cost).toBeNull()
     expect(latest.offer).toEqual({ label: 'if cold ~$0.09 rebuild' })
-    expect(await toggle($, '')).not.toMatch(/warm cache|if it goes cold|One refresh every/)
+    const learned0 = await toggle($, '')
+    expect(learned0).not.toMatch(/(^|\s)(refresh [$~]|if cold:|every \d)/)
+    expect(learned0).toContain('pie: amber ≤¼ TTL left, red ≤⅒')
     await toggle($, 'on 60')
     await clock.advance(1000)
     expect(JSON.stringify(await m.drawn())).not.toMatch(/keep warm|if cold/)
@@ -4526,7 +4532,7 @@ describe('the pair: keeping the cache warm against rebuilding it if it goes cold
     const m = await mountHint($)
     expect(JSON.stringify(await m.drawn())).not.toMatch(/keep warm|if cold/)
     const text = (await toggle($, '')).replace(/\n\s*/g, ' ')
-    expect(text).not.toMatch(/warm cache|if it goes cold/)
+    expect(text).not.toMatch(/ refresh [$~]| if cold:| every \d/)
     expect(text).toContain('Cache reset · rebuild')
     await m.unmount()
   })
@@ -4538,7 +4544,7 @@ describe('the pair: keeping the cache warm against rebuilding it if it goes cold
     await clock.advance(1000)
     const text = (await toggle($, '')).replace(/\n\s*/g, ' ')
     expect(text).toContain('Keepalive  on, no count')
-    expect(text).not.toMatch(/warm cache|if it goes cold/)
+    expect(text).not.toMatch(/ refresh [$~]| if cold:| every \d/)
     expect(text).toMatch(/Cache reset · rebuild ~\$[\d.]+/)
   })
 })
@@ -4555,7 +4561,7 @@ describe('the cost unit: dollars at list prices, or tokens, switched by /keepali
     const running = JSON.stringify(await m.drawn()) + (await drawnPane($))
     // 18559 tokens read at $0.20 per million.
     expect(running).toContain('keep warm $0.004/refresh')
-    expect(running).toContain('a refresh reads the warm cache: $0.004 (~19k cached)')
+    expect(running).toContain('refresh $0.004 (~19k cached)')
     expect(running).not.toContain('Shown in tokens')
     await m.unmount()
   })
@@ -4604,7 +4610,7 @@ describe('the cost unit: dollars at list prices, or tokens, switched by /keepali
     expect(tokens).toContain('keep warm ~19k read/refresh')
     expect(await toggle($, '')).toContain('A 5-minute cache write costs about 25 cache reads on claude-opus-5-5.')
     expect(tokens).not.toContain('$0.004/refresh')
-    expect(await toggle($, '')).toContain('a refresh reads the warm cache: ~19k cached')
+    expect(await toggle($, '')).toContain('refresh ~19k cached')
     expect(await toggle($, 'unit dollars')).toBe('figures show in dollars for this session.')
     expect(JSON.stringify(await m.drawn())).toContain('keep warm $0.004/refresh')
     // Back in dollars, keepalive reads as it did before the switch: the unit is all that moved.
@@ -4950,7 +4956,7 @@ describe('the cost unit: dollars at list prices, or tokens, switched by /keepali
     await clock.settle()
     expect(rec.fetches).toEqual([])
     // The fold's write is priced at the stored $10 per million, not the built-in $5: 20,000 tokens cost $0.20.
-    expect((await commandText($, '')).replace(/\n\s*/g, ' ')).toContain('Cache misses: 1 (lapse 1), $0.20 rewritten')
+    expect((await commandText($, '')).replace(/\n\s*/g, ' ')).toContain('misses: 1 (lapse 1) · $0.20 rewritten')
   })
 
   test('an unreadable price record prices the first fold at the built-in table and logs why', { options: { keepalive_lead_s: 15, keepalive_count: 3 } }, async ($, on) => {
@@ -4973,7 +4979,7 @@ describe('the cost unit: dollars at list prices, or tokens, switched by /keepali
     await clock.settle()
     expect(rec.fetches).toEqual([])
     expect(rec.logs.join('\n')).toContain('read refused')
-    expect((await commandText($, '')).replace(/\n\s*/g, ' ')).toContain('Cache misses: 1 (lapse 1), $0.10 rewritten')
+    expect((await commandText($, '')).replace(/\n\s*/g, ' ')).toContain('misses: 1 (lapse 1) · $0.10 rewritten')
   })
 })
 
@@ -5232,7 +5238,7 @@ describe('the default mode: the one a session starts in, set by /keepalive defau
     await $.classic.SessionStart({ source: 'startup', transcript_path: PATH })
     expect(await toggle($, 'on 60')).toContain('3 refreshes')
     await clock.advance(1000)
-    expect(await toggle($, '')).toContain(', 24 left')
+    expect(await toggle($, '')).toContain(' · 24 left')
   })
 })
 
@@ -5430,8 +5436,8 @@ describe('the learned count: an unpinned run sends what the stored pauses say, a
     await mainStep($)
     await turnEnd($)
     await clock.advance(1000)
-    expect(await toggle($, '')).toContain('Keepalive  paused no refreshes this pause: your pauses rarely outlast the cache')
-    expect(await toggle($, '')).toContain('Learned from your pauses: no refreshes, as 0 of your 10 pauses ended within the 5:00 TTL.')
+    expect(await toggle($, '')).toContain('Keepalive  paused 0 refreshes this pause (learned: pauses rarely outlast TTL) · resumes on next prompt')
+    expect(await toggle($, '')).toContain('learned: 0 refreshes · 0/10 pauses within 5:00 TTL')
     await clock.advance(10 * MIN)
     expect(rec.forks).toEqual([])
   })
@@ -5445,9 +5451,9 @@ describe('the learned count: an unpinned run sends what the stored pauses say, a
     await mainStep($)
     await turnEnd($)
     await clock.advance(1000)
-    expect(await toggle($, '')).toContain(', 2 left')
-    expect(await drawnHint($)).not.toContain('Learned from your pauses')
-    expect(await toggle($, '')).toContain('Each pause sends at most 2 refreshes: the count you pinned with /keepalive on.')
+    expect(await toggle($, '')).toContain(' · 2 left')
+    expect(await drawnHint($)).not.toContain('learned')
+    expect(await toggle($, '')).toContain('max 2 refreshes/pause (pinned)')
     await clock.advance(239000)
     expect(rec.forks.length).toBe(1)
   })
@@ -5460,8 +5466,8 @@ describe('the learned count: an unpinned run sends what the stored pauses say, a
     await toggle($, 'on 60 2')
     await toggle($, 'off')
     await clock.advance(1000)
-    expect(await toggle($, '')).toContain('Each pause sends at most 2 refreshes: the count you pinned with /keepalive on.')
-    expect(await drawnHint($)).not.toContain('Learned from your pauses')
+    expect(await toggle($, '')).toContain('max 2 refreshes/pause (pinned)')
+    expect(await drawnHint($)).not.toContain('learned')
   })
 
   test('a running run whose learned count moves after its first refresh: Settings names the count it keeps, not a source it did not come from', { options: { keepalive_lead_s: 60 } }, async ($, on) => {
@@ -5504,7 +5510,7 @@ describe('the learned count: an unpinned run sends what the stored pauses say, a
     await turnEnd($)
     await clock.advance(1000)
     const text = await toggle($, '')
-    expect(text).toContain('Each pause sends at most 1 refresh: kept from pause start; recounted next prompt.')
+    expect(text).toContain('max 1 refresh/pause (kept from pause start; recounted next prompt)')
     expect(text).toContain('refreshes a pause 1 (kept from pause start; recounted next prompt)')
   })
 
@@ -5527,7 +5533,7 @@ describe('the learned count: an unpinned run sends what the stored pauses say, a
     await turnEnd($)
     await clock.advance(1000)
     const text = await toggle($, '')
-    expect(text).toContain('Each pause sends at most 24 refreshes: kept from pause start; recounted next prompt.')
+    expect(text).toContain('max 24 refreshes/pause (kept from pause start; recounted next prompt)')
     expect(text).toContain('refreshes a pause 24 (kept from pause start; recounted next prompt)')
   })
 })
@@ -5538,7 +5544,7 @@ describe('the bare command says how many refreshes a pause sends, and why', () =
     const clock = mock.clock(on, { now: T0 })
     await $.classic.SessionStart({ source: 'startup', transcript_path: PATH })
     await clock.advance(1000)
-    expect(await toggle($, '')).toContain('Each pause sends at most 24 refreshes: the break-even count, the most refreshes that cost no more than the rewrite they avoid.')
+    expect(await toggle($, '')).toContain('max 24 refreshes/pause (break-even)')
   })
 
   test('keepalive_count caps the break-even count, and the pane says so', { options: { keepalive_count: 6 } }, async ($, on) => {
@@ -5546,7 +5552,7 @@ describe('the bare command says how many refreshes a pause sends, and why', () =
     const clock = mock.clock(on, { now: T0 })
     await $.classic.SessionStart({ source: 'startup', transcript_path: PATH })
     await clock.advance(1000)
-    expect(await toggle($, '')).toContain('Each pause sends at most 6 refreshes: keepalive_count, which caps the break-even count of 24.')
+    expect(await toggle($, '')).toContain('max 6 refreshes/pause (keepalive_count cap; break-even 24)')
   })
 
   test('a model with no price sends keepalive_count, or 3 while it is unset, and the pane says why', async ($, on) => {
@@ -5554,7 +5560,7 @@ describe('the bare command says how many refreshes a pause sends, and why', () =
     const clock = mock.clock(on, { now: T0 })
     await $.classic.SessionStart({ source: 'startup', transcript_path: PATH })
     await clock.advance(1000)
-    expect(await toggle($, '')).toContain('Each pause sends at most 3 refreshes: the default, since the price of this model is unknown and keepalive_count is unset.')
+    expect(await toggle($, '')).toContain('max 3 refreshes/pause (default: model unpriced, keepalive_count unset)')
   })
 })
 
@@ -5746,8 +5752,8 @@ describe('the bare command answers five sections, in order: Cache, Keepalive, Th
     await clock.advance(1000)
     await toggle($, 'on 15 3')
     const text = await commandText($, '')
-    expect(text.indexOf('Keepalive')).toBeLessThan(text.indexOf('reads the warm cache'))
-    expect(text.indexOf('reads the warm cache')).toBeLessThan(text.indexOf('Settings'))
+    expect(text.indexOf('Keepalive')).toBeLessThan(text.indexOf('refresh ~19k cached'))
+    expect(text.indexOf('refresh ~19k cached')).toBeLessThan(text.indexOf('Settings'))
   })
 
   test('the session balance against the other setting is in the Keepalive section once a pause has been judged', { options: { keepalive_lead_s: 15, keepalive_count: 3 } }, async ($, on) => {
@@ -5759,9 +5765,9 @@ describe('the bare command answers five sections, in order: Cache, Keepalive, Th
     await clock.advance(10 * MIN)
     await userPrompt($)
     const text = await toggle($, '')
-    expect(text).toMatch(/Over 1 pause this session, keepalive (saved|cost)/)
-    expect(text.indexOf('Keepalive  on, refreshing')).toBeLessThan(text.indexOf('Over 1 pause this session'))
-    expect(text.indexOf('Over 1 pause this session')).toBeLessThan(text.indexOf('Settings'))
+    expect(text).toMatch(/balance vs other setting: (saved \$[\d.]+ net|\$[\d.]+ net more|even) \(1 pause\)/)
+    expect(text.indexOf('Keepalive  on, refreshing')).toBeLessThan(text.indexOf('balance vs other setting'))
+    expect(text.indexOf('balance vs other setting')).toBeLessThan(text.indexOf('Settings'))
   })
 
   test('the Keepalive section says when keepalive pays off, under its heading', { options: { keepalive_count: 3 } }, async ($, on) => {
@@ -5770,8 +5776,8 @@ describe('the bare command answers five sections, in order: Cache, Keepalive, Th
     await $.classic.SessionStart({ source: 'startup', transcript_path: PATH })
     await clock.advance(1000)
     const text = await commandText($, '')
-    expect(text.indexOf('Keepalive')).toBeLessThan(text.indexOf('Each pause sends'))
-    expect(text).toContain('Keepalive pays off if you')
+    expect(text.indexOf('Keepalive')).toBeLessThan(text.indexOf('refreshes/pause ('))
+    expect(text).toContain('pays off if back in ')
   })
 })
 
@@ -5790,7 +5796,7 @@ const sectionLines = (text: string, title: string): string[] | undefined => {
   }
   return body
 }
-const MISSES = 'Cache misses: 1 (lapse 1), $0.10 rewritten'
+const MISSES = 'misses: 1 (lapse 1) · $0.10 rewritten'
 // A session on PATH whose keepalive sends one refresh and is then turned off; the pause is judged on the prompt that ends it, and the reply
 // after the lapse counts a miss.
 const withMiss = async ($: any, on: any) => {
@@ -5818,9 +5824,9 @@ describe('the This session section: the session figures, copied from the Keepali
     await startedWorld($, on)
     const text = await commandText($, '')
     expect(headingsOf(text)).toEqual(['Cache', 'Keepalive  off', 'This session', 'Settings'])
-    expect(sectionLines(text, 'This session')).toEqual(['This session: no refreshes yet.'])
-    expect(sectionLines(text, 'Keepalive')?.some((line) => line.startsWith('This session:'))).toBe(false)
-    expect(await drawnPane($)).toContain('This session: no refreshes yet.')
+    expect(sectionLines(text, 'This session')).toEqual(['session: no refreshes yet'])
+    expect(sectionLines(text, 'Keepalive')?.some((line) => line.startsWith('session:'))).toBe(false)
+    expect(await drawnPane($)).toContain('session: no refreshes yet')
   })
 
   test('after one refresh read in tokens, its first line is the Keepalive section\'s session line, and Keepalive still carries that line once', async ($, on) => {
@@ -5832,7 +5838,7 @@ describe('the This session section: the session figures, copied from the Keepali
     await clock.advance(240500)
     await clock.advance(1000)
     const text = await commandText($, '')
-    const session = 'This session: 1 refresh costing ~19k read.'
+    const session = 'session: 1 refresh · ~19k read'
     expect(sectionLines(text, 'This session')?.[0]).toBe(session)
     expect(sectionLines(text, 'Keepalive')?.filter((line) => line === session)).toHaveLength(1)
   })
@@ -5846,7 +5852,7 @@ describe('the This session section: the session figures, copied from the Keepali
     await clock.advance(1000)
     const text = await commandText($, '')
     expect(text).toContain('unit dollars (cost_unit option)')
-    const session = 'This session: 1 refresh costing ~19k read.'
+    const session = 'session: 1 refresh · ~19k read'
     expect(sectionLines(text, 'This session')?.[0]).toBe(session)
     expect(sectionLines(text, 'Keepalive')).toContain(session)
   })
@@ -5859,7 +5865,7 @@ describe('the This session section: the session figures, copied from the Keepali
     await clock.advance(240500)
     await clock.advance(240000)
     const text = await commandText($, '')
-    const session = 'This session: 2 refreshes costing $0.007.'
+    const session = 'session: 2 refreshes · $0.007'
     expect(sectionLines(text, 'This session')?.[0]).toBe(session)
     expect(sectionLines(text, 'Keepalive')).toContain(session)
   })
@@ -5869,14 +5875,14 @@ describe('the This session section: the session figures, copied from the Keepali
     await clock.advance(10 * MIN)
     await userPrompt($)
     const text = await commandText($, '')
-    const balance = sectionLines(text, 'Keepalive')?.find((line) => line.startsWith('Over 1 pause this session'))
-    expect(balance).toMatch(/^Over 1 pause this session, keepalive (saved|cost)/)
-    expect(sectionLines(text, 'This session')).toEqual(['This session: no refreshes yet.', balance])
+    const balance = sectionLines(text, 'Keepalive')?.find((line) => line.startsWith('balance vs other setting'))
+    expect(balance).toMatch(/^balance vs other setting: (saved \$[\d.]+ net|\$[\d.]+ net more|even) \(1 pause\)$/)
+    expect(sectionLines(text, 'This session')).toEqual(['session: no refreshes yet', balance])
     await toggle($, 'unit tokens')
     const tokens = await commandText($, '')
-    const pointer = 'Over 1 pause this session, the balance is stated in dollars: /keepalive unit dollars.'
+    const pointer = 'balance vs other setting: $ only, /keepalive unit dollars (1 pause)'
     expect(sectionLines(tokens, 'Keepalive')).toContain(pointer)
-    expect(sectionLines(tokens, 'This session')).toEqual(['This session: no refreshes yet.', pointer])
+    expect(sectionLines(tokens, 'This session')).toEqual(['session: no refreshes yet', pointer])
   })
 
   test('once a miss is counted, its last line is the Advice section\'s misses line, the same text', async ($, on) => {
@@ -5891,7 +5897,7 @@ describe('the This session section: the session figures, copied from the Keepali
     await clock.advance(1000)
     const text = await commandText($, '')
     expect(sectionLines(text, 'Advice')).toContain(MISSES)
-    expect(sectionLines(text, 'This session')).toEqual(['This session: no refreshes yet.', MISSES])
+    expect(sectionLines(text, 'This session')).toEqual(['session: no refreshes yet', MISSES])
   })
 
   test('a /clear starts the refreshes and the balance over, and a compaction keeps them', async ($, on) => {
@@ -5905,8 +5911,8 @@ describe('the This session section: the session figures, copied from the Keepali
     await userPrompt($)
     await clock.advance(1000)
     const before = sectionLines(await commandText($, ''), 'This session')
-    expect(before?.[0]).toBe('This session: 2 refreshes costing $0.007.')
-    expect(before?.[1]).toMatch(/^Over 1 pause this session/)
+    expect(before?.[0]).toBe('session: 2 refreshes · $0.007')
+    expect(before?.[1]).toMatch(/^balance vs other setting/)
     await $.classic.PostCompact({ trigger: 'manual', compact_summary: 's' } as any)
     await $.classic.SessionStart({ source: 'compact', transcript_path: PATH })
     await clock.advance(1000)
@@ -5914,19 +5920,19 @@ describe('the This session section: the session figures, copied from the Keepali
     await $.classic.SessionStart({ source: 'clear', transcript_path: PATH })
     await clock.advance(1000)
     const cleared = sectionLines(await commandText($, ''), 'This session')
-    expect(cleared?.[0]).toBe('This session: no refreshes yet.')
+    expect(cleared?.[0]).toBe('session: no refreshes yet')
     expect(cleared?.some((line) => line.startsWith('Over '))).toBe(false)
   })
 
   test('a resume of the same transcript starts the refreshes and the balance over, and keeps the misses the section ends with', async ($, on) => {
     const clock = await withMiss($, on)
     const before = sectionLines(await commandText($, ''), 'This session')
-    expect(before?.[0]).toBe('This session: 1 refresh costing $0.004.')
+    expect(before?.[0]).toBe('session: 1 refresh · $0.004')
     expect(before?.[2]).toBe(MISSES)
     await $.classic.SessionStart({ source: 'resume', transcript_path: PATH })
     await clock.advance(1000)
     const after = await commandText($, '')
-    expect(sectionLines(after, 'This session')).toEqual(['This session: no refreshes yet.', MISSES])
+    expect(sectionLines(after, 'This session')).toEqual(['session: no refreshes yet', MISSES])
     expect(sectionLines(after, 'Advice')).toContain(MISSES)
     expect(sectionLines(after, 'Keepalive')?.some((line) => line.startsWith('Over '))).toBe(false)
   })
@@ -5937,8 +5943,8 @@ describe('the This session section: the session figures, copied from the Keepali
     await $.classic.SessionStart({ source: 'resume', transcript_path: '/other/session.jsonl' })
     await clock.advance(1000)
     const text = await commandText($, '')
-    expect(sectionLines(text, 'This session')).toEqual(['This session: no refreshes yet.'])
-    expect(text).not.toContain('Cache misses')
+    expect(sectionLines(text, 'This session')).toEqual(['session: no refreshes yet'])
+    expect(text).not.toContain('misses:')
   })
 
   test('the section is shown with keepalive off, on and paused', async ($, on) => {
@@ -5948,7 +5954,7 @@ describe('the This session section: the session figures, copied from the Keepali
       await clock.advance(1000)
       const text = await commandText($, '')
       expect(headingsOf(text)).toContain('This session')
-      expect(sectionLines(text, 'This session')?.[0]).toMatch(/^This session: /)
+      expect(sectionLines(text, 'This session')?.[0]).toMatch(/^session: /)
     }
   })
 
@@ -5966,7 +5972,7 @@ describe('the This session section: the session figures, copied from the Keepali
     const text = await commandText($, '')
     expect(headingsOf(text)).toContain('Keepalive  stopped')
     expect(headingsOf(text)).toContain('This session')
-    expect(sectionLines(text, 'This session')?.[0]).toMatch(/^This session: /)
+    expect(sectionLines(text, 'This session')?.[0]).toMatch(/^session: /)
   })
 
   test('the section is shown with no cache to count from', async ($, on) => {
@@ -5975,7 +5981,7 @@ describe('the This session section: the session figures, copied from the Keepali
     await clock.advance(1000)
     const text = await commandText($, '')
     expect(headingsOf(text)).toContain('This session')
-    expect(sectionLines(text, 'This session')?.[0]).toMatch(/^This session: /)
+    expect(sectionLines(text, 'This session')?.[0]).toMatch(/^session: /)
   })
 })
 
@@ -6001,19 +6007,14 @@ describe('the bare command answers whole: the text its sections lay out, for fix
         '  warm · 4:59 left · 5m TTL',
         '',
         'Keepalive  on, refreshing',
-        '  a refresh reads the warm cache: $0.004 (~19k',
-        '    cached), every 4:45',
-        '  if it goes cold, your next prompt rebuilds it:',
-        '    ~$0.09 (~19k written)',
-        '  next refresh in 4:44, 24 left',
-        '  Each pause sends at most 24 refreshes: the',
-        '    break-even count, the most refreshes that',
-        '    cost no more than the rewrite they avoid.',
-        "  Keepalive pays off if you're back between 5:00",
-        '    and 1:54:00',
+        '  refresh $0.004 (~19k cached) · every 4:45',
+        '  if cold: rebuild ~$0.09 (~19k written)',
+        '  next in 4:44 · 24 left',
+        '  max 24 refreshes/pause (break-even)',
+        '  pays off if back in 5:00–1:54:00',
         '',
         'This session',
-        '  This session: no refreshes yet.',
+        '  session: no refreshes yet',
         '',
         'Settings',
         '  TTL 5 min (read from the last response): set',
@@ -6042,22 +6043,15 @@ describe('the bare command answers whole: the text its sections lay out, for fix
         '  warm · 4:59 left · 5m TTL',
         '',
         'Keepalive  off',
-        "  The pie turns amber in the cache's last",
-        '    quarter and red in its last tenth: the cache',
-        '    is about to lapse.',
-        '  A refresh reads the warm cache: $0.004 (~19k',
-        '    cached).',
-        '  One refresh every 4:45.',
-        '  if it goes cold, your next prompt rebuilds it:',
-        '    ~$0.09 (~19k written)',
-        '  Each pause sends at most 24 refreshes: the',
-        '    break-even count, the most refreshes that',
-        '    cost no more than the rewrite they avoid.',
-        "  Keepalive pays off if you're back between 5:00",
-        '    and 1:54:00',
+        '  pie: amber ≤¼ TTL left, red ≤⅒',
+        '  refresh $0.004 (~19k cached)',
+        '  every 4:45',
+        '  if cold: rebuild ~$0.09 (~19k written)',
+        '  max 24 refreshes/pause (break-even)',
+        '  pays off if back in 5:00–1:54:00',
         '',
         'This session',
-        '  This session: no refreshes yet.',
+        '  session: no refreshes yet',
         '',
         'Settings',
         '  TTL 5 min (read from the last response): set',
@@ -6087,18 +6081,14 @@ describe('the bare command answers whole: the text its sections lay out, for fix
         '  warm · 4:59 left · 5m TTL',
         '',
         'Keepalive  on, refreshing',
-        '  a refresh reads the warm cache: $0.004 (~19k',
-        '    cached), every 4 min',
-        '  if it goes cold, your next prompt rebuilds it:',
-        '    ~$0.09 (~19k written)',
-        '  next refresh in 3:59, 2 left',
-        '  Each pause sends at most 2 refreshes: the',
-        '    count you pinned with /keepalive on.',
-        "  Keepalive pays off if you're back between 5:00",
-        '    and 13:00',
+        '  refresh $0.004 (~19k cached) · every 4 min',
+        '  if cold: rebuild ~$0.09 (~19k written)',
+        '  next in 3:59 · 2 left',
+        '  max 2 refreshes/pause (pinned)',
+        '  pays off if back in 5:00–13:00',
         '',
         'This session',
-        '  This session: no refreshes yet.',
+        '  session: no refreshes yet',
         '',
         'Settings',
         '  TTL 5 min (read from the last response): set',
@@ -6127,19 +6117,14 @@ describe('the bare command answers whole: the text its sections lay out, for fix
         '  expired · rebuild ~$0.13',
         '',
         'Keepalive  off',
-        "  The pie turns amber in the cache's last",
-        '    quarter and red in its last tenth: the cache',
-        '    is about to lapse.',
-        '  Next refresh: $0.004 (~19k read).',
-        '  One refresh every 4:45.',
-        '  Each pause sends at most 24 refreshes: the',
-        '    break-even count, the most refreshes that',
-        '    cost no more than the rewrite they avoid.',
-        "  Keepalive pays off if you're back between 5:00",
-        '    and 1:54:00',
+        '  pie: amber ≤¼ TTL left, red ≤⅒',
+        '  next refresh $0.004 (~19k read)',
+        '  every 4:45',
+        '  max 24 refreshes/pause (break-even)',
+        '  pays off if back in 5:00–1:54:00',
         '',
         'This session',
-        '  This session: no refreshes yet.',
+        '  session: no refreshes yet',
         '',
         'Settings',
         '  TTL 5 min (read from the last response): set',
@@ -6169,19 +6154,14 @@ describe('the bare command answers whole: the text its sections lay out, for fix
         '  expired · rebuild ~26k tokens',
         '',
         'Keepalive  off',
-        "  The pie turns amber in the cache's last",
-        '    quarter and red in its last tenth: the cache',
-        '    is about to lapse.',
-        '  Next refresh: ~19k read.',
-        '  One refresh every 4:45.',
-        '  Each pause sends at most 24 refreshes: the',
-        '    break-even count, the most refreshes that',
-        '    cost no more than the rewrite they avoid.',
-        "  Keepalive pays off if you're back between 5:00",
-        '    and 1:54:00',
+        '  pie: amber ≤¼ TTL left, red ≤⅒',
+        '  next refresh ~19k read',
+        '  every 4:45',
+        '  max 24 refreshes/pause (break-even)',
+        '  pays off if back in 5:00–1:54:00',
         '',
         'This session',
-        '  This session: no refreshes yet.',
+        '  session: no refreshes yet',
         '',
         'Advice',
         '  A 5-minute cache write costs about 25 cache',
@@ -6237,13 +6217,13 @@ describe('the bare command answers whole: the text its sections lay out, for fix
           '  warm · 5:00 left · 5m TTL',
           '',
           'Keepalive  paused',
-          '  until the cache reset is recorded',
-          '  a refresh reads the warm cache: ~19k cached, every 4 min',
-          '  if it goes cold, your next prompt rebuilds it: ~19k written',
-          '  Each pause sends at most 2 refreshes: the count you pinned with /keepalive on.',
+          '  recording cache reset',
+          '  refresh ~19k cached · every 4 min',
+          '  if cold: rebuild ~19k written',
+          '  max 2 refreshes/pause (pinned)',
           '',
           'This session',
-          '  This session: no refreshes yet.',
+          '  session: no refreshes yet',
           '',
           'Advice',
           '  Shown in tokens: no price for an unnamed model.',
@@ -6302,25 +6282,21 @@ describe('the bare command answers whole: the text its sections lay out, for fix
         '  expired · rebuild ~$0.20',
         '',
         'Keepalive  off',
-        "  The pie turns amber in the cache's last",
-        '    quarter and red in its last tenth: the cache',
-        '    is about to lapse.',
-        '  Next refresh: $0.008 (~20k read).',
-        '  One refresh every 4:45.',
-        '  Each pause sends at most 3 refreshes:',
-        '    keepalive_count, which caps the break-even',
-        '    count of 24.',
-        "  Keepalive pays off if you're back between 5:00",
-        '    and 19:15',
-        '  Long pauses: 1 · p90 6:00 · mean 6:00 · max',
+        '  pie: amber ≤¼ TTL left, red ≤⅒',
+        '  next refresh $0.008 (~20k read)',
+        '  every 4:45',
+        '  max 3 refreshes/pause (keepalive_count cap;',
+        '    break-even 24)',
+        '  pays off if back in 5:00–19:15',
+        '  long pauses: 1 · p90 6:00 · mean 6:00 · max',
         '    6:00',
         '',
         'This session',
-        '  This session: no refreshes yet.',
-        '  Cache misses: 1 (lapse 1), $0.20 rewritten',
+        '  session: no refreshes yet',
+        '  misses: 1 (lapse 1) · $0.20 rewritten',
         '',
         'Advice',
-        '  Cache misses: 1 (lapse 1), $0.20 rewritten',
+        '  misses: 1 (lapse 1) · $0.20 rewritten',
         '',
         'Settings',
         '  TTL 5 min (read from the last response): set',
@@ -6348,12 +6324,10 @@ describe('the bare command answers whole: the text its sections lay out, for fix
     expect(await commandText($, '')).toBe(
       [
         'Keepalive  off',
-        "  The pie turns amber in the cache's last",
-        '    quarter and red in its last tenth: the cache',
-        '    is about to lapse.',
+        '  pie: amber ≤¼ TTL left, red ≤⅒',
         '',
         'This session',
-        '  This session: no refreshes yet.',
+        '  session: no refreshes yet',
         '',
         'Settings',
         '  TTL 5 min (read from the last response): set',
@@ -6390,12 +6364,10 @@ describe('the bare command answers whole: the text its sections lay out, for fix
         '  reset · rebuild ~$0.13',
         '',
         'Keepalive  off',
-        "  The pie turns amber in the cache's last",
-        '    quarter and red in its last tenth: the cache',
-        '    is about to lapse.',
+        '  pie: amber ≤¼ TTL left, red ≤⅒',
         '',
         'This session',
-        '  This session: no refreshes yet.',
+        '  session: no refreshes yet',
         '',
         'Settings',
         '  TTL 5 min (read from the last response): set',
@@ -6423,12 +6395,10 @@ describe('the bare command answers whole: the text its sections lay out, for fix
         '  reset · rebuild ~26k tokens',
         '',
         'Keepalive  off',
-        "  The pie turns amber in the cache's last",
-        '    quarter and red in its last tenth: the cache',
-        '    is about to lapse.',
+        '  pie: amber ≤¼ TTL left, red ≤⅒',
         '',
         'This session',
-        '  This session: no refreshes yet.',
+        '  session: no refreshes yet',
         '',
         'Settings',
         '  TTL 5 min (read from the last response): set',
@@ -6472,7 +6442,7 @@ describe('the bare command reads each state it states once per call', () => {
 // or a reading held, whatever the pie's colour. The offer's explanation and figures show with keepalive off and an offer. The answer's rows
 // are joined, since the sentence wraps at 48 columns. A paused keepalive's refresh cost is followed by its interval row wherever the lead is below the TTL.
 describe('the Keepalive section: the colour sentence wherever no refresh is coming, the offer while keepalive is off, and the interval a paused keepalive names', () => {
-  const SENTENCE = "The pie turns amber in the cache's last quarter and red in its last tenth: the cache is about to lapse."
+  const SENTENCE = 'pie: amber ≤¼ TTL left, red ≤⅒'
   const LONG = { 'pauses/old': Array.from({ length: 10 }, (_, i) => ({ startMs: 1000 + i, pausedMs: 3 * 3600000, hour: 10, weekday: 2, ratio: 24, ttlMs: 300000 })) }
   const started = async ($: any, on: any, doc: any = opusCached()) => {
     kaWorld(on, doc)
@@ -6482,9 +6452,9 @@ describe('the Keepalive section: the colour sentence wherever no refresh is comi
     return clock
   }
   // The refresh's cost in dollars, as the section's rows read it joined: the cost wraps at 48 columns, and the interval row follows it.
-  const REFRESH = 'a refresh reads the warm cache: $0.004 (~19k cached)'
-  const REBUILD = 'if it goes cold, your next prompt rebuilds it: ~$0.09 (~19k written)'
-  const EXPIRED_REFRESH = 'each refresh costs $0.004 (reads ~19k cached)'
+  const REFRESH = 'refresh $0.004 (~19k cached)'
+  const REBUILD = 'if cold: rebuild ~$0.09 (~19k written)'
+  const EXPIRED_REFRESH = 'refresh $0.004 (~19k cached)'
   // Holds the write that records a stop of the given kind, so the section is read between the tick's verdict and its record.
   const holdingStop = (on: any, stop: string) => {
     let release: () => void = () => {}
@@ -6505,7 +6475,7 @@ describe('the Keepalive section: the colour sentence wherever no refresh is comi
   test('keepalive off, in the last quarter: the sentence follows the heading, then the offer, ahead of the section\'s other lines', async ($, on) => {
     const clock = await started($, on)
     await clock.advance(240000)
-    expect(await toggle($, '')).toContain(`Keepalive  off ${SENTENCE} A refresh reads the warm cache: $0.004 (~19k cached). One refresh every 4:45. if it goes cold, your next prompt rebuilds it: ~$0.09 (~19k written) Each pause sends at most 24 refreshes`)
+    expect(await toggle($, '')).toContain(`Keepalive  off ${SENTENCE} refresh $0.004 (~19k cached) every 4:45 if cold: rebuild ~$0.09 (~19k written) max 24 refreshes/pause`)
   })
 
   test('keepalive off, in the last tenth: the sentence is there', async ($, on) => {
@@ -6517,7 +6487,7 @@ describe('the Keepalive section: the colour sentence wherever no refresh is comi
   test('keepalive off, before the last quarter: the sentence is there too, though the pie is the normal colour', async ($, on) => {
     const clock = await started($, on)
     await clock.advance(100000)
-    expect(await toggle($, '')).toContain(`Keepalive  off ${SENTENCE} A refresh reads the warm cache: $0.004 (~19k cached). One refresh every 4:45. if it goes cold, your next prompt rebuilds it: ~$0.09 (~19k written)`)
+    expect(await toggle($, '')).toContain(`Keepalive  off ${SENTENCE} refresh $0.004 (~19k cached) every 4:45 if cold: rebuild ~$0.09 (~19k written)`)
   })
 
   test('keepalive on and refreshing, in the last quarter: no sentence, the pie is green', async ($, on) => {
@@ -6527,7 +6497,7 @@ describe('the Keepalive section: the colour sentence wherever no refresh is comi
     expect(await drawnHint($)).toContain('"color":"success"')
     const text = await toggle($, '')
     expect(text).toContain('Keepalive  on, refreshing')
-    expect(text).not.toContain('about to lapse')
+    expect(text).not.toContain('pie: amber')
   })
 
   test('keepalive on with a lead at the TTL, in the last quarter: the sentence follows the reason line', async ($, on) => {
@@ -6535,7 +6505,7 @@ describe('the Keepalive section: the colour sentence wherever no refresh is comi
     await toggle($, 'on 300')
     await clock.advance(240000)
     expect(await drawnHint($)).not.toContain('"color":"success"')
-    expect(await toggle($, '')).toContain(`Keepalive  paused lead 300s ≥ 300s TTL ${SENTENCE} ${REBUILD}`)
+    expect(await toggle($, '')).toContain(`Keepalive  paused lead 300s ≥ 300s TTL · sends nothing ${SENTENCE} ${REBUILD}`)
   })
 
   test('keepalive stopped with its count used, in the last quarter: the sentence sits between the reason and the last-refresh line', async ($, on) => {
@@ -6548,7 +6518,7 @@ describe('the Keepalive section: the colour sentence wherever no refresh is comi
     await clock.advance(240000)
     expect(await drawnHint($)).not.toContain('"color":"success"')
     const text = await toggle($, '')
-    expect(text).toMatch(new RegExp(`Keepalive  paused its refreshes for this pause are used up; it resumes after your next prompt ${SENTENCE} \\S`))
+    expect(text).toMatch(new RegExp(`Keepalive  paused count used · resumes on next prompt ${SENTENCE} \\S`))
   })
 
   test('keepalive on with a learned count of none, in the last quarter: the sentence sits between the reason and the figure', async ($, on) => {
@@ -6558,7 +6528,7 @@ describe('the Keepalive section: the colour sentence wherever no refresh is comi
     await turnEnd($)
     await clock.advance(250000)
     expect(await drawnHint($)).not.toContain('"color":"success"')
-    expect(await toggle($, '')).toContain(`Keepalive  paused no refreshes this pause: your pauses rarely outlast the cache; it resumes after your next prompt ${SENTENCE} a refresh reads the warm cache: `)
+    expect(await toggle($, '')).toContain(`Keepalive  paused 0 refreshes this pause (learned: pauses rarely outlast TTL) · resumes on next prompt ${SENTENCE} refresh `)
   })
 
   test('an expired cache with keepalive on: the pie is red, and the sentence follows the reason, once', async ($, on) => {
@@ -6570,7 +6540,7 @@ describe('the Keepalive section: the colour sentence wherever no refresh is comi
     await clock.advance(1000)
     const text = await toggle($, '')
     expect(text).toContain('Cache expired · rebuild')
-    expect(text).toContain(`Keepalive  paused the cache expired; it resumes after your next prompt ${SENTENCE}`)
+    expect(text).toContain(`Keepalive  paused cache expired · resumes on next prompt ${SENTENCE}`)
     expect(text.split(SENTENCE).length - 1).toBe(1)
     expect(await drawnHint($)).toContain('"color":"error"')
   })
@@ -6623,8 +6593,8 @@ describe('the Keepalive section: the colour sentence wherever no refresh is comi
       expect(holding).toBe(true)
       const text = await toggle($, '')
       expect(text).toContain('Cache warm · 0:50 left · 5m TTL')
-      expect(text).toContain('Keepalive  paused until the cache reset is recorded')
-      expect(text).not.toContain('about to lapse')
+      expect(text).toContain('Keepalive  paused recording cache reset')
+      expect(text).not.toContain('pie: amber')
       expect(await drawnHint($)).toContain('"color":"success"')
     } finally {
       release()
@@ -6662,8 +6632,8 @@ describe('the Keepalive section: the colour sentence wherever no refresh is comi
       expect(holding).toBe(true)
       const text = await toggle($, '')
       expect(text).toContain('Cache reset')
-      expect(text).toContain('Keepalive  paused until the cache reset is recorded')
-      expect(text).toContain(`reset is recorded ${SENTENCE}`)
+      expect(text).toContain('Keepalive  paused recording cache reset')
+      expect(text).toContain(`recording cache reset ${SENTENCE}`)
       expect(text.split(SENTENCE).length - 1).toBe(1)
       expect(await drawnHint($)).toContain('"color":"success"')
       await clock.advance(1000)
@@ -6703,7 +6673,7 @@ describe('the Keepalive section: the colour sentence wherever no refresh is comi
     try {
       expect(holding).toBe(true)
       expect(await toggle($, '')).toContain(
-        `Keepalive  paused until the cache reset is recorded ${SENTENCE} lead 300s ≥ 300s TTL if it goes cold, your next prompt rebuilds it: ~19k written`,
+        `Keepalive  paused recording cache reset ${SENTENCE} lead 300s ≥ 300s TTL · sends nothing if cold: rebuild ~19k written`,
       )
     } finally {
       release()
@@ -6739,7 +6709,7 @@ describe('the Keepalive section: the colour sentence wherever no refresh is comi
     await clock.settle()
     try {
       expect(holding).toBe(true)
-      expect(await toggle($, '')).toContain(`Keepalive  paused until the cache reset is recorded ${SENTENCE} no live cache to count from, nothing scheduled; there is no cache until the next reply`)
+      expect(await toggle($, '')).toContain(`Keepalive  paused recording cache reset ${SENTENCE} no live cache · nothing scheduled · cache from next reply`)
     } finally {
       release()
     }
@@ -6773,8 +6743,8 @@ describe('the Keepalive section: the colour sentence wherever no refresh is comi
     try {
       expect(holding).toBe(true)
       const text = await toggle($, '')
-      expect(text).toContain('Keepalive  paused its refreshes for this pause are used up')
-      expect(text).not.toContain('about to lapse')
+      expect(text).toContain('Keepalive  paused count used')
+      expect(text).not.toContain('pie: amber')
       expect(await drawnHint($)).toContain('"color":"success"')
     } finally {
       release()
@@ -6784,20 +6754,18 @@ describe('the Keepalive section: the colour sentence wherever no refresh is comi
 
   test('keepalive off with an offer: the section and the pane give the same explanation and figures', async ($, on) => {
     await started($, on)
-    expect(await toggle($, '')).toContain('A refresh reads the warm cache: $0.004 (~19k cached). One refresh every 4:45. if it goes cold, your next prompt rebuilds it: ~$0.09 (~19k written)')
+    expect(await toggle($, '')).toContain('refresh $0.004 (~19k cached) every 4:45 if cold: rebuild ~$0.09 (~19k written)')
     const pane = await drawnPane($)
-    expect(pane).toContain('A refresh reads the warm cache: $0.004 (~19k cached).')
-    expect(pane).toContain('One refresh every 4:45.')
-    expect(pane).toContain('rebuilds it: ~$0.09 (~19k written)')
+    expect(pane).toContain('refresh $0.004 (~19k cached)')
+    expect(pane).toContain('every 4:45')
+    expect(pane).toContain('if cold: rebuild ~$0.09 (~19k written)')
   })
 
   test('keepalive off with no cache to offer from: the sentence is there, and neither the explanation nor the figures', async ($, on) => {
     await started($, on, { text: '', exists: false })
     const text = await toggle($, '')
     expect(text).toContain(`Keepalive  off ${SENTENCE}`)
-    expect(text).not.toContain('warm cache')
-    expect(text).not.toContain('if it goes cold')
-    expect(text).not.toContain('One refresh every')
+    expect(text).not.toMatch(/(^|\s)(refresh [$~]|if cold:|every \d)/)
   })
 
   test('keepalive off with a lead at the TTL, which offers no refresh: the hover states the rebuild, the sentence is there, and neither the explanation nor the figures', { options: { keepalive_lead_s: 300 } }, async ($, on) => {
@@ -6805,9 +6773,7 @@ describe('the Keepalive section: the colour sentence wherever no refresh is comi
     expect(await drawnHint($)).toContain('if cold ~$0.09 rebuild')
     const text = await toggle($, '')
     expect(text).toContain(`Keepalive  off ${SENTENCE}`)
-    expect(text).not.toContain('warm cache')
-    expect(text).not.toContain('if it goes cold')
-    expect(text).not.toContain('One refresh every')
+    expect(text).not.toMatch(/(^|\s)(refresh [$~]|if cold:|every \d)/)
   })
 
   test('keepalive off: the sentence is there exactly once on a calm, an amber and a red pie', async ($, on) => {
@@ -6828,7 +6794,7 @@ describe('the Keepalive section: the colour sentence wherever no refresh is comi
     await clock.advance(1000)
     expect(await drawnHint($)).not.toContain('"color":"success"')
     const text = await toggle($, '')
-    expect(text).toContain(`Keepalive  paused lead 300s ≥ 300s TTL ${SENTENCE} ${REBUILD}`)
+    expect(text).toContain(`Keepalive  paused lead 300s ≥ 300s TTL · sends nothing ${SENTENCE} ${REBUILD}`)
     expect(text.split(SENTENCE).length - 1).toBe(1)
   })
 
@@ -6841,18 +6807,18 @@ describe('the Keepalive section: the colour sentence wherever no refresh is comi
     await clock.advance(1000)
     await clock.advance(240000)
     const text = await toggle($, '')
-    expect(text).toContain('Keepalive  paused its refreshes for this pause are used up')
-    expect(text).toContain('One refresh every 4 min.')
-    expect(text).toContain('rebuilds it: ~$0.09 (~19k written)')
-    expect(text).not.toContain('cached), every')
+    expect(text).toContain('Keepalive  paused count used')
+    expect(text).toContain('every 4 min')
+    expect(text).toContain('if cold: rebuild ~$0.09 (~19k written)')
+    expect(text).not.toContain('cached) · every')
   })
 
   test('keepalive on and refreshing: the section names the next refresh\'s cost and interval, and gives no offer', async ($, on) => {
     await started($, on)
     await toggle($, 'on 15')
     const text = await toggle($, '')
-    expect(text).toContain('Keepalive  on, refreshing a refresh reads the warm cache: $0.004 (~19k cached), every 4:45 if it goes cold, your next prompt rebuilds it: ~$0.09 (~19k written)')
-    expect(text).not.toContain('One refresh every')
+    expect(text).toContain('Keepalive  on, refreshing refresh $0.004 (~19k cached) · every 4:45 if cold: rebuild ~$0.09 (~19k written)')
+    expect(text).not.toMatch(/\) every \d/)
   })
 
   test('keepalive on and refreshing on a calm pie: the sentence is absent', async ($, on) => {
@@ -6872,8 +6838,8 @@ describe('the Keepalive section: the colour sentence wherever no refresh is comi
     await clock.advance(1000)
     await clock.advance(240000)
     const text = await toggle($, '')
-    expect(text).toContain('Keepalive  paused its refreshes for this pause are used up')
-    expect(text).toContain(`${REFRESH} One refresh every 4 min. ${REBUILD}`)
+    expect(text).toContain('Keepalive  paused count used')
+    expect(text).toContain(`${REFRESH} every 4 min ${REBUILD}`)
   })
 
   test('recording a count-used stop leaves the section\'s figure rows unchanged: the cost and the interval read the same before the stop is recorded and after', async ($, on) => {
@@ -6897,8 +6863,8 @@ describe('the Keepalive section: the colour sentence wherever no refresh is comi
     }
     await advancing
     const after = await toggle($, '')
-    expect(before).toContain(`${REFRESH} One refresh every 4 min. ${REBUILD}`)
-    expect(after).toContain(`${REFRESH} One refresh every 4 min. ${REBUILD}`)
+    expect(before).toContain(`${REFRESH} every 4 min ${REBUILD}`)
+    expect(after).toContain(`${REFRESH} every 4 min ${REBUILD}`)
   })
 
   test('a cache expired, its stop recorded: the refresh cost, and directly after it the interval row', async ($, on) => {
@@ -6909,8 +6875,8 @@ describe('the Keepalive section: the colour sentence wherever no refresh is comi
     await turnEnd($)
     await clock.advance(1000)
     const text = await toggle($, '')
-    expect(text).toContain('Keepalive  paused the cache expired; it resumes after your next prompt')
-    expect(text).toContain(`${EXPIRED_REFRESH} One refresh every 4 min.`)
+    expect(text).toContain('Keepalive  paused cache expired · resumes on next prompt')
+    expect(text).toContain(`${EXPIRED_REFRESH} every 4 min`)
   })
 
   test('a cache expired, its stop not yet recorded: the refresh cost, and directly after it the interval row', async ($, on) => {
@@ -6925,7 +6891,7 @@ describe('the Keepalive section: the colour sentence wherever no refresh is comi
     await clock.advance(310000)
     try {
       expect(held.holding).toBe(true)
-      expect(await toggle($, '')).toContain(`${EXPIRED_REFRESH} One refresh every 4 min.`)
+      expect(await toggle($, '')).toContain(`${EXPIRED_REFRESH} every 4 min`)
     } finally {
       release()
       await clock.settle()
@@ -6940,8 +6906,8 @@ describe('the Keepalive section: the colour sentence wherever no refresh is comi
     await clock.advance(310000)
     await clock.advance(1000)
     const text = await toggle($, '')
-    expect(text).toContain('Keepalive  paused the cache expired; it resumes after your next prompt')
-    expect(text).toContain(`${EXPIRED_REFRESH} One refresh every 4 min.`)
+    expect(text).toContain('Keepalive  paused cache expired · resumes on next prompt')
+    expect(text).toContain(`${EXPIRED_REFRESH} every 4 min`)
   })
 
   test('a learned count of none whose cache expired, its stop not yet recorded: the refresh cost, and directly after it the interval row', async ($, on) => {
@@ -6956,7 +6922,7 @@ describe('the Keepalive section: the colour sentence wherever no refresh is comi
     await clock.advance(310000)
     try {
       expect(held.holding).toBe(true)
-      expect(await toggle($, '')).toContain(`${EXPIRED_REFRESH} One refresh every 4 min.`)
+      expect(await toggle($, '')).toContain(`${EXPIRED_REFRESH} every 4 min`)
     } finally {
       release()
       await clock.settle()
@@ -7844,14 +7810,14 @@ describe('a model switch counts as a reset only on a cache cachier read as warm'
   })
 })
 
-// The old pane's lines as it drew them at `8996571`, held as literals since the builders that gave them are retired: the cache's warmth, the advice
-// sentence, the status line (its status words are not compared), the cost's explanation and figures, the break-even line and the session line.
-// The sentence the old pane ended its off and paused status lines with.
-const COLOUR = "The pie turns amber in the cache's last quarter and red in its last tenth: the cache is about to lapse."
+// The old pane's lines as each state must still draw them, held as literals since the builders that gave them are retired: the cache's warmth, the
+// advice sentence, the status line (its status words are not compared; its reason and colour sentence are the Keepalive section's rows), the refresh
+// figure and the interval, the break-even line and the session line.
+// The pie-colour row the old pane ended its off and paused status lines with.
+const COLOUR = 'pie: amber ≤¼ TTL left, red ≤⅒'
 type OldPane = { advice?: string; warmth?: string; status: string; explain?: string; figures?: string; breakEven?: string; session?: string }
-// How a state compares: `literal` finds the old explanation and figures as they were; `running` finds both in the one running-figure line; `interval` finds the figures
-// as the interval row and the explanation by meaning as `explainBy`. `reasonBy` are the fragments a paused reason shares in meaning with the section's, when the
-// wording differs. `heading` is the Keepalive heading's state, where the check pins it.
+// How a state compares: `literal` finds the refresh row and the interval row, each of its own; `running` finds both in the one warm refresh row; `interval` finds the
+// interval row and the refresh row as `explainBy`. `reasonBy` are the fragments a paused reason shares with the section's, when the wording differs. `heading` is the Keepalive heading's state, where the check pins it.
 type Scenario = {
   name: string
   old: OldPane
@@ -7981,16 +7947,16 @@ const noStateRun = (args: string): Scenario['run'] => async ($, on) => {
   return paneRows($)
 }
 const SCENARIOS: Scenario[] = [
-  { name: 'keepalive off with an offer', old: { warmth: 'warm · 4:59 left · 5m TTL', status: `Keepalive is off. ${COLOUR}`, explain: 'Next refresh: $0.004 (~19k cached tokens read).', figures: 'One refresh every 4:45.', breakEven: "Keepalive pays off if you're back between 5:00 and 1:54:00" }, figure: 'literal', run: async ($, on) => (await startedWorld($, on), paneRows($)) },
-  { name: 'keepalive off with the best setup advised over ten recent pauses', old: { advice: 'A 5-minute cache with keepalive on would have saved $4.40 over 10 recent pauses: run /keepalive on 15 or click the pie on.', warmth: 'warm · 4:59 left · 5m TTL', status: `Keepalive is off. ${COLOUR}`, explain: 'Next refresh: $0.004 (~19k cached tokens read).', figures: 'One refresh every 4:45.', breakEven: "Keepalive pays off if you're back between 5:00 and 1:54:00" }, figure: 'literal', run: async ($, on) => {
+  { name: 'keepalive off with an offer', old: { warmth: 'warm · 4:59 left · 5m TTL', status: `Keepalive is off. ${COLOUR}`, explain: '$0.004 (~19k cached)', figures: 'every 4:45', breakEven: 'pays off if back in 5:00–1:54:00' }, figure: 'literal', run: async ($, on) => (await startedWorld($, on), paneRows($)) },
+  { name: 'keepalive off with the best setup advised over ten recent pauses', old: { advice: 'A 5-minute cache with keepalive on would have saved $4.40 over 10 recent pauses: run /keepalive on 15 or click the pie on.', warmth: 'warm · 4:59 left · 5m TTL', status: `Keepalive is off. ${COLOUR}`, explain: '$0.004 (~19k cached)', figures: 'every 4:45', breakEven: 'pays off if back in 5:00–1:54:00' }, figure: 'literal', run: async ($, on) => {
     const pauses = Array.from({ length: 10 }, (_, i) => ({ startMs: 1000 + i, pausedMs: 10 * MIN, hour: 10, weekday: 2, ratio: 24, ttlMs: 300000, contextTokens: 100000, grownTokens: 1000000 }))
     await startedWorld($, on, { ...opusCached(), store: { 'pauses/old': pauses } })
     return paneRows($)
   } },
   { name: 'keepalive off with no cache to count from', old: { status: `Keepalive is off. ${COLOUR}` }, run: async ($, on) => (await startedWorld($, on, { text: '', exists: false }), paneRows($)) },
-  { name: 'keepalive off with a lead at the TTL, which offers no refresh', old: { warmth: 'warm · 4:59 left · 5m TTL', status: `Keepalive is off. ${COLOUR}`, breakEven: "Keepalive doesn't pay off on this context" }, options: { keepalive_lead_s: 300 }, run: async ($, on) => (await startedWorld($, on), expect(await drawnHint($)).toContain('if cold ~$0.09 rebuild'), paneRows($)) },
+  { name: 'keepalive off with a lead at the TTL, which offers no refresh', old: { warmth: 'warm · 4:59 left · 5m TTL', status: `Keepalive is off. ${COLOUR}`, breakEven: 'never pays off on this context' }, options: { keepalive_lead_s: 300 }, run: async ($, on) => (await startedWorld($, on), expect(await drawnHint($)).toContain('if cold ~$0.09 rebuild'), paneRows($)) },
   { name: 'keepalive off with a learned run count of 0', old: { warmth: 'warm · 4:59 left · 5m TTL', status: `Keepalive is off. ${COLOUR}` }, run: async ($, on) => (await startedWorld($, on, { ...opusCached(), store: LONG_PAUSES }), expect(await drawnHint($)).toContain('if cold ~$0.09 rebuild'), paneRows($)) },
-  { name: 'keepalive on and refreshing', old: { warmth: 'warm · 4:58 left · 5m TTL', status: 'Keepalive is on and refreshing the cache.', explain: 'Next refresh: $0.004 (~19k cached tokens read).', figures: 'One refresh every 4:45.', breakEven: "Keepalive pays off if you're back between 5:00 and 1:54:00" }, figure: 'running', heading: 'on, refreshing', run: async ($, on) => {
+  { name: 'keepalive on and refreshing', old: { warmth: 'warm · 4:58 left · 5m TTL', status: 'Keepalive is on and refreshing the cache.', explain: '$0.004 (~19k cached)', figures: 'every 4:45', breakEven: 'pays off if back in 5:00–1:54:00' }, figure: 'running', heading: 'on, refreshing', run: async ($, on) => {
     const clock = await startedWorld($, on)
     await toggle($, 'on 15')
     await clock.advance(1000)
@@ -8002,19 +7968,19 @@ const SCENARIOS: Scenario[] = [
     await clock.advance(1000)
     return paneRows($)
   } },
-  { name: 'keepalive on with a lead at the TTL', old: { warmth: 'warm · 4:58 left · 5m TTL', status: `Keepalive is paused: the lead 300s ≥ 300s TTL. ${COLOUR}`, breakEven: "Keepalive doesn't pay off on this context" }, reasonBy: ['lead 300s ≥ 300s TTL'], run: async ($, on) => {
+  { name: 'keepalive on with a lead at the TTL', old: { warmth: 'warm · 4:58 left · 5m TTL', status: `Keepalive is paused: lead 300s ≥ 300s TTL · sends nothing. ${COLOUR}`, breakEven: 'never pays off on this context' }, reasonBy: ['lead 300s ≥ 300s TTL'], run: async ($, on) => {
     const clock = await startedWorld($, on)
     await toggle($, 'on 300')
     await clock.advance(1000)
     return paneRows($)
   } },
-  { name: 'keepalive on with a lead above the TTL', old: { warmth: 'warm · 4:58 left · 5m TTL', status: `Keepalive is paused: the lead 400s ≥ 300s TTL. ${COLOUR}`, breakEven: "Keepalive doesn't pay off on this context" }, reasonBy: ['lead 400s ≥ 300s TTL'], run: async ($, on) => {
+  { name: 'keepalive on with a lead above the TTL', old: { warmth: 'warm · 4:58 left · 5m TTL', status: `Keepalive is paused: lead 400s ≥ 300s TTL · sends nothing. ${COLOUR}`, breakEven: 'never pays off on this context' }, reasonBy: ['lead 400s ≥ 300s TTL'], run: async ($, on) => {
     const clock = await startedWorld($, on)
     await toggle($, 'on 400')
     await clock.advance(1000)
     return paneRows($)
   } },
-  { name: 'keepalive stopped with its count used, the stop recorded', old: { warmth: 'warm · 0:59 left · 5m TTL', status: `Keepalive is paused: its refreshes for this pause are used up; it resumes after your next prompt. ${COLOUR}`, breakEven: "Keepalive pays off if you're back between 5:00 and 9:00", session: 'This session: 1 refresh costing $0.004.' }, run: async ($, on) => {
+  { name: 'keepalive stopped with its count used, the stop recorded', old: { warmth: 'warm · 0:59 left · 5m TTL', status: `Keepalive is paused: count used · resumes on next prompt. ${COLOUR}`, breakEven: 'pays off if back in 5:00–9:00', session: 'session: 1 refresh · $0.004' }, run: async ($, on) => {
     const clock = await startedWorld($, on)
     await toggle($, 'on 60 1')
     await mainStep($)
@@ -8024,7 +7990,7 @@ const SCENARIOS: Scenario[] = [
     await clock.advance(240000)
     return paneRows($)
   } },
-  { name: 'keepalive stopped with its cache expired, the stop recorded', old: { warmth: 'expired · rebuild ~$0.09', status: `Keepalive is paused: the cache expired; it resumes after your next prompt. ${COLOUR}`, breakEven: "Keepalive pays off if you're back between 5:00 and 13:00" }, run: async ($, on) => {
+  { name: 'keepalive stopped with its cache expired, the stop recorded', old: { warmth: 'expired · rebuild ~$0.09', status: `Keepalive is paused: cache expired · resumes on next prompt. ${COLOUR}`, breakEven: 'pays off if back in 5:00–13:00' }, run: async ($, on) => {
     const clock = await startedWorld($, on)
     await toggle($, 'on 60 2')
     await mainStep($)
@@ -8033,7 +7999,7 @@ const SCENARIOS: Scenario[] = [
     await clock.advance(1000)
     return paneRows($)
   } },
-  { name: 'keepalive on with a learned run count of 0', old: { warmth: 'warm · 4:59 left · 5m TTL', status: `Keepalive is paused: your pauses rarely outlast the cache, so no refresh is sent; it resumes after your next prompt. ${COLOUR}` }, reasonBy: ['your pauses rarely outlast the cache', 'it resumes after your next prompt'], run: async ($, on) => {
+  { name: 'keepalive on with a learned run count of 0', old: { warmth: 'warm · 4:59 left · 5m TTL', status: `Keepalive is paused: 0 refreshes this pause (learned: pauses rarely outlast TTL) · resumes on next prompt. ${COLOUR}` }, reasonBy: ['pauses rarely outlast TTL', 'resumes on next prompt'], run: async ($, on) => {
     const clock = await startedWorld($, on, { ...opusCached(), store: LONG_PAUSES })
     await toggle($, 'on 60')
     await mainStep($)
@@ -8041,7 +8007,7 @@ const SCENARIOS: Scenario[] = [
     await clock.advance(1000)
     return paneRows($)
   } },
-  { name: 'the count-used stop not yet recorded', old: { warmth: 'warm · 4:58 left · 5m TTL', status: 'Keepalive is on and refreshing the cache.', explain: 'Next refresh: $0.004 (~19k cached tokens read).', figures: 'One refresh every 4 min.', breakEven: "Keepalive pays off if you're back between 5:00 and 9:00", session: 'This session: 1 refresh costing $0.004.' }, figure: 'interval', explainBy: 'a refresh reads the warm cache: $0.004 (~19k cached)', run: async ($, on) => {
+  { name: 'the count-used stop not yet recorded', old: { warmth: 'warm · 4:58 left · 5m TTL', status: 'Keepalive is on and refreshing the cache.', explain: '$0.004 (~19k cached)', figures: 'every 4 min', breakEven: 'pays off if back in 5:00–9:00', session: 'session: 1 refresh · $0.004' }, figure: 'interval', explainBy: 'refresh $0.004 (~19k cached)', run: async ($, on) => {
     kaWorld(on, opusCached())
     const { held, release } = gatedWrite(on, isStop('count used'))
     const clock = mock.clock(on, { now: T0 })
@@ -8062,25 +8028,25 @@ const SCENARIOS: Scenario[] = [
       await advancing
     }
   } },
-  { name: 'a cold mark from a model switch whose write is begun and the mark not yet set', old: { warmth: 'warm · 3:19 left · 5m TTL', status: 'Keepalive is on and refreshing the cache.', explain: 'Next refresh: $0.004 (~19k cached tokens read).', figures: 'One refresh every 4 min.', breakEven: "Keepalive pays off if you're back between 5:00 and 13:00" }, figure: 'running', heading: 'paused', run: coldWrite(isColdWrite, SWITCH, false) },
-  { name: 'a cold mark from a model switch whose write failed before the mark was set', old: { warmth: 'warm · 3:19 left · 5m TTL', status: 'Keepalive is on and refreshing the cache.', explain: 'Next refresh: $0.004 (~19k cached tokens read).', figures: 'One refresh every 4 min.', breakEven: "Keepalive pays off if you're back between 5:00 and 13:00" }, figure: 'running', heading: 'paused', run: coldWrite(isColdWrite, SWITCH, true) },
-  { name: 'a cold mark from a model switch set and its write not yet recorded', old: { warmth: 'reset · rebuild ~$0.09', status: `Keepalive is paused: there is no cache until the next reply. ${COLOUR}` }, run: coldWrite(isMarkedStats, SWITCH, false) },
-  { name: 'a cold mark from a model switch set and its write failed', old: { warmth: 'reset · rebuild ~$0.09', status: `Keepalive is paused: there is no cache until the next reply. ${COLOUR}` }, heading: 'on, no count', run: coldWrite(isMarkedStats, SWITCH, true) },
-  { name: 'a cold mark from a compaction set and its write not yet recorded', old: { warmth: 'reset · rebuild ~$0.09', status: `Keepalive is paused: there is no cache until the next reply. ${COLOUR}` }, run: coldWrite(isMarkedStats, COMPACT, false) },
-  { name: 'a cold mark from a compaction set and its write failed', old: { warmth: 'reset · rebuild ~$0.09', status: `Keepalive is paused: there is no cache until the next reply. ${COLOUR}` }, heading: 'on, no count', run: coldWrite(isMarkedStats, COMPACT, true) },
-  { name: 'a /clear cold mark begun and the mark not yet set', old: { warmth: 'warm · 4:59 left · 5m TTL', status: 'Keepalive is on and refreshing the cache.', explain: 'Next refresh: $0.004 (~19k cached tokens read).', figures: 'One refresh every 4 min.', breakEven: "Keepalive pays off if you're back between 5:00 and 13:00" }, figure: 'running', heading: 'paused', run: clearWrite(isColdWrite, false) },
+  { name: 'a cold mark from a model switch whose write is begun and the mark not yet set', old: { warmth: 'warm · 3:19 left · 5m TTL', status: 'Keepalive is on and refreshing the cache.', explain: '$0.004 (~19k cached)', figures: 'every 4 min', breakEven: 'pays off if back in 5:00–13:00' }, figure: 'running', heading: 'paused', run: coldWrite(isColdWrite, SWITCH, false) },
+  { name: 'a cold mark from a model switch whose write failed before the mark was set', old: { warmth: 'warm · 3:19 left · 5m TTL', status: 'Keepalive is on and refreshing the cache.', explain: '$0.004 (~19k cached)', figures: 'every 4 min', breakEven: 'pays off if back in 5:00–13:00' }, figure: 'running', heading: 'paused', run: coldWrite(isColdWrite, SWITCH, true) },
+  { name: 'a cold mark from a model switch set and its write not yet recorded', old: { warmth: 'reset · rebuild ~$0.09', status: `Keepalive is paused: cache from next reply. ${COLOUR}` }, run: coldWrite(isMarkedStats, SWITCH, false) },
+  { name: 'a cold mark from a model switch set and its write failed', old: { warmth: 'reset · rebuild ~$0.09', status: `Keepalive is paused: cache from next reply. ${COLOUR}` }, heading: 'on, no count', run: coldWrite(isMarkedStats, SWITCH, true) },
+  { name: 'a cold mark from a compaction set and its write not yet recorded', old: { warmth: 'reset · rebuild ~$0.09', status: `Keepalive is paused: cache from next reply. ${COLOUR}` }, run: coldWrite(isMarkedStats, COMPACT, false) },
+  { name: 'a cold mark from a compaction set and its write failed', old: { warmth: 'reset · rebuild ~$0.09', status: `Keepalive is paused: cache from next reply. ${COLOUR}` }, heading: 'on, no count', run: coldWrite(isMarkedStats, COMPACT, true) },
+  { name: 'a /clear cold mark begun and the mark not yet set', old: { warmth: 'warm · 4:59 left · 5m TTL', status: 'Keepalive is on and refreshing the cache.', explain: '$0.004 (~19k cached)', figures: 'every 4 min', breakEven: 'pays off if back in 5:00–13:00' }, figure: 'running', heading: 'paused', run: clearWrite(isColdWrite, false) },
   { name: 'a /clear cold mark set and its write not yet recorded', old: { status: 'Keepalive is on, with no cache to count from yet.' }, run: clearWrite(isMarkedStats, false) },
   { name: 'a /clear cold mark set and its write failed', old: { status: 'Keepalive is on, with no cache to count from yet.' }, run: clearWrite(isMarkedStats, true) },
-  { name: 'a cold mark from a model switch whose write is begun and the mark not yet set, over a refresh due with the turn running', old: { warmth: 'warm · 0:59 left · 5m TTL', status: 'Keepalive is on and refreshing the cache.', explain: 'Next refresh: $0.004 (~19k cached tokens read).', figures: 'One refresh every 4 min.', breakEven: "Keepalive pays off if you're back between 5:00 and 13:00" }, figure: 'running', heading: 'paused', run: coldWrite(isColdWrite, SWITCH, false, 'running') },
-  { name: 'a cold mark from a model switch whose write failed before the mark was set, over a refresh due with the turn running', old: { warmth: 'warm · 0:59 left · 5m TTL', status: 'Keepalive is on and refreshing the cache.', explain: 'Next refresh: $0.004 (~19k cached tokens read).', figures: 'One refresh every 4 min.', breakEven: "Keepalive pays off if you're back between 5:00 and 13:00" }, figure: 'running', heading: 'paused', run: coldWrite(isColdWrite, SWITCH, true, 'running') },
-  { name: 'a cold mark from a model switch whose write is begun and the mark not yet set, over a refresh sent now', old: { warmth: 'warm · 0:29 left · 5m TTL', status: 'Keepalive is on and refreshing the cache.', explain: 'Next refresh: $0.004 (~19k cached tokens read).', figures: 'One refresh every 4 min.', breakEven: "Keepalive pays off if you're back between 5:00 and 13:00" }, figure: 'running', heading: 'paused', run: coldWrite(isColdWrite, SWITCH, false, 'sent') },
-  { name: 'a cold mark from a model switch whose write failed before the mark was set, over a refresh sent now', old: { warmth: 'warm · 0:29 left · 5m TTL', status: 'Keepalive is on and refreshing the cache.', explain: 'Next refresh: $0.004 (~19k cached tokens read).', figures: 'One refresh every 4 min.', breakEven: "Keepalive pays off if you're back between 5:00 and 13:00" }, figure: 'running', heading: 'paused', run: coldWrite(isColdWrite, SWITCH, true, 'sent') },
-  { name: 'a cold mark from a compaction whose write is begun and the mark not yet set', old: { warmth: 'warm · 3:19 left · 5m TTL', status: 'Keepalive is on and refreshing the cache.', explain: 'Next refresh: $0.004 (~19k cached tokens read).', figures: 'One refresh every 4 min.', breakEven: "Keepalive pays off if you're back between 5:00 and 13:00" }, figure: 'running', heading: 'paused', run: coldWrite(isColdWrite, COMPACT, false) },
-  { name: 'a cold mark from a compaction whose write failed before the mark was set', old: { warmth: 'warm · 3:19 left · 5m TTL', status: 'Keepalive is on and refreshing the cache.', explain: 'Next refresh: $0.004 (~19k cached tokens read).', figures: 'One refresh every 4 min.', breakEven: "Keepalive pays off if you're back between 5:00 and 13:00" }, figure: 'running', heading: 'paused', run: coldWrite(isColdWrite, COMPACT, true) },
-  { name: 'a /clear cold mark whose write failed before the mark was set', old: { warmth: 'warm · 4:59 left · 5m TTL', status: 'Keepalive is on and refreshing the cache.', explain: 'Next refresh: $0.004 (~19k cached tokens read).', figures: 'One refresh every 4 min.', breakEven: "Keepalive pays off if you're back between 5:00 and 13:00" }, figure: 'running', heading: 'paused', run: clearWrite(isColdWrite, true) },
-  { name: 'keepalive turned off after a refresh, the session tally kept', old: { warmth: 'warm · 4:58 left · 5m TTL', status: `Keepalive is off. ${COLOUR}`, explain: 'Next refresh: $0.004 (~19k cached tokens read).', figures: 'One refresh every 4 min.', breakEven: "Keepalive pays off if you're back between 5:00 and 13:00", session: 'This session: 1 refresh costing $0.004.' }, figure: 'literal', run: sessionRun(async ($, clock) => { await toggle($, 'off'); await clock.advance(1000) }) },
-  { name: 'keepalive refreshing after a refresh, the session tally shown', old: { warmth: 'warm · 4:59 left · 5m TTL', status: 'Keepalive is on and refreshing the cache.', explain: 'Next refresh: $0.004 (~19k cached tokens read).', figures: 'One refresh every 4 min.', breakEven: "Keepalive pays off if you're back between 5:00 and 13:00", session: 'This session: 1 refresh costing $0.004.' }, figure: 'running', heading: 'on, refreshing', run: sessionRun(async () => {}) },
-  { name: 'keepalive stopped with its cache expired after a refresh, the session tally shown', old: { warmth: 'expired · rebuild ~$0.09', status: `Keepalive is paused: the cache expired; it resumes after your next prompt. ${COLOUR}`, breakEven: "Keepalive pays off if you're back between 5:00 and 13:00", session: 'This session: 1 refresh costing $0.004.' }, run: sessionRun(async ($, clock) => { await mainStep($); await clock.advance(310000); await turnEnd($); await clock.advance(1000) }) },
+  { name: 'a cold mark from a model switch whose write is begun and the mark not yet set, over a refresh due with the turn running', old: { warmth: 'warm · 0:59 left · 5m TTL', status: 'Keepalive is on and refreshing the cache.', explain: '$0.004 (~19k cached)', figures: 'every 4 min', breakEven: 'pays off if back in 5:00–13:00' }, figure: 'running', heading: 'paused', run: coldWrite(isColdWrite, SWITCH, false, 'running') },
+  { name: 'a cold mark from a model switch whose write failed before the mark was set, over a refresh due with the turn running', old: { warmth: 'warm · 0:59 left · 5m TTL', status: 'Keepalive is on and refreshing the cache.', explain: '$0.004 (~19k cached)', figures: 'every 4 min', breakEven: 'pays off if back in 5:00–13:00' }, figure: 'running', heading: 'paused', run: coldWrite(isColdWrite, SWITCH, true, 'running') },
+  { name: 'a cold mark from a model switch whose write is begun and the mark not yet set, over a refresh sent now', old: { warmth: 'warm · 0:29 left · 5m TTL', status: 'Keepalive is on and refreshing the cache.', explain: '$0.004 (~19k cached)', figures: 'every 4 min', breakEven: 'pays off if back in 5:00–13:00' }, figure: 'running', heading: 'paused', run: coldWrite(isColdWrite, SWITCH, false, 'sent') },
+  { name: 'a cold mark from a model switch whose write failed before the mark was set, over a refresh sent now', old: { warmth: 'warm · 0:29 left · 5m TTL', status: 'Keepalive is on and refreshing the cache.', explain: '$0.004 (~19k cached)', figures: 'every 4 min', breakEven: 'pays off if back in 5:00–13:00' }, figure: 'running', heading: 'paused', run: coldWrite(isColdWrite, SWITCH, true, 'sent') },
+  { name: 'a cold mark from a compaction whose write is begun and the mark not yet set', old: { warmth: 'warm · 3:19 left · 5m TTL', status: 'Keepalive is on and refreshing the cache.', explain: '$0.004 (~19k cached)', figures: 'every 4 min', breakEven: 'pays off if back in 5:00–13:00' }, figure: 'running', heading: 'paused', run: coldWrite(isColdWrite, COMPACT, false) },
+  { name: 'a cold mark from a compaction whose write failed before the mark was set', old: { warmth: 'warm · 3:19 left · 5m TTL', status: 'Keepalive is on and refreshing the cache.', explain: '$0.004 (~19k cached)', figures: 'every 4 min', breakEven: 'pays off if back in 5:00–13:00' }, figure: 'running', heading: 'paused', run: coldWrite(isColdWrite, COMPACT, true) },
+  { name: 'a /clear cold mark whose write failed before the mark was set', old: { warmth: 'warm · 4:59 left · 5m TTL', status: 'Keepalive is on and refreshing the cache.', explain: '$0.004 (~19k cached)', figures: 'every 4 min', breakEven: 'pays off if back in 5:00–13:00' }, figure: 'running', heading: 'paused', run: clearWrite(isColdWrite, true) },
+  { name: 'keepalive turned off after a refresh, the session tally kept', old: { warmth: 'warm · 4:58 left · 5m TTL', status: `Keepalive is off. ${COLOUR}`, explain: '$0.004 (~19k cached)', figures: 'every 4 min', breakEven: 'pays off if back in 5:00–13:00', session: 'session: 1 refresh · $0.004' }, figure: 'literal', run: sessionRun(async ($, clock) => { await toggle($, 'off'); await clock.advance(1000) }) },
+  { name: 'keepalive refreshing after a refresh, the session tally shown', old: { warmth: 'warm · 4:59 left · 5m TTL', status: 'Keepalive is on and refreshing the cache.', explain: '$0.004 (~19k cached)', figures: 'every 4 min', breakEven: 'pays off if back in 5:00–13:00', session: 'session: 1 refresh · $0.004' }, figure: 'running', heading: 'on, refreshing', run: sessionRun(async () => {}) },
+  { name: 'keepalive stopped with its cache expired after a refresh, the session tally shown', old: { warmth: 'expired · rebuild ~$0.09', status: `Keepalive is paused: cache expired · resumes on next prompt. ${COLOUR}`, breakEven: 'pays off if back in 5:00–13:00', session: 'session: 1 refresh · $0.004' }, run: sessionRun(async ($, clock) => { await mainStep($); await clock.advance(310000); await turnEnd($); await clock.advance(1000) }) },
   { name: 'keepalive off before any session has started', old: { status: `Keepalive is off. ${COLOUR}` }, run: noStateRun('off') },
   { name: 'keepalive on before any session has started', old: { status: 'Keepalive is on, with no cache to count from yet.' }, run: noStateRun('on 60') },
 ]
@@ -8140,16 +8106,15 @@ describe('the pane\'s sections hold every line the old pane drew, in each state 
       }
       if (old.explain !== undefined) {
         expect(old.figures).toBeDefined()
-        const every = old.figures!.slice('One refresh every '.length, -1)
-        // Every state here is warm, so the old pane's refresh price is found by meaning, as the warm wording of the same figure.
-        const warm = old.explain.replace('Next refresh: ', 'a refresh reads the warm cache: ').replace(' cached tokens read)', ' cached)')
+        // Every state here is warm, so the refresh row is the warm wording of the figure.
+        const warm = `refresh ${old.explain}`
         if (s.figure === 'literal') {
-          found(keepalive?.text, `${warm.charAt(0).toUpperCase()}${warm.slice(1)}`)
+          found(keepalive?.text, warm)
           found(keepalive?.text, old.figures)
         } else if (s.figure === 'running') {
-          // One line in place of the old pane's two, which names both facts.
-          found(keepalive?.text, `${warm.slice(0, -1)}, every ${every}`)
-          expect(keepalive?.text).not.toContain('One refresh every')
+          // One row in place of two, which names both facts.
+          found(keepalive?.text, `${warm} · ${old.figures}`)
+          expect(keepalive?.text).not.toContain(`${old.explain} ${old.figures}`)
         } else {
           expect(s.figure).toBe('interval')
           found(keepalive?.text, s.explainBy)
@@ -8159,7 +8124,7 @@ describe('the pane\'s sections hold every line the old pane drew, in each state 
         expect(s.figure).toBeUndefined()
       }
       // The warm refresh price comes with the price of rebuilding the cache if it goes cold, once.
-      if (old.explain !== undefined) found(keepalive?.text, 'if it goes cold, your next prompt rebuilds it:')
+      if (old.explain !== undefined) found(keepalive?.text, 'if cold: rebuild')
       if (old.breakEven !== undefined) found(keepalive?.text, old.breakEven)
       if (old.session !== undefined) found(keepalive?.text, old.session)
       if (s.heading !== undefined) expect(keepalive?.heading).toBe(`Keepalive  ${s.heading}`)

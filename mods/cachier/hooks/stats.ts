@@ -145,17 +145,17 @@ const missTotal = (s: StatsState): StatCount => {
 }
 
 // The session line, shown in the Keepalive and This session sections: this session's refreshes and their cost, empty while there are none.
-export const sessionLineOf = (t: TallyState, money: Money): string => (t.session.pings > 0 ? tallyOf('This session', t.session, money.unit) : '')
+export const sessionLineOf = (t: TallyState, money: Money): string => (t.session.pings > 0 ? tallyOf('session', t.session, money.unit) : '')
 
 // The lines that show the tallies and a raised lead, for the rundown. A zero tally is not a line.
 const tallyLines = (t: TallyState, money: Money): string[] => [
-  ...(t.pause.pings > 0 ? [tallyOf('This pause', t.pause, money.unit)] : []),
+  ...(t.pause.pings > 0 ? [tallyOf('pause', t.pause, money.unit)] : []),
   ...[sessionLineOf(t, money)].filter((line) => line !== ''),
   ...(t.raisedMs === null ? [] : [raiseNote(t.raisedMs)]),
 ]
 
 // A cause's name on the rundown.
-const CAUSE_WORD: Record<Cause, string> = { lapse: 'lapse', cold: 'switch or compaction', unexplained: 'unexplained' }
+const CAUSE_WORD: Record<Cause, string> = { lapse: 'lapse', cold: 'switch/compaction', unexplained: 'unexplained' }
 const CAUSES: readonly Cause[] = ['lapse', 'cold', 'unexplained']
 
 // The saved pauses in the unit shown. In dollars, what the pings cost, what the writes they avoided would have cost, and the
@@ -165,19 +165,19 @@ const savedOf = (s: StatsState, money: Money): string => {
   const writes = s.saved.count === 1 ? '1 write' : `${s.saved.count} writes`
   const { spend, avoided } = s.saved
   if (money.unit === 'dollars' && spend.usd !== null && avoided.usd !== null) {
-    return `Earlier pauses: ${s.saved.count} saved (refreshes ${dollars(spend.usd)}; ${writes} avoided, ${dollars(avoided.usd)}; net ${dollars(Math.max(0, avoided.usd - spend.usd))} saved)`
+    return `earlier: ${s.saved.count} saved · refreshes ${dollars(spend.usd)} · ${writes} avoided ${dollars(avoided.usd)} · net ${dollars(Math.max(0, avoided.usd - spend.usd))} saved`
   }
   const ratio = writeReadRatio(money.list, money.model, money.ttl)
-  const worth = ratio === null ? '' : `, a write is worth about ${Math.floor(ratio)} refreshes`
-  return `Earlier pauses: ${s.saved.count} saved (refreshes ${figureOf(spend, 'tokens')}; ${writes} avoided, ${writtenOf(avoided.write5m + avoided.write1h)}${worth})`
+  const worth = ratio === null ? '' : ` · 1 write ≈ ${Math.floor(ratio)} refreshes`
+  return `earlier: ${s.saved.count} saved · refreshes ${figureOf(spend, 'tokens')} · ${writes} avoided ${writtenOf(avoided.write5m + avoided.write1h)}${worth}`
 }
 
 // The pauses' lines of the rundown: this pause, this session and any raise, then the earlier pauses by outcome.
 const pauseParts = (t: TallyState, s: StatsState, money: Money): string[] => {
   const parts = tallyLines(t, money)
   if (s.saved.count > 0) parts.push(savedOf(s, money))
-  if (s.ranOut.count > 0) parts.push(`Earlier pauses: ${s.ranOut.count} wasted, ran out (refreshes ${figureOf(s.ranOut.spend, money.unit)})`)
-  if (s.notNeeded.count > 0) parts.push(`Earlier pauses: ${s.notNeeded.count} wasted, not needed (refreshes ${figureOf(s.notNeeded.spend, money.unit)})`)
+  if (s.ranOut.count > 0) parts.push(`earlier: ${s.ranOut.count} wasted, ran out · refreshes ${figureOf(s.ranOut.spend, money.unit)}`)
+  if (s.notNeeded.count > 0) parts.push(`earlier: ${s.notNeeded.count} wasted, not needed · refreshes ${figureOf(s.notNeeded.spend, money.unit)}`)
   return parts
 }
 
@@ -188,7 +188,7 @@ const missParts = (s: StatsState, money: Money): string[] => {
   const causes = CAUSES.filter((c) => s.misses[c].count > 0)
     .map((c) => `${CAUSE_WORD[c]} ${s.misses[c].count}`)
     .join(', ')
-  return [`Cache misses: ${misses.count} (${causes}), ${rewriteOf(misses.spend, money.unit)} rewritten`]
+  return [`misses: ${misses.count} (${causes}) · ${rewriteOf(misses.spend, money.unit)} rewritten`]
 }
 
 // The long pauses, the overlap with lapse misses, and the hint for the larger kind of waste.
@@ -196,17 +196,17 @@ const tailParts = (s: StatsState): string[] => {
   const parts: string[] = []
   if (s.longCount > 0) {
     const mean = s.longGaps.reduce((a, b) => a + b, 0) / s.longGaps.length
-    parts.push(`Long pauses: ${s.longCount} · p90 ${clock(p90Of(s.longGaps))} · mean ${clock(mean)} · max ${clock(s.maxMs)}`)
+    parts.push(`long pauses: ${s.longCount} · p90 ${clock(p90Of(s.longGaps))} · mean ${clock(mean)} · max ${clock(s.maxMs)}`)
   }
   if (s.overlap > 0) {
     parts.push(
       s.overlap === 1
-        ? '1 of the lapse misses is also a wasted ran-out pause: one event, shown under both'
-        : `${s.overlap} of the lapse misses are also wasted ran-out pauses: one event, shown under both`,
+        ? '1 lapse miss = a ran-out pause (one event, in both)'
+        : `${s.overlap} lapse misses = ran-out pauses (one event each, in both)`,
     )
   }
-  if (s.ranOut.count > s.notNeeded.count) parts.push('most wasted pauses ran out: your pauses outlast the refreshes')
-  else if (s.notNeeded.count > s.ranOut.count) parts.push('most wasted pauses were not needed: refreshes fire just before you return')
+  if (s.ranOut.count > s.notNeeded.count) parts.push('most wasted pauses ran out: pauses outlast refreshes')
+  else if (s.notNeeded.count > s.ranOut.count) parts.push('most wasted pauses not needed: refreshes fire just before you return')
   return parts
 }
 

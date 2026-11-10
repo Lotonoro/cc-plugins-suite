@@ -168,6 +168,8 @@ export const kTokens = (n: number): string => (n === 0 ? '0' : n < 1000 ? '<1k' 
 
 // A count of tokens read from the cache, or written to it, with the verb in place of the word tokens.
 export const readOf = (n: number): string => `${kTokens(n)} read`
+// The tokens a refresh reads from the warm cache: `cached` tells them from the tokens a rebuild writes.
+export const cachedOf = (n: number): string => `${kTokens(n)} cached`
 export const writtenOf = (n: number): string => `${kTokens(n)} written`
 
 // A spend in the unit shown: its dollars, or its tokens by what the cache did with them. A spend with no price is in tokens.

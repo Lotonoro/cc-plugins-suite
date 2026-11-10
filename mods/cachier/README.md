@@ -59,11 +59,12 @@ and a close another plugin refuses leaves the pane open to be closed by the next
   `reset · rebuild ~$0.13` (the state alone where no figure is drawn). The rebuild figure is the context plus the last reply's output, which the next prompt writes with it, priced
   at the model that last wrote the cache, so after a model switch it is at the rates of the model switched from;
 - **Keepalive**: its state on the heading (`off`, `on, refreshing`, `paused`, `stopped`), and beneath it why it is paused or stopped and
-  that it resumes after your next prompt, what the pie's colours warn of while it is amber or red, what a refresh costs and when the next is due (while
-  the cache is warm, with a line of its own for what your next prompt pays to rebuild it, opening `if it goes cold`; a run whose lead is not below the TTL states that line alone on a warm cache), how many
-  refreshes a pause sends, when keepalive pays off (`Keepalive pays off if you're back between 5:00 and 1:54:00`), and this
-  pause's and this session's refreshes and their cost;
-- **This session**: the session's refreshes and their cost (`This session: no refreshes yet.` before the first), keepalive's
+  whether it resumes or restarts on the next prompt (`count used · resumes on next prompt`), what the pie's colours warn of while it is amber or red (`pie: amber ≤¼ TTL left, red ≤⅒`), what a refresh costs
+  and when the next is due (`refresh $0.004 (~19k cached) · every 4:45`, then `next in 4:44 · 24 left`; while the cache is warm, with a row of its own for what your
+  next prompt pays to rebuild it, `if cold: rebuild ~$0.09 (~19k written)`; a run whose lead is not below the TTL states that row alone on a warm cache), how many
+  refreshes a pause sends (`max 24 refreshes/pause (break-even)`), when keepalive pays off (`pays off if back in 5:00–1:54:00`), and this
+  pause's and this session's refreshes and their cost (`pause: 6 refreshes · $0.022`);
+- **This session**: the session's refreshes and their cost (`session: no refreshes yet` before the first), keepalive's
   balance against the other setting once a pause is judged, and the cache misses once one is counted. The refreshes and the
   balance start over at a `/clear` or a resume and are kept at a compaction; the misses line is the Advice section's, counted
   over the current transcript, so a resume of the same transcript keeps its misses;
@@ -86,6 +87,17 @@ a short terminal the lower sections are scrolled to with the wheel.
 - **`> ½ of 30s TTL`**: the lead a slow round trip needs, twice that round trip, is over half the whole TTL, here 30s, so keepalive stops instead of raising it.
 - **read** / **written**: a count of tokens read from or written to the cache, `~19k read`; `cached` after a count (`~19k cached`) is the context a refresh reads.
 - **kept**: a running pause keeps the count it started with until the next prompt recounts it (`kept from pause start; recounted next prompt`).
+- **`≤¼`** / **`≤⅒`**: the last quarter / tenth of the TTL left; the pie turns amber, then red.
+- **refresh**: a small request keepalive sends shortly before the cache expires, so it stays warm. Each costs one cache read of the whole context.
+- **lead**: how long before expiry a refresh is sent (`15s`); `lead raised to 16s (slow refresh)` says a slow refresh raised it.
+- **refreshes/pause**: the most refreshes one pause sends. **break-even**: the most that cost no more than the rewrite they avoid. **pinned**: a count you gave `/keepalive on <lead_s> <count>`. **cap**: `keepalive_count`, which bounds the break-even and learned counts. **learned**: the count your own pauses say is cheapest; **covers** `33:30` is how long that many refreshes keep the cache warm, and `10/13 pauses within` how many of your pauses ended inside it.
+- **pays off if back in a–b**: keepalive on costs less than off if you return between those times (`–` is a range); `never pays off on this context` says no return time does.
+- **resumes / restarts on next prompt**: a pause by design (`count used`, `cache expired`) resumes; a failure stop restarts.
+- **balance vs other setting**: this session's net saving of keepalive as you ran it against the opposite setting (`saved $0.15 net`, `$0.09 net more`, `even`); `$ only` says the figure is stated only in dollars.
+- **earlier**: pauses before this one, by outcome: **saved** (a refresh kept the cache; the write it avoided is counted), **wasted, ran out** (the count ran out and the cache lapsed anyway), **wasted, not needed** (you came back before the TTL).
+- **miss**: a reply that rewrote the cache. Causes: **lapse** (past the TTL), **switch/compaction**, **unexplained**.
+- **long pauses**: pauses past the TTL; **p90** is the time 90% of them stay under.
+- **`≈`**: about equal, as in `1 write ≈ 24 refreshes`. **`<$0.001`**: under a tenth of a cent.
 
 ## Keepalive
 
@@ -105,8 +117,8 @@ a short terminal the lower sections are scrolled to with the wheel.
 - A refresh that fails stops keepalive, except a rate limit, which is retried: at most once a second (one attempt per round trip,
   rounded up to a tick) until shortly before the cache would expire, none being let through in the last half of the lead. The
   Keepalive heading reads `stopped` and the first line beneath it says what broke in one clause, such as
-  `API error 529 (overloaded); your next prompt restarts it`, or, once no retry is left, `API error 429 (rate_limit), no retry
-  before expiry; your next prompt restarts it`.
+  `API error 529 (overloaded) · restarts on next prompt` in the section, or, once no retry is left, `API error 429 (rate_limit), no retry
+  before expiry · restarts on next prompt`. The `/keepalive on` answer words the same stop as `…; your next prompt restarts it`.
 - The lead (how long before expiry a refresh is sent) starts at 15 s. An answered refresh slower than half the lead raises it to
   twice that round trip for the session. It is never lowered, and keepalive stops instead of raising it past half the
   TTL.
@@ -186,16 +198,15 @@ setup's sentence, the one-hour cache advice, the misses by cause, why figures ar
 refresh count, start mode and unit: each value, where it came from when that is known, and what changes it; the TTL and
 start mode apply to new sessions). The Keepalive heading names keepalive's state, one of `off`, `on, refreshing`,
 `on, no count`, `paused` and `stopped`; the reason for a pause or stop is the first line beneath it. When no refresh is
-coming, the Keepalive section words the pie's warning (the pie turns amber in the cache's last quarter and red in its last
-tenth: the cache is about to lapse) just below the heading or that reason, whatever the pie's colour, with keepalive off or on
+coming, the Keepalive section words the pie's warning (`pie: amber ≤¼ TTL left, red ≤⅒`) just below the heading or that reason, whatever the pie's colour, with keepalive off or on
 with a reading and not refreshing, on a reset or expired cache too. With keepalive off, and where a press would send refreshes,
-the refresh's cost or the context it reads, and how often one is sent, come straight after the warning. While the cache is warm, each price
-of a refresh is followed by a line of its own for what the next prompt pays to rebuild the cache if it goes cold (`if it goes cold, your next prompt rebuilds it: ~$0.21 (~33k written)`);
-once it has expired the refresh's price stands alone. A run whose lead is not below the TTL sends no refresh, so on a warm cache it states the `if it goes cold` line alone. A keepalive paused by design
-(its count used, or its cache expired) names what a refresh reads or costs and, where the cache is known and the lead is below the TTL, how often one would
-be sent. With keepalive on and no stop held, the heading reads `paused` while a cache reset is being recorded, and the first line
-beneath it says so; the reason the section would give with no reset pending, when it has one, follows as a second reason row, after
-the colour sentence when that shows. The Keepalive section is always shown, as its heading alone when it has nothing else to say, and so is This session, which says `This session: no refreshes yet.` before the first refresh. Cache, Advice and Settings
+the refresh's cost or the context it reads (`refresh $0.004 (~19k cached)` on a warm cache, `next refresh $0.004 (~19k read)` on an expired one), and how often one is sent (`every 4:45`, a row of its own), come straight after the warning. While the cache is warm, each price
+of a refresh is followed by a row of its own for what the next prompt pays to rebuild the cache if it goes cold (`if cold: rebuild ~$0.21 (~33k written)`);
+once it has expired the refresh's price stands alone. A run whose lead is not below the TTL sends no refresh, so on a warm cache it states the `if cold: rebuild` row alone, under the reason `lead 300s ≥ 300s TTL · sends nothing`. A keepalive paused by design
+(`count used` or `cache expired`, shown as those words, `· resumes on next prompt`) names what a refresh costs (`refresh $0.004 (~19k cached)`) and, where the cache is known and the lead is below the TTL, how often one would
+be sent. A run that learned no refreshes reads `0 refreshes this pause (learned: pauses rarely outlast TTL) · resumes on next prompt`. With keepalive on and no stop held, the heading reads `paused` while a cache reset is being recorded, and the first row
+beneath it says so (`recording cache reset`); the reason the section would give with no reset pending, when it has one, follows as a second reason row, after
+the colour row when that shows. A run with no cache to count from reads `no live cache · nothing scheduled`, with `· cache from next reply` before the first reply. A refresh slower than half the lead raises it, and the section says so (`lead raised to 16s (slow refresh)`). The Keepalive section is always shown, as its heading alone when it has nothing else to say, and so is This session, which says `session: no refreshes yet` before the first refresh. Cache, Advice and Settings
 are left out when they have nothing to say. The `/keepalive` answer wraps at 48 columns. A count pins the refreshes per pause for the session;
 without one, each pause sends the learned count, else the break-even count.
 
@@ -228,13 +239,13 @@ A model with no price (see Cost unit) has no break-even count, and sends `keepal
 Break-even is the safe bet with nothing known about you. Once cachier has seen your pauses (kept as below), it prices
 each count from 0 up to break-even over them, the way the marker prices a pause: the refreshes sent before you came
 back, plus a rewrite if the cache lapsed. The cheapest count wins, and the bare `/keepalive` answer says what it learned from
-(`Learned from your pauses: 6 refreshes, which cover 33:30; 10 of your 13 pauses ended within it.`).
+(`learned: 6 refreshes/pause · covers 33:30 · 10/13 pauses within`).
 
 The savings come from long pauses. A pause shorter than the time between refreshes costs nothing at any count, but one
 longer than any count covers (lunch, a meeting, the night) costs break-even's 24 refreshes and the rewrite too, where no
 refreshes would have cost the rewrite alone. So if your long pauses are usually much longer than half an hour, keepalive
 learns to send fewer refreshes, down to none. With none, it stays on and sends nothing, and the answer says so
-(`Learned from your pauses: no refreshes, as … ended within the 5:00 TTL.`).
+(`learned: 0 refreshes · 1/10 pauses within 5:00 TTL`).
 
 Which pauses to learn from is left to the history: all of them, or only those that started in the same hour of the day.
 Each rule is checked by leaving one pause out at a time and pricing it at the count the others teach. The rule that

@@ -240,7 +240,7 @@ describe('pieOf: the pie\'s tone, its keepalive state and the colour sentence, f
 
   test('the sentence is the pane\'s words, and the footer is footerOf\'s over refreshingOf', () => {
     const quarter = readingOf(known, null, null, T + 250000, UPON)
-    expect(pieOf(quarter, false, null, false).colour).toBe("The pie turns amber in the cache's last quarter and red in its last tenth: the cache is about to lapse.")
+    expect(pieOf(quarter, false, null, false).colour).toBe('pie: amber ≤¼ TTL left, red ≤⅒')
     expect(pieOf(quarter, true, FIGURE, false).footer).toEqual(footerOf(quarter, true, refreshingOf(true, quarter, FIGURE), false))
     expect(pieOf(null, false, null, false)).toEqual({ footer: null, state: null, colour: COLOUR_SENTENCE })
   })
