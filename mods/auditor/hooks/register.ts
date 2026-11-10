@@ -649,7 +649,7 @@ const withRoute = (c: Conversation, route: BriefTo | undefined): Conversation =>
 
 // The route taken off review `number` at `epoch` when its brief is known not to have reached a reviewer (a send or a spawn that threw or was refused), so its log reads null. A review that failed after its brief went out keeps its route.
 const unroute = ($: Scope, epoch: number, number: number): Promise<unknown> =>
-  change($, c => (c.epoch === epoch && c.review?.number === number ? { ...c, review: withoutRoute(c.review) } : c))
+  change($, c => (c.epoch === epoch && c.review?.number === number ? { ...c, review: withoutRoute(c.review) } : c)).catch((err: unknown) => recordFailed($, 'route bookkeeping', err))
 
 // The one step that sends a plugin message, a brief or a follow-up, to the stored reviewer `to`. A brief names its route (`briefTo`), which the same change that puts it in flight sets on the review. It goes out only while the conversation is still at the epoch (`epoch`) and open review `number` it was planned under, and is 'stale' otherwise. It is held in flight (`briefsInFlight`) until its call reaches the recorder, which takes it out and leaves the call out of the record; a refused or thrown send takes it out here. It carries no agent id, so the send gate passes it untouched. Each caller decides what a refusal means.
 const sendToReviewer = async ($: Scope, to: string, text: string, epoch: number, number: number, route?: BriefTo): Promise<Delivery> => {
