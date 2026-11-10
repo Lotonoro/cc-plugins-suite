@@ -223,7 +223,7 @@ const logReview = async ($: Scope, sessionId: string, log: boolean, closed: Clos
       escalation: marks.escalation,
       stall: marks.stall,
       // What the review's brief said of waking the worker: only a review whose brief said nothing will may carry a stall note.
-      nothing_wakes: review.nothingWakes,
+      nothing_wakes: review.nothingWakes === true,
       // Whether the review had its one follow-up, asking its reviewer to send a note it wrote as its answer.
       followed_up: review.followedUp === true,
       // Where the brief went: the stored reviewer, or a spawn and why. Null when no brief is known to have gone out.
@@ -235,7 +235,7 @@ const logReview = async ($: Scope, sessionId: string, log: boolean, closed: Clos
   }
 }
 
-// A review whose dispatch failed or was given back, as its log reads it: its brief is not known to have reached a reviewer, so its route is not logged.
+// A review as its log reads it when its brief is not known to have reached a reviewer: without its route.
 const withoutRoute = ({ briefTo: _route, ...review }: OpenReview): OpenReview => review
 
 // Logs a review that closed with no reviewer turn end as incomplete.
@@ -647,6 +647,10 @@ const spawnRoute = (c: Conversation): BriefTo => (c.lastLetGo === undefined ? 's
 // The conversation with its open review's brief going `route`; unchanged where no route is named or no review is open.
 const withRoute = (c: Conversation, route: BriefTo | undefined): Conversation => (c.review === undefined || route === undefined ? c : { ...c, review: { ...c.review, briefTo: route } })
 
+// The route taken off review `number` at `epoch` when its brief is known not to have reached a reviewer (a send or a spawn that threw or was refused), so its log reads null. A review that failed after its brief went out keeps its route.
+const unroute = ($: Scope, epoch: number, number: number): Promise<unknown> =>
+  change($, c => (c.epoch === epoch && c.review?.number === number ? { ...c, review: withoutRoute(c.review) } : c))
+
 // The one step that sends a plugin message, a brief or a follow-up, to the stored reviewer `to`. A brief names its route (`briefTo`), which the same change that puts it in flight sets on the review. It goes out only while the conversation is still at the epoch (`epoch`) and open review `number` it was planned under, and is 'stale' otherwise. It is held in flight (`briefsInFlight`) until its call reaches the recorder, which takes it out and leaves the call out of the record; a refused or thrown send takes it out here. It carries no agent id, so the send gate passes it untouched. Each caller decides what a refusal means.
 const sendToReviewer = async ($: Scope, to: string, text: string, epoch: number, number: number, route?: BriefTo): Promise<Delivery> => {
   const ours = (c: Conversation): boolean => c.epoch === epoch && c.review?.number === number
@@ -654,6 +658,7 @@ const sendToReviewer = async ($: Scope, to: string, text: string, epoch: number,
   if (!ours(queued)) return { status: 'stale' }
   const sent = await $.session.send({ to, text }).catch(async (err: unknown) => {
     await leaveFlight($, text)
+    await unroute($, epoch, number)
     throw err
   })
   if (!sent.isDelivered) {
@@ -701,14 +706,22 @@ const deliverBrief = async ($: Scope, plan: Plan): Promise<boolean> => {
   }
   // However the spawn settles, the finally takes its entry out of `spawnsInFlight`, with what the spawn hook kept on it, and stops the refused stored reviewer (`spawned.released`, set only when its send was refused).
   try {
-    const started = await $.agent.spawn({
-      subagentType: REVIEWER_TYPE,
-      name: REVIEWER,
-      description: REVIEW_DESCRIPTION,
-      prompt: brief,
-    })
+    const started = await $.agent
+      .spawn({
+        subagentType: REVIEWER_TYPE,
+        name: REVIEWER,
+        description: REVIEW_DESCRIPTION,
+        prompt: brief,
+      })
+      .catch(async (err: unknown) => {
+        await unroute($, plan.epoch, number)
+        throw err
+      })
     if (started.deny !== undefined) {
-      if (!isStoppedRefusal(started.deny)) throw new Error(`reviewer spawn refused: ${started.deny}`)
+      if (!isStoppedRefusal(started.deny)) {
+        await unroute($, plan.epoch, number)
+        throw new Error(`reviewer spawn refused: ${started.deny}`)
+      }
       await unflightBrief($, brief)
       return true
     }
@@ -762,7 +775,7 @@ const failReview = async ($: Scope, sessionId: string, log: boolean, plan: Plan,
   try {
     await markFailed($, reason, plan.epoch, 'not dispatched')
     if (taken === undefined) return
-    await logIncomplete($, sessionId, log, withoutRoute(taken.review), taken.model, reason)
+    await logIncomplete($, sessionId, log, taken.review, taken.model, reason)
   } finally {
     await stopReviewer($, taken?.retired, true)
   }

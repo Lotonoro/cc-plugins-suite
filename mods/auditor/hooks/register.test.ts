@@ -7206,6 +7206,12 @@ describe('the fields of the review log that audit the brief', () => {
     expect(logOf(seen, LOG_1)).toMatchObject({ status: 'incomplete', nothing_wakes: true, followed_up: false, brief_to: null })
   })
 
+  test('a review whose dispatch failed after its brief went out keeps its route: a spawn that answers with no agent id logs its spawn route', ON, async ($, on) => {
+    const seen = engine(on, { spawnNoId: true })
+    await workerTurn($)
+    expect(logOf(seen, LOG_1)).toMatchObject({ status: 'incomplete', reason: 'reviewer spawn returned no agent id', brief_to: 'spawn: no reviewer yet' })
+  })
+
   test('a refused spawn that fails its dispatch logs brief_to null', ON, async ($, on) => {
     const seen = engine(on, { spawn: { deny: 'no' } })
     await workerTurn($)

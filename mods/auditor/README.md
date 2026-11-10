@@ -122,8 +122,8 @@ Then start a new session. The reviewer is on as soon as the plugin is loaded.
   whether the review's brief told the reviewer that nothing will wake the agent (`nothing_wakes`), whether the review
   had its follow-up (`followed_up`), and where the brief went (`brief_to`): `stored` for the reviewer already running,
   or `spawn:` with why, either `no reviewer yet` or the reason the last reviewer was let go (`rotation`, `switch off`,
-  `session end`, `refused brief`, `stale landing`). `brief_to` is null for a review whose dispatch failed or was given
-  back, since its brief is not known to have reached a reviewer. It is declared under `userConfig` in
+  `session end`, `refused brief`, `stale landing`). `brief_to` is null for a review given back, or whose dispatch failed
+  before its brief went out, since its brief did not reach a reviewer. It is declared under `userConfig` in
   `.claude-plugin/plugin.json`.
 
 ## The stall nudge
