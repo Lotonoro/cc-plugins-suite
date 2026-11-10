@@ -1,6 +1,7 @@
 import type { ButtonProps, BoxProps, ElementConstructor, InputProps, MarkdownProps, RenderElement, TextProps, UiCopyArgs } from 'claude-code'
 import type { Item, Selection, Store, TodoItem, Turn } from '../types'
-import { labelOf, oneLine, orderedOptions, replyText, turnsOf } from './done'
+import { oneLine } from './cut'
+import { labelOf, orderedOptions, replyText, turnsOf } from './done'
 import { briefParts } from './fences'
 import { outcomeOf, parseInput, selectedItem, type ToolInput } from './items'
 import {

@@ -1,0 +1,104 @@
+import { expect, test } from 'claude-code/testing'
+import { unitsOf } from './columns'
+import { cutLine, cutText, oneLine } from './cut'
+
+const pair = String.fromCodePoint(0x1f600)
+const family = '👨‍👩‍👧‍👦'
+const kiss = '\u{1f468}\u{1f3fb}‍❤️‍\u{1f48b}‍\u{1f468}\u{1f3fb}'
+const flag = '🇺🇸'
+const keycap = '1️⃣'
+const chain = '😀‍😀‍😀'
+const acute = '́'
+const a = (n: number): string => 'a'.repeat(n)
+const x = (n: number): string => 'x'.repeat(n)
+
+test('cutText keeps a text within the bound as it is, and otherwise ends it in an ellipsis that is counted within the bound', () => {
+  expect(cutText('abc', 3)).toBe('abc')
+  expect(cutText('abcd', 3)).toBe('ab…')
+  expect(cutText('abcd', 1)).toBe('…')
+  expect(cutText('abcd', 0)).toBe('')
+})
+
+test('cutText never splits a surrogate pair: a cut that would is one unit shorter', () => {
+  expect(cutText(`${pair}x`, 2)).toBe('…')
+  expect(cutText(`a${pair}x`, 3)).toBe('a…')
+  expect(cutText(`a${pair}x`, 4)).toBe(`a${pair}x`)
+  expect(cutText(`${pair}${pair}x`, 4)).toBe(`${pair}…`)
+})
+
+test('cutText keeps the line breaks of a multi-line text, and cutLine cuts the same text to one line with every break as a space', () => {
+  expect(cutText('one\ntwo\nthree', 9)).toBe('one\ntwo\n…')
+  expect(cutLine('one\ntwo\nthree', 9)).toBe('one two …')
+  expect(cutLine(`a\r\nb${String.fromCharCode(0x2028)}c${String.fromCharCode(0x2029)}d`, 20)).toBe('a b c d')
+})
+
+test('oneLine turns a line break and the blanks around it into one space and keeps other spacing', () => {
+  expect(oneLine('a \n\r\n b  c')).toBe('a b  c')
+})
+
+test('three families of four are cut to two families and the ellipsis', () => {
+  const out = cutText(family.repeat(3), 30)
+  expect(out).toBe(`${family.repeat(2)}…`)
+  expect(out.length).toBe(23)
+})
+
+test('a measured sequence straddling the cut is kept whole or dropped', () => {
+  expect(cutText(`${a(20)}${kiss}b`, 30)).toBe(`${a(20)}…`)
+  expect(cutText(`${a(14)}${kiss}bc`, 30)).toBe(`${a(14)}${kiss}…`)
+  expect(cutText(`${x(27)}${flag}y`, 30)).toBe(`${x(27)}…`)
+  expect(cutText(`${x(28)}${keycap}y`, 30)).toBe(`${x(28)}…`)
+})
+
+test('an unmeasured run joined by U+200D is kept whole or dropped, never shown as a fragment', () => {
+  expect(cutText(`${a(25)}${chain}b`, 30)).toBe(`${a(25)}…`)
+  expect(cutText(`${a(21)}${chain}bc`, 30)).toBe(`${a(21)}${chain}…`)
+})
+
+test('a combining mark stays with its letter, and a text of zero-width units cuts to the ellipsis', () => {
+  expect(cutText(`${x(28)}e${acute}y`, 30)).toBe(`${x(28)}…`)
+  expect(cutText(`${x(28)}ก่y`, 30)).toBe(`${x(28)}…`)
+  expect(cutText(acute.repeat(31), 30)).toBe('…')
+  expect(cutText(`${acute.repeat(30)}abc`, 30)).toBe('…')
+})
+
+test('a chain shorter than the cap is dropped whole, and kept when it fits with the ellipsis', () => {
+  const six = Array(6).fill('😀').join('‍')
+  expect(six.length).toBe(17)
+  expect(cutText(`aa${six}bc`, 19)).toBe('aa…')
+  expect(cutText(`aa${six}bc`, 20)).toBe(`aa${six}…`)
+})
+
+// The longest prefix that ends at a cut point and fits `max` with its ellipsis, found by trying every prefix: a prefix of `n` units ends on a unit boundary,
+// not on U+200D, with a next unit that draws a column (or is the empty prefix).
+const longestKept = (text: string, max: number): string => {
+  const boundaries = new Set<number>([0])
+  let at = 0
+  for (const unit of unitsOf(text)) {
+    at += unit.text.length
+    boundaries.add(at)
+  }
+  let best = 0
+  for (let n = 0; n <= max - 1; n++) {
+    if (!boundaries.has(n)) continue
+    const next = unitsOf(text.slice(n)).at(0)
+    if (n === 0 || (!text.slice(0, n).endsWith('\u200d') && next !== undefined && next.columns > 0)) best = n
+  }
+  return text.slice(0, best)
+}
+
+test('for every cap from 0 to 40, the cut is within it, never ends on a joiner, and is the longest prefix at a cut point that fits', () => {
+  const texts = [family.repeat(3), `${a(20)}${kiss}b`, `${a(14)}${kiss}bc`, `${x(27)}${flag}y`, `${x(28)}${keycap}y`, `${a(25)}${chain}b`, `${x(28)}e${acute}y`, acute.repeat(31)]
+  for (const text of texts) {
+    for (let max = 0; max <= 40; max++) {
+      const out = cutText(text, max)
+      expect(out.length).toBeLessThanOrEqual(max)
+      if (out === text) continue
+      if (max === 0) {
+        expect(out).toBe('')
+        continue
+      }
+      expect(out.slice(0, -1).endsWith('\u200d')).toBe(false)
+      expect(out).toBe(`${longestKept(text, max)}…`)
+    }
+  }
+})

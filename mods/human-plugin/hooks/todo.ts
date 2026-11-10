@@ -1,6 +1,6 @@
 import { atom, read, update, type EngineInterface } from 'claude-code'
 import type { TodoItem } from '../types'
-import { cutLine } from './done'
+import { cutLine } from './cut'
 import { LINE_BREAK } from './items'
 import { resetCount } from './reminder'
 import type { ToolCall } from './ui'

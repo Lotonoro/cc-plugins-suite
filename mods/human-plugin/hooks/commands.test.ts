@@ -705,3 +705,41 @@ test('the usage, rebuilding and failure lines each name /claude-todo, none names
   }
   expect(CLAUDE_DESCRIPTION).not.toContain('/asks')
 })
+
+// A text with only whole copies of `unit` left, once the plain letters, the indent, the heading and the ellipsis are taken off.
+const onlyWhole = (text: string, unit: string): boolean => text.replace(/[a\s…]|you:/g, '').split(unit).join('') === ''
+
+test('a cut that a joined emoji straddles keeps it whole or drops it: the phone title, /claude-todo\'s title, and /asks\'s list line', () => {
+  const family = '👨‍👩‍👧‍👦'
+  for (let k = 40; k <= 60; k++) {
+    const title = `${'a'.repeat(k)}${family.repeat(10)}`
+    const named = lastLine(phoneBlock([made(1, { title })]) ?? '').slice('  #1 '.length)
+    expect(named.length).toBeLessThanOrEqual(PHONE_TITLE)
+    expect(onlyWhole(named, family)).toBe(true)
+  }
+  for (let k = 60; k <= 80; k++) {
+    const title = `${'a'.repeat(k)}${family.repeat(10)}`
+    const todoLine = claudeTodoText([step(title, 'queued', NO_ETA)]).split('\n')[2] ?? ''
+    expect(onlyWhole(todoLine.slice(`    ${QUEUED} `.length, -' · no ETA'.length), family)).toBe(true)
+    const asked = list([made(1, { title })]).slice('  #1 non-blocking: '.length)
+    expect(asked.length).toBeLessThanOrEqual(LIMITS.listLine)
+    expect(onlyWhole(asked, family)).toBe(true)
+  }
+})
+
+test('/asks <n> keeps its newest turn at the floor and whole when it is joined emoji, for every count of letters ahead of them', () => {
+  const options = [1, 2].map(k => ({ label: `Option ${k}`, description: '', recommended: false }))
+  const newestOf = (text: string): string => text.slice(text.indexOf('  you:\n'), text.indexOf('\n  options:'))
+  const kiss = '\u{1f468}\u{1f3fb}‍❤️‍\u{1f48b}‍\u{1f468}\u{1f3fb}'
+  const family = '👨‍👩‍👧‍👦'
+  for (const [unit, floor, ahead] of [[family, 990, 10], [kiss, 986, 14]] as const) {
+    for (let k = 0; k <= ahead; k++) {
+      const text = whole([made(4, { note: 'n'.repeat(5000), options, state: 'done-pending', answer: `${'a'.repeat(k)}${unit.repeat(500)}` })], '4')
+      expect(text.length).toBeLessThanOrEqual(LIMITS.cap)
+      for (const line of lineList(text)) expect(line.startsWith('  ')).toBe(true)
+      const newest = newestOf(text)
+      expect(newest.length).toBeGreaterThanOrEqual(floor)
+      expect(onlyWhole(newest.replace(/\n {2,}/g, ''), unit)).toBe(true)
+    }
+  }
+})

@@ -71,7 +71,8 @@ const unitAt = (codes: readonly number[], at: number): number => {
 }
 
 // A text as the units it is measured in, in order; a code point is whole, a surrogate pair one. An unmeasured sequence is counted as its parts, so never
-// fewer columns than tmux draws it in unless the engine lays it out wider, and a cut or a count on it errs early, never over the room.
+// fewer columns than tmux draws it in unless the engine lays it out wider, and a cut or a count on it errs early, never over the room. A cut that must not
+// split a sequence the measure does not know ends only at a cut point (isCutPoint), which keeps a run of unmeasured parts joined by U+200D whole or drops it.
 export const unitsOf = (text: string): Unit[] => {
   const codes = codePointsOf(text)
   const units: Unit[] = []
@@ -83,6 +84,11 @@ export const unitsOf = (text: string): Unit[] => {
   }
   return units
 }
+
+// Whether a cut may fall between `before` and `after`, two units in a row (`before` undefined at the start of a text, which is always a cut point): the unit
+// before does not end on U+200D, which would join what follows to it, and the unit after draws at least one column, so a mark stays with the letter it marks.
+export const isCutPoint = (before: Unit | undefined, after: Unit): boolean =>
+  before === undefined || (!before.text.endsWith('\u200d') && after.columns > 0)
 
 // The columns a text takes on screen: the measure the label and term limits are checked in, and the one the band's layout (layout.ts) cuts and wraps by.
 export const displayColumns = (text: string): number => {

@@ -1,5 +1,5 @@
 import { expect, test } from 'claude-code/testing'
-import { answerOf, cutLine, cutText, doneNotice, expire, formsOf, isNumbered, orderedOptions, pointerText, press, reopen, reply, replyText, turnsOf, type Form } from './done'
+import { answerOf, doneNotice, expire, formsOf, isNumbered, orderedOptions, pointerText, press, reopen, reply, replyText, turnsOf, type Form } from './done'
 import { act, parseInput } from './items'
 import type { Item, Store, Turn } from '../types'
 
@@ -311,27 +311,6 @@ test('expiry reports that it reopened the item when an agent turn or an update i
   expect(expire(press(store, 3, 1000, 'Use sqlite'), 3, 1000).reopened).toBe(false)
   expect(expire(press(store, 3, 1000, null), 3, 1000).reopened).toBe(false)
   expect(expire(store, 3, 1000).reopened).toBe(false)
-})
-
-test('cutText keeps a text within the bound as it is, and otherwise ends it in an ellipsis that is counted within the bound', () => {
-  expect(cutText('abc', 3)).toBe('abc')
-  expect(cutText('abcd', 3)).toBe('ab…')
-  expect(cutText('abcd', 1)).toBe('…')
-  expect(cutText('abcd', 0)).toBe('')
-})
-
-test('cutText never splits a surrogate pair: a cut that would is one unit shorter', () => {
-  const pair = String.fromCodePoint(0x1f600)
-  expect(cutText(`${pair}x`, 2)).toBe('…')
-  expect(cutText(`a${pair}x`, 3)).toBe('a…')
-  expect(cutText(`a${pair}x`, 4)).toBe(`a${pair}x`)
-  expect(cutText(`${pair}${pair}x`, 4)).toBe(`${pair}…`)
-})
-
-test('cutText keeps the line breaks of a multi-line text, and cutLine cuts the same text to one line with every break as a space', () => {
-  expect(cutText('one\ntwo\nthree', 9)).toBe('one\ntwo\n…')
-  expect(cutLine('one\ntwo\nthree', 9)).toBe('one two …')
-  expect(cutLine(`a\r\nb${String.fromCharCode(0x2028)}c${String.fromCharCode(0x2029)}d`, 20)).toBe('a b c d')
 })
 
 test('orderedOptions puts the recommended option first and keeps the rest in their order, and leaves the item\'s options as they are', () => {
