@@ -121,7 +121,10 @@ Then start a new session. The reviewer is on as soon as the plugin is loaded.
   one whose review failed (its turn ended with no answer or an error, or its brief could not be delivered; a turn you
   aborted with Esc is not one, and keeps its reviewer), or one the toggle switched off. A session
   that is exiting (`/exit`, ctrl+c, ctrl+d, or a `-p` run that finished) ends the reviewer with it, so no stop is
-  attempted then. Should one review alone outgrow 100,000 tokens, the reviewer compacts, keeping your instructions and
+  attempted then. Each stop is checked against Claude Code's agent list, without holding anything up: a stop that was
+  refused, or after which the list still shows the reviewer not ended, is issued once more, and a reviewer that
+  survives both is named as left running in the debug log. A session end issues its one stop and does not check it.
+  Should one review alone outgrow 100,000 tokens, the reviewer compacts, keeping your instructions and
   where you gave them.
 - **What the reviewer reads.** A record of the agent's turns since the previous review: your prompts, the agent's
   replies and every tool call with its result. The review's brief also lists the paths the record edits: one line,
@@ -175,6 +178,7 @@ other note.
   change it.
 - A plugin reload while a reviewer sits idle cancels the timer that would stop it. That reviewer stays until its next
   review settles and starts a new timer, or a `/clear`, a switch or the session end lets it go.
+- A plugin reload between a stop and its check loses the check; the reviewer was still stopped once.
 - The footer redraws when the auditor's own count moves, which it does at every reviewer response, and the session's
   cost is read at each redraw. Between redraws the share can lag the session's cost, which `/auditor` always reads
   fresh.

@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'claude-code/testing'
 import type { AgentInfo } from 'claude-code'
 import type { Conversation } from '../types/index'
-import { adopt, idleTimerOf, isEndNotice, isHandBack, isNotice, isReviewerEntry, land, lapseOf, learn, learnName, letGo, markers, nameKnown, nameListed, originOf, reapIdle, reviewerNameOf, spawnName, spawning, standingOf, withTurnEnd } from './reviewer'
+import { adopt, idleTimerOf, isEndNotice, isHandBack, isNotice, isReviewerEntry, land, lapseOf, learn, learnName, letGo, markers, nameKnown, nameListed, originOf, reapIdle, reviewerNameOf, spawnName, spawning, standingOf, stopMissed, withTurnEnd } from './reviewer'
 import type { Identity } from './reviewer'
 
 const ID: Identity = { plugin: 'auditor', name: 'auditor-reviewer', description: 'auditor review' }
@@ -464,4 +464,25 @@ describe('the reap of an idle reviewer', () => {
       expect(reapIdle(c, timer)).toEqual({ next: c, released: undefined })
     })
   }
+})
+
+describe('stopMissed', () => {
+  test('a stop the engine took is missed when the list still shows the reviewer in any status that is not ended, and says which', () => {
+    for (const status of ['pending', 'running', 'waiting', 'idle'] as const) {
+      expect(stopMissed(false, [listed('ag1', { status })], 'ag1')).toBe(`the list still shows it ${status}`)
+    }
+  })
+
+  test('a stop the engine took is not missed when the list shows the reviewer ended, shows it not at all, or could not be read', () => {
+    for (const status of ['completed', 'failed', 'killed'] as const) expect(stopMissed(false, [listed('ag1', { status })], 'ag1')).toBeUndefined()
+    expect(stopMissed(false, [], 'ag1')).toBeUndefined()
+    expect(stopMissed(false, [listed('ag2', { status: 'idle' })], 'ag1')).toBeUndefined()
+    expect(stopMissed(false, undefined, 'ag1')).toBeUndefined()
+  })
+
+  test('a stop the engine refused is missed whatever the list says, the refusal named first', () => {
+    expect(stopMissed(true, undefined, 'ag1')).toBe('the engine refused it')
+    expect(stopMissed(true, [], 'ag1')).toBe('the engine refused it')
+    expect(stopMissed(true, [listed('ag1', { status: 'killed' })], 'ag1')).toBe('the engine refused it')
+  })
 })

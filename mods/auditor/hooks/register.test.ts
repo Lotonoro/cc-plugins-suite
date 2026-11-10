@@ -76,8 +76,13 @@ type Opts = {
   sendHold?: { until: Promise<void>; reached?: () => void }
   // Each $.tool.call of this tool rejects.
   toolThrows?: string
-  // Each TaskStop call is refused with this reason.
+  // Each TaskStop call is refused with this reason, or only the first `stopRefusals` of them when that is given.
   stopRefuses?: string
+  stopRefusals?: number
+  // What the agent list answers, given how many TaskStop calls had been made: the way to stage a reviewer that a stop does, or does not, take off the list.
+  agentsAfterStops?: (stops: number) => NonNullable<Opts['agents']>
+  // The first agent list call made after a TaskStop calls reached, then waits for until before the engine answers it.
+  listHold?: { until: Promise<void>; reached?: () => void }
   // A spawn a hold covers calls its `reached`, then waits for `until` before its result lands (`result` when given, else the reviewer's id). A single hold covers the spawns numbered `from` (1-based, 1 by default) through `to` when given; an array holds the spawn numbered i + 1 by its entry i, and an undefined entry holds none.
   spawnHold?: (SpawnHold & { from?: number; to?: number }) | (SpawnHold | undefined)[]
   // From the reviewer spawn numbered `spawnThrowsFrom` (1-based) on, the spawn throws; from `spawnDeniesFrom` on, it is refused.
@@ -89,6 +94,8 @@ type Opts = {
   writesFailFromSpawn?: number
   // With `listFailsAt`, the agent list call with that number (1 for the first) rejects and the rest answer.
   listFailsAt?: number
+  // Every agent list call made after a TaskStop rejects.
+  listFailsAfterStop?: boolean
   // Each session id read calls reached, then waits for `until` before the engine answers it; a hold covers the reads numbered `from` (1-based, 1 by default) through `to` when given.
   sessionIdHold?: { until: Promise<void>; reached?: () => void; from?: number; to?: number }
   // Each $.tool.call of `tool`, in the order the calls arrive, waits for its gate in `untils` before the engine answers it.
@@ -167,11 +174,16 @@ const engine = (on: any, opts: Opts = {}) => {
     }
     return { value: seen.session }
   })
+  let listHeld = false
   on('agent.list', () => {
     seen.listCalls++
     if (seen.listCalls === opts.listFailsAt) throw new Error('agent list unavailable')
-    if (opts.listFails === true) throw new Error('agent list unavailable')
-    return { value: opts.agents ?? [] }
+    if (opts.listFails === true || (opts.listFailsAfterStop === true && seen.stops.length > 0)) throw new Error('agent list unavailable')
+    const answer = { value: opts.agentsAfterStops?.(seen.stops.length) ?? opts.agents ?? [] }
+    if (opts.listHold === undefined || listHeld || seen.stops.length === 0) return answer
+    listHeld = true
+    opts.listHold.reached?.()
+    return opts.listHold.until.then(() => answer)
   })
   on('fs.read', (_$: any, e: any) => {
     seen.reads.push(e.path)
@@ -204,7 +216,7 @@ const engine = (on: any, opts: Opts = {}) => {
       seen.stops.push({ task_id: e.task_id, spawns: seen.spawns.length })
       seen.stopWrites.push(seen.writes.length)
     }
-    if (e.tool === 'TaskStop' && opts.stopRefuses !== undefined) return { deny: opts.stopRefuses }
+    if (e.tool === 'TaskStop' && opts.stopRefuses !== undefined && seen.stops.length <= (opts.stopRefusals ?? Infinity)) return { deny: opts.stopRefuses }
     if (e.tool === opts.toolThrows) return Promise.reject(new Error('tool unavailable'))
     const answer = tools[e.tool] ?? { text: `ran ${e.tool}` }
     return answer.deny === undefined ? { ref: 1, result: null, text: answer.text, isError: answer.isError || opts.failsCall?.(e) === true } : { deny: answer.deny }
@@ -3593,15 +3605,20 @@ describe('the session mode button', () => {
   })
 
   test('a spawn that never settles, then the reviewer turned off and on: the next turn end dispatches again', ON, async ($, on) => {
+    // The held spawn is let land at the end: a call left pending is aborted by the engine when the test's own 5 s run out, in whichever later test is running then, and its dispatch's failure handling writes that test's state.
+    const release = gate()
     const reached = gate()
-    const seen = engine(on, { spawnHold: { to: 1, until: new Promise<void>(() => {}), reached: reached.open } })
-    void workerTurn($)
+    const seen = engine(on, { spawnHold: { to: 1, until: release.until, reached: reached.open } })
+    const first = workerTurn($)
     await reached.until
     await $.command.run({ command: 'auditor', args: 'off' } as any)
     await $.command.run({ command: 'auditor', args: 'on' } as any)
     await workerTurn($, 'Second.')
     expect(seen.spawns.length).toBe(2)
     expect(seen.conversation.reviewer).toMatchObject({ id: 'ag1' })
+    release.open()
+    await first
+    await drained()
   })
 
   test('a spawn that lands with no agent id after the reviewer is turned off and on stops no reviewer: the next turn end\'s review reaches a live one', ON, async ($, on) => {
@@ -4458,12 +4475,16 @@ describe('reviewer rotation', () => {
   })
 
   test('a stop that never answers holds neither the turn end nor the next dispatch', ON, async ($, on) => {
-    const seen = engine(on, { reviewerIds: ['ag1', 'ag2'], toolHolds: { tool: 'TaskStop', untils: [new Promise<void>(() => {})] } })
+    // The held stop is answered at the end, so no call is left pending past the test (see the spawn that never settles).
+    const answer = gate()
+    const seen = engine(on, { reviewerIds: ['ag1', 'ag2'], toolHolds: { tool: 'TaskStop', untils: [answer.until] } })
     await workerTurn($)
     await requestWith($, contextOf(80_001))
     await reviewed($, HANDBACK('Nothing to note.'), 'ag1')
     await workerTurn($, 'Second.')
     expect(seen.spawns.length).toBe(2)
+    answer.open()
+    await drained()
   })
 
   test('a retiring settle whose dispatch throws still makes one stop of the retired id', ON, async ($, on) => {
@@ -4522,6 +4543,164 @@ describe('a reviewer stop with no session bound', () => {
     expect(logs[0]).toContain('auditor: reviewer stop failed')
     expect(logs[0]).toContain('tool unavailable')
     expect(logs[0]).toContain('at ')
+  })
+})
+
+describe('a reviewer stop is checked against the agent list and retried once', () => {
+  const listed = (status: string) => [{ id: 'ag1', name: 'auditor-reviewer', type: 'auditor:reviewer', status }]
+  // The agent list shows ag1 as `status` until `taken` stops have been made, and not at all after.
+  const staysUntil = (taken: number, status = 'idle') => (stops: number) => (stops >= taken ? [] : listed(status))
+  const leftRunning = (seen: { logs: { text: string }[] }) => debugLines(seen, 'left running')
+  const retried = (seen: { logs: { text: string }[] }) => debugLines(seen, 'stopping it once more')
+  // A rotation: the reviewer's context passes the threshold, its review settles, and the settle stops it.
+  const rotated = async ($: any): Promise<void> => {
+    await workerTurn($)
+    STEP_USAGE = { ...USAGE, input_tokens: 80_001 }
+    try {
+      await step($, '', 'ag1')
+    } finally {
+      STEP_USAGE = null
+    }
+    await reviewed($, HANDBACK('Nothing to note.'), 'ag1')
+    await drained()
+  }
+
+  test('a stop the engine refuses is issued once more, and a retry the engine takes logs no left-running line', ON, async ($, on) => {
+    const seen = engine(on, { reviewerIds: ['ag1', 'ag2'], stopRefuses: 'no such task', stopRefusals: 1 })
+    await rotated($)
+    expect(seen.stops.map(s => s.task_id)).toEqual(['ag1', 'ag1'])
+    expect(retried(seen).length).toBe(1)
+    expect(leftRunning(seen)).toEqual([])
+  })
+
+  test('a stop the engine refuses twice logs one line naming the reviewer as left running, and issues no third stop', ON, async ($, on) => {
+    const seen = engine(on, { reviewerIds: ['ag1', 'ag2'], stopRefuses: 'no such task' })
+    await rotated($)
+    await workerTurn($, 'Second.')
+    await drained()
+    expect(seen.stops.map(s => s.task_id)).toEqual(['ag1', 'ag1'])
+    expect(leftRunning(seen)).toEqual(['auditor: reviewer ag1 left running: two stops did not end it'])
+  })
+
+  for (const status of ['idle', 'running', 'waiting', 'pending']) {
+    test(`a stop after which the list still shows the reviewer ${status} is issued once more, and a retry the list then shows ended logs no left-running line`, ON, async ($, on) => {
+      const seen = engine(on, { reviewerIds: ['ag1', 'ag2'], agentsAfterStops: staysUntil(2, status) })
+      await rotated($)
+      expect(seen.stops.map(s => s.task_id)).toEqual(['ag1', 'ag1'])
+      expect(retried(seen).length).toBe(1)
+      expect(leftRunning(seen)).toEqual([])
+    })
+  }
+
+  test('a reviewer the list shows not ended after both stops is logged as left running once, and stopped no third time', ON, async ($, on) => {
+    const seen = engine(on, { reviewerIds: ['ag1', 'ag2'], agentsAfterStops: () => listed('idle') })
+    await rotated($)
+    await workerTurn($, 'Second.')
+    await drained()
+    expect(seen.stops.map(s => s.task_id)).toEqual(['ag1', 'ag1'])
+    expect(leftRunning(seen)).toEqual(['auditor: reviewer ag1 left running: two stops did not end it'])
+  })
+
+  for (const status of ['killed', 'completed', 'failed']) {
+    test(`a stopped reviewer the list shows ${status} is not stopped again`, ON, async ($, on) => {
+      const seen = engine(on, { reviewerIds: ['ag1', 'ag2'], agentsAfterStops: () => listed(status) })
+      await rotated($)
+      expect(seen.stops.map(s => s.task_id)).toEqual(['ag1'])
+      expect(retried(seen)).toEqual([])
+      expect(leftRunning(seen)).toEqual([])
+    })
+  }
+
+  test('a stopped reviewer absent from the list is not stopped again', ON, async ($, on) => {
+    const seen = engine(on, { reviewerIds: ['ag1', 'ag2'], agentsAfterStops: () => [] })
+    await rotated($)
+    expect(seen.stops.map(s => s.task_id)).toEqual(['ag1'])
+    expect(retried(seen)).toEqual([])
+  })
+
+  test('a list read that rejects leaves the stop alone and is logged', ON, async ($, on) => {
+    const seen = engine(on, { reviewerIds: ['ag1', 'ag2'], listFailsAfterStop: true, agentsAfterStops: () => listed('idle') })
+    await rotated($)
+    expect(seen.stops.map(s => s.task_id)).toEqual(['ag1'])
+    expect(JSON.stringify(seen.logs)).toContain('agent list')
+    expect(leftRunning(seen)).toEqual([])
+  })
+
+  test('a stop whose call throws is logged as failed and not retried', ON, async ($, on) => {
+    const seen = engine(on, { reviewerIds: ['ag1', 'ag2'], toolThrows: 'TaskStop', agentsAfterStops: () => listed('idle') })
+    await rotated($)
+    await drained()
+    expect(seen.stops.length).toBe(1)
+    expect(JSON.stringify(seen.logs)).toContain('reviewer stop failed')
+    expect(retried(seen)).toEqual([])
+  })
+
+  test('a retry does not stop an id that became the current reviewer since the first stop', ON, async ($, on) => {
+    const check = gate()
+    const reached = gate()
+    const seen = engine(on, { reviewerIds: ['ag1', 'ag1'], stopRefuses: 'no such task', stopRefusals: 1, listHold: { until: check.until, reached: reached.open } })
+    await workerTurn($)
+    await $.command.run({ command: 'auditor', args: 'off' } as any)
+    await reached.until
+    expect(seen.stops.map(s => s.task_id)).toEqual(['ag1'])
+    await $.command.run({ command: 'auditor', args: 'on' } as any)
+    await workerTurn($, 'Second.')
+    expect(seen.conversation.reviewer).toMatchObject({ id: 'ag1' })
+    check.open()
+    await drained()
+    expect(seen.stops.map(s => s.task_id)).toEqual(['ag1'])
+    expect(retried(seen)).toEqual([])
+    expect(seen.conversation.reviewer).toMatchObject({ id: 'ag1' })
+  })
+
+  describe('nothing waits on the check', () => {
+    test('a settle that rotates the reviewer completes, and spawns the next, while the check is held', ON, async ($, on) => {
+      const check = gate()
+      const seen = engine(on, { reviewerIds: ['ag1', 'ag2'], listHold: { until: check.until } })
+      await rotated($)
+      await workerTurn($, 'Second.')
+      expect(seen.stops.map(s => s.task_id)).toEqual(['ag1'])
+      expect(seen.spawns.length).toBe(2)
+      check.open()
+      await drained()
+    })
+
+    test('a dispatch whose brief is refused completes, and spawns the next reviewer, while the check is held', ON, async ($, on) => {
+      const check = gate()
+      const seen = engine(on, { reviewerIds: ['ag1', 'ag2'], sendFails: 'ag1', listHold: { until: check.until } })
+      await workerTurn($)
+      await turnEnded($, 'ag1', 'Nothing to note.')
+      await workerTurn($, 'Second.')
+      await drained()
+      expect(seen.stops.map(s => s.task_id)).toEqual(['ag1'])
+      expect(seen.spawns.length).toBe(2)
+      check.open()
+      await drained()
+    })
+
+    test('the toggle completes while the check is held', ON, async ($, on) => {
+      const check = gate()
+      const seen = engine(on, { reviewerIds: ['ag1'], listHold: { until: check.until } })
+      await workerTurn($)
+      await $.command.run({ command: 'auditor', args: 'off' } as any)
+      expect(seen.stops.map(s => s.task_id)).toEqual(['ag1'])
+      expect(seen.conversation.off).toBe(true)
+      check.open()
+      await drained()
+    })
+  })
+
+  test('a session end issues its stop and checks nothing, so a refused stop is not retried', ON, async ($, on) => {
+    const seen = engine(on, { reviewerIds: ['ag1', 'ag2'], stopRefuses: 'no such task', agentsAfterStops: () => listed('idle') })
+    await $.prompt.submit(COMPOSER('fix the parser'))
+    await $.classic.Stop(stop)
+    const lists = seen.listCalls
+    await $.session.end({ reason: 'clear', sessionId: 's1' } as any)
+    await drained()
+    expect(seen.stops.map(s => s.task_id)).toEqual(['ag1'])
+    expect(seen.listCalls).toBe(lists)
+    expect(retried(seen)).toEqual([])
+    expect(leftRunning(seen)).toEqual([])
   })
 })
 

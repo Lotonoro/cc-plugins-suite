@@ -190,3 +190,16 @@ export const withTurnEnd = (c: Conversation, id: string, at: number): Conversati
 
 // The reviewer markers a /clear keeps: they mark traffic, not a review.
 export const markers = (c: Conversation): Pick<Conversation, 'reviewerIds' | 'reviewerNames'> => ({ reviewerIds: c.reviewerIds, reviewerNames: c.reviewerNames })
+
+// The agent list's statuses that are in flight. A waiting agent is held on background work it owns, or on a plan's approval, and resumes by itself or by a message it can send the worker.
+export const WORKING: readonly string[] = ['pending', 'running', 'waiting']
+
+// The statuses of an agent a stop has not ended: in flight, or idle between turns. The ended ones are `completed`, `failed` and `killed`, and an agent the list does not show; a stopped reviewer was measured absent from the list (engine 2.1.311).
+const NOT_ENDED: readonly string[] = [...WORKING, 'idle']
+
+// Whether a stop missed, and why in words for the debug log: the engine refused it, or took it and the list still shows the agent not ended. A list that could not be read says nothing against a stop the engine took.
+export const stopMissed = (refused: boolean, listed: readonly AgentInfo[] | undefined, id: string): string | undefined => {
+  if (refused) return 'the engine refused it'
+  const status = listed?.find(a => a.id === id)?.status
+  return status !== undefined && NOT_ENDED.includes(status) ? `the list still shows it ${status}` : undefined
+}

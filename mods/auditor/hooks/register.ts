@@ -9,7 +9,7 @@ import { MAIN, admitSend, decideRefusal, followUpText, frameNote, isStoppedRefus
 import type { Decided, Outcome, Refusal, Sent, Verdict } from './notes'
 import { REVIEWER_PROMPT } from './prompt'
 import { clip, editedLines, entryBlock, pageOf, renumberBlock, toolLine } from './record'
-import { adopt, idleTimerOf, isEndNotice, isHandBack, isNotice, isReviewerEntry, land, lapseOf, learn, learnName, letGo, markers, nameKnown, nameListed, originOf, reapIdle, reviewerNameOf, spawnName, spawning, standingOf, withTurnEnd } from './reviewer'
+import { adopt, idleTimerOf, isEndNotice, isHandBack, isNotice, isReviewerEntry, land, lapseOf, learn, learnName, letGo, markers, nameKnown, nameListed, originOf, reapIdle, reviewerNameOf, spawnName, spawning, standingOf, stopMissed, WORKING, withTurnEnd } from './reviewer'
 import type { Identity, IdleTimer, Release } from './reviewer'
 import { purged, withCompaction, withNoteGiven, withResponse, withReviewDone } from './tally'
 import { DIGEST_CHARS, LOOKUP_TIMEOUT_MS, SEARCH_TERM_CHARS, digestBlocks, digestOf, lineCommand, lookupOf, parseSearch, renderSearch, searchCommand } from './transcript'
@@ -267,18 +267,41 @@ const stopFailed = ($: Pick<Scope, 'ui'>, err: unknown): void => {
   else recordFailed($, 'reviewer stop', err)
 }
 
-// Stops a reviewer the auditor lets go (`letGo`: one a take rotated out or a failed review ended, one a session end forgot, one a refused brief dropped, one whose spawn rejected after its id was learned, one whose review lapsed, one that sat idle past its cache's life, or one the toggle switched off or whose spawn landed after it), so it does not sit idle for the rest of the session; each caller says when it issues it. The engine call is not awaited, so no caller's settle or dispatch waits on it; the helper resolves once the stop is issued. Any failure, the state read included, is logged and leaves the reviewer idle, and the caller goes on; the engine's no-session-bound error is the expected failure where no session is bound, and is logged as one plain line. Where a respawn can follow (`mayRespawn`), an id the state holds as the current reviewer is not stopped: a fresh reviewer can come back under a forgotten id, and the stop would end it. A session end spawns none, and when its reset failed the state still names the reviewer it forgot, so it passes false.
-export const stopReviewer = async ($: Pick<Scope, 'state' | 'tool' | 'ui'>, id: string | undefined, mayRespawn: boolean): Promise<void> => {
+// One TaskStop of `id`: whether the engine took it ('ok'), refused it ('refused', logged), or the call threw ('threw', logged).
+const issueStop = async ($: Pick<Scope, 'tool' | 'ui'>, id: string): Promise<'ok' | 'refused' | 'threw'> => {
+  try {
+    const result = await $.tool.call({ tool: 'TaskStop', task_id: id })
+    if (result.deny === undefined && result.isError !== true) return 'ok'
+    $.ui.log(`${PLUGIN}: reviewer stop refused: ${result.deny ?? result.text ?? ''}`, { to: 'debug' })
+    return 'refused'
+  } catch (err) {
+    stopFailed($, err)
+    return 'threw'
+  }
+}
+
+// The stop the caller has issued (`first`) and its check: the agent list is read after each stop, and the stop is issued once more when the engine refused it or the list still shows the reviewer not ended (`stopMissed`); a second miss logs one line naming the reviewer as left running. An id the state holds as the current reviewer by then is not stopped again (`stopReviewer`). A thrown stop is not checked: it is logged and, with no session bound, the list is no more readable than the stop was. Any failure is logged and ends the check.
+const verifyStop = async ($: Pick<Scope, 'agent' | 'state' | 'tool' | 'ui'>, id: string, first: 'ok' | 'refused'): Promise<void> => {
+  try {
+    const missed = stopMissed(first === 'refused', await listAgents($), id)
+    if (missed === undefined) return
+    if (standingOf(await currentConversation($), id) === 'current') return
+    $.ui.log(`${PLUGIN}: reviewer ${id} was not stopped: ${missed}; stopping it once more`, { to: 'debug' })
+    const second = await issueStop($, id)
+    if (second === 'threw') return
+    if (stopMissed(second === 'refused', await listAgents($), id) !== undefined) $.ui.log(`${PLUGIN}: reviewer ${id} left running: two stops did not end it`, { to: 'debug' })
+  } catch (err) {
+    recordFailed($, 'reviewer stop check', err)
+  }
+}
+
+// Stops a reviewer the auditor lets go (`letGo`: one a take rotated out or a failed review ended, one a session end forgot, one a refused brief dropped, one whose spawn rejected after its id was learned, one whose review lapsed, one that sat idle past its cache's life, or one the toggle switched off or whose spawn landed after it), so it does not sit idle for the rest of the session; each caller says when it issues it. The engine call is not awaited, so no caller's settle or dispatch waits on it or on its check; the helper resolves once the stop is issued. Any failure, the state read included, is logged and leaves the reviewer idle, and the caller goes on; the engine's no-session-bound error is the expected failure where no session is bound, and is logged as one plain line. Where a respawn can follow (`mayRespawn`), an id the state holds as the current reviewer is not stopped: a fresh reviewer can come back under a forgotten id, and the stop would end it. Such a stop is checked against the agent list and retried once (`verifyStop`; a stopped reviewer was measured absent from the list, or `killed`). A session end spawns none and runs under a short wall-clock bound, so it passes false: its one stop is not checked. Its reset may also have failed, and then the state still names the reviewer it forgot.
+export const stopReviewer = async ($: Pick<Scope, 'agent' | 'state' | 'tool' | 'ui'>, id: string | undefined, mayRespawn: boolean): Promise<void> => {
   if (id === undefined) return
   try {
     // A plain get would miss a spawn this dispatch made under the id (currentConversation).
     if (mayRespawn && standingOf(await currentConversation($), id) === 'current') return
-    void $.tool.call({ tool: 'TaskStop', task_id: id }).then(
-      result => {
-        if (result.deny !== undefined || result.isError === true) $.ui.log(`${PLUGIN}: reviewer stop refused: ${result.deny ?? result.text ?? ''}`, { to: 'debug' })
-      },
-      (err: unknown) => stopFailed($, err),
-    )
+    void issueStop($, id).then(outcome => (mayRespawn && outcome !== 'threw' ? verifyStop($, id, outcome) : undefined))
   } catch (err) {
     stopFailed($, err)
   }
@@ -530,8 +553,6 @@ const followUp = async ($: Scope, log: boolean, agentId: string, done: Finished,
 // A guard withholds the stall fact: the turn's last tool call asked the user; a stall note on a review dispatched since the user's last prompt was delivered; or the turn's main loop sent a broadcast (`"*"`), which names no listed agent, so the agent list cannot say what it wakes.
 const withheld = (c: Conversation): boolean => c.lastAsked || c.nudged || c.messaged.includes('*')
 
-// The agent list's statuses that are in flight. A waiting agent is held on background work it owns, or on a plan's approval, and resumes by itself or by a message it can send the worker.
-const WORKING = ['pending', 'running', 'waiting']
 // A SendMessage may address a listed name with its ` [ref]` appended, so the suffix is set aside before matching.
 const addressedBy = (a: AgentInfo, to: string): boolean => {
   const bare = to.replace(/ \[[^\]]*\]$/, '')
