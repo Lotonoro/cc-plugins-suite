@@ -1,4 +1,5 @@
 import type { Item, ItemOption, Store, Turn } from '../types'
+import { oneLine } from './cut'
 
 // The text the agent reads when the human's done press is sent: the item's title, and the answer the press chose, if an option or
 // a yes or no was pressed, the label a labelled to-do's ✓ carries, or the reply the human typed. It carries no brief: the agent wrote
@@ -7,26 +8,6 @@ import type { Item, ItemOption, Store, Turn } from '../types'
 // the human owes and the agent's own follow-up work (a build, an install, a check) would read as theirs. A reply's notice asks instead whether
 // the reply settles the ask: the agent removes the item, or appends to it, after which it is open for their next reply.
 const THEN = 'then remove it. Keep it only if the human still has a step of their own to take, updated to name that step; your own follow-up work does not stay on the list.'
-
-// A notice's title and answer, each on one line: a line break in either would start a line the replay reads as another item's marker,
-// and the replay reads a reply's text to its line's end. Only a line break, with the blanks around it, becomes a space: the human's own
-// spacing is kept.
-export const oneLine = (text: string): string => text.replace(/\s*[\r\n\u2028\u2029]+\s*/g, ' ')
-
-// The text cut to at most `max` UTF-16 units, the ellipsis counted within them. A cut never splits a surrogate pair: one that would is a unit
-// shorter. Line breaks stay as they are, so a multi-line text is cut to a multi-line text; cutLine is the one-line cut.
-export const cutText = (text: string, max: number): string => {
-  if (text.length <= max) return text
-  if (max <= 0) return ''
-  let end = max - 1
-  const before = text.charCodeAt(end - 1)
-  const after = text.charCodeAt(end)
-  if (end > 0 && before >= 0xd800 && before <= 0xdbff && after >= 0xdc00 && after <= 0xdfff) end--
-  return `${text.slice(0, end)}\u2026`
-}
-
-// A title or a label cut to one line: its line breaks become spaces (oneLine), then cutText.
-export const cutLine = (text: string, max: number): string => cutText(oneLine(text), max)
 
 // The stack of an error, not only its message: a log line that names no place cannot be traced back to where the failure came from. An error
 // with no stack is logged by its message, and a value that is not an Error as it is.

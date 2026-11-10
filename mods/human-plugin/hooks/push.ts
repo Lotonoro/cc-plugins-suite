@@ -1,6 +1,7 @@
 import type { EngineInterface, Timer } from 'claude-code'
 import type { Item } from '../types'
-import { cutLine, messageOf } from './done'
+import { cutLine } from './cut'
+import { messageOf } from './done'
 import type { Outcome } from './items'
 import { readList } from './shared'
 

@@ -1,11 +1,12 @@
 import type { Item, TodoItem, Turn } from '../types'
-import { cutLine, cutText, formsOf, humanTurn, isNumbered, labelOf, orderedOptions, replyText, turnsOf, type AnswerOutcome, type Form } from './done'
+import { cutLine, cutText } from './cut'
+import { formsOf, humanTurn, isNumbered, labelOf, orderedOptions, replyText, turnsOf, type AnswerOutcome, type Form } from './done'
 import { LINE_BREAK } from './items'
 import { bandOrder } from './layout'
 import { GLYPH, HEADING, countsText, etaTail, inDisplayOrder } from './todo'
 
 // The bounds the answers keep, in UTF-16 units. `cap` is the most `/asks <n>` prints, the cut line included; `floor` is the least its cut newest
-// turn keeps, as printed, one unit less when a surrogate pair straddles the cut; `title` and `label` cut those fields in `/asks <n>`;
+// turn keeps, as printed, less the bound cutText states where its cut would split a run; `title` and `label` cut those fields in `/asks <n>`;
 // `listLine` cuts a list line's title and its answer, and the answer an answer form echoes; `listItems` is how many items the list names before the
 // rest fold into a line of numbers; `foot` is the most the foot of `/asks <n>` prints, which its fixed wording keeps it to. The foot is never cut.
 export const LIMITS = { cap: 4000, floor: 1000, title: 300, label: 200, listLine: 80, listItems: 20, foot: 500 } as const
@@ -276,7 +277,7 @@ const cutPrinted = (text: string, max: number): string => {
   if (text.length <= max) return text
   let best = ''
   for (let at = max - 1; at >= Math.max(0, max - 3); at--) {
-    // cutText keeps `at` units, or one fewer when a pair straddles them, and adds the ellipsis, which is taken off again here.
+    // cutText keeps `at` units, or fewer by the bound it states, and adds the ellipsis, which is taken off again here.
     const head = cutText(text, at + 1).slice(0, -1)
     const line = head.length - (head.lastIndexOf('\n') + 1)
     const cut = `${head}${line === 0 ? `${INDENT}…` : line === 1 ? ' …' : '…'}`

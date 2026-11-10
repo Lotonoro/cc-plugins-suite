@@ -5,7 +5,8 @@ import { TOOL, act, carryNext, clearAll, parseInput, type Outcome } from './item
 import { STEERING, TODO_SPEC, TOOL_SPEC } from './steering'
 import { countBatch } from './reminder'
 import { SUBAGENT_REFUSAL, TODO_NAME, TODO_TOOL, emptyTodo, parseTodo, readTodo, todoLine, todoReply, writeTodo } from './todo'
-import { messageOf, oneLine, stateOf } from './done'
+import { oneLine } from './cut'
+import { messageOf, stateOf } from './done'
 import {
   ARG_HINT, CLAUDE_COMMAND, CLAUDE_DESCRIPTION, CLAUDE_FAILED, CLAUDE_REBUILDING, CLAUDE_USAGE, COMMAND, DESCRIPTION, FAILED, PHONE_REBUILDING, REBUILDING, USAGE,
   answerLine, answerTo, claudeTodoText, hasArgument, parseAsk, phoneBlock,

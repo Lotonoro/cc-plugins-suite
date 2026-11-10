@@ -133,6 +133,11 @@ test('a missing, null, non-text or blank ETA is accepted and stored as no ETA', 
   expect(write([{ title: 'Build', state: 'queued' }])).toEqual([{ title: 'Build', state: 'queued', eta: NO_ETA }])
 })
 
+test('an ETA of three families of four is stored as two families and the ellipsis', () => {
+  const family = '👨‍👩‍👧‍👦'
+  expect(write([{ title: 'Build', state: 'queued', eta: family.repeat(3) }])?.[0]?.eta).toBe(`${family.repeat(2)}…`)
+})
+
 test('a line break in an ETA becomes a space', () => {
   expect(write([{ title: 'Build', state: 'queued', eta: 'after\ntests' }])?.[0]?.eta).toBe('after tests')
   expect(write([{ title: 'Build', state: 'queued', eta: 'after\r\ntests' }])?.[0]?.eta).toBe('after tests')

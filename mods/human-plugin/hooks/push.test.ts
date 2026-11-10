@@ -703,3 +703,18 @@ test('a push hung at one window\'s end does not hold back another item\'s send t
   expect(lines.filter(line => line.text.includes('sent #2 for press')).length).toBe(1)
   expect(messages).toEqual(['Blocking: #1 Plain ask'])
 })
+
+test('a push whose title holds a family straddling the 180th unit holds the family whole or not at all', async ($, on) => {
+  const clock = mock.clock(on)
+  mock.store(on)
+  on('ui.panes', () => ({ value: [] }))
+  const messages = pushes(on)
+  const family = '👨‍👩‍👧‍👦'
+  for (let k = 150; k <= 165; k++) await $.tool.call({ tool: TOOL, action: 'add', blocking: true, title: `${'a'.repeat(k)}${family.repeat(5)}` })
+  await clock.settle()
+  expect(messages).toHaveLength(16)
+  for (const message of messages) {
+    expect(message.length).toBeLessThanOrEqual(180)
+    expect(message.replace(/[a\s…]|Blocking:|#\d+/g, '').split(family).join('')).toBe('')
+  }
+})
