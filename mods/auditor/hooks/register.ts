@@ -142,6 +142,12 @@ const recordFailed = ($: Pick<Scope, 'ui'>, what: string, err: unknown): void =>
 
 const reasonOf = (err: unknown): string => (err instanceof Error ? err.message : String(err))
 
+// The engine's error for a tool call made where no session is bound (a headless run, or a process on its way out). It names itself in its message.
+const NO_SESSION_BOUND = /no session is bound in this process/
+
+// The session end reasons of a process that is exiting (`/exit`, ctrl+c, ctrl+d; a `-p` run finished, or a signal); any other reason (`clear`, `resume`, `logout`) leaves the process going or costs a line at worst.
+const EXIT_REASONS: readonly string[] = ['prompt_input_exit', 'other']
+
 type Label = { type: string; name: string }
 
 // A subagent as the record names it: its id, then its type and name where known.
@@ -239,8 +245,8 @@ const withEntriesFirst = (entries: readonly string[], record: TurnRecord): TurnR
 // The conversation as it is now: read through a change, which writes the state back unchanged. A plain get answers the dispatch's starting moment; no read in the dispatch sees the writes made since it began, its own or another dispatch's, except a change.
 const currentConversation = ($: Pick<Scope, 'state'>): Promise<Conversation> => change($, c => c)
 
-// Stops a reviewer the auditor lets go (one a take retired, one a session end forgot, one a refused brief dropped, or one the toggle switched off or whose spawn landed after it), so it does not sit idle for the rest of the session; each caller says when it issues it. The engine call is not awaited, so no caller's settle or dispatch waits on it; the helper resolves once the stop is issued. Any failure, the state read included, is logged and leaves the reviewer idle, and the caller goes on. Where a respawn can follow (`mayRespawn`), an id the state holds as the current reviewer is not stopped: a fresh reviewer can come back under a forgotten id, and the stop would end it. A session end spawns none, and when its reset failed the state still names the reviewer it forgot, so it passes false.
-const stopReviewer = async ($: Pick<Scope, 'state' | 'tool' | 'ui'>, id: string | undefined, mayRespawn: boolean): Promise<void> => {
+// Stops a reviewer the auditor lets go (one a take retired, one a session end forgot, one a refused brief dropped, or one the toggle switched off or whose spawn landed after it), so it does not sit idle for the rest of the session; each caller says when it issues it. The engine call is not awaited, so no caller's settle or dispatch waits on it; the helper resolves once the stop is issued. Any failure, the state read included, is logged and leaves the reviewer idle, and the caller goes on; the engine's no-session-bound error is the expected failure where no session is bound, and is logged as one plain line. Where a respawn can follow (`mayRespawn`), an id the state holds as the current reviewer is not stopped: a fresh reviewer can come back under a forgotten id, and the stop would end it. A session end spawns none, and when its reset failed the state still names the reviewer it forgot, so it passes false.
+export const stopReviewer = async ($: Pick<Scope, 'state' | 'tool' | 'ui'>, id: string | undefined, mayRespawn: boolean): Promise<void> => {
   if (id === undefined) return
   try {
     // A plain get would miss a spawn this dispatch made under the id (currentConversation).
@@ -249,11 +255,16 @@ const stopReviewer = async ($: Pick<Scope, 'state' | 'tool' | 'ui'>, id: string 
       result => {
         if (result.deny !== undefined || result.isError === true) $.ui.log(`${PLUGIN}: reviewer stop refused: ${result.deny ?? result.text ?? ''}`, { to: 'debug' })
       },
-      (err: unknown) => recordFailed($, 'reviewer stop', err),
+      (err: unknown) => stopFailed($, err),
     )
   } catch (err) {
-    recordFailed($, 'reviewer stop', err)
+    stopFailed($, err)
   }
+}
+
+const stopFailed = ($: Pick<Scope, 'ui'>, err: unknown): void => {
+  if (NO_SESSION_BOUND.test(reasonOf(err))) $.ui.log(`${PLUGIN}: reviewer stop skipped: no session is bound in this mode`, { to: 'debug' })
+  else recordFailed($, 'reviewer stop', err)
 }
 
 // Takes the open review if `ready`, judged on the conversation the change reads; where `back` holds for the review taken, its entries are put back in the record in the same change. Where `mark` holds instead, the review is not taken but marked as followed up (`followedUp`), in the same change: it stays open with its entries held, and its reviewer is not retired. The dispatch failure never asks for a mark.
@@ -1003,8 +1014,13 @@ export const register: Register = (on, options) => {
       }
     }
     const closing = ended.conversation
-    // The forgotten reviewer is stopped first, before the log is written: the session end's hooks run under a short wall-clock bound, and issued first the stop has all of it before an abort can cut it off.
-    await stopReviewer($, closing?.reviewer?.id, false)
+    // An exiting process ends the reviewer with it, so no stop is attempted (the engine has no session to take one in by then).
+    if (EXIT_REASONS.includes(e.reason)) {
+      if (closing?.reviewer?.id !== undefined) $.ui.log(`${PLUGIN}: the session is exiting, which ends the reviewer with it, so it is not stopped`, { to: 'debug' })
+    } else {
+      // The forgotten reviewer is stopped first, before the log is written: the session end's hooks run under a short wall-clock bound, and issued first the stop has all of it before an abort can cut it off.
+      await stopReviewer($, closing?.reviewer?.id, false)
+    }
     if (closing !== undefined) await logDropped($, e.sessionId, log, closing, `session ended: ${e.reason}`)
     return next(e)
   })

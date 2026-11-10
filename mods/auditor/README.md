@@ -107,7 +107,8 @@ Then start a new session. The reviewer is on as soon as the plugin is loaded.
   not raise a settled finding again without new evidence. The memory is the reviewer's own, never sent to the agent:
   it is bounded in size and age, reset on `/clear` and on switching on, and kept while the auditor is off. The retired
   reviewer is stopped, so it does not stay idle for the rest of the session. So is a reviewer forgotten on a `/clear`,
-  one whose brief was refused, or one the toggle switched off. Should one review alone outgrow 100,000 tokens, the
+  one whose brief was refused, or one the toggle switched off. A session that is exiting (`/exit`, ctrl+c, ctrl+d, or
+  a `-p` run that finished) ends the reviewer with it, so no stop is attempted then. Should one review alone outgrow 100,000 tokens, the
   reviewer compacts, keeping your instructions and where you gave them.
 - **What the reviewer reads.** A record of the agent's turns since the previous review: your prompts, the agent's
   replies and every tool call with its result. It also reads files on disk, and it can search the whole session's

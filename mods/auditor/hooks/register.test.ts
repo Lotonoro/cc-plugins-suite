@@ -8,6 +8,8 @@ import { REVIEWER_PROMPT } from './prompt'
 import * as register from './register'
 
 const ON = { options: { log: true } }
+// The error the engine throws from $.tool.call where no session is bound, as the plugin sees it: a HooksError whose message the plugin's name prefixes (the debug logs of the reviewer-memory live runs show it).
+const NO_SESSION_BOUND_MESSAGE = 'auditor: $.tool.call is not available in this mode: no session is bound in this process (the REPL has not mounted and no headless session is built); catch it and carry on'
 
 const stop = { stop_hook_active: false, last_assistant_message: 'Done.', transcript_path: '/tmp/w.jsonl' }
 const QUIET_STOP = { ...stop, background_tasks: [], session_crons: [] }
@@ -4468,6 +4470,39 @@ describe('reviewer rotation', () => {
   })
 })
 
+describe('a reviewer stop with no session bound', () => {
+  // The test engine cannot stage this: a tool.call hook that throws is skipped, and the plugin then sees "no implementation for tool.call". So the stop is staged with a hand-made `$` and the error as the engine throws it.
+  const NO_SESSION_BOUND = Object.assign(new Error(NO_SESSION_BOUND_MESSAGE), { name: 'HooksError' })
+  const dollar = (reject: unknown) => {
+    const logs: string[] = []
+    const calls: unknown[] = []
+    const $ = { tool: { call: (e: unknown) => (calls.push(e), Promise.reject(reject)) }, ui: { log: (text: string) => logs.push(text) } } as any
+    return { $, logs, calls }
+  }
+  // The stop is not awaited, so its rejection is handled a few microtasks after the helper resolves.
+  const settled = async (): Promise<void> => {
+    for (let i = 0; i < 5; i++) await Promise.resolve()
+  }
+
+  test('the engine\'s no-session-bound error is logged as one plain line with no stack', async () => {
+    const { $, logs, calls } = dollar(NO_SESSION_BOUND)
+    await register.stopReviewer($, 'ag1', false)
+    await settled()
+    expect(calls).toEqual([{ tool: 'TaskStop', task_id: 'ag1' }])
+    expect(logs).toEqual(['auditor: reviewer stop skipped: no session is bound in this mode'])
+  })
+
+  test('any other error is logged as a failure with its stack', async () => {
+    const { $, logs } = dollar(new Error('tool unavailable'))
+    await register.stopReviewer($, 'ag1', false)
+    await settled()
+    expect(logs.length).toBe(1)
+    expect(logs[0]).toContain('auditor: reviewer stop failed')
+    expect(logs[0]).toContain('tool unavailable')
+    expect(logs[0]).toContain('at ')
+  })
+})
+
 describe('a reviewer the auditor forgets', () => {
   test('a session end with a stored reviewer stops it once, by its id, before the session\'s log is written, and starts no worker turn', ON, async ($, on) => {
     const seen = engine(on, { reviewerIds: ['ag1', 'ag2'] })
@@ -4480,6 +4515,27 @@ describe('a reviewer the auditor forgets', () => {
     expect(seen.writes.length).toBeGreaterThan(written)
     expect(logOf(seen, LOG_1)).toMatchObject({ status: 'incomplete', reason: 'session ended: clear' })
     expect(seen.prompts).toEqual(['fix the parser'])
+  })
+
+  for (const reason of ['prompt_input_exit', 'other']) {
+    test(`a session end with reason ${reason} issues no stop and logs one plain line that the exiting process ends the reviewer`, ON, async ($, on) => {
+      const seen = engine(on, { reviewerIds: ['ag1', 'ag2'] })
+      await $.prompt.submit(COMPOSER('fix the parser'))
+      await $.classic.Stop(stop)
+      await $.session.end({ reason, sessionId: 's1' } as any)
+      expect(seen.toolCalls.filter((c: any) => c.tool === 'TaskStop')).toEqual([])
+      expect(debugLines(seen, 'exiting')).toEqual(['auditor: the session is exiting, which ends the reviewer with it, so it is not stopped'])
+      expect(seen.conversation.reviewer).toBeUndefined()
+      expect(logOf(seen, LOG_1)).toMatchObject({ status: 'incomplete', reason: `session ended: ${reason}` })
+    })
+  }
+
+  test('a session end with reason resume stops the reviewer as a clear does', ON, async ($, on) => {
+    const seen = engine(on, { reviewerIds: ['ag1', 'ag2'], })
+    await $.prompt.submit(COMPOSER('fix the parser'))
+    await $.classic.Stop(stop)
+    await $.session.end({ reason: 'resume', sessionId: 's1' } as any)
+    expect(seen.stops.map(s => s.task_id)).toEqual(['ag1'])
   })
 
   test('a session end with no stored reviewer stops nothing', ON, async ($, on) => {
