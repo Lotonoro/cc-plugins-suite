@@ -255,6 +255,21 @@ test('a resumed session shows the Claude list the last live write gave, done ent
   expect(await titles($)).toBe('#1 non-blocking, open: An ask')
 })
 
+// Twenty a, a family of three ending on a joiner, then the ellipsis: an ETA a cut left split.
+test('a rebuild over a stored split ETA restores it repaired', async ($, on) => {
+  mock.clock(on)
+  const split = `${'a'.repeat(20)}👨‍👩‍👧‍…`
+  host(on, {
+    [MAIN]: jsonl(
+      prompt('u0', null, 0),
+      todoCall('a1', 'u0', 1, 'w1', { entries: [{ title: 'Plan one', state: 'in_flight', eta: split }] }),
+      reply('r1', 'a1', 2, 'w1', 'Claude TODO: 1 in flight, 0 queued'),
+    ),
+  })
+  await $.classic.SessionStart({ source: 'resume', transcript_path: MAIN })
+  expect(await todoList($)).toBe(`Claude TODO: 1 in flight, 0 queued\n- in_flight: Plan one (ETA: ${'a'.repeat(20)}…)`)
+})
+
 test('a transcript with no Claude list write rebuilds an empty Claude list', async ($, on) => {
   mock.clock(on)
   host(on, { [MAIN]: SESSION })
