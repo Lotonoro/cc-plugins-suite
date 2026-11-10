@@ -153,6 +153,9 @@ const reasonOf = (err: unknown): string => (err instanceof Error ? err.message :
 // The engine's error for a tool call made where no session is bound (a headless run, or a process on its way out). It names itself in its message.
 const NO_SESSION_BOUND = /no session is bound in this process/
 
+// The engine's refusal of a stop whose id is no task, which a reviewer that is already gone is. It names the id after it, inside a tool-error wrapper.
+const NO_TASK_FOUND = /No task found/
+
 // The session end reasons of a process that is exiting (`/exit`, ctrl+c, ctrl+d; a `-p` run finished, or a signal); any other reason (`clear`, `resume`, `logout`) leaves the process going or costs a line at worst.
 const EXIT_REASONS: readonly string[] = ['prompt_input_exit', 'other']
 
@@ -267,20 +270,21 @@ const stopFailed = ($: Pick<Scope, 'ui'>, err: unknown): void => {
   else recordFailed($, 'reviewer stop', err)
 }
 
-// One TaskStop of `id`: whether the engine took it ('ok'), refused it ('refused', logged), or the call threw ('threw', logged).
-const issueStop = async ($: Pick<Scope, 'tool' | 'ui'>, id: string): Promise<'ok' | 'refused' | 'threw'> => {
+// One TaskStop of `id`: whether the engine took it ('ok'), refused it ('refused', logged), answered that the id is no task ('gone', logged: the reviewer is already gone, so there is nothing to stop again), or the call threw ('threw', logged).
+const issueStop = async ($: Pick<Scope, 'tool' | 'ui'>, id: string): Promise<'ok' | 'refused' | 'gone' | 'threw'> => {
   try {
     const result = await $.tool.call({ tool: 'TaskStop', task_id: id })
     if (result.deny === undefined && result.isError !== true) return 'ok'
-    $.ui.log(`${PLUGIN}: reviewer stop refused: ${result.deny ?? result.text ?? ''}`, { to: 'debug' })
-    return 'refused'
+    const reason = result.deny ?? result.text ?? ''
+    $.ui.log(`${PLUGIN}: reviewer stop refused: ${reason}`, { to: 'debug' })
+    return NO_TASK_FOUND.test(reason) ? 'gone' : 'refused'
   } catch (err) {
     stopFailed($, err)
     return 'threw'
   }
 }
 
-// The stop the caller has issued (`first`) and its check: the agent list is read after each stop, and the stop is issued once more when the engine refused it or the list still shows the reviewer not ended (`stopMissed`); a second miss logs one line naming the reviewer as left running. An id the state holds as the current reviewer by then is not stopped again (`stopReviewer`). A thrown stop is not checked: it is logged and, with no session bound, the list is no more readable than the stop was. Any failure is logged and ends the check.
+// The stop the caller has issued (`first`) and its check: the agent list is read after each stop, and the stop is issued once more when the engine refused it or the list still shows the reviewer not ended (`stopMissed`); a second miss logs one line naming the reviewer as left running. A stop the engine answers with no task found (`gone`) is not a miss: the reviewer is already gone, so it is neither retried nor named as left running. An id the state holds as the current reviewer by then is not stopped again (`stopReviewer`). A thrown stop is not checked: it is logged and, with no session bound, the list is no more readable than the stop was. Any failure is logged and ends the check.
 const verifyStop = async ($: Pick<Scope, 'agent' | 'state' | 'tool' | 'ui'>, id: string, first: 'ok' | 'refused'): Promise<void> => {
   try {
     const missed = stopMissed(first === 'refused', await listAgents($), id)
@@ -288,7 +292,7 @@ const verifyStop = async ($: Pick<Scope, 'agent' | 'state' | 'tool' | 'ui'>, id:
     if (standingOf(await currentConversation($), id) === 'current') return
     $.ui.log(`${PLUGIN}: reviewer ${id} was not stopped: ${missed}; stopping it once more`, { to: 'debug' })
     const second = await issueStop($, id)
-    if (second === 'threw') return
+    if (second === 'threw' || second === 'gone') return
     if (stopMissed(second === 'refused', await listAgents($), id) !== undefined) $.ui.log(`${PLUGIN}: reviewer ${id} left running: two stops did not end it`, { to: 'debug' })
   } catch (err) {
     recordFailed($, 'reviewer stop check', err)
@@ -301,7 +305,7 @@ export const stopReviewer = async ($: Pick<Scope, 'agent' | 'state' | 'tool' | '
   try {
     // A plain get would miss a spawn this dispatch made under the id (currentConversation).
     if (mayRespawn && standingOf(await currentConversation($), id) === 'current') return
-    void issueStop($, id).then(outcome => (mayRespawn && outcome !== 'threw' ? verifyStop($, id, outcome) : undefined))
+    void issueStop($, id).then(outcome => (mayRespawn && outcome !== 'threw' && outcome !== 'gone' ? verifyStop($, id, outcome) : undefined))
   } catch (err) {
     stopFailed($, err)
   }

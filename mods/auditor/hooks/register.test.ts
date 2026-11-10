@@ -79,6 +79,8 @@ type Opts = {
   // Each TaskStop call is refused with this reason, or only the first `stopRefusals` of them when that is given.
   stopRefuses?: string
   stopRefusals?: number
+  // The reason each TaskStop call is refused with, by call number (1-based); a call past the end is not refused.
+  stopRefusalReasons?: string[]
   // What the agent list answers, given how many TaskStop calls had been made: the way to stage a reviewer that a stop does, or does not, take off the list.
   agentsAfterStops?: (stops: number) => NonNullable<Opts['agents']>
   // The first agent list call made after a TaskStop calls reached, then waits for until before the engine answers it.
@@ -217,6 +219,7 @@ const engine = (on: any, opts: Opts = {}) => {
       seen.stopWrites.push(seen.writes.length)
     }
     if (e.tool === 'TaskStop' && opts.stopRefuses !== undefined && seen.stops.length <= (opts.stopRefusals ?? Infinity)) return { deny: opts.stopRefuses }
+    if (e.tool === 'TaskStop' && opts.stopRefusalReasons?.[seen.stops.length - 1] !== undefined) return { deny: opts.stopRefusalReasons[seen.stops.length - 1] }
     if (e.tool === opts.toolThrows) return Promise.reject(new Error('tool unavailable'))
     const answer = tools[e.tool] ?? { text: `ran ${e.tool}` }
     return answer.deny === undefined ? { ref: 1, result: null, text: answer.text, isError: answer.isError || opts.failsCall?.(e) === true } : { deny: answer.deny }
@@ -4580,6 +4583,40 @@ describe('a reviewer stop is checked against the agent list and retried once', (
     await drained()
     expect(seen.stops.map(s => s.task_id)).toEqual(['ag1', 'ag1'])
     expect(leftRunning(seen)).toEqual(['auditor: reviewer ag1 left running: two stops did not end it'])
+  })
+
+  // The engine's own answer to a stop of an id that is no task: a reviewer already gone.
+  const NO_TASK = 'No task found with ID: ag1'
+
+  test('a stop the engine refuses with no task found is not issued again and logs no left-running line', ON, async ($, on) => {
+    const seen = engine(on, { reviewerIds: ['ag1', 'ag2'], stopRefuses: NO_TASK })
+    await rotated($)
+    await workerTurn($, 'Second.')
+    await drained()
+    expect(seen.stops.map(s => s.task_id)).toEqual(['ag1'])
+    expect(retried(seen)).toEqual([])
+    expect(leftRunning(seen)).toEqual([])
+    expect(debugLines(seen, 'reviewer stop refused').length).toBe(1)
+  })
+
+  test('a stop whose error result says no task found is not issued again and logs no left-running line', ON, async ($, on) => {
+    const seen = engine(on, { reviewerIds: ['ag1', 'ag2'], tools: { TaskStop: { text: `<tool_use_error>${NO_TASK}</tool_use_error>`, isError: true } } })
+    await rotated($)
+    await workerTurn($, 'Second.')
+    await drained()
+    expect(seen.stops.map(s => s.task_id)).toEqual(['ag1'])
+    expect(retried(seen)).toEqual([])
+    expect(leftRunning(seen)).toEqual([])
+  })
+
+  test('a retry the engine answers with no task found logs no left-running line', ON, async ($, on) => {
+    const seen = engine(on, { reviewerIds: ['ag1', 'ag2'], stopRefusalReasons: ['no such task', NO_TASK] })
+    await rotated($)
+    await workerTurn($, 'Second.')
+    await drained()
+    expect(seen.stops.map(s => s.task_id)).toEqual(['ag1', 'ag1'])
+    expect(retried(seen).length).toBe(1)
+    expect(leftRunning(seen)).toEqual([])
   })
 
   for (const status of ['idle', 'running', 'waiting', 'pending']) {
