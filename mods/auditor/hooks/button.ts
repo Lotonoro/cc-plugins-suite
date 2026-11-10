@@ -1,4 +1,5 @@
 import type { BoxProps, ButtonProps, ElementConstructor, RenderElement, TextProps } from 'claude-code'
+import type { FailCause, LastReview } from '../types/index'
 import { centsOf, percentOf, shareOf, wholeOf } from './pricing'
 
 // The button's words and drawing: the footer label, the hover popup's rows as an ordered list, and `/auditor`'s answer, all from the same plain figures so they cannot drift apart.
@@ -10,8 +11,18 @@ type Table = {
   Button: ElementConstructor<ButtonProps>
 }
 
-// What the words read: the toggle's state, the tally in dollars, the model that made it unknown (null while it is known), and the session's total from the ledger (undefined when unknown).
-export type Figures = { state: 'on' | 'off' | 'failing'; spent: number; unpriced: string | null; total: number | undefined }
+// What the words read: the toggle's state, the tally in dollars, the model that made it unknown (null while it is known), the session's total from the ledger (undefined when unknown), the reviews completed and notes given with the last review, the cause of the failure (set exactly while the state is failing) and the count of notes held for the next prompt.
+export type Figures = {
+  state: 'on' | 'off' | 'failing'
+  spent: number
+  unpriced: string | null
+  total: number | undefined
+  reviews: number
+  notes: number
+  last: LastReview | undefined
+  cause: FailCause | undefined
+  held: number
+}
 
 // One popup row: a stable key, so a test or a later row finds it by key and order, and its words.
 export type Row = { key: string; text: string }
@@ -33,11 +44,42 @@ const costRow = (f: Figures): string => {
   return ['auditor ' + centsOf(f.spent) + ' since on', ...session, 'API list prices'].join(' · ')
 }
 
-// The popup's rows, in order: the cost row, then the press row. The popup never exceeds four rows.
-export const rowsOf = (f: Figures): Row[] => [
-  { key: 'cost', text: costRow(f) },
-  { key: 'press', text: f.state === 'off' ? 'click to switch on' : 'click to switch off' },
-]
+// The failing row's cause wording, one per cause. A place that sets `failing` with a cause of its own adds its row here.
+const CAUSE_WORDS: Record<FailCause, string> = {
+  'no answer': 'the reviewer ended a turn without an answer',
+  'not dispatched': 'a review could not be handed to a reviewer',
+  'no start': 'the reviewer did not start in 10 minutes',
+  unknown: 'cause unknown; see the debug log',
+}
+
+const plural = (n: number, noun: string): string => `${n} ${noun}${n === 1 ? '' : 's'}`
+
+// The host's local time of day, as HH:MM.
+const clockOf = (at: number): string => {
+  const d = new Date(at)
+  return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`
+}
+
+// The reviews row: how many reviews completed and notes were given, and how the last review closed, at an absolute time since the popup is not redrawn while it is open.
+const reviewsRow = (f: Figures): string => {
+  if (f.reviews === 0 || f.last === undefined) return 'no reviews yet'
+  return [plural(f.reviews, 'review'), f.notes === 0 ? 'no notes' : plural(f.notes, 'note'), `last at ${clockOf(f.last.at)}, ${f.last.note ? 'note sent' : 'quiet'}`].join(' · ')
+}
+
+// The state row, or none: the failure with its cause, the notes held for the next prompt, or both in one row.
+const stateRow = (f: Figures): string | undefined => {
+  const failing = f.state === 'failing' && f.cause !== undefined ? `failing: ${CAUSE_WORDS[f.cause]}` : undefined
+  if (f.held === 0) return failing
+  return failing === undefined ? `${plural(f.held, 'note')} held for your next prompt` : `${failing} · ${plural(f.held, 'note')} held`
+}
+
+// The popup's rows, in order: the cost row, the reviews row, the press row, then at most one state row; four at the most. Off shows the cost row and the press row alone.
+export const rowsOf = (f: Figures): Row[] => {
+  const press: Row = { key: 'press', text: f.state === 'off' ? 'click to switch on' : 'click to switch off' }
+  if (f.state === 'off') return [{ key: 'cost', text: costRow(f) }, press]
+  const state = stateRow(f)
+  return [{ key: 'cost', text: costRow(f) }, { key: 'reviews', text: reviewsRow(f) }, press, ...(state === undefined ? [] : [{ key: 'state', text: state }])]
+}
 
 // What `/auditor` answers: the label the footer would draw, then the popup's rows.
 export const answerOf = (f: Figures): string => [labelOf(f), ...rowsOf(f).map(row => row.text)].join('\n')

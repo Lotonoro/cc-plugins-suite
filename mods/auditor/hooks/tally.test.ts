@@ -1,10 +1,10 @@
 import { describe, expect, test } from 'claude-code/testing'
 import type { Conversation } from '../types/index'
 import { PRICED_MODEL, priceOf } from './pricing'
-import { purged, withCompaction, withResponse } from './tally'
+import { purged, withNoteGiven, withReviewDone, withCompaction, withResponse } from './tally'
 
 // A conversation holding only what the tally reads.
-const conversation = (over: Partial<Conversation> = {}): Conversation => ({ off: false, spent: 0, unpriced: null, ...over }) as unknown as Conversation
+const conversation = (over: Partial<Conversation> = {}): Conversation => ({ off: false, spent: 0, unpriced: null, reviews: 0, notes: 0, ...over }) as unknown as Conversation
 const response = (over: Partial<Parameters<typeof withResponse>[1]> = {}): Parameters<typeof withResponse>[1] => ({ input_tokens: 10, output_tokens: 1000, cache_read_input_tokens: 20_000, cache_creation_input_tokens: 5_000, model: PRICED_MODEL, ...over })
 
 // Whether two dollar figures agree to a billionth: the kit's expect has no toBeCloseTo.
@@ -87,5 +87,35 @@ describe('withCompaction', () => {
 describe('purged', () => {
   test('empties the tally and forgets the model that made it unknown', () => {
     expect(purged(conversation({ spent: 3, unpriced: 'haiku' }))).toMatchObject({ spent: 0, unpriced: null })
+  })
+
+  test('empties the review counters and the last review', () => {
+    const after = purged(conversation({ reviews: 4, notes: 2, last: { at: 5, note: true } }))
+    expect(after).toMatchObject({ reviews: 0, notes: 0 })
+    expect(after.last).toBeUndefined()
+  })
+})
+
+describe('withReviewDone', () => {
+  test('a completed review adds one and becomes the last review, with the time it closed and whether it gave a note', () => {
+    const one = withReviewDone(conversation(), 100, false)
+    expect(one).toMatchObject({ reviews: 1, last: { at: 100, note: false } })
+    expect(withReviewDone(one, 200, true)).toMatchObject({ reviews: 2, last: { at: 200, note: true } })
+  })
+
+  test('a review closing while the auditor is off adds nothing', () => {
+    const off = conversation({ off: true })
+    expect(withReviewDone(off, 100, true)).toBe(off)
+  })
+})
+
+describe('withNoteGiven', () => {
+  test('a note adds one to the notes given', () => {
+    expect(withNoteGiven(withNoteGiven(conversation())).notes).toBe(2)
+  })
+
+  test('a note booked while the auditor is off adds nothing', () => {
+    const off = conversation({ off: true })
+    expect(withNoteGiven(off)).toBe(off)
   })
 })

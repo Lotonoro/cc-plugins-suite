@@ -26,6 +26,12 @@ export type OpenReview = {
   followedUp?: boolean
 }
 
+// Why the reviewer is failing: a review ended without an answer, none could be handed to a reviewer, a spawn did not start in time, or a state stored before causes existed. Every place that sets `failing` sets one of these, or adds a row for its own cause to the words in button.ts in the same change.
+export type FailCause = 'no answer' | 'not dispatched' | 'no start' | 'unknown'
+
+// The last completed review: when it closed (the clock's time) and whether it gave a note.
+export type LastReview = { at: number; note: boolean }
+
 // A note held for the worker's next prompt: the engine refused its send in its stopped-session state, by the refusal's wording or because the interrupt mark was set. It rides beside the user's next own prompt (a slash command never carries it), framed as its review line then its body, and carries no stall mark: the stall guard is armed when the note is held. A stored state may still give a note a `stall` mark; nothing reads it.
 export type PendingNote = { number: number; text: string }
 
@@ -73,8 +79,8 @@ export type Conversation = {
   review?: OpenReview
   // Each reviewer spawn still in flight, by the brief it was spawned with, the epoch it was spawned under, the number of the review it serves, the clock's time its dispatch started, and the id and resolved model once the spawn hook has seen it: a dispatch whose spawn result names no agent takes its id from here. No reset clears it, so a spawn a reset dropped still finds the id it is stopped by (`deliverBrief`). `learn`, `adopt` and `land` in reviewer.ts read and write it. Its landing takes it out (`releaseSpawn`). A review no reviewer has stood in for `SPAWN_TIMEOUT_MS` after its dispatch fails at the next dispatch (`dispatchIdle`).
   spawnsInFlight: { brief: string; epoch: number; number: number; startedAt: number; id?: string; model?: string }[]
-  // Whether the last review failed and none has succeeded since: no review is dispatched until a turn the user's own prompt started ends.
-  failing: boolean
+  // Why the last review failed, while none has succeeded since: no review is dispatched until a turn the user's own prompt started ends. Absent means not failing. A state stored before causes existed holds `true` (read as the unknown cause) or `false` (not failing).
+  failing?: FailCause | boolean
   // What started the worker's latest turn. A turn a reviewer's task notification started records nothing and dispatches nothing at its end.
   turnStart: TurnStart | null
   // The stall fact the worker's latest Stop gave, which the brief states. Null when the guards withheld it, a Stop omitted a list, the agent list was unread, or an aborted turn cleared it: a turn whose main loop sent a broadcast gets no stall verdict.
@@ -89,6 +95,12 @@ export type Conversation = {
   dispatchesAtPrompt: number
   // What the auditor's reviewers have spent, in US dollars at API list prices (pricing.ts), since this conversation began or the auditor was last switched on: every response of every reviewer this session spawned and every reviewer compaction's own request, while on. Switching off empties it, and a fresh conversation starts it empty (the `session.end` reset in register.ts, the one place that decides which session ends restart it).
   spent: number
+  // Reviews completed since this conversation began or the auditor was last switched on, a complete one with a note or quiet; an incomplete one is not counted. Restarts with the tally (`purged`, and the `session.end` reset).
+  reviews: number
+  // Notes given since the same point: each note booked, delivered or held for the next prompt, a stall note's and an escalation's included.
+  notes: number
+  // The last completed review. Absent while none has completed since the same point.
+  last?: LastReview
   // The model id that made the cost unknown: a response or a compaction priced at a model pricing.ts has no rate for. Null while every figure was priced; once set it stays until the tally restarts, and `spent` stops growing.
   unpriced: string | null
   // The worker's record since the reviewer's last dispatch.

@@ -27,16 +27,28 @@ earlier one, confirm a fix, or correct the wording of a message when nothing wou
   button's label and the popup's rows: the Claude mobile app draws no footer, but runs the command and shows its answer. `/auditor memory` prints the reviewer's memory of the
   notes it delivered, the findings still in flight and the ones it settled, from any surface, the phone included.
   Every new session starts on. To stop it for good, disable the plugin with `/plugin`.
-- **The hover popup.** Pointing at the button shows, above it and without moving the footer, what the label rounds: the
-  reviewer's cost since it was switched on, to the cent, the session's cost and the share, then what a click does:
+- **The hover popup.** Pointing at the button shows, above it and without moving the footer, what the label rounds
+  and what the reviewer has done, then what a click does, in at most four rows:
 
   ```
   auditor $12.40 since on · session $410.27 · 3% · API list prices
+  14 reviews · 3 notes · last at 14:32, quiet
   click to switch off
+  failing: the reviewer ended a turn without an answer · 1 note held
   ```
 
-  While the auditor is off it says `off: no reviews, no figures until switched on` and `click to switch on`. When the
-  reviewer's cost cannot be priced, the label drops its figures and the popup says `cost unknown: no price for <model>`.
+  The first row is the reviewer's cost since it was switched on, to the cent, the session's cost and the share. The
+  second counts the reviews that completed and the notes given since the session or conversation began or the auditor
+  was switched on, and says when the last review closed (the time of day on your machine) and whether it sent a note
+  (`note sent`) or stayed silent (`quiet`); before any review it reads `no reviews yet`. A review that fails is not
+  counted. The fourth row appears only when something needs saying: `failing:` with the cause, which is one of `the
+  reviewer ended a turn without an answer`, `a review could not be handed to a reviewer`, `the reviewer did not start
+  in 10 minutes` or `cause unknown; see the debug log`; and `N notes held for your next prompt` while notes wait
+  for your next message after an Esc (joined to the failing text as `· 1 note held` when both apply). The popup is not
+  redrawn while it is open, so the close time is a clock time, not "2 min ago". The reviewer's raw failure reason is in
+  the debug log. While the auditor is off it says `off: no reviews, no figures until switched on` and `click to switch
+  on`, with no review facts. When the reviewer's cost cannot be priced, the label drops its figures and the cost row
+  says `cost unknown: no price for <model>`. `/auditor` answers with the same rows after the label.
 - **Notes** reach the agent as a message from the reviewer, headed `auditor, review N:`, never as your words. Each
   shows in your transcript as Claude Code's grey collapsed `› Message from @auditor-reviewer` row. An idle agent
   takes its note at once, in a turn of its own, which the reviewer then reviews too, so the agent and the reviewer
@@ -51,7 +63,7 @@ earlier one, confirm a fix, or correct the wording of a message when nothing wou
 - **Nothing else.** Beyond those rows, a review that finds nothing leaves no trace on screen, and neither do the
   reviewer's end-of-run notices or task rows. Two things reach you: an escalation of an unresolved disagreement, as a toast and as a push
   notification on your phone when you are away from the terminal (Claude Code holds it back while you are at it), and
-  the toggle reading `auditor failing` while reviews fail, until one succeeds; the debug log has the cause. In an
+  the toggle reading `auditor failing` while reviews fail, until one succeeds, with the cause in the popup and the raw reason in the debug log. In an
   interactive session without agent teams (measured on Claude Code 2.1.312), the reviewer's hand-back arrives as a
   prompt and is dropped there, and Claude Code shows `Prompt dropped by a hook: reviewer bookkeeping`.
 

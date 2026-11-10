@@ -741,7 +741,7 @@ describe('auditor', () => {
     expect(seen.prompts).toEqual(['fix the parser'])
     expect(logOf(seen, LOG_1)).toMatchObject({ status: 'complete', note: null, note_delivered: false })
     expect(debugLines(seen, 'review 1 sent no note, and its final answer was: a.ts:9 unsent.').length).toBe(1)
-    expect(seen.conversation.failing).toBe(false)
+    expect(seen.conversation.failing).toBeUndefined()
   })
 
   test('a turn of another agent does not settle a review', ON, async ($, on) => {
@@ -871,7 +871,7 @@ describe('auditor', () => {
       await workerTurn($)
       await $.turn.complete(TURN_END('ag1', answer))
       expect(logOf(seen, LOG_1)).toMatchObject({ status: 'complete', note: null, note_delivered: false, escalation: false, stall: false })
-      expect(seen.conversation.failing).toBe(false)
+      expect(seen.conversation.failing).toBeUndefined()
       expect(seen.conversation.record.blocks).toEqual([])
       expect(debugLines(seen, 'sent no note, and its final answer was').length).toBe(logged ? 1 : 0)
       expect(toMain(seen)).toEqual([])
@@ -901,7 +901,7 @@ describe('auditor', () => {
     await noteSent($, 'a.ts:4 sent.')
     await $.turn.complete({ ...TURN_END('ag1', ''), isAborted: true, reason: 'aborted' })
     expect(logOf(seen, LOG_1)).toMatchObject({ status: 'complete', note: 'a.ts:4 sent.', note_delivered: true })
-    expect(seen.conversation.failing).toBe(false)
+    expect(seen.conversation.failing).toBeUndefined()
     expect(seen.conversation.record.blocks).toEqual([])
   })
 
@@ -1365,7 +1365,7 @@ describe('auditor', () => {
     expect(seen.spawns.length).toBe(2)
     expect(seen.spawns[1].prompt).toContain('Review 2. Its record holds entries 1-1,')
     expect(seen.toasts).toEqual([])
-    expect(seen.conversation.failing).toBe(false)
+    expect(seen.conversation.failing).toBeUndefined()
   })
 
   test('two dispatch paths running at once brief the reviewer once', ON, async ($, on) => {
@@ -1431,7 +1431,7 @@ describe('auditor', () => {
     await $.classic.Stop(stop)
     expect(logOf(seen, LOG_1)).toMatchObject({ status: 'incomplete', reason: 'reviewer spawn returned no agent id' })
     expect(seen.conversation.review).toBeUndefined()
-    expect(seen.conversation.failing).toBe(true)
+    expect(seen.conversation.failing).toBe('not dispatched')
     expect(seen.conversation.briefsInFlight).toEqual([])
     opts.spawnNoId = false
     await $.prompt.submit(COMPOSER('second'))
@@ -3401,7 +3401,7 @@ describe('the session mode button', () => {
     await drained()
     expect(seen.conversation.reviewer).toMatchObject({ id: 'ag1' })
     expect(seen.conversation.review).toMatchObject({ number: 1 })
-    expect(seen.conversation.failing).toBe(false)
+    expect(seen.conversation.failing).toBeUndefined()
     expect(seen.stops).toEqual([])
   })
 
@@ -3514,7 +3514,7 @@ describe('the session mode button', () => {
     lands.open()
     await stopping
     await drained()
-    expect(seen.conversation.failing).toBe(false)
+    expect(seen.conversation.failing).toBeUndefined()
   })
 
 
@@ -3710,7 +3710,7 @@ describe('the session mode button', () => {
     release.open()
     await ending
     expect(seen.conversation.review).toMatchObject({ number: 2 })
-    expect(seen.conversation.failing).toBe(false)
+    expect(seen.conversation.failing).toBeUndefined()
     expect(debugLines(seen, 'reviewer send bookkeeping failed').length).toBe(1)
   })
 
@@ -4802,7 +4802,7 @@ describe('rc regression tests', () => {
     await workerTurn($, 'Second.')
     await drained()
     expect(seen.stops).toEqual([])
-    expect(seen.conversation.failing).toBe(false)
+    expect(seen.conversation.failing).toBeUndefined()
     await turnEnded($, 'ag1', 'a.ts:4 swallows the error.')
     expect(logOf(seen, LOG_1)).toMatchObject({ status: 'complete', note: 'a.ts:4 swallows the error.' })
   })
@@ -4957,7 +4957,7 @@ describe('the follow-up to a note written as the answer', () => {
       expect(sentTo(seen)).toEqual(ONE_FOLLOW_UP)
       expect(logOf(seen, LOG_1)).toMatchObject({ status: 'complete', note: null, note_delivered: false })
       expect(seen.conversation.review).toBeUndefined()
-      expect(seen.conversation.failing).toBe(false)
+      expect(seen.conversation.failing).toBeUndefined()
       expect(debugLines(seen, QUIET_LOGGED).length).toBe(logged ? 1 : 0)
       expect(debugLines(seen, ATTEMPT).length).toBe(1)
     })
@@ -4976,7 +4976,7 @@ describe('the follow-up to a note written as the answer', () => {
       expect(debugLines(seen, ATTEMPT).length).toBe(1)
       expect(debugLines(seen, QUIET_LOGGED)).toEqual([])
       // The settle cleared the failure before it dispatched; a brief that throws the same way fails review 2 afterwards.
-      expect(seen.conversations.some(c => c.failing === false)).toBe(true)
+      expect(seen.conversations.some(c => c.failing === undefined)).toBe(true)
       expect(seen.conversation.briefsInFlight).not.toContain(followUpText(1))
       // The follow-up once, then review 2's brief to the same reviewer, at once on the idle worker.
       expect(seen.sends.map(s => s.text).filter(t => t === followUpText(1)).length).toBe(1)
@@ -5197,7 +5197,7 @@ describe('a note held after an interrupt', () => {
     await step($, 'working')
     await abort($)
     expect(seen.sends.map(s => s.to)).toEqual(['ag1'])
-    expect(seen.conversation.failing).toBe(true)
+    expect(seen.conversation.failing).toBe('not dispatched')
     expect(seen.conversation.pendingNotes).toEqual([])
     expect(logOf(seen, LOG_2)).toMatchObject({ status: 'incomplete' })
   })
@@ -6279,16 +6279,16 @@ describe('the auditor\'s cost', () => {
     // The popup's texts, in the order the tree draws them.
     const rowsDrawn = async (ui: any): Promise<string[]> => {
       const drawn = JSON.stringify(await ui.drawn())
-      return [...drawn.matchAll(/"key":"(cost|press)"[^]*?"children":\["([^"]+)"\]/g)].map(m => m[2] ?? '')
+      return [...drawn.matchAll(/"key":"(cost|reviews|press|state)"[^]*?"children":\["([^"]+)"\]/g)].map(m => m[2] ?? '')
     }
 
-    test('on: the cost row, then the press row, in order', ON, async ($, on) => {
+    test('on: the cost row, the reviews row, then the press row, in order', ON, async ($, on) => {
       engine(on, { ledger: 410.27 })
       otherMods(on)
       await workerTurn($)
       await request($, worth(12.4))
       const ui = await mountMode($)
-      expect(await rowsDrawn(ui)).toEqual(['auditor $12.40 since on · session $410.27 · 3% · API list prices', 'click to switch off'])
+      expect(await rowsDrawn(ui)).toEqual(['auditor $12.40 since on · session $410.27 · 3% · API list prices', 'no reviews yet', 'click to switch off'])
     })
 
     test('with the share unknown the cost row has no session figure', ON, async ($, on) => {
@@ -6296,7 +6296,7 @@ describe('the auditor\'s cost', () => {
       otherMods(on)
       await workerTurn($)
       await request($, worth(12.4))
-      expect(await rowsDrawn(await mountMode($))).toEqual(['auditor $12.40 since on · API list prices', 'click to switch off'])
+      expect(await rowsDrawn(await mountMode($))).toEqual(['auditor $12.40 since on · API list prices', 'no reviews yet', 'click to switch off'])
     })
 
     test('off: no reviews, no figures, then click to switch on', ON, async ($, on) => {
@@ -6332,7 +6332,7 @@ describe('the auditor\'s cost', () => {
       await workerTurn($)
       await request($, worth(12.4))
       const answer = await run($)
-      expect(answer).toBe('auditor on ($12, 3%)\nauditor $12.40 since on · session $410.27 · 3% · API list prices\nclick to switch off')
+      expect(answer).toBe('auditor on ($12, 3%)\nauditor $12.40 since on · session $410.27 · 3% · API list prices\nno reviews yet\nclick to switch off')
       expect(answer?.split('\n')[0]).toBe(await labelOf($))
     })
 
@@ -6340,7 +6340,7 @@ describe('the auditor\'s cost', () => {
       engine(on)
       otherMods(on)
       expect(await run($, 'off')).toBe('auditor off\noff: no reviews, no figures until switched on\nclick to switch on')
-      expect(await run($, 'on')).toBe('auditor on\nauditor $0.00 since on · API list prices\nclick to switch off')
+      expect(await run($, 'on')).toBe('auditor on\nauditor $0.00 since on · API list prices\nno reviews yet\nclick to switch off')
     })
 
     test('failing and an unknown cost read as the footer does', ON, async ($, on) => {
@@ -6349,7 +6349,7 @@ describe('the auditor\'s cost', () => {
       await workerTurn($)
       await request($, billed({ model: 'haiku' }))
       await turnFailed($, 'ag1')
-      expect(await run($)).toBe('auditor failing\ncost unknown: no price for haiku\nclick to switch off')
+      expect(await run($)).toBe('auditor failing\ncost unknown: no price for haiku\nno reviews yet\nclick to switch off\nfailing: the reviewer ended a turn without an answer')
     })
 
     test('the usage line and the memory print are unchanged, and the description names the cost', ON, async ($, on) => {
@@ -6358,6 +6358,239 @@ describe('the auditor\'s cost', () => {
       expect(await run($, 'bogus')).toBe('Usage: /auditor [on|off|memory]')
       expect(await run($, 'memory')).toBe(printMemory([]))
       expect(seen.commands.find(c => c.name === 'auditor').description).toMatch(/cost/)
+    })
+  })
+})
+
+describe('the review facts', () => {
+  const run = async ($: any, args = ''): Promise<string> => (await $.command.run({ command: 'auditor', args })).text
+  // The answer's rows after its label line.
+  const rowsOf = async ($: any, args = ''): Promise<string[]> => (await run($, args)).split('\n').slice(1)
+  const reviewsRow = async ($: any): Promise<string | undefined> => (await rowsOf($)).find(r => /reviews? yet|^\d+ reviews?/.test(r))
+  const NOON = new Date(2026, 10, 9, 14, 32).getTime()
+  const QUIET = 'Nothing to note.'
+  const STOPPED_MAIN = 'The main conversation was not messaged: the session was stopped and nobody has sent input since.'
+  const BODY = 'a.ts:4 swallows it.'
+  // The popup's rows as the footer draws them.
+  const popupRows = async ($: any): Promise<string[]> => {
+    const drawn = JSON.stringify(await (await mountMode($)).drawn())
+    return [...drawn.matchAll(/"key":"(cost|reviews|press|state)"[^]*?"children":\["([^"]+)"\]/g)].map(m => m[2] ?? '')
+  }
+
+  describe('the reviews row', () => {
+    test('a conversation with no review completed says so, and a state stored before the counters existed reads the same', ON, async ($, on) => {
+      engine(on, { stateSeed: { dispatches: 3, off: false, epoch: 1 } })
+      expect(await reviewsRow($)).toBe('no reviews yet')
+    })
+
+    test('a quiet review adds one review and no note, at the close time', ON, async ($, on) => {
+      const seen = engine(on)
+      await workerTurn($)
+      seen.clock = NOON
+      await $.turn.complete(TURN_END('ag1', QUIET))
+      expect(seen.conversation).toMatchObject({ reviews: 1, notes: 0, last: { note: false } })
+      expect(await reviewsRow($)).toBe('1 review · no notes · last at 14:32, quiet')
+    })
+
+    test('a review with a note adds a review and a note, and says so', ON, async ($, on) => {
+      const seen = engine(on)
+      await workerTurn($)
+      seen.clock = NOON
+      await turnEnded($, 'ag1', BODY)
+      expect(seen.conversation).toMatchObject({ reviews: 1, notes: 1, last: { note: true } })
+      expect(await reviewsRow($)).toBe('1 review · 1 note · last at 14:32, note sent')
+    })
+
+    test('the counts grow by review, and the last review is the latest', ON, async ($, on) => {
+      const seen = engine(on)
+      await workerTurn($)
+      await turnEnded($, 'ag1', BODY)
+      await workerTurn($, 'More.')
+      await $.turn.complete(TURN_END('ag1', QUIET))
+      await workerTurn($, 'Again.')
+      seen.clock = NOON
+      await $.turn.complete(TURN_END('ag1', QUIET))
+      expect(await reviewsRow($)).toBe('3 reviews · 1 note · last at 14:32, quiet')
+    })
+
+    test('a review that ends without an answer is not counted', ON, async ($, on) => {
+      const seen = engine(on)
+      await workerTurn($)
+      await turnFailed($, 'ag1')
+      expect(seen.conversation.reviews).toBe(0)
+      expect(await reviewsRow($)).toBe('no reviews yet')
+    })
+
+    test('switching off and on, or a /clear, restarts the facts', ON, async ($, on) => {
+      const seen = engine(on)
+      await workerTurn($)
+      await turnEnded($, 'ag1', BODY)
+      expect(await reviewsRow($)).toMatch(/^1 review/)
+      await run($, 'off')
+      await run($, 'on')
+      expect(await reviewsRow($)).toBe('no reviews yet')
+      expect(seen.conversation).toMatchObject({ reviews: 0, notes: 0 })
+      await workerTurn($)
+      await turnEnded($, 'ag1', BODY)
+      expect(await reviewsRow($)).toMatch(/^1 review/)
+      await $.session.end({ reason: 'clear', sessionId: 's1' } as any)
+      expect(await reviewsRow($)).toBe('no reviews yet')
+      expect(seen.conversation.last).toBeUndefined()
+    })
+
+    test('off shows no review facts, in /auditor or the popup', ON, async ($, on) => {
+      engine(on)
+      otherMods(on)
+      await workerTurn($)
+      await turnEnded($, 'ag1', BODY)
+      await run($, 'off')
+      expect(await rowsOf($)).toEqual(['off: no reviews, no figures until switched on', 'click to switch on'])
+      expect(await popupRows($)).toEqual(['off: no reviews, no figures until switched on', 'click to switch on'])
+    })
+  })
+
+  describe('notes held', () => {
+    test('a note held for the next prompt counts as given and shows in the held row until a prompt attaches it', ON, async ($, on) => {
+      const seen = engine(on, { noteFailsAt: [1], refusal: STOPPED_MAIN })
+      otherMods(on)
+      await workerTurn($)
+      await noteSent($, BODY)
+      expect(seen.conversation).toMatchObject({ notes: 1, pendingNotes: [{ number: 1, text: BODY }] })
+      expect((await rowsOf($)).at(-1)).toBe('1 note held for your next prompt')
+      await $.turn.complete(TURN_END('ag1', 'Sent.'))
+      expect(await reviewsRow($)).toMatch(/^1 review · 1 note · last at \d\d:\d\d, note sent$/)
+      await $.prompt.submit(COMPOSER('carry on'))
+      expect(seen.conversation.pendingNotes).toEqual([])
+      expect((await rowsOf($)).some(r => r.includes('held'))).toBe(false)
+      expect(seen.conversation.notes).toBe(1)
+    })
+
+    test('a delivered note is counted once and shows no held row', ON, async ($, on) => {
+      const seen = engine(on)
+      await workerTurn($)
+      await noteSent($, BODY)
+      expect(seen.conversation.notes).toBe(1)
+      expect((await rowsOf($)).some(r => r.includes('held'))).toBe(false)
+    })
+
+    test('a switch off drops the held notes and their row', ON, async ($, on) => {
+      const seen = engine(on, { noteFailsAt: [1], refusal: STOPPED_MAIN })
+      await workerTurn($)
+      await noteSent($, BODY)
+      await run($, 'off')
+      await run($, 'on')
+      expect(seen.conversation.pendingNotes).toEqual([])
+      expect((await rowsOf($)).some(r => r.includes('held'))).toBe(false)
+    })
+  })
+
+  describe('the failure cause', () => {
+    const stateRow = async ($: any): Promise<string | undefined> => (await rowsOf($)).find(r => r.startsWith('failing'))
+
+    test('a turn end without an answer fails with the no-answer cause', ON, async ($, on) => {
+      const seen = engine(on)
+      await workerTurn($)
+      await turnFailed($, 'ag1')
+      expect(seen.conversation.failing).toBe('no answer')
+      expect(await stateRow($)).toBe('failing: the reviewer ended a turn without an answer')
+    })
+
+    const dispatches: [string, Opts][] = [['a spawn that is refused', { spawnDeniesFrom: 1 }], ['a spawn that throws', { spawnThrows: 'spawn broke' }], ['a spawn that returns no agent', { spawnNoId: true }], ['a brief whose send throws', { sendThrows: 'ag1', reviewerIds: ['ag1', 'ag2'], spawnThrowsFrom: 2 }]]
+    for (const [how, opts] of dispatches) {
+      test(`${how} fails with the not-dispatched cause`, ON, async ($, on) => {
+        const seen = engine(on, opts)
+        await workerTurn($)
+        if ('sendThrows' in opts) {
+          await $.turn.complete(TURN_END('ag1', QUIET))
+          await workerTurn($, 'More.')
+        }
+        expect(seen.conversation.failing).toBe('not dispatched')
+        expect(await stateRow($)).toBe('failing: a review could not be handed to a reviewer')
+      })
+    }
+
+    test('a spawn that does not settle in ten minutes fails with the no-start cause', ON, async ($, on) => {
+      const held = heldSpawn()
+      const seen = engine(on, { spawnHold: { ...held.hold, to: 1 }, reviewerIds: ['ag1', 'ag2'] })
+      await $.prompt.submit(COMPOSER('fix'))
+      const stopping = $.classic.Stop(stop)
+      await held.reached
+      seen.clock += TEN_MINUTES + 1
+      await $.prompt.submit(COMPOSER('again'))
+      await $.classic.Stop(stop)
+      expect(seen.conversation.failing).toBe('no start')
+      expect(await stateRow($)).toBe('failing: the reviewer did not start in 10 minutes')
+      held.land()
+      await stopping
+      await drained()
+    })
+
+    test('a conversation stored with failing true reads as the unknown cause', ON, async ($, on) => {
+      engine(on, { stateSeed: { failing: true } })
+      expect(await stateRow($)).toBe('failing: cause unknown; see the debug log')
+    })
+
+    test('a conversation stored with failing false is not failing', ON, async ($, on) => {
+      engine(on, { stateSeed: { failing: false } })
+      expect(await stateRow($)).toBeUndefined()
+      expect((await run($)).split('\n')[0]).toBe('auditor on')
+    })
+
+    test('a brief the stored reviewer refuses, followed by a successful spawn, is not a failure', ON, async ($, on) => {
+      const seen = engine(on, { sendFails: 'ag1', reviewerIds: ['ag1', 'ag2'] })
+      await workerTurn($)
+      await $.turn.complete(TURN_END('ag1', QUIET))
+      await workerTurn($, 'More.')
+      expect(seen.spawns.length).toBe(2)
+      expect(seen.conversation.failing).toBeUndefined()
+      expect(await stateRow($)).toBeUndefined()
+    })
+
+    test('a completed review clears the cause', ON, async ($, on) => {
+      const seen = engine(on)
+      await workerTurn($)
+      await turnFailed($, 'ag1')
+      expect(seen.conversation.failing).toBe('no answer')
+      await $.prompt.submit(COMPOSER('go on'))
+      await workerTurn($, 'More.')
+      await $.turn.complete(TURN_END('ag1', QUIET))
+      expect(seen.conversation.failing).toBeUndefined()
+      expect(await stateRow($)).toBeUndefined()
+    })
+
+    test('a switch off and on clears the cause', ON, async ($, on) => {
+      const seen = engine(on)
+      await workerTurn($)
+      await turnFailed($, 'ag1')
+      await run($, 'off')
+      await run($, 'on')
+      expect(seen.conversation.failing).toBeUndefined()
+      expect(await stateRow($)).toBeUndefined()
+    })
+  })
+
+  describe('the popup and /auditor agree', () => {
+    test('failing with two notes held draws four rows in order, and /auditor answers the same four after its label', ON, async ($, on) => {
+      engine(on, { stateSeed: { failing: 'no answer', reviews: 2, notes: 2, last: { at: NOON, note: true }, pendingNotes: [{ number: 1, text: 'a' }, { number: 2, text: 'b' }] } })
+      otherMods(on)
+      const expected = [
+        'auditor $0.00 since on · API list prices',
+        '2 reviews · 2 notes · last at 14:32, note sent',
+        'click to switch off',
+        'failing: the reviewer ended a turn without an answer · 2 notes held',
+      ]
+      expect(await popupRows($)).toEqual(expected)
+      expect(await rowsOf($)).toEqual(expected)
+    })
+
+    test('every state draws the rows /auditor answers, never more than four', ON, async ($, on) => {
+      engine(on, { stateSeed: { failing: true, reviews: 1, notes: 0, last: { at: NOON, note: false } } })
+      otherMods(on)
+      for (const args of ['', 'off', 'on']) {
+        const answered = await rowsOf($, args)
+        expect(await popupRows($)).toEqual(answered)
+        expect(answered.length).toBeLessThanOrEqual(4)
+      }
     })
   })
 })

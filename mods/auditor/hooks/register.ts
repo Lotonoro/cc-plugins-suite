@@ -1,6 +1,6 @@
 import type { AgentInfo, AgentSpawnResult, CoreEngineInterface, ProcessRunResult, Register, TurnUsage } from 'claude-code'
 import { update } from 'claude-code'
-import type { Conversation, OpenReview, PendingNote, ReviewUsage, TurnEnd, TurnRecord, TurnStart, Wake } from '../types/index'
+import type { Conversation, FailCause, OpenReview, PendingNote, ReviewUsage, TurnEnd, TurnRecord, TurnStart, Wake } from '../types/index'
 import { MEMORY, MEMORY_ACTION, MEMORY_FIELD, MEMORY_LOG_CHARS, REVIEW_ENDED, WHY_CHARS, bounded, changeMemory, printMemory, renderMemory, withNote } from './memory'
 import type { MemoryChange } from './memory'
 import { answerOf, buttonOf } from './button'
@@ -11,7 +11,7 @@ import { REVIEWER_PROMPT } from './prompt'
 import { clip, entryBlock, pageOf, renumberBlock, toolLine } from './record'
 import { adopt, forget, isEndNotice, isHandBack, isNotice, isReviewerEntry, land, learn, learnName, markers, nameKnown, nameListed, originOf, retire, reviewerNameOf, spawnName, spawning, standingOf } from './reviewer'
 import type { Identity } from './reviewer'
-import { purged, withCompaction, withResponse } from './tally'
+import { purged, withCompaction, withNoteGiven, withResponse, withReviewDone } from './tally'
 import { DIGEST_CHARS, LOOKUP_TIMEOUT_MS, SEARCH_TERM_CHARS, digestBlocks, digestOf, lineCommand, lookupOf, parseSearch, renderSearch, searchCommand } from './transcript'
 
 const PLUGIN = 'auditor'
@@ -65,17 +65,20 @@ type Finished = { answer: string; reason: string; isAborted: boolean; durationMs
 // `epoch`: the epoch at the plan; `at`: the clock's time at the plan.
 type Plan = { number: number; brief: string; send: string | undefined; epoch: number; at: number }
 
-const fresh = (): Conversation => ({ dispatches: 0, off: false, epoch: 0, midTurn: false, pendingNotes: [], interrupted: false, lastMessage: '', transcript: null, record: EMPTY_RECORD, subagents: {}, briefsInFlight: [], failing: false, turnStart: null, reviewerIds: [], reviewerNames: [], reviewerContext: 0, memory: [], spawnsInFlight: [], wake: null, lastAsked: false, messaged: [], nudged: false, dispatchesAtPrompt: 0, spent: 0, unpriced: null })
+const fresh = (): Conversation => ({ dispatches: 0, off: false, epoch: 0, midTurn: false, pendingNotes: [], interrupted: false, lastMessage: '', transcript: null, record: EMPTY_RECORD, subagents: {}, briefsInFlight: [], turnStart: null, reviewerIds: [], reviewerNames: [], reviewerContext: 0, memory: [], spawnsInFlight: [], wake: null, lastAsked: false, messaged: [], nudged: false, dispatchesAtPrompt: 0, spent: 0, unpriced: null, reviews: 0, notes: 0 })
 
 // The toggle, by the footer button or `/auditor`. Off stops the auditor at once: the open review is dropped with its note slot, the held notes are dropped and the reviewer is let go (`toggle` stops it), so the gate refuses every reviewer send from then on; a note let through before the switch may still arrive. Its ids still mark its traffic and rows, and its late turn end matches no reviewer. On starts an empty record, an empty memory and a fresh run, so no entry from the off period or before it is briefed, no memory entry about work the reviewer never saw is briefed either, a failure before it no longer holds the reviewer back, and an interrupt mark from before it holds no note refused for another reason. Either empties the tally (`purged`), so off shows no figures and on starts them from zero, and clears the stall guard. A switch moves the epoch (`epoch`); setting the state it already has changes nothing.
 const switched = (c: Conversation, off: boolean): Conversation => {
   if (c.off === off) return c
   const moved = { ...c, epoch: c.epoch + 1, nudged: false, dispatchesAtPrompt: c.dispatches }
-  return off ? { ...purged(forget(moved)), off: true, review: undefined, pendingNotes: [] } : { ...purged(moved), off: false, record: EMPTY_RECORD, memory: [], failing: false, interrupted: false }
+  return off ? { ...purged(forget(moved)), off: true, review: undefined, pendingNotes: [] } : { ...purged(moved), off: false, record: EMPTY_RECORD, memory: [], failing: undefined, interrupted: false }
 }
 
 // What the footer label and `/auditor` say: off by the toggle, failing until a review succeeds, else on.
 const stateOf = (c: Conversation): 'on' | 'off' | 'failing' => (c.off ? 'off' : c.failing ? 'failing' : 'on')
+
+// Why the reviewer is failing, if it is: the cause itself, or the unknown cause for a state stored before causes existed (`true`).
+const causeOf = (c: Conversation): FailCause | undefined => (c.failing === true ? 'unknown' : c.failing || undefined)
 
 // The words a drawing shows, in order: its strings, the labels of its buttons and links, and the text a leaf holds in its props (a Markdown's `text`, a Code's `source`, a picture's `alt`). A drawing with none shows nothing. Core's own drawing is an opaque `engine` node whose words are not in the tree: it reads as `engine`, the words core draws there.
 const LEAF_WORDS = ['label', 'text', 'source', 'alt'] as const
@@ -117,7 +120,7 @@ export const readLedger = async ($: Pick<Scope, 'session' | 'clock' | 'ui'>): Pr
 // What the button's words read for a conversation: its state and tally, and the session total where there is a share to show (off shows no figures, and nothing spent or an unknown cost has no share, so the ledger is not read for them).
 const figuresOf = async ($: Pick<Scope, 'session' | 'clock' | 'ui'>, c: Conversation): Promise<Figures> => {
   const showsShare = !c.off && c.unpriced === null && c.spent > 0
-  return { state: stateOf(c), spent: c.spent, unpriced: c.unpriced, total: showsShare ? await readLedger($) : undefined }
+  return { state: stateOf(c), spent: c.spent, unpriced: c.unpriced, total: showsShare ? await readLedger($) : undefined, reviews: c.reviews, notes: c.notes, last: c.last, cause: causeOf(c), held: c.pendingNotes.length }
 }
 
 const firstLine = (text: string): string => text.split('\n', 1)[0] ?? ''
@@ -285,9 +288,9 @@ const appendEntry = async ($: Pick<Scope, 'state'>, body: string): Promise<void>
 // Applies `fn` only while the conversation is still at the epoch the caller read (`epoch`).
 const inEpoch = (epoch: number, fn: (c: Conversation) => Conversation) => (c: Conversation): Conversation => (c.epoch !== epoch ? c : fn(c))
 
-// A review that ends without an answer fails: the footer reads `auditor failing` until a review succeeds, and the reason goes to the debug log. A review taken or planned under an older epoch (`epoch`) does not fail.
-const markFailed = async ($: Pick<Scope, 'state' | 'ui'>, reason: string, epoch: number): Promise<void> => {
-  await change($, inEpoch(epoch, c => ({ ...c, failing: true })))
+// A review that fails: the footer reads `auditor failing` until a review succeeds, with the cause in the popup (`cause`) and the raw reason in the debug log. A review taken or planned under an older epoch (`epoch`) does not fail.
+const markFailed = async ($: Pick<Scope, 'state' | 'ui'>, reason: string, epoch: number, cause: FailCause): Promise<void> => {
+  await change($, inEpoch(epoch, c => ({ ...c, failing: cause })))
   $.ui.log(`${PLUGIN}: review failed: ${reason}`, { to: 'debug' })
 }
 
@@ -333,8 +336,8 @@ const announce = ($: Scope, sent: Sent): void => {
   void $.tool.call({ tool: 'PushNotification', message, status: 'proactive' }).catch((err: unknown) => recordFailed($, 'escalation push', err))
 }
 
-// What a note's booking writes into the conversation, delivered or held, with the marks from the send's own read: a stall note arms the stall guard and adds no memory entry, since once the worker moves on there is nothing to dispute; any other note, an escalation included, adds one.
-const withBooked = (c: Conversation, number: number, sent: Sent): Conversation => ({ ...withStallGuard(c, number, sent.stall), ...(sent.stall ? {} : { memory: withNote(c.memory, number, sent.body) }) })
+// What a note's booking writes into the conversation, delivered or held: one more note given, then the marks from the send's own read: a stall note arms the stall guard and adds no memory entry, since once the worker moves on there is nothing to dispute; any other note, an escalation included, adds one.
+const withBooked = (c: Conversation, number: number, sent: Sent): Conversation => ({ ...withNoteGiven(withStallGuard(c, number, sent.stall)), ...(sent.stall ? {} : { memory: withNote(c.memory, number, sent.body) }) })
 
 // The debug line for a memory entry a booking added.
 const logAdded = ($: Pick<Scope, 'ui'>, number: number, body: string): void => {
@@ -411,7 +414,7 @@ const settle = async ($: Scope, log: boolean, agentId: string, done: Finished, u
     if (outcome.status === 'incomplete') {
       // settleOutcome fails an answer only when it is empty.
       const reason = done.reason === 'answer' ? 'reviewer ended its turn with an empty answer' : `reviewer turn ended with reason ${done.reason}, isAborted ${done.isAborted}`
-      await markFailed($, reason, epoch)
+      await markFailed($, reason, epoch, 'no answer')
       await logReview($, sessionId, log, closed, { status: 'incomplete', reason })
       // Its restored entries wait for the worker's next turn end.
       return
@@ -420,7 +423,7 @@ const settle = async ($: Scope, log: boolean, agentId: string, done: Finished, u
     if (outcome.logAnswer && !unsent) $.ui.log(`${PLUGIN}: review ${review.number} sent no note, and its final answer was: ${done.answer}`, { to: 'debug' })
     await logReview($, sessionId, log, closed, { status: 'complete', note: outcome.note })
     // The failure clears under the take's epoch (`epoch`), and a moved epoch dispatches nothing.
-    const after = await change($, inEpoch(epoch, c => ({ ...c, failing: false })))
+    const after = await change($, inEpoch(epoch, c => ({ ...withReviewDone(c, turnEnd.at, outcome.note !== null), failing: undefined })))
     if (after.epoch !== epoch) return
     // An idle worker gets the next brief at once; a busy one's turn end dispatches. midTurn is read through a change (currentConversation), since a plain get answers the dispatch's starting moment and misses a prompt that entered while this settle ran, a note's own among them.
     if (!(await currentConversation($)).midTurn) await dispatchIdle($, log)
@@ -520,7 +523,7 @@ const dispatchIdle = async ($: Scope, log: boolean): Promise<void> => {
     // The one place a spawn is given up: a review still open with no reviewer stored SPAWN_TIMEOUT_MS after its dispatch has no spawn left that will stand one in, so it fails here, its entries put back.
     const open = c.review
     planned.lapsed = open !== undefined && c.reviewer === undefined && now - open.dispatchedAt > SPAWN_TIMEOUT_MS ? open : undefined
-    const d = planned.lapsed === undefined ? c : { ...c, review: undefined, failing: true, record: withEntriesFirst(planned.lapsed.record, c.record) }
+    const d: Conversation = planned.lapsed === undefined ? c : { ...c, review: undefined, failing: 'no start', record: withEntriesFirst(planned.lapsed.record, c.record) }
     if (!eligible(d)) return d
     const number = d.dispatches + 1
     const { blocks } = d.record
@@ -690,7 +693,7 @@ const failReview = async ($: Scope, sessionId: string, log: boolean, plan: Plan,
   const taken = await takeReview($, r => r.number === plan.number, () => true)
   // As in settle, the stop is issued last whatever the bookkeeping does: a retired reviewer is never left running by a throw.
   try {
-    await markFailed($, reason, plan.epoch)
+    await markFailed($, reason, plan.epoch, 'not dispatched')
     if (taken === undefined) return
     await logIncomplete($, sessionId, log, taken.review, taken.model, reason)
   } finally {
