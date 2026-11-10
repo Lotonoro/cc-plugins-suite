@@ -35,7 +35,7 @@ const NO_LOOKUP = 'auditor could not look in the session transcript; the lookup 
 const ESCALATED = 'auditor: the reviewer escalated a disagreement; see its note to the worker'
 // A push is cut here: phones truncate a notification past about 200 characters.
 const PUSH_CHARS = 180
-// A reviewer whose context passed this many tokens is retired when its review is taken (`takeReview`), not at a turn end that gives the review its follow-up: under Haiku 5.5's 100,000-token price tier and the reviewer's compaction point, with room for one review's growth.
+// A reviewer whose context passed this many tokens is retired when its review is taken (`takeReview`), not at a turn end that gives the review its follow-up: under Haiku 5.5's 100,000-token price tier, with room for one review's growth. It sits above the engine's own compaction of the reviewer (about 64-68k, measured), so it fires only when a reviewer jumps past 80k in one review; it is the backstop for that jump.
 const ROTATE_AT = 80_000
 // How long a reviewer spawn may stay in flight before it is given up (`spawnsInFlight`).
 const SPAWN_TIMEOUT_MS = 10 * 60 * 1000
