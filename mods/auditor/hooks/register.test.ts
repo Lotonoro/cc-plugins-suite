@@ -4619,6 +4619,17 @@ describe('a reviewer stop is checked against the agent list and retried once', (
     expect(leftRunning(seen)).toEqual([])
   })
 
+  for (const reason of ['No task found with ID: ag7', 'permission denied: No task found with ID: ag1 was not looked up', 'No task found with ID: ag1 and more']) {
+    test(`a refusal that is not the no-task-found answer for this id (${reason}) is retried and then logged as left running`, ON, async ($, on) => {
+      const seen = engine(on, { reviewerIds: ['ag1', 'ag2'], stopRefuses: reason })
+      await rotated($)
+      await workerTurn($, 'Second.')
+      await drained()
+      expect(seen.stops.map(s => s.task_id)).toEqual(['ag1', 'ag1'])
+      expect(leftRunning(seen)).toEqual(['auditor: reviewer ag1 left running: two stops did not end it'])
+    })
+  }
+
   for (const status of ['idle', 'running', 'waiting', 'pending']) {
     test(`a stop after which the list still shows the reviewer ${status} is issued once more, and a retry the list then shows ended logs no left-running line`, ON, async ($, on) => {
       const seen = engine(on, { reviewerIds: ['ag1', 'ag2'], agentsAfterStops: staysUntil(2, status) })

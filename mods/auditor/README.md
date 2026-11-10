@@ -123,8 +123,9 @@ Then start a new session. The reviewer is on as soon as the plugin is loaded.
   that is exiting (`/exit`, ctrl+c, ctrl+d, or a `-p` run that finished) ends the reviewer with it, so no stop is
   attempted then. Each stop is checked against Claude Code's agent list, without holding anything up: a stop that was
   refused, or after which the list still shows the reviewer not ended, is issued once more, and a reviewer that
-  survives both is named as left running in the debug log. A stop Claude Code answers with "No task found" means the
-  reviewer is already gone: it is not issued again and the reviewer is not named as left running. A session end issues its one stop and does not check it.
+  survives both is named as left running in the debug log. A stop Claude Code answers with "No task found with ID:" and the
+  reviewer's id means the reviewer is already gone: it is not issued again and the reviewer is not named as left running.
+  A session end issues its one stop and does not check it.
   Should one review alone outgrow 100,000 tokens, the reviewer compacts, keeping your instructions and
   where you gave them.
 - **What the reviewer reads.** A record of the agent's turns since the previous review: your prompts, the agent's

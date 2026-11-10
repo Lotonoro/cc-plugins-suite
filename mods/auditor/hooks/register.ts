@@ -153,8 +153,8 @@ const reasonOf = (err: unknown): string => (err instanceof Error ? err.message :
 // The engine's error for a tool call made where no session is bound (a headless run, or a process on its way out). It names itself in its message.
 const NO_SESSION_BOUND = /no session is bound in this process/
 
-// The engine's refusal of a stop whose id is no task, which a reviewer that is already gone is. It names the id after it, inside a tool-error wrapper.
-const NO_TASK_FOUND = /No task found/
+// Whether `reason` is the engine's refusal of a stop whose id is no task, which a reviewer that is already gone is: "No task found with ID: <id>" for this very id, alone or inside a tool_use_error tag. Any other text, one that merely contains those words included, is a different refusal.
+const noTaskFound = (reason: string, id: string): boolean => reason.trim().replace(/^<tool_use_error>([\s\S]*)<\/tool_use_error>$/, '$1').trim() === `No task found with ID: ${id}`
 
 // The session end reasons of a process that is exiting (`/exit`, ctrl+c, ctrl+d; a `-p` run finished, or a signal); any other reason (`clear`, `resume`, `logout`) leaves the process going or costs a line at worst.
 const EXIT_REASONS: readonly string[] = ['prompt_input_exit', 'other']
@@ -277,7 +277,7 @@ const issueStop = async ($: Pick<Scope, 'tool' | 'ui'>, id: string): Promise<'ok
     if (result.deny === undefined && result.isError !== true) return 'ok'
     const reason = result.deny ?? result.text ?? ''
     $.ui.log(`${PLUGIN}: reviewer stop refused: ${reason}`, { to: 'debug' })
-    return NO_TASK_FOUND.test(reason) ? 'gone' : 'refused'
+    return noTaskFound(reason, id) ? 'gone' : 'refused'
   } catch (err) {
     stopFailed($, err)
     return 'threw'
