@@ -9,8 +9,8 @@ import { MAIN, admitSend, decideRefusal, followUpText, frameNote, isStoppedRefus
 import type { Decided, Outcome, Refusal, Sent, Verdict } from './notes'
 import { REVIEWER_PROMPT } from './prompt'
 import { clip, editedLines, entryBlock, pageOf, renumberBlock, toolLine } from './record'
-import { adopt, forget, isEndNotice, isHandBack, isNotice, isReviewerEntry, land, learn, learnName, markers, nameKnown, nameListed, originOf, retire, reviewerNameOf, spawnName, spawning, standingOf } from './reviewer'
-import type { Identity } from './reviewer'
+import { adopt, isEndNotice, isHandBack, isNotice, isReviewerEntry, land, learn, learnName, letGo, markers, nameKnown, nameListed, originOf, reviewerNameOf, spawnName, spawning, standingOf } from './reviewer'
+import type { Identity, Release } from './reviewer'
 import { purged, withCompaction, withNoteGiven, withResponse, withReviewDone } from './tally'
 import { DIGEST_CHARS, LOOKUP_TIMEOUT_MS, SEARCH_TERM_CHARS, digestBlocks, digestOf, lineCommand, lookupOf, parseSearch, renderSearch, searchCommand } from './transcript'
 
@@ -69,11 +69,13 @@ type Plan = { number: number; brief: string; send: string | undefined; epoch: nu
 
 const fresh = (): Conversation => ({ dispatches: 0, off: false, epoch: 0, midTurn: false, pendingNotes: [], interrupted: false, lastMessage: '', transcript: null, record: EMPTY_RECORD, subagents: {}, briefsInFlight: [], turnStart: null, reviewerIds: [], reviewerNames: [], reviewerContext: 0, memory: [], spawnsInFlight: [], wake: null, lastAsked: false, messaged: [], nudged: false, dispatchesAtPrompt: 0, spent: 0, unpriced: null, reviews: 0, notes: 0 })
 
-// The toggle, by the footer button or `/auditor`. Off stops the auditor at once: the open review is dropped with its note slot, the held notes are dropped and the reviewer is let go (`toggle` stops it), so the gate refuses every reviewer send from then on; a note let through before the switch may still arrive. Its ids still mark its traffic and rows, and its late turn end matches no reviewer. On starts an empty record, an empty memory and a fresh run, so no entry from the off period or before it is briefed, no memory entry about work the reviewer never saw is briefed either, a failure before it no longer holds the reviewer back, and an interrupt mark from before it holds no note refused for another reason. Either empties the tally (`purged`), so off shows no figures and on starts them from zero, and clears the stall guard. A switch moves the epoch (`epoch`); setting the state it already has changes nothing.
-const switched = (c: Conversation, off: boolean): Conversation => {
-  if (c.off === off) return c
+// The toggle, by the footer button or `/auditor`. Off stops the auditor at once: the open review is dropped with its note slot, the held notes are dropped and the reviewer is let go (`letGo`; `toggle` releases it), so the gate refuses every reviewer send from then on; a note let through before the switch may still arrive. Its ids still mark its traffic and rows, and its late turn end matches no reviewer. On starts an empty record, an empty memory and a fresh run, so no entry from the off period or before it is briefed, no memory entry about work the reviewer never saw is briefed either, a failure before it no longer holds the reviewer back, and an interrupt mark from before it holds no note refused for another reason. Either empties the tally (`purged`), so off shows no figures and on starts them from zero, and clears the stall guard. A switch moves the epoch (`epoch`); setting the state it already has changes nothing.
+const switched = (c: Conversation, off: boolean): Release => {
+  if (c.off === off) return { next: c, released: undefined }
   const moved = { ...c, epoch: c.epoch + 1, nudged: false, dispatchesAtPrompt: c.dispatches }
-  return off ? { ...purged(forget(moved)), off: true, review: undefined, pendingNotes: [] } : { ...purged(moved), off: false, record: EMPTY_RECORD, memory: [], failing: undefined, interrupted: false }
+  if (!off) return { next: { ...purged(moved), off: false, record: EMPTY_RECORD, memory: [], failing: undefined, interrupted: false }, released: undefined }
+  const { next, released } = letGo(moved, 'switch off', moved.reviewer?.id)
+  return { next: { ...purged(next), off: true, review: undefined, pendingNotes: [] }, released }
 }
 
 // What the footer label and `/auditor` say: off by the toggle, failing until a review succeeds, else on.
@@ -250,7 +252,7 @@ const stopFailed = ($: Pick<Scope, 'ui'>, err: unknown): void => {
   else recordFailed($, 'reviewer stop', err)
 }
 
-// Stops a reviewer the auditor lets go (one a take retired, one a session end forgot, one a refused brief dropped, or one the toggle switched off or whose spawn landed after it), so it does not sit idle for the rest of the session; each caller says when it issues it. The engine call is not awaited, so no caller's settle or dispatch waits on it; the helper resolves once the stop is issued. Any failure, the state read included, is logged and leaves the reviewer idle, and the caller goes on; the engine's no-session-bound error is the expected failure where no session is bound, and is logged as one plain line. Where a respawn can follow (`mayRespawn`), an id the state holds as the current reviewer is not stopped: a fresh reviewer can come back under a forgotten id, and the stop would end it. A session end spawns none, and when its reset failed the state still names the reviewer it forgot, so it passes false.
+// Stops a reviewer the auditor lets go (`letGo`: one a take rotated out, one a session end forgot, one a refused brief dropped, or one the toggle switched off or whose spawn landed after it), so it does not sit idle for the rest of the session; each caller says when it issues it. The engine call is not awaited, so no caller's settle or dispatch waits on it; the helper resolves once the stop is issued. Any failure, the state read included, is logged and leaves the reviewer idle, and the caller goes on; the engine's no-session-bound error is the expected failure where no session is bound, and is logged as one plain line. Where a respawn can follow (`mayRespawn`), an id the state holds as the current reviewer is not stopped: a fresh reviewer can come back under a forgotten id, and the stop would end it. A session end spawns none, and when its reset failed the state still names the reviewer it forgot, so it passes false.
 export const stopReviewer = async ($: Pick<Scope, 'state' | 'tool' | 'ui'>, id: string | undefined, mayRespawn: boolean): Promise<void> => {
   if (id === undefined) return
   try {
@@ -267,6 +269,18 @@ export const stopReviewer = async ($: Pick<Scope, 'state' | 'tool' | 'ui'>, id: 
   }
 }
 
+// The release step of a let-go whose stop follows its change at once: applies `decide`, a state change that makes its let-go through `letGo` and returns the decision, then stops the reviewer it released, unless `stops` is false. Resolves with the conversation after and the id released; a change that throws throws, with nothing stopped. A let-go whose stop must wait for other work applies `letGo` in its own change and stops afterwards: a rotation is let go in the change that takes the review and stopped after the review's log (`takeReview`, `settle`), and a refused brief and a stale landing are let go in the delivery's changes and stopped as it goes on (`deliverBrief`).
+const release = async ($: Scope, decide: (c: Conversation) => Release, mayRespawn: boolean, stops = true): Promise<{ after: Conversation; released: string | undefined }> => {
+  const got: { released?: string } = {}
+  const after = await change($, c => {
+    const decided = decide(c)
+    got.released = decided.released
+    return decided.next
+  })
+  if (stops) await stopReviewer($, got.released, mayRespawn)
+  return { after, released: got.released }
+}
+
 // Takes the open review if `ready`, judged on the conversation the change reads; where `back` holds for the review taken, its entries are put back in the record in the same change. Where `mark` holds instead, the review is not taken but marked as followed up (`followedUp`), in the same change: it stays open with its entries held, and its reviewer is not retired. The dispatch failure never asks for a mark.
 const takeReview = async ($: Pick<Scope, 'state'>, ready: (r: OpenReview, c: Conversation) => boolean, back: (r: OpenReview) => boolean, mark: (r: OpenReview) => boolean = () => false): Promise<Taken | undefined> => {
   const got: { taken?: Taken } = {}
@@ -278,8 +292,8 @@ const takeReview = async ($: Pick<Scope, 'state'>, ready: (r: OpenReview, c: Con
       got.taken = { review: open, model: c.reviewer?.model || null, retired: undefined, epoch: c.epoch }
       return { ...c, review: { ...open, followedUp: true } }
     }
-    // A reviewer past ROTATE_AT is retired in the same change that ends its review (`retire`); the caller stops it.
-    const { next, retired } = retire(c, ROTATE_AT)
+    // A reviewer past ROTATE_AT is let go in the same change that ends its review (`letGo`); the caller stops it.
+    const { next, released: retired } = letGo(c, 'rotation', c.reviewer?.id, ROTATE_AT)
     got.taken = { review: open, model: c.reviewer?.model || null, retired, epoch: c.epoch }
     return { ...next, review: undefined, record: back(open) ? withEntriesFirst(open.record, c.record) : c.record }
   })
@@ -658,17 +672,19 @@ const deliverBrief = async ($: Scope, plan: Plan): Promise<boolean> => {
   }
   // The spawn sends the brief as planned, whether the stored reviewer refused it or none was stored: every brief carries the memory. It enters flight in this change, until its Agent call reaches the recorder.
   // A plan whose review was dropped, before the spawn or while the send was refused, spawns no reviewer and stops the refused reviewer there as well. The spawn is committed in this change as an entry in `spawnsInFlight` under the plan's epoch (`epoch`), which the finally takes out.
-  const spawned = { dropped: false }
+  const spawned: { dropped: boolean; released?: string } = { dropped: false }
   await change($, c => {
     spawned.dropped = !ours(c)
     if (spawned.dropped) return c
-    return { ...spawning(c, { brief, epoch: plan.epoch, number, startedAt: plan.at }), briefsInFlight: [...c.briefsInFlight, brief] }
+    const { next, released } = letGo(c, 'refused brief', send)
+    spawned.released = released
+    return { ...spawning(next, { brief, epoch: plan.epoch, number, startedAt: plan.at }), briefsInFlight: [...c.briefsInFlight, brief] }
   })
   if (spawned.dropped) {
     await stopReviewer($, send, true)
     return false
   }
-  // However the spawn settles, the finally takes its entry out of `spawnsInFlight`, with what the spawn hook kept on it, and stops the refused stored reviewer (`send` is set only when its send was refused).
+  // However the spawn settles, the finally takes its entry out of `spawnsInFlight`, with what the spawn hook kept on it, and stops the refused stored reviewer (`spawned.released`, set only when its send was refused).
   try {
     const started = await $.agent.spawn({
       subagentType: REVIEWER_TYPE,
@@ -682,13 +698,15 @@ const deliverBrief = async ($: Scope, plan: Plan): Promise<boolean> => {
       return true
     }
     // The landing's one change, under the plan's epoch (`epoch`): `land` decides the id and whether the spawn stands in as the reviewer (`spawnsInFlight`).
-    const landed: { id?: string; stale: boolean; stood: boolean } = { stale: false, stood: false }
+    const landed: { id?: string; stale: boolean; released?: string } = { stale: false }
     await change($, c => {
       const landing = land(c, brief, number, plan.epoch, started)
       landed.id = landing.id
       landed.stale = landing.stale
-      landed.stood = landing.stood
-      return landing.next
+      // A stale spawn, or one whose review closed since under no reviewer of its own (`dispatchIdle` gave it up), is let go.
+      const { next, released } = landing.stood ? { next: landing.next, released: undefined } : letGo(landing.next, 'stale landing', landing.id)
+      landed.released = released
+      return next
     })
     // A stale landing with no id stops nothing. No catch takes its brief out of flight, so it leaves here.
     if (landed.id === undefined && landed.stale) {
@@ -698,12 +716,11 @@ const deliverBrief = async ($: Scope, plan: Plan): Promise<boolean> => {
     if (landed.id === undefined) {
       throw new Error('reviewer spawn returned no agent id')
     }
-    // A stale spawn, or one whose review closed since under no reviewer of its own (`dispatchIdle` gave it up), is let go.
-    if (!landed.stood) await stopReviewer($, landed.id, true)
+    await stopReviewer($, landed.released, true)
     return false
   } finally {
     await releaseSpawn($, brief)
-    await stopReviewer($, send, true)
+    await stopReviewer($, spawned.released, true)
   }
 }
 
@@ -736,7 +753,7 @@ const failReview = async ($: Scope, sessionId: string, log: boolean, plan: Plan,
   }
 }
 
-// Switches the auditor (`switched`) and returns the state after. A switch to off stops the reviewer it let go, so a review under way ends now, and logs that review as incomplete.
+// Switches the auditor (`switched`) and returns the state after. A switch to off releases the reviewer it lets go, so a review under way ends now, and logs that review as incomplete.
 const toggle = async ($: Scope, log: boolean, off: (c: Conversation) => boolean): Promise<Conversation> => {
   // Read before the switch, so a /clear in between leaves the review's log in the session it was dispatched in. A failed read costs only that log: the switch still lands.
   const sessionId = await $.session.id().catch((err: unknown) => {
@@ -744,13 +761,12 @@ const toggle = async ($: Scope, log: boolean, off: (c: Conversation) => boolean)
     return undefined
   })
   const before: { c?: Conversation } = {}
-  const after = await change($, c => {
+  const { after } = await release($, c => {
     before.c = c
     return switched(c, off(c))
-  })
+  }, true)
   const was = before.c
   if (was === undefined || was.off || !after.off) return after
-  await stopReviewer($, was.reviewer?.id, true)
   if (sessionId !== undefined) await logDropped($, sessionId, log, was, 'the auditor was switched off')
   return after
 }
@@ -996,32 +1012,34 @@ export const register: Register = (on, options) => {
     return result
   })
 
-  // A session end forgets the current reviewer, its open review and that review's note slot, so a late turn end from it matches nothing and its late sends are refused; its open review is logged as incomplete. The reviewer markers are kept: they mark traffic, not a review.
+  // A session end lets the current reviewer go (`letGo`), forgets its open review and that review's note slot, so a late turn end from it matches nothing and its late sends are refused; its open review is logged as incomplete. The reviewer markers are kept: they mark traffic, not a review.
   on('session.end', async ($, e, next) => {
     const ended = { conversation: undefined as Conversation | undefined }
+    // An exiting process ends the reviewer with it, so no stop is attempted (the engine has no session to take one in by then).
+    const exiting = EXIT_REASONS.includes(e.reason)
+    let released: string | undefined
     try {
-      await change($, c => {
+      // The forgotten reviewer is stopped first, before the log is written: the session end's hooks run under a short wall-clock bound, and issued first the stop has all of it before an abort can cut it off.
+      const done = await release($, c => {
         ended.conversation = c
-        // The toggle is the session's: a /clear keeps it off. The reviewer markers are kept, so a pre-/clear reviewer's late end notice is still consumed, its calls stay out of the record and its task row stays hidden. Everything else starts over, and the epoch moves on (`epoch`). The spawns still in flight are kept for their dispatches to settle (`spawnsInFlight`).
-        return { ...fresh(), dispatches: c.dispatches, dispatchesAtPrompt: c.dispatches, off: c.off, epoch: c.epoch + 1, spawnsInFlight: c.spawnsInFlight, ...markers(c) }
-      })
+        const gone = letGo(c, 'session end', c.reviewer?.id)
+        // The toggle is the session's: a /clear keeps it off. The reviewer markers are kept, so a pre-/clear reviewer's late end notice is still consumed, its calls stay out of the record and its task row stays hidden; so is the reason the reviewer was let go. Everything else starts over, and the epoch moves on (`epoch`). The spawns still in flight are kept for their dispatches to settle (`spawnsInFlight`).
+        return { next: { ...fresh(), dispatches: c.dispatches, dispatchesAtPrompt: c.dispatches, off: c.off, epoch: c.epoch + 1, spawnsInFlight: c.spawnsInFlight, ...markers(c), lastLetGo: gone.next.lastLetGo }, released: gone.released }
+      }, false, !exiting)
+      released = done.released
     } catch (err) {
       recordFailed($, 'session end', err)
-      // The reset did not land, so the state still holds the session as it was: read it, for the stop and the log. A read that fails too is logged, and the session end goes on without them.
+      // The reset did not land, so the state still holds the session as it was: read it, for the stop and the log. A read that fails too is logged, and the session end goes on without them. The state still names the reviewer it forgot, so the stop passes false (`stopReviewer`).
       try {
         ended.conversation = await readConversation($)
+        released = letGo(ended.conversation, 'session end', ended.conversation.reviewer?.id).released
+        if (!exiting) await stopReviewer($, released, false)
       } catch (readErr) {
         recordFailed($, 'session end read', readErr)
       }
     }
     const closing = ended.conversation
-    // An exiting process ends the reviewer with it, so no stop is attempted (the engine has no session to take one in by then).
-    if (EXIT_REASONS.includes(e.reason)) {
-      if (closing?.reviewer?.id !== undefined) $.ui.log(`${PLUGIN}: the session is exiting, which ends the reviewer with it, so it is not stopped`, { to: 'debug' })
-    } else {
-      // The forgotten reviewer is stopped first, before the log is written: the session end's hooks run under a short wall-clock bound, and issued first the stop has all of it before an abort can cut it off.
-      await stopReviewer($, closing?.reviewer?.id, false)
-    }
+    if (exiting && released !== undefined) $.ui.log(`${PLUGIN}: the session is exiting, which ends the reviewer with it, so it is not stopped`, { to: 'debug' })
     if (closing !== undefined) await logDropped($, e.sessionId, log, closing, `session ended: ${e.reason}`)
     return next(e)
   })

@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'claude-code/testing'
 import type { AgentInfo } from 'claude-code'
 import type { Conversation } from '../types/index'
-import { adopt, forget, isEndNotice, isHandBack, isNotice, isReviewerEntry, land, learn, learnName, markers, nameKnown, nameListed, originOf, retire, reviewerNameOf, spawnName, spawning, standingOf } from './reviewer'
+import { adopt, isEndNotice, isHandBack, isNotice, isReviewerEntry, land, learn, learnName, letGo, markers, nameKnown, nameListed, originOf, reviewerNameOf, spawnName, spawning, standingOf } from './reviewer'
 import type { Identity } from './reviewer'
 
 const ID: Identity = { plugin: 'auditor', name: 'auditor-reviewer', description: 'auditor review' }
@@ -21,12 +21,12 @@ describe('standingOf', () => {
 
   test('a retired reviewer is a former one', () => {
     const c = conversation({ reviewer: { id: 'ag1', model: 'm' }, reviewerIds: ['ag1'], reviewerContext: 90_000 })
-    expect(standingOf(retire(c, 80_000).next, 'ag1')).toBe('former')
+    expect(standingOf(letGo(c, 'rotation', 'ag1', 80_000).next, 'ag1')).toBe('former')
   })
 
   test('a reviewer switched off is a former one', () => {
     const c = conversation({ reviewer: { id: 'ag1', model: 'm' }, reviewerIds: ['ag1'] })
-    expect(standingOf(forget(c), 'ag1')).toBe('former')
+    expect(standingOf(letGo(c, 'switch off', 'ag1').next, 'ag1')).toBe('former')
   })
 
   test('a reviewer forgotten on a /clear is a former one, since its marker is kept', () => {
@@ -266,7 +266,7 @@ describe('adopt', () => {
   })
 
   test('a former reviewer is never adopted, whatever the list says of its name', () => {
-    const c = forget(conversation({ reviewer: { id: 'ag1', model: 'm' }, reviewerIds: ['ag1'] }))
+    const c = letGo(conversation({ reviewer: { id: 'ag1', model: 'm' }, reviewerIds: ['ag1'] }), 'switch off', 'ag1').next
     expect(adopted(c)).toBe(c)
   })
 })
@@ -322,18 +322,53 @@ describe('spawning, landing and ending a reviewer', () => {
     expect(landing.next.reviewer).toEqual({ id: 'ag1', model: 'haiku' })
   })
 
-  test('a reviewer past the limit is retired with its id returned, its context cleared and its marks kept; one at the limit is not', () => {
-    const c = conversation({ reviewer: { id: 'ag1', model: 'm' }, reviewerIds: ['ag1'], reviewerNames: ['n'], reviewerContext: 80_001 })
-    const retired = retire(c, 80_000)
-    expect(retired.retired).toBe('ag1')
-    expect(retired.next).toMatchObject({ reviewer: undefined, reviewerContext: 0, reviewerIds: ['ag1'], reviewerNames: ['n'] })
-    const at = { ...c, reviewerContext: 80_000 }
-    expect(retire(at, 80_000)).toEqual({ next: at, retired: undefined })
+  test('the markers a /clear keeps are the ids and the names', () => {
+    const c = conversation({ reviewer: { id: 'ag1', model: 'm' }, reviewerIds: ['ag1'], reviewerNames: ['n'], reviewerContext: 7 })
+    expect(markers(c)).toEqual({ reviewerIds: ['ag1'], reviewerNames: ['n'] })
+  })
+})
+
+describe('letting a reviewer go', () => {
+  const stored = (over: Partial<Conversation> = {}): Conversation => conversation({ reviewer: { id: 'ag1', model: 'm' }, reviewerIds: ['ag1'], reviewerNames: ['n'], reviewerContext: 7, ...over })
+
+  test('a reviewer past the rotation limit is let go with its id returned, its context cleared, its marks kept and the reason noted; one at the limit is not', () => {
+    const past = letGo(stored({ reviewerContext: 80_001 }), 'rotation', 'ag1', 80_000)
+    expect(past.released).toBe('ag1')
+    expect(past.next).toMatchObject({ reviewer: undefined, reviewerContext: 0, reviewerIds: ['ag1'], reviewerNames: ['n'], lastLetGo: 'rotation' })
+    const at = stored({ reviewerContext: 80_000 })
+    expect(letGo(at, 'rotation', 'ag1', 80_000)).toEqual({ next: at, released: undefined })
   })
 
-  test('forgetting clears the stored reviewer and its context and keeps the marks; the markers a /clear keeps are the ids and the names', () => {
-    const c = conversation({ reviewer: { id: 'ag1', model: 'm' }, reviewerIds: ['ag1'], reviewerNames: ['n'], reviewerContext: 7 })
-    expect(forget(c)).toMatchObject({ reviewer: undefined, reviewerContext: 0, reviewerIds: ['ag1'], reviewerNames: ['n'] })
-    expect(markers(c)).toEqual({ reviewerIds: ['ag1'], reviewerNames: ['n'] })
+  for (const reason of ['switch off', 'session end'] as const) {
+    test(`a ${reason} lets the stored reviewer go whatever its context: its id returned, its context cleared, its marks kept and the reason noted`, () => {
+      const gone = letGo(stored(), reason, 'ag1')
+      expect(gone.released).toBe('ag1')
+      expect(gone.next).toMatchObject({ reviewer: undefined, reviewerContext: 0, reviewerIds: ['ag1'], reviewerNames: ['n'], lastLetGo: reason })
+    })
+  }
+
+  test('a refused brief notes its reason and returns the refused id, and leaves the stored reviewer to the spawn that replaces it', () => {
+    const c = stored()
+    expect(letGo(c, 'refused brief', 'ag1')).toEqual({ next: { ...c, lastLetGo: 'refused brief' }, released: 'ag1' })
+  })
+
+  test('a stale landing notes its reason and returns the landed id, the stored reviewer staying', () => {
+    const c = stored()
+    expect(letGo(c, 'stale landing', 'ag9')).toEqual({ next: { ...c, lastLetGo: 'stale landing' }, released: 'ag9' })
+  })
+
+  test('a stale landing whose id is the stored reviewer\'s lets nothing go', () => {
+    const c = stored()
+    expect(letGo(c, 'stale landing', 'ag1')).toEqual({ next: c, released: undefined })
+  })
+
+  test('with no id to let go, nothing is released and the last reason stays; a clearing reason still clears', () => {
+    const c = conversation({ reviewerContext: 3, lastLetGo: 'rotation' })
+    expect(letGo(c, 'switch off', undefined)).toEqual({ next: { ...c, reviewer: undefined, reviewerContext: 0 }, released: undefined })
+    expect(letGo(c, 'refused brief', undefined)).toEqual({ next: c, released: undefined })
+  })
+
+  test('a later let-go replaces the reason', () => {
+    expect(letGo(stored({ lastLetGo: 'rotation' }), 'switch off', 'ag1').next.lastLetGo).toBe('switch off')
   })
 })

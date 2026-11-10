@@ -29,6 +29,9 @@ export type OpenReview = {
 // Why the reviewer is failing: a review ended without an answer, none could be handed to a reviewer, a spawn did not start in time, or a state stored before causes existed. Every place that sets `failing` sets one of these, or adds a row for its own cause to the words in button.ts in the same change.
 export type FailCause = 'no answer' | 'not dispatched' | 'no start' | 'unknown'
 
+// Why a reviewer was let go, which `letGo` in reviewer.ts decides: its context passed the rotation limit, the toggle switched off, the session ended, its brief was refused, or its spawn landed after it was no longer wanted.
+export type LetGoReason = 'rotation' | 'switch off' | 'session end' | 'refused brief' | 'stale landing'
+
 // The last completed review: when it closed (the clock's time) and whether it gave a note.
 export type LastReview = { at: number; note: boolean }
 
@@ -71,6 +74,8 @@ export type Conversation = {
   reviewerIds: string[]
   // The team name each of this session's reviewer spawns runs under, as the agent list names it (the engine renames a taken name), kept across /clear: the name decisions in reviewer.ts read them, and a verified end-of-run notice from one of these is consumed.
   reviewerNames: string[]
+  // Why the latest reviewer was let go, kept across /clear: the /clear's own let-go is why the next brief goes to a spawn. Absent until a reviewer is let go; a switch on does not clear it.
+  lastLetGo?: LetGoReason
   // The current reviewer's context at its last request (input, cache-read and cache-write tokens): past ROTATE_AT it is retired when its review is taken, never at a turn end that gives the review its follow-up, and the next dispatch spawns a fresh one.
   reviewerContext: number
   // The reviewer's memory of this conversation, the handoff doc: one entry per note booked, oldest first. The plugin adds an entry when a note is booked, delivered or held, and never for a `Stalled:` note; an `Escalation:` note is kept. The current reviewer settles or removes an entry with its memory tool while its review is open, and does nothing else to it. At each dispatch it drops the entries last touched more than 30 reviews below the new review's number, then, while the rendering exceeds 12,000 characters, evicts the oldest-touched settled entry, or the oldest-touched in-flight one once none is settled, and every brief carries what remains; between dispatches it may run over the cap. It never reaches the worker. A /clear and a switch to on start it empty; a switch to off and a /compact of the worker leave it as it is, and while off it takes no entry.

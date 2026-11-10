@@ -6927,3 +6927,141 @@ describe('the review facts', () => {
     })
   })
 })
+
+// Every let-go of the stored reviewer notes its reason in `lastLetGo` beside its stop.
+describe('the reason the last reviewer was let go', () => {
+  const contextOf = (tokens: number) => ({ ...USAGE, input_tokens: tokens, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 })
+  // The reviewer's request, answered with `usage`. STEP_USAGE is module-level, so it is reset after the request.
+  const requestWith = async ($: any, usage: unknown): Promise<void> => {
+    STEP_USAGE = usage
+    try {
+      await step($, '', 'ag1')
+    } finally {
+      STEP_USAGE = null
+    }
+  }
+
+  test('a conversation no reviewer was let go in has no reason', ON, async ($, on) => {
+    const seen = engine(on)
+    await workerTurn($)
+    await turnEnded($, 'ag1', 'Nothing to note.')
+    expect(seen.conversation.lastLetGo).toBeUndefined()
+  })
+
+  test('a rotation at a settle notes rotation and stops the retired id', ON, async ($, on) => {
+    const seen = engine(on, { reviewerIds: ['ag1', 'ag2'] })
+    await workerTurn($)
+    await requestWith($, contextOf(80_001))
+    await turnEnded($, 'ag1', 'Nothing to note.')
+    expect(seen.conversation.lastLetGo).toBe('rotation')
+    expect(seen.stops.map(s => s.task_id)).toEqual(['ag1'])
+  })
+
+  test('a rotation by a failed dispatch notes rotation too', ON, async ($, on) => {
+    const seen = engine(on, { sendThrows: 'ag1', stateSeed: { reviewer: { id: 'ag1', model: 'm' }, reviewerIds: ['ag1'], reviewerContext: 80_001 } })
+    await workerTurn($)
+    expect(seen.conversation.lastLetGo).toBe('rotation')
+    expect(seen.stops.map(s => s.task_id)).toEqual(['ag1'])
+  })
+
+  test('a reviewer under the rotation limit leaves no reason', ON, async ($, on) => {
+    const seen = engine(on)
+    await workerTurn($)
+    await requestWith($, contextOf(80_000))
+    await turnEnded($, 'ag1', 'Nothing to note.')
+    expect(seen.conversation.lastLetGo).toBeUndefined()
+  })
+
+  test('a switch off notes switch off and stops the stored reviewer', ON, async ($, on) => {
+    const seen = engine(on)
+    await workerTurn($)
+    await $.command.run({ command: 'auditor', args: 'off' } as any)
+    expect(seen.conversation.lastLetGo).toBe('switch off')
+    expect(seen.stops.map(s => s.task_id)).toEqual(['ag1'])
+  })
+
+  test('a switch off with no stored reviewer, and a switch on, leave the reason as it was', ON, async ($, on) => {
+    const seen = engine(on, { stateSeed: { lastLetGo: 'rotation' } })
+    await $.command.run({ command: 'auditor', args: 'off' } as any)
+    await $.command.run({ command: 'auditor', args: 'on' } as any)
+    expect(seen.conversation.lastLetGo).toBe('rotation')
+    expect(seen.stops).toEqual([])
+  })
+
+  test('a refused brief notes refused brief, and stops the refused reviewer after the spawn that replaces it', ON, async ($, on) => {
+    const seen = engine(on, { sendFails: 'ag1', reviewerIds: ['ag1', 'ag2'] })
+    await workerTurn($)
+    await turnEnded($, 'ag1', 'Nothing to note.')
+    await workerTurn($, 'Second.')
+    expect(seen.conversation).toMatchObject({ reviewer: { id: 'ag2' }, lastLetGo: 'refused brief' })
+    expect(seen.stops).toEqual([{ task_id: 'ag1', spawns: 2 }])
+  })
+
+  test('a spawn that lands after a switch off notes stale landing and is stopped', ON, async ($, on) => {
+    const held = heldSpawn()
+    const seen = engine(on, { spawnHold: held.hold })
+    const ending = workerTurn($)
+    await held.reached
+    await $.command.run({ command: 'auditor', args: 'off' } as any)
+    held.land()
+    await ending
+    await drained()
+    expect(seen.conversation.lastLetGo).toBe('stale landing')
+    expect(seen.stops.map(s => s.task_id)).toEqual(['ag1'])
+  })
+
+  test('a stale spawn whose agent was adopted by name in the current epoch is not let go', ON, async ($, on) => {
+    const held = heldSpawn()
+    const seen = engine(on, { spawnHold: held.hold, agents: [{ id: 'ag1', name: 'auditor-reviewer', type: 'auditor:reviewer', spawnedBy: 'auditor' }] })
+    const first = workerTurn($)
+    await held.reached
+    await $.session.end({ reason: 'clear', sessionId: 's1' } as any)
+    seen.clock += TEN_MINUTES + 1
+    try {
+      expect(await entriesOf($, { which: 'record' }, 'ag1')).toBe(NO_REVIEW)
+    } finally {
+      held.land()
+    }
+    await first
+    await drained()
+    expect(seen.conversation.lastLetGo).toBeUndefined()
+    expect(seen.stops).toEqual([])
+  })
+
+  for (const reason of ['clear', 'resume', 'logout']) {
+    test(`a session end with reason ${reason} notes session end and stops the stored reviewer`, ON, async ($, on) => {
+      const seen = engine(on)
+      await workerTurn($)
+      await $.session.end({ reason, sessionId: 's1' } as any)
+      expect(seen.conversation.lastLetGo).toBe('session end')
+      expect(seen.stops.map(s => s.task_id)).toEqual(['ag1'])
+    })
+  }
+
+  for (const reason of ['prompt_input_exit', 'other']) {
+    test(`a session end with reason ${reason} notes session end and stops nothing`, ON, async ($, on) => {
+      const seen = engine(on)
+      await workerTurn($)
+      await $.session.end({ reason, sessionId: 's1' } as any)
+      expect(seen.conversation.lastLetGo).toBe('session end')
+      expect(seen.toolCalls.filter((c: any) => c.tool === 'TaskStop')).toEqual([])
+    })
+  }
+
+  test('a session end with no stored reviewer leaves the reason as it was', ON, async ($, on) => {
+    const seen = engine(on, { stateSeed: { lastLetGo: 'switch off' } })
+    await $.session.end({ reason: 'clear', sessionId: 's1' } as any)
+    expect(seen.conversation.lastLetGo).toBe('switch off')
+  })
+
+  test('the reason reads the same after a /clear that lets no reviewer go', ON, async ($, on) => {
+    const seen = engine(on, { reviewerIds: ['ag1', 'ag2'] })
+    await workerTurn($)
+    await requestWith($, contextOf(80_001))
+    await turnEnded($, 'ag1', 'Nothing to note.')
+    expect(seen.conversation.lastLetGo).toBe('rotation')
+    await $.session.end({ reason: 'clear', sessionId: 's1' } as any)
+    expect(seen.conversation.lastLetGo).toBe('rotation')
+    expect(seen.conversation.reviewer).toBeUndefined()
+  })
+})
