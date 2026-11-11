@@ -1,6 +1,7 @@
 import { expect, test } from 'claude-code/testing'
 import { backlogTail, bandDraws, bandRows, bandWidths, claudeRows, columnHeight, cutTitle, cutToColumns, headerLines, humanFoldRows, isChipShort, isSqueezed, rowLayout, squeezedFold, wrapText, type BandWidths, type ClaudeRow, type Control, type RowTexts } from './layout'
 import { displayColumns, unitsOf } from './columns'
+import { endsJoining } from './joining-oracle'
 import { SEQUENCES } from './sequences'
 import type { Item, TodoItem } from '../types'
 
@@ -471,12 +472,6 @@ const SAMPLES = [
   `${cps(0x1f600, 0x200d, 0xfe0f, 0x1f600)}ab${cps(0x1f600, 0x200d, 0xfe0f, 0x1f600)}cd`,
 ]
 
-// Whether a text ends where a joiner still joins what comes next: its last U+200D is followed only by code points that draw no column, or by none.
-const endsJoining = (text: string): boolean => {
-  const at = text.lastIndexOf(JOINER)
-  return at !== -1 && [...text.slice(at + 1)].every(point => displayColumns(point) === 0)
-}
-
 test('whatever the text and the room, the cut is the longest start of the text that ends at a cut point and leaves a column for the ellipsis, and it measures at most the room', () => {
   for (const text of SAMPLES) {
     for (let room = -1; room <= 45; room++) {
@@ -507,12 +502,13 @@ test('whatever the text and the room, the cut is the longest start of the text t
 })
 
 // Text built from sub-plan 3's measured sequences, every 37th of them (the doubled-joiner unit among them by name), each between ASCII, CJK and spaces so no two join into a
-// longer one: its pieces, whose ends are the only places a cut or a wrap may fall.
+// longer one, except the two pieces that end on a joiner followed by U+FE0F or by a combining mark: a joiner joins the piece after it, so no cut may fall directly after either.
+// Its pieces, whose ends are the only places a cut or a wrap may fall.
 const MEASURED = SEQUENCES.filter((_, k) => k % 37 === 0).map(([hex]) => cps(...hex.split(' ').map(code => parseInt(code, 16))))
-const PIECES = [...MEASURED.flatMap(text => [text, 'a', 'b', ' ', '日']), cps(0x1f600, 0x200d, 0x200d, 0x1f600), ' ']
+const PIECES = [...[cps(0x1f600, 0x200d, 0xfe0f), cps(0x1f600, 0x200d, 0x301), ...MEASURED].flatMap(text => [text, 'a', 'b', ' ', '日']), cps(0x1f600, 0x200d, 0x200d, 0x1f600), ' ']
 const endsOf = (pieces: readonly string[]): Set<string> => new Set(pieces.map((_, k) => pieces.slice(0, k + 1).join('')))
 
-test('for any text built from measured sequences, ASCII and CJK, ending on a joiner, and any room from 1 to 40, no cut ends inside a measured sequence or on a joiner, or on one and the code points after it that draw nothing, and each measures at most its room', () => {
+test('for any text built from measured sequences, a joiner followed by U+FE0F or by a combining mark, ASCII and CJK, ending on a joiner, and any room from 1 to 40, no cut ends inside a measured sequence or on a joiner, or on one and the code points after it that draw nothing, and each measures at most its room', () => {
   expect(MEASURED.length).toBeGreaterThan(60)
   expect(MEASURED.some(text => text.length > 8)).toBe(true)
   const text = [...PIECES, JOINER].join('')

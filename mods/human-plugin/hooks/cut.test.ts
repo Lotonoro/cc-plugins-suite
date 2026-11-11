@@ -1,6 +1,7 @@
 import { expect, test } from 'claude-code/testing'
-import { displayColumns, unitsOf } from './columns'
+import { unitsOf } from './columns'
 import { cutLine, cutText, oneLine, repairCut } from './cut'
+import { endsJoining } from './joining-oracle'
 
 const pair = String.fromCodePoint(0x1f600)
 const zwj = String.fromCodePoint(0x200d)
@@ -85,12 +86,6 @@ test('a chain shorter than the cap is dropped whole, and kept when it fits with 
   expect(cutText(`aa${six}bc`, 19)).toBe('aa…')
   expect(cutText(`aa${six}bc`, 20)).toBe(`aa${six}…`)
 })
-
-// Whether a text ends where a U+200D still joins what comes next: its last U+200D is followed only by code points that draw no column, or by none.
-const endsJoining = (text: string): boolean => {
-  const at = text.lastIndexOf(zwj)
-  return at !== -1 && [...text.slice(at + 1)].every(point => displayColumns(point) === 0)
-}
 
 // The longest prefix that ends at a cut point and fits `max` with its ellipsis, found by trying every prefix: a prefix of `n` units ends on a unit boundary,
 // where no U+200D still joins what follows (endsJoining), with a next unit that draws a column (or is the empty prefix).
