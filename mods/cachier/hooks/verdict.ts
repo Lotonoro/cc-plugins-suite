@@ -6,9 +6,10 @@
 // a warm cache would have taken. The other reality's pings are counted as keepalive would have sent them: ping k at
 // k×(ttl−lead) after the touch, up to the count.
 import type { CacheView, Judged, KeepaliveState, Spend, Unit, Verdict } from '../types'
-import { clockOf, expiredAt } from './countdown'
+import { clockOf, expiredAt, labelled } from './countdown'
 import type { Defaults } from './keepalive'
 import { dollars, DOLLARS_ONLY, NO_KINDS, spendOf, type Money } from './prices'
+import type { Line } from './sections'
 import { refreshIntervalMs } from './setup'
 
 export type Pause = {
@@ -65,16 +66,17 @@ export const NO_JUDGED: Judged = { netUsd: 0, pauses: 0 }
 export const judge = (j: Judged, p: Pause | null): Judged => (p === null ? j : { netUsd: j.netUsd + marginOf(p), pauses: j.pauses + 1 })
 
 // The session's balance against the other keepalive setting: the net over the pauses judged, in dollars. In tokens no balance is stated,
-// since a balance is a sum of prices; the line says which unit states it. Empty before the first judged pause.
-export const sessionBalanceLine = (j: Judged, unit: Unit): string => {
+// since a balance is a sum of prices; the line says which unit states it. The empty string before the first judged pause.
+export const sessionBalanceLine = (j: Judged, unit: Unit): Line => {
   if (j.pauses === 0) return ''
   const pauses = `(${j.pauses} ${j.pauses === 1 ? 'pause' : 'pauses'})`
-  if (unit === 'tokens') return `balance vs other setting: ${DOLLARS_ONLY} ${pauses}`
+  const balance = (rest: string): Line => labelled('balance vs other setting:', ` ${rest}`)
+  if (unit === 'tokens') return balance(`${DOLLARS_ONLY} ${pauses}`)
   const net = Math.abs(j.netUsd) < EPSILON_USD ? 0 : j.netUsd
   const verdict = verdictOfMargin(net)
-  if (verdict === 'par') return `balance vs other setting: even ${pauses}`
-  if (verdict === 'saving') return `balance vs other setting: saved ${dollars(net)} net ${pauses}`
-  return `balance vs other setting: ${dollars(-net)} net more ${pauses}`
+  if (verdict === 'par') return balance(`even ${pauses}`)
+  if (verdict === 'saving') return balance(`saved ${dollars(net)} net ${pauses}`)
+  return balance(`${dollars(-net)} net more ${pauses}`)
 }
 
 // What a lapse rewrites over the prefix alone: the view's context at its model's write rate for the TTL in force, for the lapse

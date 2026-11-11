@@ -2,8 +2,8 @@
 // and sentences into a snapshot, and this turns them into sections, laid out unwrapped with its size for the pane and wrapped at 48 columns for the command. It
 // takes no engine handle, so it is tested without one. It knows no state's words: the Keepalive part brings its state as a string beside the
 // tone to draw it in, and the other parts bring finished lines, the This session fallback included, each as plain text or as the pieces to draw in tones.
-// It imports the pie's tone and piece types and nothing else.
-import type { Run, Tone } from './countdown'
+// It imports the pie's tone and piece types, and the constructor of a labelled line, which forms each Settings row's label, and nothing else.
+import { labelled, type Run, type Tone } from './countdown'
 
 // The width a line is wrapped at, counting its indent.
 export const WRAP = 48
@@ -43,7 +43,8 @@ export type PaneRow = { kind: 'heading' | 'line' | 'blank'; text: string; runs?:
 // The rows and columns the pane asks for.
 export type PaneSize = { rows: number; columns: number }
 
-const settingLine = (s: Setting): string => `${s.name}: ${s.value}${s.source === null ? '' : ` (${s.source})`} · ${s.change}`
+// A setting as a line: its name and colon as the dim label, then its value, its source in brackets when there is one, and its change.
+const settingLine = (s: Setting): Line => labelled(`${s.name}:`, ` ${s.value}${s.source === null ? '' : ` (${s.source})`} · ${s.change}`)
 
 // The sections, in order, each with its lines. A section with no line and no state is left out.
 export const sectionsOf = (snap: Snapshot): Section[] =>
@@ -90,8 +91,9 @@ const headingRunsOf = (section: Section): Run[] =>
 
 const headingOf = (section: Section): string => headingRunsOf(section).map((run) => run.text).join('')
 
-// A line's text, in one place: itself, or its pieces joined. It keeps the marks of its spans, which the wrap reads so a span stays whole.
-const plainOf = (line: Line): string => (typeof line === 'string' ? line : line.map((run) => run.text).join(''))
+// A line's text, in one place: itself, or its pieces joined. It keeps the marks of its spans, which the wrap reads so a span stays whole. The producers' tests
+// read a labelled line through it.
+export const plainOf = (line: Line): string => (typeof line === 'string' ? line : line.map((run) => run.text).join(''))
 
 // The sections as the command's rows: each section's heading row, its lines wrapped beneath it, and one blank row between sections.
 const answerRowsOf = (sections: Section[]): AnswerRow[] =>

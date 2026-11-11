@@ -1,7 +1,7 @@
 import type { EngineInterface, Register, RenderElement } from 'claude-code'
 import type { ModelForkResult, ModelUsage } from 'claude-code'
 import type { CacheView, ColdMark, HintCost, HintState, Judged, KeepaliveState, PriceCue, Spend, StatsState, TallyState, Unit } from '../types'
-import { cacheLineOf, expiredAt, expiryOf, pieOf, readingOf, rebuildDrawnOf, settleCold, touchedAt } from './countdown'
+import { cacheLineOf, expiredAt, expiryOf, labelled, pieOf, readingOf, rebuildDrawnOf, settleCold, touchedAt } from './countdown'
 import {
   coldBegun,
   coldLanded,
@@ -59,10 +59,10 @@ import { appended, HISTORY_BOUND, keyOf, KEY_PREFIX, merged, recordOf, recordsOf
 import { adviceOf, ratesOfView, ttlLineOf, type Inputs } from './advice'
 import { learnedLine, learnedOf, ttlSwitchOf, type Learned } from './learn'
 import { breakEvenLine, countLineOf, judge, KEPT_COUNT, ratioOf, rebuildSpendOf, runCountOf, sessionBalanceLine, NO_JUDGED, pauseOf, type Pause } from './verdict'
-import { answerOf, paneLayoutOf, spanOf, type PaneRow, type PaneSize, type Setting, type Snapshot } from './sections'
+import { answerOf, paneLayoutOf, spanOf, type Line, type PaneRow, type PaneSize, type Setting, type Snapshot } from './sections'
 import { secsTerse } from './setup'
 import { stampLabel, withStamp } from './stamp'
-import { foldStatsEvents, INITIAL_STATS, pendingFor, rundownSections, sessionLineOf, type MissEvent, type LongPauseEvent } from './stats'
+import { foldStatsEvents, INITIAL_STATS, noRefreshesLine, pendingFor, rundownSections, sessionLineOf, type MissEvent, type LongPauseEvent } from './stats'
 import { lookupRows, readCache, type History, type Host, type Row } from './transcript'
 import { NO_KINDS, spendOf, unitOf, uponOf, writeReadRatio, type Money } from './prices'
 import { priceCheck, priceList, priceReady, priceSink, priceSync, report, type PriceEvent } from './pricesync'
@@ -156,9 +156,9 @@ const memoised = <T>(memo: Memo<T> | null, pauses: readonly (readonly unknown[])
   memo !== null && memo.key === key && memo.pauses.every((p, i) => p === pauses[i]) ? memo : { pauses, key, value: make() }
 let learnedMemo: Memo<Learned | null> | null = null
 // The TTL block's rows, memoised on the history it prices and the inputs it words, and on whether the best-setup block is shown.
-let ttlLineMemo: Memo<string[]> | null = null
+let ttlLineMemo: Memo<Line[]> | null = null
 // The best-setup block's rows, memoised on the pauses and inputs it prices.
-let sentenceMemo: Memo<string[]> | null = null
+let sentenceMemo: Memo<Line[]> | null = null
 // This load's reset of the state an earlier load left, from session.start; unset until it starts.
 let restoring: Promise<string | null> | undefined
 const stampTimes = new Map<string, number | null>()
@@ -939,7 +939,7 @@ const snapshotNow = async ($: Dollar): Promise<Snapshot> => {
     },
     // This session repeats the Keepalive section's refreshes line and balance, and the Advice section's misses line, word for word. Before the
     // first refresh the refreshes line is the fallback here, this section's own.
-    session: [refreshes === '' ? 'session: no refreshes yet' : refreshes, balance, ...rundown.advice].filter((line) => line !== ''),
+    session: [refreshes === '' ? noRefreshesLine() : refreshes, balance, ...rundown.advice].filter((line) => line !== ''),
     advice: [...best, ...ttlLineNow(held, view, money, best.length > 0), ...rundown.advice, ...unitNotes(money, view, rebuildSpend, tally, stats)],
     settings: settingsOf(raw, run, kept, tally, view, money, nowMs, unitPressedNow(unitHeld)),
   }
@@ -991,7 +991,7 @@ export const alarmOf = async ($: Dollar, view: CacheView): Promise<string | null
 
 // The bare command's notes on the unit. In tokens, what a cache write costs in reads on this model, which no token count says by
 // itself. In dollars, why a figure is shown in tokens instead, once per reason. `rebuild` is the rebuild figure's spend, null where none is drawn.
-const unitNotes = (money: Money, view: CacheView, rebuild: Spend | null, tally: TallyState, stats: StatsState): string[] => {
+const unitNotes = (money: Money, view: CacheView, rebuild: Spend | null, tally: TallyState, stats: StatsState): Line[] => {
   if (money.unit === 'tokens') {
     const ratio = writeReadRatio(money.list, money.model, money.ttl)
     return ratio === null || money.model === null
@@ -1001,7 +1001,7 @@ const unitNotes = (money: Money, view: CacheView, rebuild: Spend | null, tally: 
   const ping = view.kind === 'known' ? spendOf(money.list, view.model, view.speed, { ...NO_KINDS, read: view.promptTokens }) : null
   const spends: (Spend | null)[] = [ping, rebuild, tally.session.spend, stats.misses.lapse.spend, stats.misses.cold.spend, stats.misses.unexplained.spend, stats.saved.spend, stats.saved.avoided, stats.ranOut.spend, stats.notNeeded.spend]
   const whys = new Set(spends.flatMap((sp) => (sp !== null && sp.usd === null && sp.why !== null ? [sp.why] : [])))
-  return [...whys].map((why) => `in tokens: ${why}`)
+  return [...whys].map((why) => labelled('in tokens:', ` ${why}`))
 }
 
 // One draw at a time: a unit switch's draw that comes while the tick's runs is skipped, and the next tick draws the figures, so two
@@ -1214,7 +1214,7 @@ const keptOf = (k: KeepaliveState, view: CacheView, money: Money, nowMs: number)
 // count is what it is. The run is the one a click would start, or the running one, with its own lead and pin. A running run's line reports
 // the count it sends (`runCount`), not one worked out now: from a pause's first refresh that count is kept (recount). `kept` is keptOf's,
 // worked out once by the caller, so this line and the Settings line name the same count.
-const countLines = (k: KeepaliveState, view: CacheView, money: Money, nowMs: number, kept: number | null): string[] => {
+const countLines = (k: KeepaliveState, view: CacheView, money: Money, nowMs: number, kept: number | null): Line[] => {
   if (defaultRun === undefined || view.kind !== 'known') return []
   const run = runOf(k, defaultRun)
   if (kept === null && run.count === null) {
@@ -1254,7 +1254,7 @@ const adviceInputs = (k: KeepaliveState, view: CacheView, money: Money): Inputs 
 // no session pauses, so it is memoised on the history alone and the inputs it words; with keepalive off a lead and pin that change neither
 // price nor words still rebuild it, which is harmless. `bestShown` is whether the best-setup block is shown, which has the setup row the
 // TTL block then leaves out, so a block that appears or goes rebuilds this one.
-const ttlLineNow = (k: KeepaliveState, view: CacheView, money: Money, bestShown: boolean): string[] => {
+const ttlLineNow = (k: KeepaliveState, view: CacheView, money: Money, bestShown: boolean): Line[] => {
   const inputs = adviceInputs(k, view, money)
   if (inputs === null) return []
   const key = [JSON.stringify(inputs.rates), inputs.leadMs, inputs.cap, JSON.stringify(inputs.current), inputs.pinned, JSON.stringify(inputs.fresh), bestShown].join('|')
@@ -1264,7 +1264,7 @@ const ttlLineNow = (k: KeepaliveState, view: CacheView, money: Money, bestShown:
 
 // The best-setup block, as the details pane and bare /keepalive show it: no rows with no result. Pricing the history is the costly
 // part, so the block is memoised on the pauses and the inputs it prices, and every surface asks the same memo.
-const sentenceNow = (k: KeepaliveState, view: CacheView, money: Money): string[] => {
+const sentenceNow = (k: KeepaliveState, view: CacheView, money: Money): Line[] => {
   const inputs = adviceInputs(k, view, money)
   if (inputs === null) return []
   const key = [JSON.stringify(inputs.rates), inputs.leadMs, inputs.cap, JSON.stringify(inputs.current), inputs.pinned, JSON.stringify(inputs.fresh), money.unit].join('|')

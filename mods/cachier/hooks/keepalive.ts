@@ -3,8 +3,9 @@
 // judged, and the debug line of a ping. register.ts holds the state, writes it, and makes the fork; nothing here reads the engine.
 import type { ModelApiError, ModelForkResult, ModelUsage, PluginOptions } from 'claude-code'
 import type { CacheView, HintCost, KeepaliveState, Spend, Tally, TallyState, Unit } from '../types'
-import { expiredAt, expiryOf, type Tone } from './countdown'
+import { expiredAt, expiryOf, labelled, type Tone } from './countdown'
 import { addSpend, cachedOf, dollars, figureOf, NO_KINDS, NO_SPEND, readOf, spendOf, uponOf, writtenOf, type Money } from './prices'
+import type { Line } from './sections'
 import { notBelowTtl, refreshIntervalMs, SECONDS_SUFFIX, secs, secsTerse } from './setup'
 
 // Everything off: no config, no pings, nothing shown, no turn bookkeeping. A session's start and end reset to this.
@@ -250,17 +251,17 @@ export const HEADING_TONE: Record<Heading, Tone> = {
 // What the bare command says about the state, and what the tick does with it. The heading word, the reason line (why keepalive is
 // paused or stopped, when it is) and the lines beneath it are what the command shows; the kind and a stop's reason are what the tick
 // reads. A `ping` is the only way a fork starts, and only while the idle gap is open, a count is left and nothing has stopped it.
-type Shown = { heading: Heading; why: string | null; lines: string[] }
+type Shown = { heading: Heading; why: string | null; lines: Line[] }
 export type Step =
   | ({ kind: 'ping' } & Shown)
   | ({ kind: 'stop'; reason: string } & Shown)
   | ({ kind: 'wait' } & Shown)
 
 // The settled verdict in the pieces `step` composes its lines from: the figure lines, then the schedule line where the branch gives one.
-type Settled = { heading: Heading; why: string | null; figure: string[]; schedule?: string } & ({ kind: 'ping' } | { kind: 'wait' } | { kind: 'stop'; reason: string })
+type Settled = { heading: Heading; why: string | null; figure: Line[]; schedule?: Line } & ({ kind: 'ping' } | { kind: 'wait' } | { kind: 'stop'; reason: string })
 
 // The last refresh's read and write, a line of its own after the figures, so a live session can check the served threshold.
-const lastOf = (k: KeepaliveState): string[] => (k.last === null ? [] : [`last refresh: ${k.last.read} read · ${k.last.write} written`])
+const lastOf = (k: KeepaliveState): Line[] => (k.last === null ? [] : [labelled('last refresh:', ` ${k.last.read} read · ${k.last.write} written`)])
 
 type KnownView = Extract<CacheView, { kind: 'known' }>
 
@@ -273,13 +274,13 @@ const intervalOf = (ms: number): string => {
 
 // The running lines the bare command's Keepalive section names: the context each ping reads, how often, and while the cache is warm
 // what its rebuild would cost. Null where there is no known TTL with a lead below it, so no figure is real.
-const figuresOf = (view: CacheView, leadMs: number, money: Money, pair: Pair): string[] | null => {
+const figuresOf = (view: CacheView, leadMs: number, money: Money, pair: Pair): Line[] | null => {
   if (view.kind !== 'known') return null
   const interval = refreshIntervalMs(leadMs, view.ttlMs)
   if (interval === null) return null
-  const every = `every ${intervalOf(interval)}`
+  const tail = ` · every ${intervalOf(interval)}`
   const stated = pairing(view, money, pair)
-  return stated === null ? [`next refresh ${nextPing(view, money)} · ${every}`] : [`${refreshRow(view, money)} · ${every}`, ...rebuildRows(stated.rebuilt)]
+  return stated === null ? [nextRefreshRow(view, money, tail)] : [refreshRow(view, money, tail), ...rebuildRows(stated.rebuilt)]
 }
 
 // Paused by design: keepalive is on and waits for the next user prompt, because its count or the cache's expiry ended it.
@@ -308,8 +309,8 @@ const cachedFigure = (view: KnownView, money: Money): string => {
   return usd === null ? cached : `${usd} (${cached})`
 }
 
-// The section's refresh row on a warm cache: the warm row and the armed row of a pause by design read the same figure.
-const refreshRow = (view: KnownView, money: Money): string => `refresh ${cachedFigure(view, money)}`
+// The section's refresh row on a warm cache: the warm row and the armed row of a pause by design read the same figure. `tail` is what follows the figure on the row.
+const refreshRow = (view: KnownView, money: Money, tail = ''): Line => labelled('refresh', ` ${cachedFigure(view, money)}${tail}`)
 
 // What an enabled keepalive says a refresh would cost when it resumes on an expired cache: the context each refresh reads, not a run's interval.
 const rereadFigure = (view: CacheView, money: Money): string | null => {
@@ -319,11 +320,11 @@ const rereadFigure = (view: CacheView, money: Money): string | null => {
 }
 
 // The section's rebuild row, empty where no rebuild is priced.
-const rebuildRows = (rebuilt: string | null): string[] => (rebuilt === null ? [] : [`if cold: rebuild ${rebuilt}`])
+const rebuildRows = (rebuilt: string | null): Line[] => (rebuilt === null ? [] : [labelled('if cold:', ` rebuild ${rebuilt}`)])
 
 // A paused-by-design verdict: the reason with its by-design tail, what a refresh would read once it resumes, how often one would be sent
 // wherever the run's lead gives an interval, and while the cache is warm what its rebuild would cost.
-const pausedBy = (view: CacheView, leadMs: number, money: Money, reason: string, pair: Pair): { heading: Heading; why: string; figure: string[] } => {
+const pausedBy = (view: CacheView, leadMs: number, money: Money, reason: string, pair: Pair): { heading: Heading; why: string; figure: Line[] } => {
   const stated = pairing(view, money, pair)
   const interval = intervalRow(view, leadMs)
   return {
@@ -359,7 +360,7 @@ const settledOf = (k: KeepaliveState, leadMs: number, view: CacheView, liveMs: n
   if (k.remaining <= 0) return { kind: 'stop', reason: 'count used', ...pausedBy(view, leadMs, money, 'count used', pair) }
   const refreshing = { heading: 'on, refreshing' as const, why: null }
   if (nowMs < r.dueMs) {
-    return { kind: 'wait', ...refreshing, figure: figures, schedule: `next in ${clock(r.dueMs - nowMs)} · ${k.remaining} left` }
+    return { kind: 'wait', ...refreshing, figure: figures, schedule: labelled('next in', ` ${clock(r.dueMs - nowMs)} · ${k.remaining} left`) }
   }
   if (!gap) return { kind: 'wait', ...refreshing, figure: figures, schedule: 'refresh due · waits for turn end' }
   return { kind: 'ping', ...refreshing, figure: figures }
@@ -394,6 +395,9 @@ const nextPing = (view: KnownView, money: Money): string => {
   return usd === null ? read : `${dollars(usd)} (${read})`
 }
 
+// The section's next refresh row on an expired cache: the next ping's figure. `tail` is what follows the figure on the row.
+const nextRefreshRow = (view: KnownView, money: Money, tail = ''): Line => labelled('next refresh', ` ${nextPing(view, money)}${tail}`)
+
 const capital = (text: string): string => text.charAt(0).toUpperCase() + text.slice(1)
 
 // Whether the cache is warm, and what the next prompt pays to rebuild it if it goes cold, null where no rebuild is priced. The caller
@@ -426,7 +430,7 @@ const intervalRow = (view: CacheView, leadMs: number): string | null => {
 
 // The figure of one refresh at a lead, worked out where it is stated: its label, which the footer and the hover keep, and the lines the
 // Keepalive section states: the refresh's price, the interval row, and while the cache is warm the rebuild's price.
-export type Figure = HintCost & { lines: string[] }
+export type Figure = HintCost & { lines: Line[] }
 
 // The figure of one refresh at a lead: what it costs, or the context it reads, and how often at that lead. Null with no known cache,
 // or a lead at or above its TTL, which sends no refresh.
@@ -436,7 +440,7 @@ const figureAt = (view: CacheView, leadMs: number, money: Money, pair: Pair): Fi
   const stated = pairing(view, money, pair)
   if (stated !== null) return { label: stated.label, lines: [refreshRow(view, money), row, ...rebuildRows(stated.rebuilt)] }
   const usd = pingUsd(view, money)
-  return { label: usd === null ? `${readOf(view.promptTokens)}/refresh` : `${dollars(usd)}/refresh`, lines: [`next refresh ${nextPing(view, money)}`, row] }
+  return { label: usd === null ? `${readOf(view.promptTokens)}/refresh` : `${dollars(usd)}/refresh`, lines: [nextRefreshRow(view, money), row] }
 }
 
 // The figure keepalive's refreshes show while it runs: what each refresh costs, or the context it reads, and how often. Shown
@@ -688,7 +692,8 @@ export const countPing = (
 // A user's prompt starts a new idle stretch: the pause's tally is cleared, and a fork sent before it counts no more into it.
 export const restartPause = (t: TallyState, pauseEpoch: number): TallyState => ({ ...t, pause: ZERO_TALLY, epoch: pauseEpoch })
 
-export const tallyOf = (label: string, t: Tally, unit: Money['unit']): string => `${label}: ${refreshesOf(t.pings)} · ${figureOf(t.spend, unit)}`
+// A tally as a line: the word it is named by and a colon as the dim label, then its refreshes and what they cost.
+export const tallyOf = (word: string, t: Tally, unit: Money['unit']): Line => labelled(`${word}:`, ` ${refreshesOf(t.pings)} · ${figureOf(t.spend, unit)}`)
 
 // A fork's usage as a spend: its uncached input, its read, and its write at the TTL of the cache it was sent on, priced at
 // the main thread's model and speed (a fork that reads the cache runs on both, since a switch would have invalidated it).

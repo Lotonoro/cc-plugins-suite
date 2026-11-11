@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'claude-code/testing'
 import type { Run, Tone } from './countdown'
-import { answerOf, layoutOf, paneLayoutOf, sectionsOf, spanOf, SPAN_SPACE, wrapLine, WRAP, type AnswerRow, type PaneRow, type Setting, type Snapshot } from './sections'
+import { answerOf, layoutOf, paneLayoutOf, plainOf, sectionsOf, spanOf, SPAN_SPACE, wrapLine, WRAP, type AnswerRow, type PaneRow, type Setting, type Snapshot } from './sections'
 
 // The builder takes the figures and sentences as plain values: no engine, no `$`. A command in a setting's change is one span, as the command gives it.
 const SETTINGS: Setting[] = [
@@ -38,10 +38,32 @@ describe('sectionsOf: the five sections in order, each with its lines', () => {
   test('a setting is one line: its name, its value, its source in brackets when there is one, and its change, with no full stop', () => {
     const lines = sectionsOf({ ...EMPTY, settings: SETTINGS }).find((s) => s.title === 'Settings')!.lines
     expect(lines).toHaveLength(5)
-    expect(lines[0]).toBe('TTL: 5m (last response) · set "promptCacheTtl": "1h" in settings.json for 1h (new sessions)')
-    expect(lines[1]).toBe(`lead: 15s · ${['/keepalive', 'on', '<lead_s>'].join(SPAN_SPACE)}`)
-    expect(lines[2]).toBe(`refreshes/pause: break-even (keepalive_count cap) · ${['/keepalive', 'on', '<lead_s>', '<count>'].join(SPAN_SPACE)} or keepalive_count`)
-    expect(lines.some((line) => typeof line === 'string' && line.endsWith('.'))).toBe(false)
+    expect(plainOf(lines[0]!)).toBe('TTL: 5m (last response) · set "promptCacheTtl": "1h" in settings.json for 1h (new sessions)')
+    expect(plainOf(lines[1]!)).toBe(`lead: 15s · ${['/keepalive', 'on', '<lead_s>'].join(SPAN_SPACE)}`)
+    expect(plainOf(lines[2]!)).toBe(`refreshes/pause: break-even (keepalive_count cap) · ${['/keepalive', 'on', '<lead_s>', '<count>'].join(SPAN_SPACE)} or keepalive_count`)
+    expect(lines.some((line) => plainOf(line).endsWith('.'))).toBe(false)
+  })
+
+  test('a setting\'s line is its name and colon as one dim piece, then the rest of the line as one untoned piece', () => {
+    const lines = sectionsOf({ ...EMPTY, settings: SETTINGS }).find((s) => s.title === 'Settings')!.lines
+    expect(lines).toHaveLength(SETTINGS.length)
+    SETTINGS.forEach((setting, i) => {
+      const pieces = lines[i] as Run[]
+      expect(Array.isArray(pieces)).toBe(true)
+      expect(pieces).toHaveLength(2)
+      expect(pieces[0]).toEqual({ text: `${setting.name}:`, tone: 'gone' })
+      expect(pieces[1]!.tone).toBe('quiet')
+      expect(pieces[1]!.text.startsWith(' ')).toBe(true)
+    })
+  })
+
+  test('a setting\'s pieces joined are the line the answer wraps, so the bare answer is as it was', () => {
+    const lines = sectionsOf({ ...EMPTY, settings: SETTINGS }).find((s) => s.title === 'Settings')!.lines
+    lines.forEach((line, i) => {
+      const setting = SETTINGS[i]!
+      const source = setting.source === null ? '' : ` (${setting.source})`
+      expect(plainOf(line)).toBe(`${setting.name}: ${setting.value}${source} · ${setting.change}`)
+    })
   })
 
   test('the Settings rows at 48 columns keep each command whole on a row, the TTL step wrapping as words', () => {
@@ -247,12 +269,15 @@ describe('paneLayoutOf: toned runs, the pieces of a row\'s text each drawn in a 
     }
   })
 
-  test('each row with runs reads exactly its text when they are joined, and every row other than the Keepalive heading has none, in each state', () => {
+  test('each row with runs reads exactly its text when they are joined, and every row other than the Keepalive heading and the Settings rows has none, in each state', () => {
     for (const { word, tone } of STATES) {
       for (const base of [FULL, EMPTY, { ...FULL, advice: [], session: [] }]) {
         const { rows } = paneLayoutOf(stated(word, tone, base))
         for (const row of rows) if (row.runs !== undefined) expect(row.runs.map((run) => run.text).join('')).toBe(row.text)
-        expect(rows.filter((row) => row.runs !== undefined).map((row) => row.text)).toEqual([`Keepalive  ${word}`])
+        const settings = rows.findIndex((row) => row.kind === 'heading' && row.text === 'Settings')
+        const settingRows = settings < 0 ? [] : rows.slice(settings + 1).map((row) => row.text)
+        expect(settingRows).toHaveLength(base.settings.length)
+        expect(rows.filter((row) => row.runs !== undefined).map((row) => row.text)).toEqual([`Keepalive  ${word}`, ...settingRows])
       }
     }
   })
@@ -322,8 +347,11 @@ describe('lines given as runs: the pieces of a line, each in a tone, in the Cach
     expect(answerOf(BY_RUNS)).not.toContain(SPAN_SPACE)
   })
 
-  test('the pane draws a line given as runs with those runs, spans as plain spaces: the Keepalive heading and the four lines carry runs, and no other row has the field', () => {
-    const { rows } = paneLayoutOf(BY_RUNS)
+  test('the pane draws a line given as runs with those runs, spans as plain spaces: the Keepalive heading, the four lines and the Settings rows carry runs, and no other row has the field', () => {
+    const { rows: all } = paneLayoutOf(BY_RUNS)
+    const settings = all.findIndex((row) => row.kind === 'heading' && row.text === 'Settings')
+    expect(all.slice(settings + 1).every((row) => row.kind === 'line' && row.runs !== undefined)).toBe(true)
+    const rows = all.slice(0, settings)
     expect(rows.filter((row) => 'runs' in row)).toEqual([
       { kind: 'line', text: PLAIN.cache, runs: [{ text: '◕', tone: 'on' }, { text: ` warm · 3:12 left · 5m TTL · ${PLAIN_TAIL}`, tone: 'quiet' }] },
       { kind: 'heading', text: 'Keepalive  paused', runs: [{ text: 'Keepalive  ', tone: 'quiet' }, { text: 'paused', tone: 'warning' }] },
@@ -349,7 +377,7 @@ describe('lines given as runs: the pieces of a line, each in a tone, in the Cach
     const { rows } = paneLayoutOf(BY_RUNS)
     const flat = layoutOf(BY_RUNS).map((row) => row.text.trim()).join(' ')
     const withRuns = rows.filter((row) => row.kind === 'line' && row.runs !== undefined)
-    expect(withRuns).toHaveLength(4)
+    expect(withRuns).toHaveLength(4 + SETTINGS.length)
     for (const row of withRuns) {
       expect(row.runs!.map((r) => r.text).join('')).toBe(row.text)
       expect(flat).toContain(row.text)
@@ -389,5 +417,15 @@ describe('lines given as runs: the pieces of a line, each in a tone, in the Cach
       const rows = layoutOf(snap)
       expect(paneLayoutOf(snap).size).toEqual({ rows: rows.length, columns: Math.max(...rows.map((row) => row.text.length)) })
     }
+  })
+})
+
+describe('plainOf: a line\'s text, in one place', () => {
+  test('a plain line is itself and a line of pieces is its pieces joined, the marks of its spans kept', () => {
+    expect(plainOf('why')).toBe('why')
+    expect(plainOf([])).toBe('')
+    const command = spanOf('/keepalive on 15')
+    expect(plainOf([{ text: 'do:', tone: 'gone' }, { text: ` ${command}`, tone: 'quiet' }])).toBe(`do: ${command}`)
+    expect(plainOf([{ text: 'do:', tone: 'gone' }, { text: ` ${command}`, tone: 'quiet' }])).toContain(SPAN_SPACE)
   })
 })

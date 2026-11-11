@@ -1,5 +1,5 @@
 import { describe, expect, mock, test } from 'claude-code/testing'
-import { assistant, fakeFiles, lines, user } from './fixture'
+import { assistant, drawnLabels, fakeFiles, LABELS, lines, mislabelled, UNLABELLED, user, withoutLabel } from './fixture'
 import { HISTORY_BOUND, keyOf } from './history'
 import { INITIAL as INITIAL_KEEPALIVE } from './keepalive'
 import { alarmOf, learnTranscript, pressCountdown, pressOnce, restoreState, STATE_SHAPE, unitFrom } from './register'
@@ -3112,7 +3112,7 @@ describe('the low-key UI: the footer line, the click, the gutter, and what the s
     await turnEnd($)
     await clock.advance(1000)
     expect(mounted).not.toBeNull()
-    expect(JSON.stringify(await mounted.drawn())).toContain('refresh ~19k cached')
+    expect(textOf(await mounted.drawn())).toContain('refresh ~19k cached')
     await mounted.unmount()
     expect(rec.toasts).toEqual([])
     await clock.advance(300000)
@@ -3730,6 +3730,20 @@ const withoutColourWords = (row: any): any => ({
   ...row,
   children: [{ ...row.children[0], children: row.children[0].children.filter((piece: any) => !['amber', 'red'].includes(textOf(piece))) }],
 })
+// The rows of a drawing of the pane with every piece that may carry a colour or a dim taken out: the Keepalive heading's state word, the Cache line's pie, the pie
+// line's `amber` and `red`, and each row's label. What is left is drawn with no colour, dim or background, and has as many rows as the drawing.
+const withoutTones = (tree: any): any[] => {
+  const heading = keepaliveRow(tree)
+  const cache = cacheRow(tree)
+  const line = pieLineRow(tree)
+  return [
+    ...tree.children.filter((row: any) => row !== heading && row !== cache && row !== line).map(withoutLabel),
+    heading.children[0],
+    ...(cache === undefined ? [] : [withoutPie(cache)]),
+    ...(line === undefined ? [] : [withoutLabel(withoutColourWords(line))]),
+  ]
+}
+const NO_TONE = /"color"|"dimColor"|"backgroundColor"/
 
 describe('the details pane draws the sections /keepalive answers with, built by its draw alone', () => {
   const opts = { options: { keepalive_lead_s: 15, keepalive_count: 3 } }
@@ -3755,7 +3769,7 @@ describe('the details pane draws the sections /keepalive answers with, built by 
     await pane.unmount()
   })
 
-  test('each section heading is drawn bold, and no row is bold or coloured otherwise but the Keepalive state word and the pie line\'s amber and red', opts, async ($, on) => {
+  test('each section heading is drawn bold, and no row is bold or coloured otherwise but the Keepalive state word, the pie line\'s amber and red, and each row\'s dim label', opts, async ($, on) => {
     kaWorld(on, cached())
     const clock = mock.clock(on, { now: T0 })
     await $.classic.SessionStart({ source: 'startup', transcript_path: PATH })
@@ -3773,9 +3787,14 @@ describe('the details pane draws the sections /keepalive answers with, built by 
     expect(heading.children).toHaveLength(2)
     expect(propsOf(heading.children[1])).toEqual({ dimColor: true })
     const line = pieLineRow(tree)
-    const rest = [...tree.children.filter((row: any) => row !== heading && row !== line), heading.children[0], ...(line === undefined ? [] : [withoutColourWords(line)])]
+    const rest = [...tree.children.filter((row: any) => row !== heading && row !== line).map(withoutLabel), heading.children[0], ...(line === undefined ? [] : [withoutLabel(withoutColourWords(line))])]
     expect(rest).toHaveLength(tree.children.length)
-    expect(JSON.stringify(rest)).not.toMatch(/"color"|"dimColor"|"backgroundColor"/)
+    expect(JSON.stringify(rest)).not.toMatch(NO_TONE)
+    expect(mislabelled(tree)).toEqual([])
+    // The labels taken out of `rest` are drawn dim: the pie line's, the figures' of an offer, the session fallback's, the tokens note's and each setting's name.
+    const labels = drawnLabels(tree)
+    expect(labels.map(([label]) => label)).toEqual(['pie:', 'refresh', 'if cold:', 'session:', 'in tokens:', 'TTL:', 'lead:', 'refreshes/pause:', 'start mode:', 'unit:'])
+    for (const [, props] of labels) expect(props).toEqual({ dimColor: true })
     await pane.unmount()
   })
 
@@ -3831,7 +3850,7 @@ describe('the details pane draws the sections /keepalive answers with, built by 
     },
   ]
   for (const s of HEADING_STATES) {
-    test(`keepalive ${s.word}: the Keepalive heading is one bold Text, its title untoned and its state word in the state's tone, and no other row is coloured but the Cache line's pie and the pie line's amber and red`, async ($, on) => {
+    test(`keepalive ${s.word}: the Keepalive heading is one bold Text, its title untoned and its state word in the state's tone, and no other row is coloured but the Cache line's pie, the pie line's amber and red, and each row's dim label`, async ($, on) => {
       await s.reach($, on)
       const pane = await mountPane($)
       const tree = (await pane.drawn()) as any
@@ -3846,22 +3865,22 @@ describe('the details pane draws the sections /keepalive answers with, built by 
       expect(state).toMatchObject({ type: 'Text', children: [s.word] })
       expect(propsOf(state)).toEqual(s.props)
       // The Cache line's pie is the glyph and the props the state names, or the state has no Cache line. Every other row, whole, the title, the Cache line
-      // without its pie and the pie line without its `amber` and `red`, where the state shows that line, are drawn with no colour or dim.
+      // without its pie, the pie line without its `amber` and `red`, where the state shows that line, and each labelled row without its label, are drawn with no
+      // colour or dim, and no row that opens with a listed label is left a plain string.
       const cache = cacheRow(tree)
       if (s.pie === null) expect(cache).toBeUndefined()
       else {
         expect(textOf(pieOfRow(cache))).toBe(s.pie.glyph)
         expect(propsOf(pieOfRow(cache))).toEqual(s.pie.props)
       }
-      const line = pieLineRow(tree)
-      const rest = [
-        ...tree.children.filter((row: any) => row !== heading && row !== cache && row !== line),
-        title,
-        ...(cache === undefined ? [] : [withoutPie(cache)]),
-        ...(line === undefined ? [] : [withoutColourWords(line)]),
-      ]
+      const rest = withoutTones(tree)
       expect(rest).toHaveLength(tree.children.length)
-      expect(JSON.stringify(rest)).not.toMatch(/"color"|"dimColor"|"backgroundColor"/)
+      expect(rest).toContain(title)
+      expect(JSON.stringify(rest)).not.toMatch(NO_TONE)
+      expect(mislabelled(tree)).toEqual([])
+      const labels = drawnLabels(tree)
+      expect(labels.length).toBeGreaterThan(0)
+      for (const [, props] of labels) expect(props).toEqual({ dimColor: true })
       // The bare answer names the state in the same words, as plain text.
       expect((await commandText($, '')).split('\n')).toContain(`Keepalive  ${s.word}`)
       await pane.unmount()
@@ -6000,7 +6019,7 @@ const sectionLines = (text: string, title: string): string[] | undefined => {
 const MISSES = 'misses: 1 (lapse 1) · $0.10 rewritten'
 // A session on PATH whose keepalive sends one refresh and is then turned off; the pause is judged on the prompt that ends it, and the reply
 // after the lapse counts a miss.
-const withMiss = async ($: any, on: any) => {
+const withMiss = async ($: any, on: any, replyMs = T0 + 600000) => {
   const doc: any = opusCached()
   kaWorld(on, doc)
   const clock = mock.clock(on, { now: T0 })
@@ -6013,7 +6032,7 @@ const withMiss = async ($: any, on: any) => {
   await toggle($, 'off')
   await clock.advance(359000)
   await userPrompt($)
-  doc.text += lines([assistant({ uuid: 'a2', parent: 'a1', ts: iso(T0 + 600000), write: 20000, tags: FIVE, msg: 'm2', model: 'claude-opus-5-5', speed: 'standard' })])
+  doc.text += lines([assistant({ uuid: 'a2', parent: 'a1', ts: iso(replyMs), write: 20000, tags: FIVE, msg: 'm2', model: 'claude-opus-5-5', speed: 'standard' })])
   await mainStep($)
   await turnEnd($)
   await clock.advance(1000)
@@ -8846,7 +8865,7 @@ describe('the Cache line opens with the pie: the footer\'s glyph in the bare ans
   }
 })
 
-describe('the pie line draws amber in the warning colour and red in the error colour, in each state that shows it, and the bare answer states it as plain text', () => {
+describe('the pie line draws its label dim, amber in the warning colour and red in the error colour, in each state that shows it, and the bare answer states it as plain text', () => {
   // The states that show the line, each with how a session reaches it. The line shows wherever no refresh is coming, whatever the pie's colour: a calm pie, an amber
   // one, a red one and a dim one stand beside the same two colour words.
   const STATES: { name: string; reach: ($: any, on: any) => Promise<unknown> }[] = [
@@ -8899,14 +8918,147 @@ describe('the pie line draws amber in the warning colour and red in the error co
       const pane = await mountPane($)
       const tree = (await pane.drawn()) as any
       await pane.unmount()
-      // The pieces of the line with a colour or dim are `amber` in the warning colour and `red` in the error colour, in that order, so the rest of the line has none.
+      // The pieces of the line with a colour or dim are the label `pie:` dim, then `amber` in the warning colour and `red` in the error colour, in that order, so the
+      // rest of the line has none.
       const line = pieLineRow(tree)
       expect(line).toBeDefined()
       const toned = line.children[0].children.filter((piece: any) => Object.keys(propsOf(piece)).length > 0)
-      expect(toned.map((piece: any) => [textOf(piece), propsOf(piece)])).toEqual([['amber', { color: 'warning' }], ['red', { color: 'error' }]])
+      expect(toned.map((piece: any) => [textOf(piece), propsOf(piece)])).toEqual([['pie:', { dimColor: true }], ['amber', { color: 'warning' }], ['red', { color: 'error' }]])
+      expect(textOf(line.children[0].children[0])).toBe('pie:')
       // The bare answer states the line once, as plain text in its one row.
       const answer = (await commandText($, '')).split('\n')
       expect(answer.filter((row) => row.includes(PIE_LINE))).toEqual([`  ${PIE_LINE}`])
     })
   }
+})
+
+// The labels the pane draws dim, each in a state that shows its row. A state names the labels its pane must show and the unlabelled rows it must show plain; the
+// last test holds the states to the whole list, so a label added to the list needs a state that draws it.
+describe('the details pane draws each row label dim in the states that show it, and every other row as it was', () => {
+  type LabelState = {
+    name: string
+    labels: string[]
+    unlabelled?: string[]
+    options?: Record<string, number>
+    reach: ($: any, on: any) => Promise<unknown>
+  }
+  const SETTINGS_LABELS = ['TTL:', 'lead:', 'refreshes/pause:', 'start mode:', 'unit:']
+  const pausesOf = (pausedMs: number, grownTokens: number) => ({
+    'pauses/old': Array.from({ length: 10 }, (_, i) => ({ startMs: 1000 + i, pausedMs, hour: 10, weekday: 2, ratio: 24, ttlMs: 300000, contextTokens: 100000, grownTokens })),
+  })
+  // Ten pauses of three hours learn no refreshes; twelve of three hours at this hour beside twelve of half an hour at another learn none for this hour alone.
+  const LONG = { 'pauses/old': Array.from({ length: 10 }, (_, i) => ({ startMs: 1000 + i, pausedMs: 3 * 3600000, hour: 10, weekday: 2, ratio: 24, ttlMs: 300000 })) }
+  const HOUR = new Date(T0 + 1000).getHours()
+  const HOURLY = {
+    'pauses/old': [
+      ...Array.from({ length: 12 }, (_, i) => ({ startMs: 1000 + i, pausedMs: 3 * 3600000, hour: HOUR, weekday: 2, ratio: 24, ttlMs: 300000 })),
+      ...Array.from({ length: 12 }, (_, i) => ({ startMs: 2000 + i, pausedMs: 30 * MIN, hour: (HOUR + 12) % 24, weekday: 2, ratio: 24, ttlMs: 300000 })),
+    ],
+  }
+  const STATES: LabelState[] = [
+    { name: 'keepalive off, a fresh warm cache: the pie line, the refresh figure, the session fallback and the Settings rows', labels: ['pie:', 'refresh', 'session:', ...SETTINGS_LABELS], reach: ($, on) => startedWorld($, on) },
+    {
+      name: 'an advised best setup over recent pauses',
+      labels: ['setup:', 'best:', 'do:'],
+      reach: ($, on) => startedWorld($, on, { ...opusCached(), store: pausesOf(10 * MIN, 1000000) }),
+    },
+    { name: 'an other TTL that would have cost less', labels: ['setup:', 'other TTL:', 'do:'], reach: ($, on) => startedWorld($, on, { ...opusCached(), store: pausesOf(20 * MIN, 2000) }) },
+    {
+      name: 'the cheapest setup with a next best',
+      labels: ['setup:', 'saves', 'next best:'],
+      reach: async ($, on) => {
+        const clock = await startedWorld($, on, { ...opusCached(), store: pausesOf(6 * MIN, 6000) })
+        await toggle($, 'on 15 1')
+        await clock.advance(1000)
+      },
+    },
+    {
+      name: 'a learned run count',
+      labels: ['learned:'],
+      options: { keepalive_lead_s: 60 },
+      reach: async ($, on) => {
+        const clock = await startedWorld($, on, { ...opusCached(), store: LONG })
+        await toggle($, 'on 60')
+        await mainStep($)
+        await turnEnd($)
+        await clock.advance(1000)
+      },
+    },
+    { name: 'a run count learned from this hour\'s pauses alone', labels: ['learned (this hour):'], reach: ($, on) => startedWorld($, on, { ...opusCached(), store: HOURLY }) },
+    {
+      name: 'a session with a judged pause and a history of long, wasted and missed pauses',
+      labels: ['balance vs other setting:', 'earlier:', 'long pauses:', 'misses:', 'session:'],
+      unlabelled: ['most wasted pauses ran out: pauses outlast refreshes'],
+      reach: ($, on) => withMiss($, on, T0 + 601000),
+    },
+    { name: 'the tokens unit on an unpriced model', labels: ['in tokens:', 'refresh', 'if cold:'], reach: ($, on) => startedWorld($, on, cached()) },
+    {
+      name: 'a run stopped with its count used after a refresh',
+      labels: ['last refresh:', 'if cold:', 'refresh'],
+      reach: async ($, on) => countUsed($, await startedWorld($, on)),
+    },
+    {
+      name: 'keepalive refreshing after a refresh, its pause tally shown',
+      labels: ['refresh', 'next in', 'last refresh:', 'pause:', 'session:'],
+      reach: ($, on) => sessionRun(async () => {})($, on),
+    },
+    {
+      name: 'keepalive on and due while the turn runs: the due sentence is not a label',
+      labels: ['refresh'],
+      unlabelled: ['refresh due · waits for turn end'],
+      reach: async ($, on) => {
+        const clock = await startedWorld($, on)
+        await toggle($, 'on 60 2')
+        await mainStep($)
+        await clock.advance(241000)
+      },
+    },
+    {
+      name: 'keepalive on, stopped by a failure, over an expired cache',
+      labels: ['next refresh'],
+      reach: async ($, on) => {
+        const doc: any = opusCached()
+        doc.fork = { isAnswered: false, reason: 'empty-reply', usage: { ...ZERO, cache_creation_input_tokens: 18000 } }
+        const clock = await startedWorld($, on, doc)
+        await toggle($, 'on 60 2')
+        await mainStep($)
+        await turnEnd($)
+        await clock.advance(241000)
+        await clock.advance(70000)
+      },
+    },
+    { name: 'keepalive off over an expired cache', labels: ['next refresh'], reach: async ($, on) => (await startedWorld($, on)).advance(310000) },
+  ]
+  for (const s of STATES) {
+    const run = async ($: any, on: any) => {
+      await s.reach($, on)
+      const pane = await mountPane($)
+      const tree = (await pane.drawn()) as any
+      await pane.unmount()
+      // The state shows the rows: the pane's text has a row opening with each label, and each unlabelled row whole.
+      const texts: string[] = tree.children.map(textOf)
+      for (const label of s.labels) expect(texts.some((text) => text.startsWith(`${label} `) && !UNLABELLED.includes(text))).toBe(true)
+      for (const text of s.unlabelled ?? []) expect(texts).toContain(text)
+      // Each of its labels is drawn as a row's first piece, dim; no other piece of any row is a listed label, and no row opening with one is left a plain string.
+      const drawn = drawnLabels(tree)
+      for (const label of s.labels) expect(drawn.map(([drawnLabel]) => drawnLabel)).toContain(label)
+      for (const [label, props] of drawn) expect([label, props]).toEqual([label, { dimColor: true }])
+      expect(mislabelled(tree)).toEqual([])
+      // The rest of every row has no colour or dim but what the Keepalive state word, the Cache line's pie and the pie line's two words give it.
+      const rest = withoutTones(tree)
+      expect(rest).toHaveLength(tree.children.length)
+      expect(JSON.stringify(rest)).not.toMatch(NO_TONE)
+      // A row with no label is drawn as it was, its text the one string it holds; the Cache line holds its pie beside its words.
+      const cache = cacheRow(tree)
+      const labelled = (row: any) => drawnLabels({ children: [row] }).length > 0
+      for (const row of tree.children.filter((row: any) => row.type === 'Box' && row !== cache && !labelled(row))) expect(row.children[0].children).toEqual([textOf(row)])
+      for (const text of s.unlabelled ?? []) expect(tree.children.find((row: any) => textOf(row) === text).children[0].children).toEqual([text])
+    }
+    if (s.options === undefined) test(s.name, run)
+    else test(s.name, { options: s.options }, run)
+  }
+
+  test('the states between them show every listed label', () => {
+    expect([...new Set(STATES.flatMap((s) => s.labels))].sort()).toEqual([...LABELS].sort())
+  })
 })

@@ -59,6 +59,14 @@ export const readingOf = (view: CacheView, liveMs: number | null, cold: ColdMark
 export type Tone = 'on' | 'quiet' | 'warning' | 'alarm' | 'gone'
 // A piece of a line's text and the tone it is drawn in, one of the pie's. The pieces of a line, joined, are its text.
 export type Run = { text: string; tone: Tone }
+// The tone a row's label is drawn in: the pie's dim, so a label names its row and is no state of the cache or of keepalive.
+const LABEL_TONE: Tone = 'gone'
+// The pieces of a labelled line: the label as one dim piece, then the rest. The label carries its colon where it has one, and the rest opens with the space after
+// it, so the pieces joined are the label then the rest. A rest given as text is one untoned piece; a rest given as pieces is kept as given.
+export const labelled = (label: string, rest: string | Run[]): Run[] => [
+  { text: label, tone: LABEL_TONE },
+  ...(typeof rest === 'string' ? [{ text: rest, tone: 'quiet' as const }] : rest),
+]
 // The word for a reset cache: the footer's cold word and the Cache line's `reset` read this one constant.
 const RESET = 'reset'
 // The footer's word with keepalive on and no reading: nothing is counted, which is true of every no-reading state.
@@ -98,15 +106,15 @@ export const refreshingOf = (on: boolean, reading: Reading | null, refresh: stri
 
 // What the pie's colours warn of, as the pieces of the Keepalive section's line wherever no refresh is coming (`pieOf` decides where). `amber` and `red` take the
 // tones the pie takes at the quarter and tenth steps (`WARN_TONE`), so those tones cannot drift from the pie's; the words and the thresholds `¼` and `⅒` are paired
-// with the steps by hand. They are drawn in those tones whatever the pie's own: a legend for the pie's colours, not a state. The rest of the line has no tone, and
-// the pieces joined are the sentence.
-export const COLOUR_SENTENCE: Run[] = [
-  { text: 'pie: ', tone: 'quiet' },
+// with the steps by hand. They are drawn in those tones whatever the pie's own: a legend for the pie's colours, not a state. The label `pie:` is the line's one dim
+// piece (`labelled`), the rest of the line has no tone, and the pieces joined are the sentence.
+export const COLOUR_SENTENCE: Run[] = labelled('pie:', [
+  { text: ' ', tone: 'quiet' },
   { text: 'amber', tone: WARN_TONE.quarter },
   { text: ' ≤¼ TTL left, ', tone: 'quiet' },
   { text: 'red', tone: WARN_TONE.tenth },
   { text: ' ≤⅒', tone: 'quiet' },
-]
+])
 
 // The keepalive state the pie's hover names: off with keepalive off, else on for the green tone and paused for any other.
 export type PieState = 'on' | 'paused' | 'off'

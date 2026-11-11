@@ -1,6 +1,11 @@
 import { describe, expect, test } from 'claude-code/testing'
+import { pieces } from './fixture'
 import type { PauseRecord } from './history'
-import { learnedLine, learnedOf, looCosts, pauseCost, pausesCost, ttlAdviceOf, type Pricing } from './learn'
+import { learnedLine as learnedLineRaw, learnedOf, looCosts, pauseCost, pausesCost, ttlAdviceOf, type Pricing } from './learn'
+import { plainOf } from './sections'
+
+// The learned line as the tests below read it: its text, a labelled line being its pieces joined. The pieces have their own test at the end.
+const learnedLine = (...args: Parameters<typeof learnedLineRaw>) => plainOf(learnedLineRaw(...args))
 
 const S = 1000
 const MIN = 60 * S
@@ -188,5 +193,19 @@ describe('ttlAdviceOf: the TTL that would have cost less over the recorded pause
   test('pauses recorded without their context are not priced, and with none there is no advice', () => {
     expect(ttlAdviceOf(many(Array(10).fill(20 * MIN)), OPUS, 15 * S, null, '5m', OFF, FRESH)).toBeNull()
     expect(ttlAdviceOf([], OPUS, 15 * S, null, '5m', OFF, FRESH)).toBeNull()
+  })
+})
+
+describe('the learned line\'s label: the first, dim piece of the line, with its colon, and the rest one untoned piece', () => {
+  test('learned: opens the line of a count learned from every pause, with no refreshes and with some', () => {
+    const none = learnedOf(many([...Array(8).fill(3 * 60 * MIN), 2 * MIN, 40 * MIN]), 10, BE, P)!
+    expect(learnedLineRaw(none, P.ttlMs)).toEqual(pieces('learned:', ' 0 refreshes · 1/10 pauses within 5:00 TTL'))
+    const some = learnedOf(many([...[28, 29, 30, 30, 31, 29, 30, 28, 31, 30].map((m) => m * MIN), ...Array(3).fill(3 * 60 * MIN)]), 10, BE, P)!
+    expect(learnedLineRaw(some, P.ttlMs)).toEqual(pieces('learned:', ' 6 refreshes/pause · covers 33:30 · 10/13 pauses within'))
+  })
+
+  test('learned (this hour): is the label of a count learned from the hour\'s own pauses', () => {
+    const h = [...many(Array(12).fill(3 * 60 * MIN), 14), ...many(Array(12).fill(30 * MIN), 9)]
+    expect(learnedLineRaw(learnedOf(h, 14, BE, P)!, P.ttlMs)).toEqual(pieces('learned (this hour):', ' 0 refreshes · 0/12 pauses within 5:00 TTL'))
   })
 })

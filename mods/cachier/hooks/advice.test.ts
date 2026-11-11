@@ -1,10 +1,18 @@
 import { describe, expect, test } from 'claude-code/testing'
 import type { PauseRecord } from './history'
-import { adviceLine, adviceOf, bestSetupOf, newSessionClause, pricedOf, ratesOfView, ttlLine, ttlLineOf, type Inputs } from './advice'
+import type { Run } from './countdown'
+import { adviceLine as adviceLineRaw, adviceOf as adviceOfRaw, bestSetupOf, newSessionClause, pricedOf, ratesOfView, ttlLine as ttlLineRaw, ttlLineOf as ttlLineOfRaw, type Inputs } from './advice'
+import { pieces } from './fixture'
 import { parseRequest } from './keepalive'
 import { PRICES } from './prices'
-import { SPAN_SPACE, wrapLine } from './sections'
+import { plainOf, SPAN_SPACE, wrapLine, type Line } from './sections'
 import { sessionBalanceLine } from './verdict'
+
+// The blocks' rows as the tests below read them: each row's text, a labelled row being its pieces joined. The pieces have their own tests at the end.
+const adviceLine = (...args: Parameters<typeof adviceLineRaw>) => adviceLineRaw(...args).map(plainOf)
+const adviceOf = (...args: Parameters<typeof adviceOfRaw>) => adviceOfRaw(...args).map(plainOf)
+const ttlLine = (...args: Parameters<typeof ttlLineRaw>) => ttlLineRaw(...args).map(plainOf)
+const ttlLineOf = (...args: Parameters<typeof ttlLineOfRaw>) => ttlLineOfRaw(...args).map(plainOf)
 
 const S = 1000
 // A row as the pane and the answer print it: the spans of a command or a setup joined by plain spaces.
@@ -364,7 +372,7 @@ describe('adviceLine and adviceOf: the best-setup block of label rows, in the un
   })
 
   test('the pointer is the balance producer\'s words, its command one span on both rows', () => {
-    const balance = sessionBalanceLine({ netUsd: 0.15, pauses: 2 }, 'tokens')
+    const balance = plainOf(sessionBalanceLine({ netUsd: 0.15, pauses: 2 }, 'tokens'))
     const pointer = balance.slice('balance vs other setting: '.length, balance.indexOf(' (2 pauses)'))
     expect(plain(pointer)).toBe('$ only, /keepalive unit dollars')
     const rows = adviceOf(inputs({ history: pauses(10, 30 * MIN) }), 'tokens')
@@ -747,5 +755,58 @@ describe('a change of TTL where new sessions start keepalive on and the target h
             const result = bestSetupOf(inputs({ current: { ttl, keepalive }, leadMs, history: pauses(10, minutes * MIN), fresh: { on: true, leadMs: 3600 * S, pinned: null } }))
             if (result?.kind === 'change' && result.to.keepalive) expect(result.run.leadMs).toBeLessThan(TTL[result.to.ttl])
           }
+  })
+})
+
+// The pieces of the Advice rows: each label is its row's first piece, drawn dim, and the rest of the row is one untoned piece; a row that opens with a setup
+// has no label and is plain text. The text of every row is pinned above; these pin the pieces, read raw, the marks of a span printed as plain spaces.
+describe('the labels of the Advice rows: each is the first, dim piece of its row', () => {
+  const printedPieces = (row: Line | undefined): Run[] => (row as Run[]).map((piece) => ({ ...piece, text: plain(piece.text) }))
+  const near = inputs({ rates: OPUS, pinned: 1, history: pauses(10, 6 * MIN, 6000) })
+
+  test('setup:, best: and do: open the rows of a change', () => {
+    expect(adviceOfRaw(inputs({ history: pauses(10, 30 * MIN) }), 'dollars').map(printedPieces)).toEqual([
+      pieces('setup:', ' 5m/on'),
+      pieces('best:', ' 1h/off · would have saved $1.20 (10 recent pauses)'),
+      pieces('do:', ' set "promptCacheTtl": "1h" in settings.json (new sessions start off: keepalive_default)'),
+    ])
+  })
+
+  test('saves is the colon-less label of the on-best row, and (cheapest) is part of the setup row\'s rest', () => {
+    expect(adviceOfRaw(inputs({ history: pauses(10, 10 * MIN, 1000000) }), 'dollars').map(printedPieces)).toEqual([
+      pieces('setup:', ' 5m/on (cheapest)'),
+      pieces('saves', ' ~$4.40 vs 5m/off (10 recent pauses)'),
+    ])
+  })
+
+  test('next best: opens the near row, after the saves row', () => {
+    expect(adviceOfRaw(near, 'dollars').map(printedPieces)).toEqual([
+      pieces('setup:', ' 5m/on'),
+      pieces('saves', ' ~$4.60 vs 5m/off (10 recent pauses)'),
+      pieces('next best:', ' 1h/off · would have saved $0.02, too little to change'),
+    ])
+  })
+
+  test('the tail rows that open with a setup have no label: they are plain text', () => {
+    const tail = adviceLineRaw({ kind: 'even', setup: { ttl: '5m', keepalive: true }, near: null, baselineSavedUsd: 0.004, of: 10, source: 'recent' }, 'dollars', 15 * S)
+    expect(tail.map((row) => (typeof row === 'string' ? row : printedPieces(row)))).toEqual([pieces('setup:', ' 5m/on (cheapest)'), '5m/off ≈ same cost (10 recent pauses)'])
+    const cheaper = adviceLineRaw({ kind: 'even', setup: { ttl: '5m', keepalive: true }, near: null, baselineSavedUsd: 0.005, of: 10, source: 'recent' }, 'dollars', 15 * S)
+    expect(cheaper.at(-1)).toBe('5m/off a little cheaper (10 recent pauses), too little to change')
+  })
+
+  test('other TTL: and its do: row open the TTL block, with the setup: row before them unless the best-setup block has it', () => {
+    const run = inputs({ history: pauses(10, 20 * MIN, 2000), current: { ttl: '5m', keepalive: false } })
+    const a = { better: '1h' as const, savedUsd: 4.74, of: 10 }
+    expect(ttlLineRaw(a, run).map(printedPieces)).toEqual([
+      pieces('setup:', ' 5m/off'),
+      pieces('other TTL:', ' 1h/off · would have saved $4.74 (10 priced pauses, all sessions)'),
+      pieces('do:', ' set "promptCacheTtl": "1h" in settings.json (new sessions start off: keepalive_default)'),
+    ])
+    expect(ttlLineRaw(a, run, true).map(printedPieces)).toEqual(ttlLineRaw(a, run).slice(1).map(printedPieces))
+  })
+
+  test('the do: row of a command is its label, then the step as one untoned piece', () => {
+    const row = adviceLineRaw({ kind: 'change', from: { ttl: '5m', keepalive: false }, to: { ttl: '5m', keepalive: true }, savedUsd: 0.5, of: 3, source: 'recent', startsOn: false, run: { leadMs: 15 * S, pinned: null } }, 'dollars', 15 * S).at(-1)
+    expect(printedPieces(row)).toEqual(pieces('do:', ' /keepalive on 15 or click pie on'))
   })
 })

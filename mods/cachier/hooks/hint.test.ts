@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'claude-code/testing'
 import type { HintState, Reading } from '../types'
-import type { Tone } from './countdown'
+import { labelled, type Tone } from './countdown'
+import { mislabelled, withoutLabel } from './fixture'
 import { footerLine, paneOf } from './hint'
 import { layoutOf, paneLayoutOf, type Snapshot } from './sections'
 
@@ -257,21 +258,26 @@ describe('footerLine: the pie\'s hover names the keepalive state its colour stan
   })
 })
 
+// The labelled rows state their label through the constructor, as their producers do; the Settings row is formed by the layout builder.
 const SNAPSHOT: Snapshot = {
   cache: ['warm · 3:12 left · 5m TTL'],
-  keepalive: { state: 'off', tone: 'gone', lines: ['pie: amber ≤¼ TTL left, red ≤⅒'] },
-  session: ['session: no refreshes yet'],
-  advice: ['setup: 5m/off', 'best: 1h/off · would have saved $1.20 (10 recent pauses)', 'do: set "promptCacheTtl": "1h" in settings.json (new sessions start off: keepalive_default)'],
+  keepalive: { state: 'off', tone: 'gone', lines: [labelled('pie:', ' amber ≤¼ TTL left, red ≤⅒')] },
+  session: [labelled('session:', ' no refreshes yet')],
+  advice: [
+    labelled('setup:', ' 5m/off'),
+    labelled('best:', ' 1h/off · would have saved $1.20 (10 recent pauses)'),
+    labelled('do:', ' set "promptCacheTtl": "1h" in settings.json (new sessions start off: keepalive_default)'),
+  ],
   settings: [{ name: 'unit', value: 'dollars', source: 'cost_unit', change: '/keepalive unit tokens|dollars' }],
 }
 const ROWS = paneLayoutOf(SNAPSHOT).rows
-// The Keepalive heading is the one row of SNAPSHOT that has runs.
-const RUN_AT = ROWS.findIndex((row) => row.runs !== undefined)
+// The Keepalive heading is the one heading row of SNAPSHOT that has runs.
+const RUN_AT = ROWS.findIndex((row) => row.kind === 'heading' && row.runs !== undefined)
 // The text a built element holds, its strings in order, and the props it sets, none when it sets none.
 const textOf = (el: any): string => (typeof el === 'string' ? el : (el.children ?? []).map(textOf).join(''))
 const propsOf = (el: any) => el.props ?? {}
 
-describe('paneOf: the pane\'s rows, one element per row, wrapped by the engine, headings bold, and only the Keepalive state word coloured', () => {
+describe('paneOf: the pane\'s rows, one element per row, wrapped by the engine, headings bold, the Keepalive state word coloured and each label dim', () => {
   test('a heading and a blank are a Text at the left edge, a line a Text in a box indented two; every Text wraps', () => {
     const pane = paneOf(t, ROWS) as any
     expect(pane.children).toHaveLength(ROWS.length)
@@ -348,13 +354,60 @@ describe('paneOf: the pane\'s rows, one element per row, wrapped by the engine, 
     expect(pane.children[0].children[0].children).toEqual([long])
   })
 
-  test('the state word is the one coloured piece: no other row, nor the heading\'s title, has a colour or a dim', () => {
+  test('the state word and the labels are the only coloured pieces: no other row, nor the heading\'s title, nor the rest of a labelled row, has a colour or a dim', () => {
     const pane = paneOf(t, ROWS) as any
     const [title, state] = pane.children[RUN_AT].children
     expect(propsOf(state)).toEqual({ dimColor: true })
-    const rest = [...pane.children.filter((_: unknown, i: number) => i !== RUN_AT), title]
+    const rest = [...pane.children.filter((_: unknown, i: number) => i !== RUN_AT).map(withoutLabel), title]
     expect(rest).toHaveLength(ROWS.length)
     expect(JSON.stringify(rest)).not.toMatch(/"color"|"dimColor"|"backgroundColor"/)
+    expect(mislabelled(pane)).toEqual([])
+  })
+
+  test('each label is the one dim first piece of its row, the rest of the row untoned, the row\'s text unchanged', () => {
+    const pane = paneOf(t, ROWS) as any
+    const labels = ['pie:', 'session:', 'setup:', 'best:', 'do:', 'unit:']
+    const rows = pane.children.filter((row: any) => row.type === 'Box' && labels.includes(textOf(row.children[0].children[0])))
+    expect(rows.map(textOf)).toEqual([
+      'pie: amber ≤¼ TTL left, red ≤⅒',
+      'session: no refreshes yet',
+      'setup: 5m/off',
+      'best: 1h/off · would have saved $1.20 (10 recent pauses)',
+      'do: set "promptCacheTtl": "1h" in settings.json (new sessions start off: keepalive_default)',
+      'unit: dollars (cost_unit) · /keepalive unit tokens|dollars',
+    ])
+    for (const row of rows) {
+      const [label, ...rest] = row.children[0].children
+      expect(propsOf(label)).toEqual({ dimColor: true })
+      expect(rest.map(propsOf)).toEqual([{}])
+    }
+  })
+
+  // The helper and the check are shown to fail: a tree with a stray dim piece on an unlabelled row keeps it through the helper, so the negative above would see
+  // it; a tree with a labelled row left as a plain string is flagged by the check; and a tree built right passes both.
+  test('the helper keeps a dim piece that is not a listed label\'s first piece, and the check flags a labelled row left as a plain string', () => {
+    const dim = (text: string) => ({ text, tone: 'gone' as const })
+    const quiet = (text: string) => ({ text, tone: 'quiet' as const })
+    const treeOf = (rows: Parameters<typeof paneOf>[1]) => paneOf(t, rows) as any
+    const NEGATIVE = /"color"|"dimColor"|"backgroundColor"/
+
+    const right = treeOf([
+      { kind: 'line', text: 'setup: 5m/off', runs: [dim('setup:'), quiet(' 5m/off')] },
+      { kind: 'line', text: 'every 4:45' },
+      { kind: 'line', text: 'refresh due · waits for turn end' },
+    ])
+    expect(JSON.stringify(right.children.map(withoutLabel))).not.toMatch(NEGATIVE)
+    expect(mislabelled(right)).toEqual([])
+
+    const stray = treeOf([{ kind: 'line', text: 'every 4:45', runs: [dim('every'), quiet(' 4:45')] }])
+    expect(JSON.stringify(stray.children.map(withoutLabel))).toMatch(NEGATIVE)
+    const notFirst = treeOf([{ kind: 'line', text: 'setup: 5m/off', runs: [quiet('setup:'), dim(' 5m/off')] }])
+    expect(JSON.stringify(notFirst.children.map(withoutLabel))).toMatch(NEGATIVE)
+    const partial = treeOf([{ kind: 'line', text: 'next best: 1h/off', runs: [dim('next'), quiet(' best: 1h/off')] }])
+    expect(JSON.stringify(partial.children.map(withoutLabel))).toMatch(NEGATIVE)
+
+    const plain = treeOf([{ kind: 'line', text: 'setup: 5m/off' }, { kind: 'line', text: 'saves ~$0.12 vs 1h/off' }, { kind: 'line', text: 'every 4:45' }])
+    expect(mislabelled(plain)).toEqual(['setup: 5m/off', 'saves ~$0.12 vs 1h/off'])
   })
 
   test('no background, button, hover or absolute position is in the pane', () => {

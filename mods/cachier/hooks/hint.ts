@@ -17,6 +17,7 @@ const TONE_PROPS: Record<Tone, Partial<TextProps>> = {
   quiet: {},
   warning: { color: 'warning' },
   alarm: { color: 'error' },
+  // Dim: the pie's expired or off state, the heading's `off` word and every row label, so a change here changes all three.
   gone: { dimColor: true },
 }
 

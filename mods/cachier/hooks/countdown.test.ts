@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'claude-code/testing'
-import { COLOUR_SENTENCE, cacheLineOf, clockOf, cueOf, expiredAt, expiryOf, footerOf, glyphOf, pieOf, readingOf, refreshingOf, settleCold, touchedAt, touchOf, warmthOf, type PieState, type Tone } from './countdown'
+import { COLOUR_SENTENCE, cacheLineOf, clockOf, cueOf, expiredAt, expiryOf, footerOf, glyphOf, labelled, pieOf, readingOf, refreshingOf, settleCold, touchedAt, touchOf, warmthOf, type PieState, type Run, type Tone } from './countdown'
 
 const T = 1_000_000
 const known = { kind: 'known' as const, touchMs: T, ttlMs: 300000, ttlLabel: '5m' as const, promptTokens: 1, outputTokens: 0, model: null, speed: null }
@@ -325,9 +325,12 @@ describe('pieOf: the pie\'s tone, its keepalive state and the colour sentence, f
   })
 
   // The footer's tones at the quarter and tenth steps are `warning` and `alarm`, which the sentence's two colour words take, so the legend and the pie agree. The
-  // expectation is written here, not read from the sentence or the footer's table: any other tone on any piece fails it.
-  test('the sentence tones `amber` warning and `red` alarm, and every other piece quiet', () => {
-    expect(COLOUR_SENTENCE.filter((run) => run.tone !== 'quiet')).toEqual([{ text: 'amber', tone: 'warning' }, { text: 'red', tone: 'alarm' }])
+  // expectation is written here, not read from the sentence or the footer's table: any other tone on any piece fails it. The label `pie:` opens the sentence as
+  // its one dim piece, and every piece after it but the two colour words is quiet.
+  test('the sentence opens with the dim label `pie:`, tones `amber` warning and `red` alarm, and every other piece quiet', () => {
+    expect(COLOUR_SENTENCE[0]).toEqual({ text: 'pie:', tone: 'gone' })
+    expect(COLOUR_SENTENCE.slice(1).filter((run) => run.tone !== 'quiet')).toEqual([{ text: 'amber', tone: 'warning' }, { text: 'red', tone: 'alarm' }])
+    expect(COLOUR_SENTENCE.slice(1).map((run) => run.text)).toEqual([' ', 'amber', ' ≤¼ TTL left, ', 'red', ' ≤⅒'])
   })
 
   test('each call hands out its own pieces, so a line changed in place leaves the sentence and the next call alone', () => {
@@ -413,5 +416,28 @@ describe('touchOf, touchedAt and clockOf', () => {
     expect(clockOf(3_599_000)).toBe('59:59')
     expect(clockOf(3_600_000)).toBe('1:00:00')
     expect(clockOf(3_723_000)).toBe('1:02:03')
+  })
+})
+
+describe('labelled: a labelled line\'s pieces, the label dim and the rest after it', () => {
+  const run = (text: string, tone: Tone = 'quiet'): Run => ({ text, tone })
+
+  test('a rest given as text is one untoned piece after the label\'s one dim piece, and the pieces joined are the label then the rest', () => {
+    const pieces = labelled('last refresh:', ' 18000 read · 0 written')
+    expect(pieces).toEqual([run('last refresh:', 'gone'), run(' 18000 read · 0 written')])
+    expect(pieces.map((piece) => piece.text).join('')).toBe('last refresh: 18000 read · 0 written')
+  })
+
+  test('a label keeps its colon where it has one and its words alone where it has none, and the constructor adds nothing of its own', () => {
+    expect(labelled('next in', ' 4:44 · 3 left').map((piece) => piece.text)).toEqual(['next in', ' 4:44 · 3 left'])
+    expect(labelled('learned (this hour):', ' 2 refreshes/pause').map((piece) => piece.text)).toEqual(['learned (this hour):', ' 2 refreshes/pause'])
+    expect(labelled('saves', ' ~$0.12 vs 1h/off').map((piece) => piece.tone)).toEqual(['gone', 'quiet'])
+  })
+
+  test('a rest given as pieces is kept as given, in order, after the label\'s dim piece', () => {
+    const rest = [run(' '), run('amber', 'warning'), run(' ≤¼'), run('red', 'alarm')]
+    const pieces = labelled('pie:', rest)
+    expect(pieces).toEqual([run('pie:', 'gone'), ...rest])
+    expect(pieces.slice(1)).toEqual(rest)
   })
 })

@@ -2,8 +2,10 @@
 // main-thread responses and the price list, and register.ts keeps the state. Each count keeps its tokens by kind and its
 // dollars at the price when it was counted, so the pane can show either unit.
 import type { CacheView, Cause, PendingPause, Spend, StatCount, StatsState, Tally, TallyState } from '../types'
+import { labelled } from './countdown'
 import { raiseNote, tallyOf } from './keepalive'
 import { addSpend, dollars, figureOf, NO_SPEND, rewriteOf, spendOf, TTL_MS, writeReadRatio, writtenOf, type Money, type PriceList } from './prices'
+import type { Line } from './sections'
 import type { History, Response } from './transcript'
 
 const NONE: StatCount = { count: 0, spend: NO_SPEND }
@@ -144,11 +146,18 @@ const missTotal = (s: StatsState): StatCount => {
   return { count: lapse.count + cold.count + unexplained.count, spend: addSpend(addSpend(lapse.spend, cold.spend), unexplained.spend) }
 }
 
-// The session line, shown in the Keepalive and This session sections: this session's refreshes and their cost, empty while there are none.
-export const sessionLineOf = (t: TallyState, money: Money): string => (t.session.pings > 0 ? tallyOf('session', t.session, money.unit) : '')
+// The word the session line is labelled by, which the tally form gives its colon.
+const SESSION = 'session'
+
+// The session line, shown in the Keepalive and This session sections: this session's refreshes and their cost, the empty string while there are none.
+export const sessionLineOf = (t: TallyState, money: Money): Line => (t.session.pings > 0 ? tallyOf(SESSION, t.session, money.unit) : '')
+
+// The This session section's line before the first refresh, labelled as the session line is. Built afresh on each call, so a reader that changes the line it was
+// handed changes nothing for the next.
+export const noRefreshesLine = (): Line => labelled(`${SESSION}:`, ' no refreshes yet')
 
 // The lines that show the tallies and a raised lead, for the rundown. A zero tally is not a line.
-const tallyLines = (t: TallyState, money: Money): string[] => [
+const tallyLines = (t: TallyState, money: Money): Line[] => [
   ...(t.pause.pings > 0 ? [tallyOf('pause', t.pause, money.unit)] : []),
   ...[sessionLineOf(t, money)].filter((line) => line !== ''),
   ...(t.raisedMs === null ? [] : [raiseNote(t.raisedMs)]),
@@ -158,45 +167,48 @@ const tallyLines = (t: TallyState, money: Money): string[] => [
 const CAUSE_WORD: Record<Cause, string> = { lapse: 'lapse', cold: 'switch/compaction', unexplained: 'unexplained' }
 const CAUSES: readonly Cause[] = ['lapse', 'cold', 'unexplained']
 
+// A line about earlier pauses: the label, then what they came to.
+const earlier = (rest: string): Line => labelled('earlier:', ` ${rest}`)
+
 // The saved pauses in the unit shown. In dollars, what the pings cost, what the writes they avoided would have cost, and the
 // difference. In tokens, the pings' reads and the writes' tokens, and how many pings one write is worth at the current
 // model's prices, which no token count says by itself; without a price that clause is left out.
-const savedOf = (s: StatsState, money: Money): string => {
+const savedOf = (s: StatsState, money: Money): Line => {
   const writes = s.saved.count === 1 ? '1 write' : `${s.saved.count} writes`
   const { spend, avoided } = s.saved
   if (money.unit === 'dollars' && spend.usd !== null && avoided.usd !== null) {
-    return `earlier: ${s.saved.count} saved · refreshes ${dollars(spend.usd)} · ${writes} avoided ${dollars(avoided.usd)} · net ${dollars(Math.max(0, avoided.usd - spend.usd))} saved`
+    return earlier(`${s.saved.count} saved · refreshes ${dollars(spend.usd)} · ${writes} avoided ${dollars(avoided.usd)} · net ${dollars(Math.max(0, avoided.usd - spend.usd))} saved`)
   }
   const ratio = writeReadRatio(money.list, money.model, money.ttl)
   const worth = ratio === null ? '' : ` · 1 write ≈ ${Math.floor(ratio)} refreshes`
-  return `earlier: ${s.saved.count} saved · refreshes ${figureOf(spend, 'tokens')} · ${writes} avoided ${writtenOf(avoided.write5m + avoided.write1h)}${worth}`
+  return earlier(`${s.saved.count} saved · refreshes ${figureOf(spend, 'tokens')} · ${writes} avoided ${writtenOf(avoided.write5m + avoided.write1h)}${worth}`)
 }
 
 // The pauses' lines of the rundown: this pause, this session and any raise, then the earlier pauses by outcome.
-const pauseParts = (t: TallyState, s: StatsState, money: Money): string[] => {
+const pauseParts = (t: TallyState, s: StatsState, money: Money): Line[] => {
   const parts = tallyLines(t, money)
   if (s.saved.count > 0) parts.push(savedOf(s, money))
-  if (s.ranOut.count > 0) parts.push(`earlier: ${s.ranOut.count} wasted, ran out · refreshes ${figureOf(s.ranOut.spend, money.unit)}`)
-  if (s.notNeeded.count > 0) parts.push(`earlier: ${s.notNeeded.count} wasted, not needed · refreshes ${figureOf(s.notNeeded.spend, money.unit)}`)
+  if (s.ranOut.count > 0) parts.push(earlier(`${s.ranOut.count} wasted, ran out · refreshes ${figureOf(s.ranOut.spend, money.unit)}`))
+  if (s.notNeeded.count > 0) parts.push(earlier(`${s.notNeeded.count} wasted, not needed · refreshes ${figureOf(s.notNeeded.spend, money.unit)}`))
   return parts
 }
 
 // The misses by cause, in one line; empty with none.
-const missParts = (s: StatsState, money: Money): string[] => {
+const missParts = (s: StatsState, money: Money): Line[] => {
   const misses = missTotal(s)
   if (misses.count === 0) return []
   const causes = CAUSES.filter((c) => s.misses[c].count > 0)
     .map((c) => `${CAUSE_WORD[c]} ${s.misses[c].count}`)
     .join(', ')
-  return [`misses: ${misses.count} (${causes}) · ${rewriteOf(misses.spend, money.unit)} rewritten`]
+  return [labelled('misses:', ` ${misses.count} (${causes}) · ${rewriteOf(misses.spend, money.unit)} rewritten`)]
 }
 
 // The long pauses, the overlap with lapse misses, and the hint for the larger kind of waste.
-const tailParts = (s: StatsState): string[] => {
-  const parts: string[] = []
+const tailParts = (s: StatsState): Line[] => {
+  const parts: Line[] = []
   if (s.longCount > 0) {
     const mean = s.longGaps.reduce((a, b) => a + b, 0) / s.longGaps.length
-    parts.push(`long pauses: ${s.longCount} · p90 ${clock(p90Of(s.longGaps))} · mean ${clock(mean)} · max ${clock(s.maxMs)}`)
+    parts.push(labelled('long pauses:', ` ${s.longCount} · p90 ${clock(p90Of(s.longGaps))} · mean ${clock(mean)} · max ${clock(s.maxMs)}`))
   }
   if (s.overlap > 0) {
     parts.push(
@@ -212,7 +224,7 @@ const tailParts = (s: StatsState): string[] => {
 
 // The rundown the Keepalive section carries (the pauses, then the long pauses and the notes) and the one the Advice section carries (the
 // misses by cause), each as lines.
-export const rundownSections = (t: TallyState, s: StatsState, money: Money): { keepalive: string[]; advice: string[] } => ({
+export const rundownSections = (t: TallyState, s: StatsState, money: Money): { keepalive: Line[]; advice: Line[] } => ({
   keepalive: [...pauseParts(t, s, money), ...tailParts(s)],
   advice: missParts(s, money),
 })

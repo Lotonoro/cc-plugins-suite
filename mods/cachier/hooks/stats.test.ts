@@ -1,8 +1,10 @@
 import { describe, expect, test } from 'claude-code/testing'
 import type { CacheView, Spend, StatsState, TallyState } from '../types'
+import { pieces } from './fixture'
 import { ZERO_TALLY } from './keepalive'
 import { NO_SPEND, PRICES, TOKENS, type Money } from './prices'
-import { foldStatsEvents, INITIAL_STATS, p90Of, pendingFor, rundownSections, sessionLineOf } from './stats'
+import { plainOf } from './sections'
+import { foldStatsEvents, INITIAL_STATS, noRefreshesLine, p90Of, pendingFor, rundownSections as rundownRaw, sessionLineOf as sessionLineRaw } from './stats'
 import type { History, Response } from './transcript'
 
 const T = Date.parse('2026-10-18T10:00:00.000Z')
@@ -28,6 +30,13 @@ const foldStats = (s: StatsState, h: History): StatsState => foldStatsEvents(s, 
 const r = (read: number): Spend => ({ ...NO_SPEND, read, usd: null, why: 'no price for an unnamed model' })
 const w = (write5m: number): Spend => ({ ...NO_SPEND, write5m, usd: null, why: 'no price for an unnamed model' })
 const NONE = { count: 0, spend: NO_SPEND }
+// The session line and the rundown's sections as the tests below read them: each line's text, a labelled line being its pieces joined. The pieces have their own
+// tests at the end.
+const sessionLineOf = (...args: Parameters<typeof sessionLineRaw>) => plainOf(sessionLineRaw(...args))
+const rundownSections = (...args: Parameters<typeof rundownRaw>) => {
+  const { keepalive, advice } = rundownRaw(...args)
+  return { keepalive: keepalive.map(plainOf), advice: advice.map(plainOf) }
+}
 // Whether a section's lines carry a line with this text. The rundown is read by section: the pauses under Keepalive, the misses under Advice.
 const carries = (lines: string[], text: string) => lines.some((line) => line.includes(text))
 const known = (touchMs: number): CacheView => ({ kind: 'known', touchMs, ttlMs: TTL, ttlLabel: '5m', promptTokens: 1, outputTokens: 0, model: null, speed: null })
@@ -328,3 +337,64 @@ describe('long pauses: the pings that cover a pause, the p90, and the fold', () 
   })
 })
 
+
+// The pieces of the rundown's lines: each label is its line's first piece, drawn dim, and the rest is one untoned piece. A line with no label is plain text:
+// the tails that name which wasted pauses were the most, and the lapse-miss note. The text of each line is pinned above; these pin the pieces, read raw.
+describe('the labels of the rundown: each is the first, dim piece of its line', () => {
+  test('session: opens the session line, and the tally form puts the colon after the word it is given', () => {
+    const t: TallyState = { pause: { pings: 2, spend: r(30000) }, session: { pings: 3, spend: r(60000) }, raisedMs: 16000, epoch: 0 }
+    expect(sessionLineRaw(t, TOKENS)).toEqual(pieces('session:', ' 3 refreshes · ~60k read'))
+    expect(rundownRaw(t, INITIAL_STATS, TOKENS).keepalive.slice(0, 2)).toEqual([pieces('pause:', ' 2 refreshes · ~30k read'), pieces('session:', ' 3 refreshes · ~60k read')])
+    expect(sessionLineRaw(tally(0, 0), TOKENS)).toBe('')
+  })
+
+  test('the lead-raised note after the tallies is plain text', () => {
+    const t: TallyState = { pause: { pings: 2, spend: r(30000) }, session: { pings: 3, spend: r(60000) }, raisedMs: 16000, epoch: 0 }
+    expect(rundownRaw(t, INITIAL_STATS, TOKENS).keepalive.at(-1)).toBe('lead raised to 16s (slow refresh)')
+  })
+
+  test('the session line\'s fallback is the same label with no refreshes yet, and each call hands out its own pieces', () => {
+    expect(noRefreshesLine()).toEqual(pieces('session:', ' no refreshes yet'))
+    const first = noRefreshesLine() as { text: string }[]
+    first[0]!.text = 'changed'
+    first.pop()
+    expect(noRefreshesLine()).toEqual(pieces('session:', ' no refreshes yet'))
+  })
+
+  test('earlier: opens the line of each kind of earlier pause, in dollars and in tokens', () => {
+    const { keepalive } = rundownRaw(tally(0, 0), {
+      ...INITIAL_STATS,
+      saved: { count: 1, spend: r(1000), avoided: w(41008) },
+      ranOut: { count: 2, spend: r(2000) },
+      notNeeded: { count: 1, spend: r(1000) },
+    }, TOKENS)
+    expect(keepalive.slice(0, 3)).toEqual([
+      pieces('earlier:', ' 1 saved · refreshes ~1k read · 1 write avoided ~41k written'),
+      pieces('earlier:', ' 2 wasted, ran out · refreshes ~2k read'),
+      pieces('earlier:', ' 1 wasted, not needed · refreshes ~1k read'),
+    ])
+    const pending = { spend: { ...NO_SPEND, read: 38000, usd: 0.0076 }, touchMs: T, ttlMs: TTL, promptMs: T + 400000 }
+    const out = foldStatsEvents({ ...INITIAL_STATS, pending }, history([opus(T + 401000, 'm1', 39992, 0)]), OPUS).state
+    expect(rundownRaw(ZERO_TALLY_TALLY, out, DOLLARS).keepalive).toEqual([pieces('earlier:', ' 1 saved · refreshes $0.008 · 1 write avoided $0.20 · net $0.19 saved')])
+  })
+
+  test('long pauses: opens the long pauses line, and the tails after it are plain text', () => {
+    const s = { ...INITIAL_STATS, lastTtlMs: TTL, longCount: 2, maxMs: 10 * MIN, longGaps: [6 * MIN, 10 * MIN], overlap: 1, ranOut: { count: 2, spend: r(2000) }, notNeeded: { count: 1, spend: r(1000) } }
+    const { keepalive } = rundownRaw(tally(0, 0), s, TOKENS)
+    expect(keepalive.filter((line) => typeof line !== 'string')).toEqual([
+      pieces('earlier:', ' 2 wasted, ran out · refreshes ~2k read'),
+      pieces('earlier:', ' 1 wasted, not needed · refreshes ~1k read'),
+      pieces('long pauses:', ' 2 · p90 10:00 · mean 8:00 · max 10:00'),
+    ])
+    expect(keepalive.filter((line) => typeof line === 'string')).toEqual([
+      '1 lapse miss = a ran-out pause (one event, in both)',
+      'most wasted pauses ran out: pauses outlast refreshes',
+    ])
+  })
+
+  test('misses: opens the misses line of the Advice section, in dollars and in tokens', () => {
+    const out = foldStatsEvents(INITIAL_STATS, history([opus(T, 'm1', 0, 50000), opus(T + 6 * MIN, 'm2', 0, 20000)]), OPUS).state
+    expect(rundownRaw(ZERO_TALLY_TALLY, out, DOLLARS).advice).toEqual([pieces('misses:', ' 1 (lapse 1) · $0.10 rewritten')])
+    expect(rundownRaw(ZERO_TALLY_TALLY, out, TOKENS).advice).toEqual([pieces('misses:', ' 1 (lapse 1) · ~20k tokens rewritten')])
+  })
+})

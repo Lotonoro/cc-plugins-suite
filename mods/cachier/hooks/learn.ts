@@ -8,8 +8,10 @@
 // now. With little history neither learned rule can beat break-even, so break-even stands until the history says otherwise.
 
 import type { TtlLabel } from '../types'
+import { labelled } from './countdown'
 import type { PauseRecord } from './history'
 import { TTL_MS } from './prices'
+import type { Line } from './sections'
 import { refreshIntervalMs } from './setup'
 
 // The cache's timing and price that a count is learned for: those of the cache the next pause would ping.
@@ -112,11 +114,11 @@ const clock = (ms: number): string => {
 }
 
 // The line on a learned count: the count, the time its refreshes keep the cache warm, and the pauses behind it.
-export const learnedLine = (l: Learned, ttlMs: number): string => {
-  const label = l.rule === 'hour' ? 'learned (this hour)' : 'learned'
+export const learnedLine = (l: Learned, ttlMs: number): Line => {
+  const label = l.rule === 'hour' ? 'learned (this hour):' : 'learned:'
   const pauses = `${l.within}/${l.of} pauses within`
-  if (l.count === 0) return `${label}: 0 refreshes · ${pauses} ${clock(ttlMs)} TTL`
-  return `${label}: ${l.count === 1 ? '1 refresh' : `${l.count} refreshes`}/pause · covers ${clock(l.coverMs)} · ${pauses}`
+  if (l.count === 0) return labelled(label, ` 0 refreshes · ${pauses} ${clock(ttlMs)} TTL`)
+  return labelled(label, ` ${l.count === 1 ? '1 refresh' : `${l.count} refreshes`}/pause · covers ${clock(l.coverMs)} · ${pauses}`)
 }
 
 // The per-token rates a TTL comparison is priced at: the current model's read and its two write rates.

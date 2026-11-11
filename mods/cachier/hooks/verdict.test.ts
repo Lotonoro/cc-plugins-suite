@@ -1,9 +1,14 @@
 import { describe, expect, test } from 'claude-code/testing'
 import type { CacheView } from '../types'
 import { INITIAL } from './keepalive'
+import type { Run } from './countdown'
+import { pieces } from './fixture'
 import { NO_SPEND, PRICES, uponOf, type Money } from './prices'
-import { SPAN_SPACE } from './sections'
-import { breakEvenLine, countLineOf, judge, runCountOf, sessionBalanceLine, NO_JUDGED, pauseOf, rebuildSpendOf, rewriteSpendOf, verdictOf, type Pause } from './verdict'
+import { plainOf, SPAN_SPACE } from './sections'
+import { breakEvenLine, countLineOf, judge, runCountOf, sessionBalanceLine as sessionBalanceRaw, NO_JUDGED, pauseOf, rebuildSpendOf, rewriteSpendOf, verdictOf, type Pause } from './verdict'
+
+// The balance line as the tests below read it: its text, a labelled line being its pieces joined. The pieces have their own test at the end.
+const sessionBalanceLine = (...args: Parameters<typeof sessionBalanceRaw>) => plainOf(sessionBalanceRaw(...args))
 
 // A 32k context on Opus 5.5 at list prices: a ping reads it at $0.20 per million, and a rewrite costs the 5 m write
 // ($5 per million) over that read. A rewrite is worth 24 pings. The TTL is 5 m and the lead 15 s, so a ping every 285 s.
@@ -235,5 +240,23 @@ describe('sessionBalanceLine: the session\x27s balance against the other keepali
     const line = sessionBalanceLine({ netUsd: -0.09, pauses: 2 }, 'tokens')
     expect(line.split(SPAN_SPACE).join(' ')).toBe('balance vs other setting: $ only, /keepalive unit dollars (2 pauses)')
     expect(line).toContain(['/keepalive', 'unit', 'dollars'].join(SPAN_SPACE))
+  })
+})
+
+describe('the balance line\'s label: the first, dim piece of the line, the rest one untoned piece', () => {
+  test('balance vs other setting: opens the line in each wording, and no pause judged gives the empty string', () => {
+    expect(sessionBalanceRaw({ netUsd: 0.15, pauses: 1 }, 'dollars')).toEqual(pieces('balance vs other setting:', ' saved $0.15 net (1 pause)'))
+    expect(sessionBalanceRaw({ netUsd: -0.09, pauses: 2 }, 'dollars')).toEqual(pieces('balance vs other setting:', ' $0.09 net more (2 pauses)'))
+    expect(sessionBalanceRaw({ netUsd: 0, pauses: 2 }, 'dollars')).toEqual(pieces('balance vs other setting:', ' even (2 pauses)'))
+    expect(sessionBalanceRaw(NO_JUDGED, 'dollars')).toBe('')
+  })
+
+  test('in tokens the label is the same and the rest holds the pointer to the dollar unit, its command one span', () => {
+    const line = sessionBalanceRaw({ netUsd: -0.09, pauses: 2 }, 'tokens') as Run[]
+    expect(line).toHaveLength(2)
+    expect(line[0]).toEqual({ text: 'balance vs other setting:', tone: 'gone' })
+    expect(line[1]!.tone).toBe('quiet')
+    expect(line[1]!.text.split(SPAN_SPACE).join(' ')).toBe(' $ only, /keepalive unit dollars (2 pauses)')
+    expect(line[1]!.text).toContain(['/keepalive', 'unit', 'dollars'].join(SPAN_SPACE))
   })
 })

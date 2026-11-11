@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'claude-code/testing'
 import type { CacheView, KeepaliveState } from '../types'
 import {
-  costOf as costWith,
+  costOf as costRaw,
   costText as costTextWith,
   forkSpend,
   defaultsOf,
@@ -34,24 +34,35 @@ import {
   reset,
   restored,
   retriedOf,
-  step as stepWith,
+  step as stepRaw,
   stopFor,
   turnBegun,
   turnEnded,
-  offerOf as offerWith,
-  pressOfferOf as pressOfferWith,
+  offerOf as offerRaw,
+  pressOfferOf as pressOfferRaw,
+  type Figure,
+  type Step,
   coldBegun,
   coldLanded,
   modeOf,
   recount,
 } from './keepalive'
 import { expiredAt } from './countdown'
+import { pieces } from './fixture'
+import { plainOf } from './sections'
 import { sessionLineOf } from './stats'
 import { PRICES, TOKENS, type Money } from './prices'
 import { rebuildSpendOf } from './verdict'
 import { refreshIntervalMs } from './setup'
 
 const T = 1_000_000
+// A step's and a figure's lines as the tests below read them: each line's text, a labelled line being its pieces joined. The pieces have their own tests at the end.
+const readStep = (s: Step) => ({ ...s, lines: s.lines.map(plainOf) })
+const readFigure = (f: Figure | null) => (f === null ? null : { ...f, lines: f.lines.map(plainOf) })
+const stepWith = (...args: Parameters<typeof stepRaw>) => readStep(stepRaw(...args))
+const costWith = (...args: Parameters<typeof costRaw>) => readFigure(costRaw(...args))
+const offerWith = (...args: Parameters<typeof offerRaw>) => readFigure(offerRaw(...args))
+const pressOfferWith = (...args: Parameters<typeof pressOfferRaw>) => readFigure(pressOfferRaw(...args))
 // The figures each surface wraps: the Keepalive section's rows, and the sentences `/keepalive on` answers with.
 const CACHED = '~33k cached'
 const WRITTEN = '~33k written'
@@ -750,8 +761,8 @@ describe('the debug lines and the tallies', () => {
   test('the details pane names this session in the unit shown, and no pause or raise', () => {
     const sent = { late: false, pauseEpoch: 0 }
     const t = countPing(countPing(INITIAL_TALLY, spent(32884), 16000, sent), null, null, sent)
-    expect(sessionLineOf(t, TOKENS)).toBe('session: 2 refreshes · ~33k read')
-    expect(sessionLineOf(t, DOLLARS)).toBe('session: 2 refreshes · $0.007')
+    expect(plainOf(sessionLineOf(t, TOKENS))).toBe('session: 2 refreshes · ~33k read')
+    expect(plainOf(sessionLineOf(t, DOLLARS))).toBe('session: 2 refreshes · $0.007')
   })
 
   test('in dollars, the ping is priced on every surface; a model with no price is worded in tokens', () => {
@@ -1109,5 +1120,52 @@ describe('modeOf and recount: the mode a session starts in, and an unpinned coun
     const pinged = { ...fresh, remaining: 2 }
     expect(recount(pinged, 24)).toBe(pinged)
     expect(recount(INITIAL, 24)).toBe(INITIAL)
+  })
+})
+
+// The pieces of the Keepalive figures' labelled lines: each label is its line's first piece, drawn dim, and the rest is one untoned piece; the lines that
+// state a fact or a figure without a label are plain text. The text of each line is pinned above, through its text; these pin the pieces, read raw.
+describe('the labels of the Keepalive figures: each is the first, dim piece of its line', () => {
+  const rawStep = (k: KeepaliveState, view: CacheView, gap: boolean, now: number, live: number | null = null) => stepRaw(k, view, live, gap, now, TOKENS, rebuildOf(view, TOKENS))
+  const LAST = { read: 14361, write: 18523 }
+
+  test('refresh, if cold: and next in, on a running keepalive with its schedule', () => {
+    expect(rawStep(on(60000, 2), known, true, T + 100000).lines).toEqual([
+      pieces('refresh', ' ~33k cached · every 4 min'),
+      pieces('if cold:', ' rebuild ~33k written'),
+      pieces('next in', ' 2:20 · 2 left'),
+    ])
+  })
+
+  test('last refresh: is the last line, after the figures and the schedule', () => {
+    expect(rawStep({ ...on(60000, 2), last: LAST }, known, true, T + 100000).lines.at(-1)).toEqual(pieces('last refresh:', ' 14361 read · 18523 written'))
+    expect(rawStep({ ...on(60000, 2, { stop: 'count used' }), last: LAST }, known, true, T).lines.at(-1)).toEqual(pieces('last refresh:', ' 14361 read · 18523 written'))
+  })
+
+  test('refresh is the row of a paused-by-design verdict, beside the plain interval row and the if cold: row', () => {
+    expect(rawStep(on(60000, 2, { stop: 'count used' }), known, true, T).lines).toEqual([
+      pieces('refresh', ' ~33k cached'),
+      'every 4 min',
+      pieces('if cold:', ' rebuild ~33k written'),
+    ])
+  })
+
+  test('next refresh is the row of an expired cache, with the interval after it in a failure stop, and on its own row in the figure of a run', () => {
+    expect(rawStep(on(60000, 2, { stop: 'API error 529 (overloaded)' }), known, true, T + 300000).lines).toEqual([pieces('next refresh', ' ~33k read · every 4 min')])
+    expect(costRaw(on(60000, 3), known, TOKENS, pairOf(known, TOKENS, false))?.lines).toEqual([pieces('next refresh', ' ~33k read'), 'every 4 min'])
+    expect(offerRaw(known, TOKENS, 15000, 3, pairOf(known, TOKENS, false))?.lines).toEqual([pieces('next refresh', ' ~33k read'), 'every 4:45'])
+  })
+
+  test('the figures of a warm cache are labelled the same in the cost, the offer and the press', () => {
+    const rows = [pieces('refresh', ' ~33k cached'), 'every 4:45', pieces('if cold:', ' rebuild ~33k written')]
+    expect(costRaw(on(15000, 3), known, TOKENS, pairOf(known, TOKENS))?.lines).toEqual(rows)
+    expect(offerRaw(known, TOKENS, 15000, 3, pairOf(known, TOKENS))?.lines).toEqual(rows)
+    expect(pressOfferRaw(known, TOKENS, 15000, 3, pairOf(known, TOKENS))?.lines).toEqual(rows)
+  })
+
+  test('the unlabelled lines are plain text: the due-now sentence, the interval row and the no-cache sentence', () => {
+    expect(rawStep(on(60000, 2), known, false, T + 240000).lines.at(-1)).toBe('refresh due · waits for turn end')
+    expect(rawStep(on(60000, 2), { kind: 'no-cache' }, true, T).lines).toEqual(['no live cache · nothing scheduled · cache from next reply'])
+    expect(rawStep(on(60000, 2, { stop: 'count used' }), known, true, T).lines.filter((line) => typeof line === 'string')).toEqual(['every 4 min'])
   })
 })
