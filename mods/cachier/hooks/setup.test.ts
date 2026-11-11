@@ -1,20 +1,21 @@
 import { describe, expect, test } from 'claude-code/testing'
-import { notBelowTtl, refreshIntervalMs, SECONDS_SUFFIX, secs, secsTerse, setupPhrase } from './setup'
+import { notBelowTtl, refreshIntervalMs, SECONDS_SUFFIX, secs, secsTerse, setupToken } from './setup'
 
 const S = 1000
 
-describe('setupPhrase: a setup named in the words every sentence uses, paused where keepalive sends nothing', () => {
+describe('setupToken: a setup named by its TTL and keepalive state, paused where keepalive sends nothing', () => {
   test('a setup with keepalive on or off names its TTL and its keepalive state', () => {
-    expect(setupPhrase({ ttl: '5m', keepalive: true }, 15 * S)).toBe('a 5-minute cache with keepalive on')
-    expect(setupPhrase({ ttl: '1h', keepalive: false }, 15 * S)).toBe('a 1-hour cache with keepalive off')
+    expect(setupToken({ ttl: '5m', keepalive: true }, 15 * S)).toBe('5m/on')
+    expect(setupToken({ ttl: '1h', keepalive: false }, 15 * S)).toBe('1h/off')
   })
 
-  test('keepalive on at a lead not below the TTL is named paused, sending nothing, with the reason', () => {
-    expect(setupPhrase({ ttl: '5m', keepalive: true }, 300 * S)).toBe('a 5-minute cache with keepalive paused, sending nothing (lead 300s ≥ 300s TTL)')
+  test('keepalive on at a lead not below the TTL is named paused, with the reason', () => {
+    expect(setupToken({ ttl: '5m', keepalive: true }, 300 * S)).toBe('5m/paused (lead 300s ≥ 300s TTL)')
+    expect(setupToken({ ttl: '1h', keepalive: true }, 3700 * S)).toBe('1h/paused (lead 3700s ≥ 3600s TTL)')
   })
 
   test('keepalive off at a lead not below the TTL is off, not paused', () => {
-    expect(setupPhrase({ ttl: '5m', keepalive: false }, 300 * S)).toBe('a 5-minute cache with keepalive off')
+    expect(setupToken({ ttl: '5m', keepalive: false }, 300 * S)).toBe('5m/off')
   })
 })
 

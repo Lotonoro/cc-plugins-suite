@@ -2,6 +2,7 @@ import { describe, expect, test } from 'claude-code/testing'
 import type { CacheView } from '../types'
 import { INITIAL } from './keepalive'
 import { NO_SPEND, PRICES, uponOf, type Money } from './prices'
+import { SPAN_SPACE } from './sections'
 import { breakEvenLine, countLineOf, judge, runCountOf, sessionBalanceLine, NO_JUDGED, pauseOf, rebuildSpendOf, rewriteSpendOf, verdictOf, type Pause } from './verdict'
 
 // A 32k context on Opus 5.5 at list prices: a ping reads it at $0.20 per million, and a rewrite costs the 5 m write
@@ -230,7 +231,9 @@ describe('sessionBalanceLine: the session\x27s balance against the other keepali
     expect(sessionBalanceLine({ netUsd: 0, pauses: 2 }, 'dollars')).toBe('balance vs other setting: even (2 pauses)')
   })
 
-  test('in tokens the balance is not stated, and the line says the unit that states it', () => {
-    expect(sessionBalanceLine({ netUsd: -0.09, pauses: 2 }, 'tokens')).toBe('balance vs other setting: $ only, /keepalive unit dollars (2 pauses)')
+  test('in tokens the balance is not stated, and the line says the unit that states it, its command one span', () => {
+    const line = sessionBalanceLine({ netUsd: -0.09, pauses: 2 }, 'tokens')
+    expect(line.split(SPAN_SPACE).join(' ')).toBe('balance vs other setting: $ only, /keepalive unit dollars (2 pauses)')
+    expect(line).toContain(['/keepalive', 'unit', 'dollars'].join(SPAN_SPACE))
   })
 })

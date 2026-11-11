@@ -68,8 +68,8 @@ and a close another plugin refuses leaves the pane open to be closed by the next
   balance against the other setting once a pause is judged, and the cache misses once one is counted. The refreshes and the
   balance start over at a `/clear` or a resume and are kept at a compaction; the misses line is the Advice section's, counted
   over the current transcript, so a resume of the same transcript keeps its misses;
-- **Advice**: the best setup's sentence (see [Best setup](#best-setup)), priced from your recorded pauses, and the notes on the TTL
-  and the unit;
+- **Advice**: the best setup as rows, `setup:`, `best:`, `do:` (see [Best setup](#best-setup)), priced from your recorded pauses; the other TTL's
+  rows once it would have cost less (see [5 m or 1 h](#5-m-or-1-h)); the misses by cause; and the note on the unit;
 - **Settings**: each setting's value, where it came from, and what changes it.
 
 The pane draws these rows itself, from the same figures the command reads, and its countdown advances each second. A press on the pie
@@ -79,6 +79,7 @@ a short terminal the lower sections are scrolled to with the wheel.
 ## Glossary
 
 - **TTL**: how long the prompt cache lives after its last use, `5m` or `1h`. Cachier reads it from your last response.
+- **setup**: a TTL and a keepalive state, written `5m/on`, `1h/off` or `5m/paused (lead 300s ≥ 300s TTL)`, which is keepalive on at a lead not below the TTL, so it sends nothing. The Advice section's `setup:` row is the one you are on.
 - **rebuild**: what the next prompt pays to write an expired or reset cache again, in dollars or in the tokens written
   (`~26k tokens`). The footer words the same figure `to rebuild`.
 - **`·`**: separates the parts of a line, as in `warm · 3:12 left · 5m TTL`.
@@ -97,6 +98,13 @@ a short terminal the lower sections are scrolled to with the wheel.
 - **earlier**: pauses before this one, by outcome: **saved** (a refresh kept the cache; the write it avoided is counted), **wasted, ran out** (the count ran out and the cache lapsed anyway), **wasted, not needed** (you came back before the TTL).
 - **miss**: a reply that rewrote the cache. Causes: **lapse** (past the TTL), **switch/compaction**, **unexplained**.
 - **long pauses**: pauses past the TTL; **p90** is the time 90% of them stay under.
+- **best** / **next best** / **too little to change**: `best:` is the cheapest setup over the pauses priced and what it would have saved, when that clears the change threshold, a saving of at least $0.01 and at least 5% of what your setup cost. `next best:` is a cheaper setup that does not clear it, so it is too little to change to.
+- **other TTL**: the other cache lifetime, priced against yours over every priced pause as a new session would run it; its `other TTL:` row shows once it would have cost less.
+- **recent pauses**: the newest priced pauses across sessions (up to 50), which are priced when this session has fewer than five; `5 pauses this session` says the session's own were priced. **priced pauses, all sessions**: every recorded pause with its context, which the other TTL is priced over.
+- **start mode**: whether new sessions start keepalive on or off, which `keepalive_default` decides, as `new sessions start on: keepalive_default` says.
+- **`do:`**: how to make the change, the command first and the click after it (`do: /keepalive on 15 or click pie on`); a change of TTL sets `promptCacheTtl` for new sessions.
+- **`(cheapest)`**: no setup priced would have cost less than yours. **`vs`**: the setup a saving is stated against (`saves ~$4.40 vs 5m/off`). **`≈ same cost`**: that setup would have cost about the same, within half a cent. **`a little cheaper`**: it would have cost a little less, too little to change.
+- **in tokens**: a figure with no dollars is shown in tokens, and `in tokens: no price for …` says why. In the tokens unit a saving is stated as `money`, with `$ only, /keepalive unit dollars` pointing to the dollars that state it.
 - **`≈`**: about equal, as in `1 write ≈ 24 refreshes`. **`<$0.001`**: under a tenth of a cent.
 
 ## Keepalive
@@ -177,12 +185,12 @@ a short terminal the lower sections are scrolled to with the wheel.
   no change, and a model the page never lists keeps its hand rate. An entry that breaks a rule above, or a mapping to a
   model with no price, is skipped and written to the debug log; a file that is not JSON or cannot be read is skipped
   whole and logged as unreadable. An unknown field or section is ignored and named in the debug log.
-- A figure with no price is shown in tokens, and the bare `/keepalive` answer says why (`Shown in tokens: no price for …`). That covers a
+- A figure with no price is shown in tokens, and the bare `/keepalive` answer says why (`in tokens: no price for …`). That covers a
   model neither the page nor the built-in table lists, fast mode, and a response that names no model. This holds for the figure to
   rebuild an expired or reset cache too, wherever the Cache section draws one. Both prices of the pair fall to tokens together: the
   rebuild figure reads `~33k tokens`, `<1k tokens` or `0 tokens`, the tokens of the context plus the last reply's output.
 - Tokens name what was done with them (`~19k read`, `~20k written`), since a write costs many reads. The
-  bare `/keepalive` answer says how many reads a 5 m write costs on the current model.
+  bare `/keepalive` answer says how many reads a write at the current TTL costs on the current model (`5m write ≈ 25 reads (claude-opus-5-5)`).
 
 ## Message times
 
@@ -194,7 +202,7 @@ Each message has its time at its top right, so you can see how long each phase t
 rundown, in five sections: Cache (the warmth, with the figure to rebuild an expired or reset cache), Keepalive (the
 refresh cost, how many refreshes a pause gets and why, when it pays off, this session and your pauses), This session (the
 session's refreshes, balance and misses), Advice (the best
-setup's sentence, the one-hour cache advice, the misses by cause, why figures are in tokens) and Settings (the TTL, lead,
+setup's rows, the other TTL's rows, the misses by cause, why figures are in tokens) and Settings (the TTL, lead,
 refresh count, start mode and unit: each value, where it came from when that is known, and what changes it; the TTL and
 start mode apply to new sessions). The Keepalive heading names keepalive's state, one of `off`, `on, refreshing`,
 `on, no count`, `paused` and `stopped`; the reason for a pause or stop is the first line beneath it. When no refresh is
@@ -262,13 +270,20 @@ Which is cheaper depends on how long you pause and how much each turn writes, so
 both, at today's rates, in the mode keepalive is in: no refreshes while it is off, your pinned count, or the count it
 would learn for that TTL. A switch takes a new session, so the other TTL is priced as one starts: keepalive on or off as
 `keepalive_default` says, at the `keepalive_lead_s` lead and no pinned count. Once the other TTL would have cost less,
-the answer says so and how to switch (`You're on a 5-minute cache with keepalive off. A 1-hour cache with keepalive off
-would have saved $4.74 over 10 priced pauses across sessions: set "promptCacheTtl": "1h" in settings.json for new
-sessions, which start with keepalive off (keepalive_default).`). The line names the setup you are on and the setup it is
-priced against, each by its TTL and keepalive state; keepalive that sends nothing is named paused, with its reason (a
-lead not below the TTL). The step names the keepalive state new sessions start with and `keepalive_default`, which decides
-it. The figure is what it is, over every priced pause across sessions (those recorded with their context); this line has
-no threshold, so weigh a saving over a few pauses as the few pauses it is.
+the answer says so and how to switch, as rows:
+
+```
+setup: 5m/off
+other TTL: 1h/off · would have saved $4.74 (10 priced pauses, all sessions)
+do: set "promptCacheTtl": "1h" in settings.json (new sessions start off: keepalive_default)
+```
+
+The `setup:` row names the setup you are on and the `other TTL:` row the setup it is priced against, each by its TTL and
+keepalive state; keepalive that sends nothing is named paused, with its reason (a lead not below the TTL). The `do:` row
+names the keepalive state new sessions start with and `keepalive_default`, which decides it. The figure is what it is,
+in dollars in either unit, over every priced pause across sessions (those recorded with their context); this block has
+no threshold, so weigh a saving over a few pauses as the few pauses it is. Where the best-setup block below is shown it
+opens with the same `setup:` row, so this block leaves its own out.
 
 ### Best setup
 
@@ -280,47 +295,51 @@ A change of TTL says what keepalive state new sessions start with, as keepalive_
 the change wants, it names /keepalive default as well as the command and the click, and where new sessions would start
 keepalive on at a lead that sends nothing, it names them paused and asks for nothing more. The click is made in the new
 session, e.g.
-`You're on a 5-minute cache with keepalive on. A 1-hour cache with keepalive off would have saved $1.20 over 10 recent
-pauses: set "promptCacheTtl": "1h" in settings.json for new sessions, which start with keepalive on (keepalive_default);
-either run /keepalive default off before starting the new session, or in the new session run /keepalive off or click the
-pie off.` and, where new sessions start paused,
-`You're on a 1-hour cache with keepalive off. A 5-minute cache with keepalive off would have saved $1.25 over 10 recent
-pauses: set "promptCacheTtl": "5m" in settings.json for new sessions, which start with keepalive on (keepalive_default)
-and so run a 5-minute cache with keepalive paused, sending nothing (lead 300s ≥ 300s TTL).` Each click is
-also given as the /keepalive command that does the same, at the lead and pinned count the setup was priced at, so it can be
-sent from the phone. The sentence is added beside the figures above and the TTL line,
-which stay. Every sentence opens by naming your TTL and keepalive state, `You're on a 5-minute cache with keepalive off.`, and
-the setup a saving is stated against is named in full. Keepalive on at a lead not below the TTL is named paused, sending
-nothing, with the reason the Keepalive section gives (`You're on a 5-minute cache with keepalive paused, sending nothing
-(lead 300s ≥ 300s TTL).`), since such a run sends no refresh and is priced as keepalive off. The
-sentence says one thing:
+
+```
+setup: 5m/on
+best: 1h/off · would have saved $1.20 (10 recent pauses)
+do: set "promptCacheTtl": "1h" in settings.json (new sessions start on: keepalive_default); then /keepalive default off before the new session, or in it /keepalive off or click pie off
+```
+
+and, where new sessions start paused,
+
+```
+setup: 1h/off
+best: 5m/off · would have saved $1.25 (10 recent pauses)
+do: set "promptCacheTtl": "5m" in settings.json (new sessions start on: keepalive_default, so run 5m/paused (lead 300s ≥ 300s TTL))
+```
+
+Each click is also given as the /keepalive command that does the same, at the lead and pinned count the setup was priced at,
+so it can be sent from the phone; the command comes first. The block is added beside the figures above and the TTL block,
+which stay. Every block opens with a `setup:` row naming your TTL and keepalive state, `setup: 5m/off`, and the setup a saving
+is stated against is named in full (`vs 5m/off`). Keepalive on at a lead not below the TTL is named paused, with the
+reason the Keepalive section gives (`setup: 5m/paused (lead 300s ≥ 300s TTL)`), since such a run sends no refresh and is
+priced as keepalive off. A block says one thing:
 
 - a change, when the cheapest setup differs from yours and saves at least $0.01 and at least 5% of what your setup cost
-  over those pauses: the TTL and keepalive settings that change, and the saving. A TTL change names
-  the `promptCacheTtl` setting and applies to new sessions; a keepalive change at the same TTL names its /keepalive command and the
-  click, made in this session;
+  over those pauses: a `best:` row names the setup to change to and the saving, and a `do:` row the settings that change. A TTL
+  change names the `promptCacheTtl` setting and applies to new sessions; a keepalive change at the same TTL names its
+  /keepalive command and the click, made in this session;
 - or that you're on the cheapest setup, and what it saves against the other: keepalive on against keepalive off at the
-  same TTL, or the other TTL with keepalive off when keepalive is off (`You're on a 5-minute cache with keepalive on, the
-  cheapest setup: it saves about $4.40 over 10 recent pauses against a 5-minute cache with keepalive off.`). Priced from the
-  pause records at today's setting, not money already saved;
+  same TTL, or the other TTL with keepalive off when keepalive is off (`setup: 5m/on (cheapest)`,
+  `saves ~$4.40 vs 5m/off (10 recent pauses)`). Priced from the pause records at today's setting, not money already saved;
 - or that you're on the cheapest setup, and the baseline costs about the same
-  (`You're on a 1-hour cache with keepalive off, the cheapest setup; a 5-minute cache with keepalive off would have cost
-  about the same over 10 recent pauses.`).
+  (`setup: 1h/off (cheapest)`, `5m/off ≈ same cost (10 recent pauses)`).
 
-When a cheaper setup exists but would not clear the threshold, the sentence names it and its saving after your setup ("You're on a
-5-minute cache with keepalive on. No other setup would have saved enough to change (a 1-hour cache with keepalive off would
-have saved $0.02): your setup saves about $4.60 over 10 recent pauses against a 5-minute cache with keepalive off."), and
-never calls your setup the cheapest. Where no change is worth making and the baseline costs no more, the sentence says the
-baseline would have cost about the same when the two are within half a cent, else that it would have cost a little less,
-too little to change, with no figure; when the setup it opens with is the baseline, the opening names the pauses and
-nothing follows it.
+When a cheaper setup exists but would not clear the threshold, a `next best:` row names it and its saving after your setup
+(`next best: 1h/off · would have saved $0.02, too little to change`), and your setup is never marked `(cheapest)`. Where no
+change is worth making and the baseline costs no more, the block says the baseline is `≈ same cost` when the two are
+within half a cent, else that it was `a little cheaper`, too little to change, with no figure; when the setup the
+`next best:` row names is the baseline, that row names the pauses and nothing follows it.
 
 A keepalive run whose lead is not below a TTL sends no refresh at that TTL, so it is priced there as keepalive off.
 
 The pauses are this session's once five of them can be priced, else the 50 newest priced pauses across sessions, and
-every sentence says which; with fewer than five priced pauses anywhere there is no sentence. In tokens it names the
-setup and points to `/keepalive unit dollars` for the figure. It is the first line of the Advice section, in the
-details pane and in a bare `/keepalive`.
+every block says which (`5 pauses this session`, `10 recent pauses`); with fewer than five priced pauses anywhere there is no
+block. In tokens a saving is stated as `money`, and the first row that states one points to
+`$ only, /keepalive unit dollars` for the figure, once. The rows are the first lines of the Advice section, in the details
+pane and in a bare `/keepalive`.
 
 Cachier can't switch the TTL itself: no plugin setting controls it. Set `"promptCacheTtl": "5m"` or `"1h"` in
 settings.json; `FORCE_PROMPT_CACHING_5M` and `CLAUDE_CODE_PROMPT_CACHE_TTL` override it. The docs don't say a running

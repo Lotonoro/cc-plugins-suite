@@ -13,7 +13,7 @@ const FULL: Snapshot = {
   cache: ['warm · 3:12 left · 5m TTL'],
   keepalive: { state: 'on, refreshing', lines: ['next in 4:59 · 3 left', 'next refresh $0.006 (~33k read)'] },
   session: ['session: 2 refreshes · $0.007', 'misses: 1 (lapse 1) · $0.10 rewritten'],
-  advice: ['A 1-hour cache would have saved $4.74 over 10 pauses: set "promptCacheTtl": "1h" in settings.json.'],
+  advice: ['setup: 5m/off', 'other TTL: 1h/off · would have saved $4.74 (10 priced pauses, all sessions)', 'do: set "promptCacheTtl": "1h" in settings.json (new sessions start off: keepalive_default)'],
   settings: SETTINGS,
 }
 const EMPTY: Snapshot = { cache: [], keepalive: { state: 'off', lines: [] }, session: [], advice: [], settings: [] }

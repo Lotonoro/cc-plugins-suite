@@ -8,7 +8,7 @@
 import type { CacheView, Judged, KeepaliveState, Spend, Unit, Verdict } from '../types'
 import { clockOf, expiredAt } from './countdown'
 import type { Defaults } from './keepalive'
-import { dollars, NO_KINDS, spendOf, type Money } from './prices'
+import { dollars, DOLLARS_ONLY, NO_KINDS, spendOf, type Money } from './prices'
 import { refreshIntervalMs } from './setup'
 
 export type Pause = {
@@ -69,7 +69,7 @@ export const judge = (j: Judged, p: Pause | null): Judged => (p === null ? j : {
 export const sessionBalanceLine = (j: Judged, unit: Unit): string => {
   if (j.pauses === 0) return ''
   const pauses = `(${j.pauses} ${j.pauses === 1 ? 'pause' : 'pauses'})`
-  if (unit === 'tokens') return `balance vs other setting: $ only, /keepalive unit dollars ${pauses}`
+  if (unit === 'tokens') return `balance vs other setting: ${DOLLARS_ONLY} ${pauses}`
   const net = Math.abs(j.netUsd) < EPSILON_USD ? 0 : j.netUsd
   const verdict = verdictOfMargin(net)
   if (verdict === 'par') return `balance vs other setting: even ${pauses}`

@@ -1,6 +1,7 @@
 // Anthropic's list prices, and every figure worded from them: a spend counted in tokens and in dollars, and how either is
 // shown. A figure with no price keeps its tokens and says why it has no dollars.
 import type { Kinds, Spend, TtlLabel, Unit } from '../types'
+import { SPAN_SPACE } from './sections'
 
 // A model's per-token rates, and the higher ones a prompt above `threshold` tokens pays, where the model has them.
 export type Rates = Kinds & { above: (Kinds & { threshold: number }) | null }
@@ -116,8 +117,6 @@ const ownRates = (list: PriceList, id: string): Rates | null => (Object.hasOwn(l
 // The id exactly as given first, so a price kept for a partner id wins over its list model's; then its normalised form.
 export const ratesFor = (list: PriceList, model: string | null): Rates | null => (model === null ? null : (ownRates(list, model) ?? ownRates(list, normalised(model))))
 
-// A cache lifetime in words, as every surface that names a TTL words it.
-export const TTL_WORDS: Record<TtlLabel, string> = { '5m': '5-minute', '1h': '1-hour' }
 // A cache lifetime in milliseconds.
 export const TTL_MS: Record<TtlLabel, number> = { '5m': 300_000, '1h': 3_600_000 }
 
@@ -171,6 +170,10 @@ export const readOf = (n: number): string => `${kTokens(n)} read`
 // The tokens a refresh reads from the warm cache: `cached` tells them from the tokens a rebuild writes.
 export const cachedOf = (n: number): string => `${kTokens(n)} cached`
 export const writtenOf = (n: number): string => `${kTokens(n)} written`
+
+// What a saving or a balance in tokens says in place of its dollars, which only the dollar unit states. The command is one span, so the
+// wrap keeps it whole on a row; `$ only,` wraps as words.
+export const DOLLARS_ONLY = `$ only, /keepalive${SPAN_SPACE}unit${SPAN_SPACE}dollars`
 
 // A spend in the unit shown: its dollars, or its tokens by what the cache did with them. A spend with no price is in tokens.
 export const figureOf = (spend: Spend, unit: Unit): string => {

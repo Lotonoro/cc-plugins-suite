@@ -122,8 +122,8 @@ export const learnedLine = (l: Learned, ttlMs: number): string => {
 // The per-token rates a TTL comparison is priced at: the current model's read and its two write rates.
 export type TtlRates = { read: number; write5m: number; write1h: number }
 
-// The counts learned from a history, by hour and pricing: every pricing of the same history shares them, so the TTL line and the best-setup
-// sentence learn each count once.
+// The counts learned from a history, by hour and pricing: every pricing of the same history shares them, so the TTL block and the best-setup
+// block learn each count once.
 const learnedCounts: PricingMemo<Map<number, number>> = new WeakMap()
 
 // The counts by hour learned from `history` at a pricing, each learned when first asked for, else the break-even `maxCount`.
@@ -140,7 +140,7 @@ const learnedCountsAt = (history: readonly PauseRecord[], maxCount: number, p: P
 // while keepalive is off, or else at its pinned count, or the count it would learn from `history` for that TTL, or break-even. Keepalive on
 // with a lead not below the TTL is priced as off: such a run pauses on its lead and sends no refresh (keepalive.ts step). Null where the
 // model has no price for that TTL. Only pauses that carry their context and growth can be priced: the caller passes those. The Advice
-// section's two sentences, the TTL line and the best-setup sentence (both in advice.ts), price through this, so they cannot disagree on the same pauses.
+// section's two blocks, the TTL block and the best-setup block (both in advice.ts), price through this, so they cannot disagree on the same pauses.
 export const pausesCost = (
   pauses: readonly PauseRecord[],
   history: readonly PauseRecord[],
@@ -189,5 +189,5 @@ export const ttlAdviceOf = (
 
 // How to switch to a TTL: the `promptCacheTtl` setting, which the prompt-caching docs rank above ENABLE_PROMPT_CACHING_1H and below
 // only FORCE_PROMPT_CACHING_5M and CLAUDE_CODE_PROMPT_CACHE_TTL. The docs don't say a running session picks up a change to it, so a
-// switch is priced and worded as a new session. The Advice section's two sentences (advice.ts) and the Settings section's TTL row all say it this way.
+// switch is priced and worded as a new session. The Advice section's two blocks (advice.ts) and the Settings section's TTL row all say it this way.
 export const ttlSwitchOf = (ttl: TtlLabel): string => `set "promptCacheTtl": "${ttl}" in settings.json`

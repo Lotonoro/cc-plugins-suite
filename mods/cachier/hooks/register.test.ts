@@ -4562,7 +4562,7 @@ describe('the cost unit: dollars at list prices, or tokens, switched by /keepali
     // 18559 tokens read at $0.20 per million.
     expect(running).toContain('keep warm $0.004/refresh')
     expect(running).toContain('refresh $0.004 (~19k cached)')
-    expect(running).not.toContain('Shown in tokens')
+    expect(running).not.toContain('in tokens:')
     await m.unmount()
   })
 
@@ -4608,7 +4608,7 @@ describe('the cost unit: dollars at list prices, or tokens, switched by /keepali
     expect(await toggle($, 'unit tokens')).toBe('figures show in tokens for this session.')
     const tokens = JSON.stringify(await m.drawn()) + (await drawnPane($))
     expect(tokens).toContain('keep warm ~19k read/refresh')
-    expect(await toggle($, '')).toContain('A 5-minute cache write costs about 25 cache reads on claude-opus-5-5.')
+    expect(await toggle($, '')).toContain('5m write ≈ 25 reads (claude-opus-5-5)')
     expect(tokens).not.toContain('$0.004/refresh')
     expect(await toggle($, '')).toContain('refresh ~19k cached')
     expect(await toggle($, 'unit dollars')).toBe('figures show in dollars for this session.')
@@ -4931,7 +4931,8 @@ describe('the cost unit: dollars at list prices, or tokens, switched by /keepali
     await clock.advance(1000)
     const drawn = JSON.stringify(await m.drawn()) + (await drawnPane($))
     expect(drawn).toContain('keep warm ~19k read/refresh')
-    expect(await toggle($, '')).toContain('Shown in tokens: no price for claude-nonesuch-1.')
+    // The reason is a row of its own in the Advice section.
+    expect(sectionLines(await commandText($, ''), 'Advice')).toContain('in tokens: no price for claude-nonesuch-1')
     await m.unmount()
   })
 
@@ -5385,7 +5386,7 @@ describe('the pause history: this load\'s pauses and the store agree at quiescen
       const all = [...rec.store.keys()].reduce((n, key) => n + storedOf(key), 0) + lostTotal
       const want = own >= 5 ? { n: own, source: 'session' } : all >= 5 ? { n: Math.min(all, 50), source: 'recent' } : null
       const text = (await commandText($, '')).replace(/\n\s*/g, ' ')
-      const m = /over (\d+) (pauses this session|recent pauses)/.exec(text)
+      const m = /\((\d+) (pauses this session|recent pauses)/.exec(text)
       const got = m === null ? null : { n: Number(m[1]), source: m[2] === 'recent pauses' ? 'recent' : 'session' }
       expect({ row: row.join(', '), got }).toEqual({ row: row.join(', '), got: want })
     })
@@ -5419,7 +5420,7 @@ describe('the pause history: this load\'s pauses and the store agree at quiescen
     // 300 s and 362 s, 24 ratio units each at 18,559 x $0.20 per MTok, $0.0891 each; the 1 h TTL expires none. The first pause's growth is
     // 18,559 tokens: $0.0928 at 5 m, $0.1485 at 1 h. Saving: 0.1781 + 0.0928 - 0.1485 = $0.1225, shown $0.12. Had the sixth grown from the
     // whole context, it would add $0.0928 at 5 m and $0.1485 at 1 h, a net of -$0.0557, and the line would show $0.07.
-    expect((await commandText($, '')).replace(/\n\s*/g, ' ')).toMatch(/A 1-hour cache with keepalive off would have saved \$0\.12 over 6 priced pauses across sessions/)
+    expect((await commandText($, '')).replace(/\n\s*/g, ' ')).toMatch(/other TTL: 1h\/off · would have saved \$0\.12 \(6 priced pauses, all sessions\)/)
   })
 })
 
@@ -5596,15 +5597,22 @@ describe("the TTL advice: the bare command names the other TTL once the recorded
     const clock = mock.clock(on, { now: T0 })
     await $.classic.SessionStart({ source: 'startup', transcript_path: PATH })
     await clock.advance(1000)
-    expect(await toggle($, '')).toContain(
-      'You\'re on a 5-minute cache with keepalive off. A 1-hour cache with keepalive off would have saved $4.74 over 10 priced pauses across sessions: set "promptCacheTtl": "1h" in settings.json for new sessions, which start with keepalive off (keepalive_default).',
-    )
+    // The best-setup block shows too, so the TTL block's setup row is left out: one setup row, then each block's rows.
+    expect(sectionLines(await commandText($, ''), 'Advice')).toEqual([
+      'setup: 5m/off',
+      'best: 1h/off · would have saved $4.74 (10 recent pauses)',
+      'do: set "promptCacheTtl": "1h" in settings.json (new sessions start off: keepalive_default)',
+      'other TTL: 1h/off · would have saved $4.74 (10 priced pauses, all sessions)',
+      'do: set "promptCacheTtl": "1h" in settings.json (new sessions start off: keepalive_default)',
+    ])
     await toggle($, 'on 15')
     await clock.advance(1000)
-    expect(await toggle($, '')).toContain('You\'re on a 5-minute cache with keepalive on. A 1-hour cache with keepalive off would have saved $0.74')
+    expect(await toggle($, '')).toContain('other TTL: 1h/off · would have saved $0.74 (10 priced pauses, all sessions)')
+    expect(sectionLines(await commandText($, ''), 'Advice')?.[0]).toBe('setup: 5m/on')
     await toggle($, 'on 15 3')
     await clock.advance(1000)
-    expect(await toggle($, '')).toContain('You\'re on a 5-minute cache with keepalive on. A 1-hour cache with keepalive off would have saved $5.34')
+    expect(await toggle($, '')).toContain('other TTL: 1h/off · would have saved $5.34 (10 priced pauses, all sessions)')
+    expect(sectionLines(await commandText($, ''), 'Advice')?.[0]).toBe('setup: 5m/on')
   })
 
   test('keepalive on at a lead not below the TTL: the line names the setup you are on paused, with the reason the Keepalive section gives', async ($, on) => {
@@ -5618,9 +5626,47 @@ describe("the TTL advice: the bare command names the other TTL once the recorded
     const reason = 'lead 300s ≥ 300s TTL'
     expect(text).toContain(`Keepalive  paused`)
     expect(text).toContain(reason)
-    expect(text).toContain(
-      `You're on a 5-minute cache with keepalive paused, sending nothing (${reason}). A 1-hour cache with keepalive off would have saved $4.74 over 10 priced pauses across sessions: set "promptCacheTtl": "1h" in settings.json for new sessions, which start with keepalive off (keepalive_default).`,
-    )
+    const advice = sectionLines(await commandText($, ''), 'Advice')
+    expect(advice?.[0]).toBe(`setup: 5m/paused (${reason})`)
+    expect(advice).toContain('other TTL: 1h/off · would have saved $4.74 (10 priced pauses, all sessions)')
+    expect(advice?.filter((row) => row.startsWith('setup:'))).toHaveLength(1)
+  })
+
+  test('a TTL block shown alone keeps its own setup row, and the best-setup block coming or going takes that row with it', async ($, on) => {
+    // Four priced pauses are too few for the best setup (five are needed) but enough for the TTL block, which prices every one there is.
+    const rec = kaWorld(on, { ...opusCached(), store: { 'pauses/old': SIZED['pauses/old'].slice(0, 4) } })
+    const clock = mock.clock(on, { now: T0 })
+    await $.classic.SessionStart({ source: 'startup', transcript_path: PATH })
+    await clock.advance(1000)
+    const step = 'do: set "promptCacheTtl": "1h" in settings.json (new sessions start off: keepalive_default)'
+    const alone = ['setup: 5m/off', 'other TTL: 1h/off · would have saved $1.90 (4 priced pauses, all sessions)', step]
+    const both = [
+      'setup: 5m/off',
+      'best: 1h/off · would have saved $2.37 (5 recent pauses)',
+      step,
+      'other TTL: 1h/off · would have saved $2.37 (5 priced pauses, all sessions)',
+      step,
+    ]
+    // The pane's Advice rows: those under the heading up to the blank row that ends the section.
+    const drawn = async () => {
+      const rows = await paneRows($)
+      const from = rows.indexOf('Advice') + 1
+      return rows.slice(from, rows.indexOf('', from))
+    }
+    expect(sectionLines(await commandText($, ''), 'Advice')).toEqual(alone)
+    expect(await drawn()).toEqual(alone)
+    // A fifth pause, another session's, read on a resume: the best-setup block appears with the one setup row, and the TTL block loses its own.
+    rec.store.set('pauses/other', [{ ...SIZED['pauses/old'][0]!, startMs: 5000 }])
+    await $.classic.SessionStart({ source: 'resume', transcript_path: PATH })
+    await clock.advance(1000)
+    expect(sectionLines(await commandText($, ''), 'Advice')).toEqual(both)
+    expect(await drawn()).toEqual(both)
+    // The store drops it and the next load reads without it: the best-setup block goes, and the TTL block has its setup row again.
+    rec.store.set('pauses/other', [])
+    await $.classic.SessionStart({ source: 'resume', transcript_path: PATH })
+    await clock.advance(1000)
+    expect(sectionLines(await commandText($, ''), 'Advice')).toEqual(alone)
+    expect(await drawn()).toEqual(alone)
   })
 
   test('a 1-hour session whose new sessions start keepalive on at a 300 s lead is told to go back to a 5-minute cache that sends nothing', { options: { keepalive_default: 'on', keepalive_lead_s: 300 } }, async ($, on) => {
@@ -5631,17 +5677,23 @@ describe("the TTL advice: the bare command names the other TTL once the recorded
     const clock = mock.clock(on, { now: T0 })
     await $.classic.SessionStart({ source: 'startup', transcript_path: PATH })
     await clock.advance(1000)
-    const target = 'A 5-minute cache with keepalive paused, sending nothing (lead 300s ≥ 300s TTL) would have saved'
-    const step = 'which start with keepalive on (keepalive_default).'
+    const target = 'other TTL: 5m/paused (lead 300s ≥ 300s TTL) · would have saved'
+    const step = 'do: set "promptCacheTtl": "5m" in settings.json (new sessions start on: keepalive_default)'
     const text = await toggle($, '')
     expect(text).toContain(target)
     expect(text).toContain(step)
-    const pane = await drawnPane($)
-    expect(pane).toContain(target)
+    // The best-setup block runs the paused setup after its step; the TTL block's step is that row without the tail.
+    const advice = sectionLines(await commandText($, ''), 'Advice')
+    expect(advice).toContain('do: set "promptCacheTtl": "5m" in settings.json (new sessions start on: keepalive_default, so run 5m/paused (lead 300s ≥ 300s TTL))')
+    expect(advice?.some((row) => row.startsWith(target))).toBe(true)
+    expect(advice).toContain(step)
+    const pane = await paneRows($)
+    expect(pane.some((row) => row.startsWith(target))).toBe(true)
     expect(pane).toContain(step)
-    // The command keeps the line within 48 columns, in the paused form too; the pane carries it whole.
-    expect(widthOf((await commandText($, '')).split('\n'))).toBeLessThanOrEqual(48)
-    expect((await paneRows($)).some((row) => row.includes(target) && row.includes(step))).toBe(true)
+    // The command keeps every row within 48 columns, the paused setup whole on one of them; the pane carries each row whole.
+    const answer = (await commandText($, '')).split('\n')
+    expect(widthOf(answer)).toBeLessThanOrEqual(48)
+    expect(answer.some((row) => row.includes('5m/paused (lead 300s ≥ 300s TTL)'))).toBe(true)
   })
 
   test('the line is carried whole in the details pane and wrapped to 48 columns in the command', async ($, on) => {
@@ -5650,7 +5702,7 @@ describe("the TTL advice: the bare command names the other TTL once the recorded
     await $.classic.SessionStart({ source: 'startup', transcript_path: PATH })
     await clock.advance(1000)
     const rows = await paneRows($)
-    expect(rows.some((row) => row.includes('You\'re on a 5-minute cache with keepalive off. A 1-hour cache with keepalive off would have saved $4.74'))).toBe(true)
+    expect(rows).toContain('other TTL: 1h/off · would have saved $4.74 (10 priced pauses, all sessions)')
     expect(widthOf((await commandText($, '')).split('\n'))).toBeLessThanOrEqual(48)
   })
 
@@ -5682,9 +5734,12 @@ describe("the TTL advice: the bare command names the other TTL once the recorded
     await clock.advance(1000)
     await toggle($, 'off')
     await clock.advance(1000)
-    expect(await toggle($, '')).toContain(
-      'You\'re on a 5-minute cache with keepalive off. A 1-hour cache with keepalive on would have saved $4.40 over 10 priced pauses across sessions: set "promptCacheTtl": "1h" in settings.json for new sessions, which start with keepalive on (keepalive_default).',
-    )
+    // The other TTL is named as the new session starts it, keepalive on, and its step is the setting with that start alone.
+    const advice = sectionLines(await commandText($, ''), 'Advice')
+    const at = advice?.indexOf('other TTL: 1h/on · would have saved $4.40 (10 priced pauses, all sessions)') ?? -1
+    expect(at).toBeGreaterThanOrEqual(0)
+    expect(advice?.[at + 1]).toBe('do: set "promptCacheTtl": "1h" in settings.json (new sessions start on: keepalive_default)')
+    expect(advice?.[0]).toBe('setup: 5m/off')
   })
 
   test('the other TTL is priced with keepalive off when new sessions start it off, though this session has it on', { options: { keepalive_default: 'off' } }, async ($, on) => {
@@ -6164,8 +6219,7 @@ describe('the bare command answers whole: the text its sections lay out, for fix
         '  session: no refreshes yet',
         '',
         'Advice',
-        '  A 5-minute cache write costs about 25 cache',
-        '    reads on claude-opus-5-5.',
+        '  5m write ≈ 25 reads (claude-opus-5-5)',
         '',
         'Settings',
         '  TTL 5 min (read from the last response): set',
@@ -6226,7 +6280,7 @@ describe('the bare command answers whole: the text its sections lay out, for fix
           '  session: no refreshes yet',
           '',
           'Advice',
-          '  Shown in tokens: no price for an unnamed model.',
+          '  in tokens: no price for an unnamed model',
           '',
           'Settings',
           '  TTL 5 min (read from the last response): set "promptCacheTtl": "1h" in settings.json for 1 h (new sessions).',
@@ -6941,40 +6995,41 @@ describe('the Keepalive section: the colour sentence wherever no refresh is comi
 describe('the best setup: one sentence, in the pane and in the bare command, priced over this session or recent pauses', () => {
   // Ten ten-minute pauses, each with a million tokens written: on 5 m keepalive costs $5.04 a pause, off $5.48, 1 h $8.00.
   const pauseOf = (i: number, startMs = 1000 + i) => ({ startMs, pausedMs: 10 * MIN, hour: 10, weekday: 2, ratio: 24, ttlMs: 300000, contextTokens: 100000, grownTokens: 1000000 })
-  const CHANGE = 'A 5-minute cache with keepalive on would have saved $4.40 over 10 recent pauses: run /keepalive on 15 or click the pie on.'
+  // The block these pauses give while keepalive is off: the setup you are on, the change to keepalive on, and the click that makes it.
+  const CHANGE = ['setup: 5m/off', 'best: 5m/on · would have saved $4.40 (10 recent pauses)', 'do: /keepalive on 15 or click pie on']
 
-  test('the bare command opens its Advice section with the sentence, as one line of the section', async ($, on) => {
+  test('the bare command opens its Advice section with the block, each row one line of the section', async ($, on) => {
     kaWorld(on, { ...opusCached(), store: { 'pauses/old': Array.from({ length: 10 }, (_, i) => pauseOf(i)) } })
     const clock = mock.clock(on, { now: T0 })
     await $.classic.SessionStart({ source: 'startup', transcript_path: PATH })
     await clock.advance(1000)
-    expect((await commandText($, '')).replace(/\n\s*/g, ' ')).toContain(`Advice You're on a 5-minute cache with keepalive off. ${CHANGE}`)
-    expect(await drawnPane($)).toContain(`You're on a 5-minute cache with keepalive off. ${CHANGE}`)
+    expect(sectionLines(await commandText($, ''), 'Advice')?.slice(0, 3)).toEqual(CHANGE)
+    const rows = await paneRows($)
+    expect(rows.slice(rows.indexOf('Advice') + 1, rows.indexOf('Advice') + 4)).toEqual(CHANGE)
   })
 
-  test('keepalive on at a lead not below the TTL: the sentence names the setup paused, with the reason the Keepalive section gives', async ($, on) => {
+  test('keepalive on at a lead not below the TTL: the block names the setup paused, with the reason the Keepalive section gives', async ($, on) => {
     kaWorld(on, { ...opusCached(), store: { 'pauses/old': Array.from({ length: 10 }, (_, i) => pauseOf(i)) } })
     const clock = mock.clock(on, { now: T0 })
     await $.classic.SessionStart({ source: 'startup', transcript_path: PATH })
     await clock.advance(1000)
     await commandText($, 'on 300')
     await clock.advance(1000)
-    expect((await commandText($, '')).replace(/\n\s*/g, ' ')).toContain(
-      "Advice You're on a 5-minute cache with keepalive paused, sending nothing (lead 300s ≥ 300s TTL)",
-    )
+    // A run that sends nothing costs what keepalive off does, so the paused setup is the cheapest and the block states the baseline.
+    expect(sectionLines(await commandText($, ''), 'Advice')).toEqual(['setup: 5m/paused (lead 300s ≥ 300s TTL) (cheapest)', '5m/off ≈ same cost (10 recent pauses)'])
   })
 
-  test('the details pane carries the sentence, whole, in its Advice section', async ($, on) => {
+  test('the details pane carries the block, each row whole, in its Advice section', async ($, on) => {
     kaWorld(on, { ...opusCached(), store: { 'pauses/old': Array.from({ length: 10 }, (_, i) => pauseOf(i)) } })
     const clock = mock.clock(on, { now: T0 })
     await $.classic.SessionStart({ source: 'startup', transcript_path: PATH })
     await clock.advance(1000)
     const rows = await paneRows($)
     const advice = rows.indexOf('Advice')
-    const sentence = rows.findIndex((row) => row.startsWith('You\'re on a 5-minute cache with keepalive off.'))
     expect(advice).toBeGreaterThanOrEqual(0)
-    expect(sentence).toBe(advice + 1)
-    expect(rows[sentence]!.length).toBeGreaterThan(48)
+    expect(rows.slice(advice + 1, advice + 4)).toEqual(CHANGE)
+    // The pane draws the best row whole, wider than the 48 columns the command wraps its rows to.
+    expect(rows[advice + 2]!.length).toBeGreaterThan(48)
     expect(widthOf((await commandText($, '')).split('\n'))).toBeLessThanOrEqual(48)
   })
 
@@ -6989,7 +7044,8 @@ describe('the best setup: one sentence, in the pane and in the bare command, pri
     await clock.advance(1000)
     const text = (await commandText($, '')).replace(/\n\s*/g, ' ')
     expect(text).toContain('Advice ')
-    expect(text).not.toContain('click the pie on')
+    // The click is the block's own words (the first test of this group draws it): none is advised here.
+    expect(text).not.toContain('click pie on')
   })
 
   test('an "on" setup at the other TTL is priced at the defaults a new session starts with, not this session\'s last run', { options: { keepalive_count: 1 } }, async ($, on) => {
@@ -7004,8 +7060,9 @@ describe('the best setup: one sentence, in the pane and in the bare command, pri
     await commandText($, 'off')
     await clock.advance(1000)
     const text = (await commandText($, '')).replace(/\n\s*/g, ' ')
-    expect(text).not.toContain('1-hour cache with keepalive on')
-    expect(text).toContain("You're on a 5-minute cache with keepalive off, the cheapest setup: it saves about $3.00 over 10 recent pauses against a 1-hour cache with keepalive off.")
+    // The count capped at 1 cannot hold the pauses at 1 h, so no row names 1h/on (the change test below, without the cap, draws it).
+    expect(text).not.toContain('1h/on')
+    expect(sectionLines(await commandText($, ''), 'Advice')).toEqual(['setup: 5m/off (cheapest)', 'saves ~$3.00 vs 1h/off (10 recent pauses)'])
   })
 
   test('every session\'s pauses are read with at most eight store reads running, and all of them are priced', async ($, on) => {
@@ -7027,7 +7084,7 @@ describe('the best setup: one sentence, in the pane and in the bare command, pri
     await $.classic.SessionStart({ source: 'startup', transcript_path: PATH })
     await clock.advance(1000)
     expect(most).toBe(8)
-    expect((await commandText($, '')).replace(/\n\s*/g, ' ')).toContain('A 5-minute cache with keepalive on would have saved $8.80 over 20 recent pauses: run /keepalive on 15 or click the pie on.')
+    expect(sectionLines(await commandText($, ''), 'Advice')).toEqual(['setup: 5m/off', 'best: 5m/on · would have saved $8.80 (20 recent pauses)', 'do: /keepalive on 15 or click pie on'])
   })
 
   test('a pause another session\'s key has since dropped is not brought back by a later load', async ($, on) => {
@@ -7035,7 +7092,7 @@ describe('the best setup: one sentence, in the pane and in the bare command, pri
     const clock = mock.clock(on, { now: T0 })
     await $.classic.SessionStart({ source: 'startup', transcript_path: PATH })
     await clock.advance(1000)
-    expect((await commandText($, '')).replace(/\n\s*/g, ' ')).toMatch(/over 6 recent pauses/)
+    expect((await commandText($, '')).replace(/\n\s*/g, ' ')).toMatch(/\(6 recent pauses/)
     // The other session's key trims its oldest pauses at its own bound: the store keeps three.
     rec.store.set('pauses/x', Array.from({ length: 3 }, (_, i) => pauseOf(i)))
     await $.classic.SessionStart({ source: 'resume', transcript_path: PATH })
@@ -7058,7 +7115,8 @@ describe('the best setup: one sentence, in the pane and in the bare command, pri
   // 150-minute pauses with no growth: on 5 m each pays its rewrite ($0.48), with keepalive off or on at its learned count of none; at 1 h
   // keepalive on holds each for two reads ($0.04). A change to 1 h with keepalive on saves $4.40 over ten.
   const longPauses = Array.from({ length: 10 }, (_, i) => ({ ...pauseOf(i), pausedMs: 150 * MIN, grownTokens: 0 }))
-  const TO_1H_ON = 'A 1-hour cache with keepalive on would have saved $4.40 over 10 recent pauses: set "promptCacheTtl": "1h" in settings.json for new sessions, which start with keepalive on (keepalive_default)'
+  const TO_1H_ON = 'best: 1h/on · would have saved $4.40 (10 recent pauses)'
+  const SET_1H = 'set "promptCacheTtl": "1h" in settings.json'
 
   test('a change of TTL says to click the pie on when new sessions start keepalive off, though it is on here', { options: { keepalive_default: 'off' } }, async ($, on) => {
     kaWorld(on, { ...opusCached(), store: { 'pauses/old': longPauses } })
@@ -7069,8 +7127,9 @@ describe('the best setup: one sentence, in the pane and in the bare command, pri
     await clock.advance(1000)
     const text = (await commandText($, '')).replace(/\n\s*/g, ' ')
     expect(text).toContain('Keepalive  paused')
-    expect(text).toContain('A 1-hour cache with keepalive on would have saved $4.40 over 10 recent pauses: set "promptCacheTtl": "1h" in settings.json for new sessions, which start with keepalive off (keepalive_default); either run /keepalive default on before starting the new session, or in the new session run /keepalive on 15 or click the pie on.')
-    expect(await drawnPane($)).toContain('for new sessions, which start with keepalive off (keepalive_default); either run /keepalive default on before starting the new session, or in the new session run /keepalive on 15 or click the pie on.')
+    const step = `do: ${SET_1H} (new sessions start off: keepalive_default); then /keepalive default on before the new session, or in it /keepalive on 15 or click pie on`
+    expect(sectionLines(await commandText($, ''), 'Advice')).toEqual(['setup: 5m/on', TO_1H_ON, step])
+    expect(await paneRows($)).toContain(step)
     const rows = (await commandText($, '')).split('\n')
     expect(rows.every((row) => row.length <= 48)).toBe(true)
     expect(rows.some((row) => row.includes('/keepalive on 15'))).toBe(true)
@@ -7083,7 +7142,8 @@ describe('the best setup: one sentence, in the pane and in the bare command, pri
     const clock = mock.clock(on, { now: T0 })
     await $.classic.SessionStart({ source: 'startup', transcript_path: PATH })
     await clock.advance(1000)
-    expect((await commandText($, '')).replace(/\n\s*/g, ' ')).toContain(`${TO_1H_ON}.`)
+    // The step is the setting with the new-session start alone: no default to set and no click, as that start is the change's own.
+    expect(sectionLines(await commandText($, ''), 'Advice')?.slice(0, 3)).toEqual(['setup: 5m/on', TO_1H_ON, `do: ${SET_1H} (new sessions start on: keepalive_default)`])
   })
 
   test('with no recorded pause there is no sentence, in the pane or the command', async ($, on) => {
@@ -7091,8 +7151,9 @@ describe('the best setup: one sentence, in the pane and in the bare command, pri
     const clock = mock.clock(on, { now: T0 })
     await $.classic.SessionStart({ source: 'startup', transcript_path: PATH })
     await clock.advance(1000)
-    expect(await commandText($, '')).not.toMatch(/cheapest setup|would have saved/)
-    expect(await drawnPane($)).not.toContain('would have saved')
+    // Every block opens with its setup row, which a block of `saves … vs` or `≈ same cost` rows has where `would have saved` is absent.
+    expect(await commandText($, '')).not.toMatch(/setup: |would have saved/)
+    expect(await drawnPane($)).not.toMatch(/setup: |would have saved/)
   })
 
   test('a cold cache drops the sentence while the cold mark stands, as the break-even line does', async ($, on) => {
@@ -7100,10 +7161,11 @@ describe('the best setup: one sentence, in the pane and in the bare command, pri
     const clock = mock.clock(on, { now: T0 })
     await $.classic.SessionStart({ source: 'startup', transcript_path: PATH })
     await clock.advance(1000)
-    expect(await drawnPane($)).toContain('A 5-minute cache with keepalive on')
+    const warm = await paneRows($)
     await $.classic.PostCompact({ trigger: 'manual', compact_summary: 's' } as any)
     await clock.advance(1000)
-    expect(await drawnPane($)).not.toContain('would have saved')
+    expect(await drawnPane($)).not.toMatch(/setup: |would have saved/)
+    expect(warm).toContain('best: 5m/on · would have saved $4.40 (10 recent pauses)')
   })
 
   test("this session's pauses are the ones under its transcript's key: on another transcript they are recent, and the sentence says so", async ($, on) => {
@@ -7111,11 +7173,11 @@ describe('the best setup: one sentence, in the pane and in the bare command, pri
     const clock = mock.clock(on, { now: T0 })
     await $.classic.SessionStart({ source: 'startup', transcript_path: PATH })
     await clock.advance(1000)
-    expect((await commandText($, '')).replace(/\n\s*/g, ' ')).toContain('A 5-minute cache with keepalive on would have saved $2.20 over 5 pauses this session: run /keepalive on 15 or click the pie on.')
+    expect(sectionLines(await commandText($, ''), 'Advice')).toEqual(['setup: 5m/off', 'best: 5m/on · would have saved $2.20 (5 pauses this session)', 'do: /keepalive on 15 or click pie on'])
     // A resume onto another transcript: a new session with no pauses under its key, and no cold mark as a clear would leave.
     await $.classic.SessionStart({ source: 'resume', transcript_path: '/home/test/.claude/projects/p/s3.jsonl' })
     await clock.advance(1000)
-    expect((await commandText($, '')).replace(/\n\s*/g, ' ')).toContain('A 5-minute cache with keepalive on would have saved $2.20 over 5 recent pauses: run /keepalive on 15 or click the pie on.')
+    expect(sectionLines(await commandText($, ''), 'Advice')).toEqual(['setup: 5m/off', 'best: 5m/on · would have saved $2.20 (5 recent pauses)', 'do: /keepalive on 15 or click pie on'])
   })
 
   test("a pause the last transcript's prompt ended is not counted in the pauses of a transcript learned while it was written", async ($, on) => {
@@ -7135,7 +7197,7 @@ describe('the best setup: one sentence, in the pane and in the bare command, pri
     await prompted
     await clock.advance(1000)
     const text = (await commandText($, '')).replace(/\n\s*/g, ' ')
-    expect(text).toMatch(/over \d+ recent pauses/)
+    expect(text).toMatch(/\(\d+ recent pauses/)
     expect(text).not.toMatch(/pauses this session/)
   })
 
@@ -7155,7 +7217,7 @@ describe('the best setup: one sentence, in the pane and in the bare command, pri
     await userPrompt($)
     release()
     await clock.advance(1000)
-    expect((await commandText($, '')).replace(/\n\s*/g, ' ')).toMatch(/over 5 pauses this session/)
+    expect((await commandText($, '')).replace(/\n\s*/g, ' ')).toMatch(/\(5 pauses this session/)
   })
 
   test("a pause a prompt ends while every session's pauses are still being read stays in the recent pauses once the read lands", async ($, on) => {
@@ -7171,7 +7233,7 @@ describe('the best setup: one sentence, in the pane and in the bare command, pri
     release()
     await clock.advance(1000)
     // This session's one pause is too few to price alone: the sentence prices the recent pauses, the four read and the one ended.
-    expect((await commandText($, '')).replace(/\n\s*/g, ' ')).toMatch(/over 5 recent pauses/)
+    expect((await commandText($, '')).replace(/\n\s*/g, ' ')).toMatch(/\(5 recent pauses/)
   })
 
   test('a key read as stale is not deleted once a pause a prompt ended while the read ran is written under it', async ($, on) => {
@@ -7200,7 +7262,7 @@ describe('the best setup: one sentence, in the pane and in the bare command, pri
     // A resume onto the same transcript reads every session's pauses again; the store never kept this one.
     await $.classic.SessionStart({ source: 'resume', transcript_path: PATH })
     await clock.advance(1000)
-    expect((await commandText($, '')).replace(/\n\s*/g, ' ')).toMatch(/over 5 recent pauses/)
+    expect((await commandText($, '')).replace(/\n\s*/g, ' ')).toMatch(/\(5 recent pauses/)
   })
 
   test("a pause held only in memory is kept when another session's pause read again starts at the same moment", async ($, on) => {
@@ -7214,7 +7276,7 @@ describe('the best setup: one sentence, in the pane and in the bare command, pri
     rec.store.set('pauses/other', [{ ...pauseOf(0, T0), pausedMs: 3 * MIN, contextTokens: 50000 }])
     await $.classic.SessionStart({ source: 'resume', transcript_path: PATH })
     await clock.advance(1000)
-    expect((await commandText($, '')).replace(/\n\s*/g, ' ')).toMatch(/over 6 recent pauses/)
+    expect((await commandText($, '')).replace(/\n\s*/g, ' ')).toMatch(/\(6 recent pauses/)
   })
 
   test("after a reload, a pause a prompt ends before any path is learned stays this session's when the learn's read is answered before its write lands", async ($, on) => {
@@ -7244,7 +7306,7 @@ describe('the best setup: one sentence, in the pane and in the bare command, pri
     await clock.advance(1000)
     // The pause was recorded under this transcript's key, after the learn's read.
     expect(rec.store.get('pauses/s1')).toHaveLength(5)
-    expect((await commandText($, '')).replace(/\n\s*/g, ' ')).toMatch(/over 5 pauses this session/)
+    expect((await commandText($, '')).replace(/\n\s*/g, ' ')).toMatch(/\(5 pauses this session/)
   })
 
   test("a pause kept before the first learn, under the transcript a reload's state names, is not carried onto another transcript learned first", async ($, on) => {
@@ -7296,7 +7358,7 @@ describe('the best setup: one sentence, in the pane and in the bare command, pri
     await clock.advance(1000)
     expect(rec.store.get('pauses/s1')).toBeUndefined()
     expect(rec.store.get('pauses/s3')).toHaveLength(5)
-    expect((await commandText($, '')).replace(/\n\s*/g, ' ')).toMatch(/over 5 pauses this session/)
+    expect((await commandText($, '')).replace(/\n\s*/g, ' ')).toMatch(/\(5 pauses this session/)
   })
 
   test("this session's pauses are bounded as its key is: a pause past the bound drops the oldest, and the sentence prices all that are kept", async ($, on) => {
@@ -7307,7 +7369,7 @@ describe('the best setup: one sentence, in the pane and in the bare command, pri
     await userPrompt($)
     await clock.advance(1000)
     expect(rec.store.get('pauses/s1')).toHaveLength(HISTORY_BOUND)
-    expect((await commandText($, '')).replace(/\n\s*/g, ' ')).toMatch(new RegExp(`over ${HISTORY_BOUND} pauses this session`))
+    expect((await commandText($, '')).replace(/\n\s*/g, ' ')).toMatch(new RegExp(`\\(${HISTORY_BOUND} pauses this session`))
   })
 
   test("a failed read of this session's key is made again by a later tick, and the sentence then prices this session's pauses", async ($, on) => {
@@ -7319,7 +7381,7 @@ describe('the best setup: one sentence, in the pane and in the bare command, pri
     expect((await commandText($, '')).replace(/\n\s*/g, ' ')).not.toMatch(/pauses this session/)
     getDenied.clear()
     await clock.advance(1000)
-    expect((await commandText($, '')).replace(/\n\s*/g, ' ')).toMatch(/over 5 pauses this session/)
+    expect((await commandText($, '')).replace(/\n\s*/g, ' ')).toMatch(/\(5 pauses this session/)
   })
 
   test("a read of this session's key that keeps failing is reported once, not on every tick that reads it again", async ($, on) => {
@@ -7335,7 +7397,7 @@ describe('the best setup: one sentence, in the pane and in the bare command, pri
     expect(refused()).toBe(first)
     getDenied.clear()
     await clock.advance(1000)
-    expect((await commandText($, '')).replace(/\n\s*/g, ' ')).toMatch(/over 5 pauses this session/)
+    expect((await commandText($, '')).replace(/\n\s*/g, ' ')).toMatch(/\(5 pauses this session/)
   })
 
   test("an earlier transcript's read that fails after another is learned leaves the held one's failing retries reported once", async ($, on) => {
@@ -7369,13 +7431,13 @@ describe('the best setup: one sentence, in the pane and in the bare command, pri
     await clock.advance(10 * MIN)
     await userPrompt($)
     await clock.advance(1000)
-    expect((await commandText($, '')).replace(/\n\s*/g, ' ')).toMatch(/over 5 pauses this session/)
+    expect((await commandText($, '')).replace(/\n\s*/g, ' ')).toMatch(/\(5 pauses this session/)
     await $.classic.SessionStart({ source: 'resume', transcript_path: S3 })
     await clock.advance(1000)
     await $.classic.SessionStart({ source: 'resume', transcript_path: PATH })
     await clock.advance(1000)
     // The key holds four pauses; the fifth, whose write was refused, is the one this load held for the transcript.
-    expect((await commandText($, '')).replace(/\n\s*/g, ' ')).toMatch(/over 5 pauses this session/)
+    expect((await commandText($, '')).replace(/\n\s*/g, ' ')).toMatch(/\(5 pauses this session/)
   })
 
   test("a refused pause stays this session's after sixteen other transcripts are learned, as nothing drops a pause but a reload", async ($, on) => {
@@ -7396,7 +7458,7 @@ describe('the best setup: one sentence, in the pane and in the bare command, pri
     }
     // Sixteen others learned after it: the refused pause is unsaved, so it is still this session's with the key's four.
     for (let n = 0; n < 16; n++) await visit(100 + n)
-    expect(await back()).toMatch(/over 5 pauses this session/)
+    expect(await back()).toMatch(/\(5 pauses this session/)
   })
 
   test("a transcript learned again after another, whose key's read then fails, is read again by a later tick, and until then prices none of it as this session's", async ($, on) => {
@@ -7406,7 +7468,7 @@ describe('the best setup: one sentence, in the pane and in the bare command, pri
     const clock = mock.clock(on, { now: T0 })
     await $.classic.SessionStart({ source: 'startup', transcript_path: PATH })
     await clock.advance(1000)
-    expect((await commandText($, '')).replace(/\n\s*/g, ' ')).toMatch(/over 5 pauses this session/)
+    expect((await commandText($, '')).replace(/\n\s*/g, ' ')).toMatch(/\(5 pauses this session/)
     await $.classic.SessionStart({ source: 'resume', transcript_path: '/home/test/.claude/projects/p/s3.jsonl' })
     await clock.advance(1000)
     // While the other transcript is held, the first one's key gains a pause this load did not end.
@@ -7418,7 +7480,7 @@ describe('the best setup: one sentence, in the pane and in the bare command, pri
     expect((await commandText($, '')).replace(/\n\s*/g, ' ')).not.toMatch(/pauses this session/)
     getDenied.clear()
     await clock.advance(1000)
-    expect((await commandText($, '')).replace(/\n\s*/g, ' ')).toMatch(/over 6 pauses this session/)
+    expect((await commandText($, '')).replace(/\n\s*/g, ' ')).toMatch(/\(6 pauses this session/)
   })
 
   test("a transcript learned again while its earlier read still runs is read once more, not again by each tick, when the earlier read fails", async ($, on) => {
@@ -7450,11 +7512,11 @@ describe('the best setup: one sentence, in the pane and in the bare command, pri
     await $.classic.SessionStart({ source: 'startup', transcript_path: PATH })
     await clock.advance(1000)
     const pane = await mountPane($)
-    expect(JSON.stringify(await pane.drawn())).toMatch(/over 15 recent pauses/)
+    expect(JSON.stringify(await pane.drawn())).toMatch(/\(15 recent pauses/)
     release()
     // No time passes, so no tick draws the footer state again: the read's return alone draws the pane again.
     await clock.advance(0)
-    expect(JSON.stringify(await pane.drawn())).toMatch(/over 5 pauses this session/)
+    expect(JSON.stringify(await pane.drawn())).toMatch(/\(5 pauses this session/)
     await pane.unmount()
   })
 
@@ -7469,7 +7531,7 @@ describe('the best setup: one sentence, in the pane and in the bare command, pri
     expect(JSON.stringify(await pane.drawn())).not.toMatch(/recent pauses/)
     release()
     await clock.advance(0)
-    expect(JSON.stringify(await pane.drawn())).toMatch(/over 10 recent pauses/)
+    expect(JSON.stringify(await pane.drawn())).toMatch(/\(10 recent pauses/)
     await pane.unmount()
   })
 })
@@ -7547,7 +7609,7 @@ describe("the rebuild figure under a cold mark: priced at the model that last wr
     await held($, on, stored())
     // 25551 tokens at Opus 5.5's $5/M 5-minute write rate.
     await surfaces($, '~$0.13')
-    expect(await toggle($, '')).not.toContain('Shown in tokens')
+    expect(await toggle($, '')).not.toContain('in tokens:')
   })
 
   test('a compaction held over a priced model: the same figure in dollars', async ($, on) => {
@@ -7595,7 +7657,7 @@ describe("the rebuild figure under a cold mark: priced at the model that last wr
     await toggle($, 'unit tokens')
     await clock.advance(1000)
     await surfaces($, '~26k tokens')
-    expect(await toggle($, '')).not.toContain('Shown in tokens')
+    expect(await toggle($, '')).not.toContain('in tokens:')
   })
 
   describe('in dollars, a stored view with no price gives the token figure and the bare answer says why', () => {
@@ -7608,7 +7670,7 @@ describe("the rebuild figure under a cold mark: priced at the model that last wr
       test(name, async ($, on) => {
         await held($, on, stored(o))
         await surfaces($, '~26k tokens')
-        expect(await toggle($, '')).toContain(`Advice Shown in tokens: ${why}.`)
+        expect(sectionLines(await commandText($, ''), 'Advice')).toContain(`in tokens: ${why}`)
       })
     }
   })
@@ -7620,7 +7682,8 @@ describe("the rebuild figure under a cold mark: priced at the model that last wr
     await clock.advance(1000)
     const answer = await toggle($, '')
     expect(answer).toContain('expired · rebuild ~26k tokens')
-    expect(answer.split('Shown in tokens:').length).toBe(2)
+    expect(answer.split('in tokens:').length).toBe(2)
+    expect(sectionLines(await commandText($, ''), 'Advice')?.filter((row) => row === 'in tokens: no price for claude-nonesuch-1')).toHaveLength(1)
   })
 
   test('after /clear over a known stored view with no price: no Cache section, no pane warmth line and no reason line', async ($, on) => {
@@ -7632,7 +7695,7 @@ describe("the rebuild figure under a cold mark: priced at the model that last wr
     await clock.advance(1000)
     const answer = await commandText($, '')
     expect(answer.startsWith('Keepalive')).toBe(true)
-    expect(answer).not.toContain('Shown in tokens')
+    expect(answer).not.toContain('in tokens:')
     const rows = await paneRows($)
     expect(rows.filter((row: string) => row === 'Cache' || /^\s*(warm|expired|reset)\b/.test(row))).toEqual([])
   })
@@ -7811,8 +7874,8 @@ describe('a model switch counts as a reset only on a cache cachier read as warm'
 })
 
 // The old pane's lines as each state must still draw them, held as literals since the builders that gave them are retired: the cache's warmth, the
-// advice sentence, the status line (its status words are not compared; its reason and colour sentence are the Keepalive section's rows), the refresh
-// figure and the interval, the break-even line and the session line.
+// advice (its block of rows, joined with a space as a section is read), the status line (its status words are not compared; its reason and colour
+// sentence are the Keepalive section's rows), the refresh figure and the interval, the break-even line and the session line.
 // The pie-colour row the old pane ended its off and paused status lines with.
 const COLOUR = 'pie: amber ≤¼ TTL left, red ≤⅒'
 type OldPane = { advice?: string; warmth?: string; status: string; explain?: string; figures?: string; breakEven?: string; session?: string }
@@ -7948,7 +8011,7 @@ const noStateRun = (args: string): Scenario['run'] => async ($, on) => {
 }
 const SCENARIOS: Scenario[] = [
   { name: 'keepalive off with an offer', old: { warmth: 'warm · 4:59 left · 5m TTL', status: `Keepalive is off. ${COLOUR}`, explain: '$0.004 (~19k cached)', figures: 'every 4:45', breakEven: 'pays off if back in 5:00–1:54:00' }, figure: 'literal', run: async ($, on) => (await startedWorld($, on), paneRows($)) },
-  { name: 'keepalive off with the best setup advised over ten recent pauses', old: { advice: 'A 5-minute cache with keepalive on would have saved $4.40 over 10 recent pauses: run /keepalive on 15 or click the pie on.', warmth: 'warm · 4:59 left · 5m TTL', status: `Keepalive is off. ${COLOUR}`, explain: '$0.004 (~19k cached)', figures: 'every 4:45', breakEven: 'pays off if back in 5:00–1:54:00' }, figure: 'literal', run: async ($, on) => {
+  { name: 'keepalive off with the best setup advised over ten recent pauses', old: { advice: 'setup: 5m/off best: 5m/on · would have saved $4.40 (10 recent pauses) do: /keepalive on 15 or click pie on', warmth: 'warm · 4:59 left · 5m TTL', status: `Keepalive is off. ${COLOUR}`, explain: '$0.004 (~19k cached)', figures: 'every 4:45', breakEven: 'pays off if back in 5:00–1:54:00' }, figure: 'literal', run: async ($, on) => {
     const pauses = Array.from({ length: 10 }, (_, i) => ({ startMs: 1000 + i, pausedMs: 10 * MIN, hour: 10, weekday: 2, ratio: 24, ttlMs: 300000, contextTokens: 100000, grownTokens: 1000000 }))
     await startedWorld($, on, { ...opusCached(), store: { 'pauses/old': pauses } })
     return paneRows($)

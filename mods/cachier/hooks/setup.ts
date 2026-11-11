@@ -1,8 +1,8 @@
 // The keepalive rule with one owner: the refresh interval, the TTL less the lead, which is none where the lead is not below the TTL and
-// the run sends nothing; the words that say why; the seconds those words are written in; a setup's type; and the words a setup is named
-// in. Pure; milliseconds in.
+// the run sends nothing; the words that say why; the seconds those words are written in; a setup's type; and the token a setup is named
+// by. Pure; milliseconds in.
 import type { TtlLabel } from '../types'
-import { TTL_MS, TTL_WORDS } from './prices'
+import { TTL_MS } from './prices'
 
 export type Setup = { ttl: TtlLabel; keepalive: boolean }
 
@@ -18,10 +18,10 @@ export const secsTerse = (ms: number) => `${ms / 1000}${SECONDS_SUFFIX}`
 // Why a run sends nothing: its lead is not below the TTL.
 export const notBelowTtl = (leadMs: number, ttlMs: number): string => `lead ${secsTerse(leadMs)} ≥ ${secsTerse(ttlMs)} TTL`
 
-// A setup in the words a sentence names it by: its TTL, and its keepalive state, which is paused, with the reason, where its run at this
-// lead sends nothing.
-export const setupPhrase = (setup: Setup, leadMs: number): string => {
+// A setup as a token the Advice rows name it by: its TTL and its keepalive state, `5m/on` or `1h/off`, and `5m/paused (<why>)` where its run
+// at this lead sends nothing.
+export const setupToken = (setup: Setup, leadMs: number): string => {
   const ttlMs = TTL_MS[setup.ttl]
-  const state = !setup.keepalive ? 'off' : refreshIntervalMs(leadMs, ttlMs) === null ? `paused, sending nothing (${notBelowTtl(leadMs, ttlMs)})` : 'on'
-  return `a ${TTL_WORDS[setup.ttl]} cache with keepalive ${state}`
+  const state = !setup.keepalive ? 'off' : refreshIntervalMs(leadMs, ttlMs) === null ? `paused (${notBelowTtl(leadMs, ttlMs)})` : 'on'
+  return `${setup.ttl}/${state}`
 }

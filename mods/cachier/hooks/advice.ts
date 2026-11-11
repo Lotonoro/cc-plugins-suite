@@ -1,9 +1,11 @@
-// The words of the Advice section's two sentences: the cheapest setup over the recorded pauses, of the four there are (TTL 5 m or 1 h,
-// keepalive on or off), and the TTL line, which prices the other TTL against this one over every priced pause. Both open by naming the setup
-// you are on, and their steps share the new-session clause. Pure: register.ts gathers the view, the prices, the lead, the cap, the pinned
-// count and the pauses, and this words them from the pricing learn.ts does.
+// The Advice section's two blocks of label rows: the cheapest setup over the recorded pauses, of the four there are (TTL 5 m or 1 h,
+// keepalive on or off), and the TTL block, which prices the other TTL against this one over every priced pause. Each opens with a `setup:`
+// row naming the setup you are on (the TTL block leaves it out where the best-setup block, which has it, is shown), and their steps share
+// the new-session clause. Pure: register.ts gathers the view, the prices, the lead, the cap, the pinned count and the pauses, and this
+// words them from the pricing learn.ts does. A block is its list of rows, each one section line, so the answer wraps each at 48 columns
+// and the pane draws each whole.
 //
-// Each setup of the best-setup sentence prices the same pauses, through the pricing the TTL line uses (learn.ts pausesCost). Every pause carries the growth writes its
+// Each setup of the best-setup block prices the same pauses, through the pricing the TTL block uses (learn.ts pausesCost). Every pause carries the growth writes its
 // turn made, at the TTL's write rate, and then the pause itself: with keepalive off a rewrite once the TTL has passed; with it on, the
 // pings its count sends and a rewrite if they could not hold the cache. An "on" count is the pinned one, else the count learned from the
 // whole history (learn.ts), else break-even. An "on" setup at the current TTL runs at this session's lead and pin; one at the other TTL
@@ -12,10 +14,10 @@
 import type { CacheView, TtlLabel, Unit } from '../types'
 import type { PauseRecord } from './history'
 import { pausesCost, priceable, ttlAdviceOf, ttlSwitchOf, type TtlRates } from './learn'
-import { dollars, pricedSpeed, ratesFor, TTL_MS, tierOf, type Money } from './prices'
+import { dollars, DOLLARS_ONLY, pricedSpeed, ratesFor, TTL_MS, tierOf, type Money } from './prices'
 import { printRequest } from './keepalive'
 import { SPAN_SPACE } from './sections'
-import { refreshIntervalMs, setupPhrase, type Setup } from './setup'
+import { refreshIntervalMs, setupToken, type Setup } from './setup'
 
 // Whether the pauses priced are this session's, or the newest recent ones across sessions.
 export type Source = 'session' | 'recent'
@@ -39,7 +41,7 @@ export type Near = { setup: Setup; savedUsd: number }
 // current setup's saving against its baseline is above zero. `even`: no change is worth making, and the baseline cost no more, so no figure
 // is stated; `baselineSavedUsd` is what the baseline would have saved over the current setup, zero or more, which says whether it cost
 // about the same or a little less. Every kind names the pauses it priced (`of`, `source`). `near` is the cheapest setup when it is cheaper
-// than the current one but under the threshold, else null: a sentence that names it never calls the current setup the cheapest. A change's
+// than the current one but under the threshold, else null: a block that names it never calls the current setup the cheapest. A change's
 // `startsOn` is whether keepalive is on where `to` would start: this session at the same TTL, the new session a switch starts (`fresh.on`)
 // at the other.
 export type Result =
@@ -65,9 +67,6 @@ const EPSILON_USD = 1e-9
 // A baseline cheaper by less than half a cent reads as about the same. The setups are compared in dollars in either unit, so the
 // threshold is the same in both.
 const HALF_CENT_USD = 0.005
-const TOKENS_NOTE = ' (the saving is in dollars; see /keepalive unit dollars)'
-// The same note inside a parenthesis already open, so two never stand back to back.
-const TOKENS_NOTE_INSIDE = '; the saving is in dollars, see /keepalive unit dollars'
 
 // The pauses a comparison prices, and where they came from; null with fewer than PRICED_MIN priceable pauses anywhere.
 export const pricedOf = (session: readonly PauseRecord[], history: readonly PauseRecord[]): { pauses: PauseRecord[]; source: Source } | null => {
@@ -83,7 +82,7 @@ export const pricedOf = (session: readonly PauseRecord[], history: readonly Paus
 const startOf = (ttl: TtlLabel, inputs: Inputs): { on: boolean } & Run =>
   ttl === inputs.current.ttl ? { on: inputs.current.keepalive, leadMs: inputs.leadMs, pinned: inputs.pinned } : inputs.fresh
 
-// What the pauses cost under a setup, in dollars, as the TTL line prices them (pausesCost); null where that setup cannot be priced.
+// What the pauses cost under a setup, in dollars, as the TTL block prices them (pausesCost); null where that setup cannot be priced.
 const costOf = (pauses: readonly PauseRecord[], setup: Setup, inputs: Inputs): number | null => {
   const run = startOf(setup.ttl, inputs)
   return pausesCost(pauses, inputs.history, setup.ttl, inputs.rates, run.leadMs, inputs.cap, { on: setup.keepalive, pinned: run.pinned })
@@ -130,76 +129,80 @@ const pausesOf = (of: number, source: Source): string => {
   return source === 'session' ? `${of} ${noun} this session` : `${of} recent ${noun}`
 }
 
-// A target, near or baseline setup is never an "on" that sends nothing: bestSetupOf prices such a setup as its "off" twin and a tie puts
-// that first. So it is named at a lead no TTL reaches, and reads on or off as it is priced. Only the current setup is named at this
-// session's lead, which can pause it.
-const NO_PAUSE_LEAD_MS = 0
-const otherSetup = (setup: Setup): string => setupPhrase(setup, NO_PAUSE_LEAD_MS)
-const capital = (text: string): string => text.charAt(0).toUpperCase() + text.slice(1)
+// A command or a setup token is one span: the wrap keeps it whole on a row, and the answer and the pane print each space in it as a plain one.
+const spanOf = (text: string): string => text.split(' ').join(SPAN_SPACE)
 
-// The opening both Advice sentences share: the setup you are on, at this session's lead.
-const openingOf = (current: Setup, leadMs: number): string => `You're on ${setupPhrase(current, leadMs)}`
+// A target, near or baseline setup is never an "on" that sends nothing: bestSetupOf prices such a setup as its "off" twin and a tie puts
+// that first. So it is named at a lead no TTL reaches, and reads on or off as it is priced. A setup at the other TTL runs as a new session
+// starts it, so this session's lead, which may be above its TTL, says nothing of it. Only the current setup is named at this session's lead,
+// which can pause it.
+const NO_PAUSE_LEAD_MS = 0
+const otherSetup = (setup: Setup): string => spanOf(setupToken(setup, NO_PAUSE_LEAD_MS))
+
+// The row that opens a block: the setup you are on, at this session's lead, and `(cheapest)` where nothing would have cost less.
+const setupRow = (current: Setup, leadMs: number, cheapest = false): string => `setup: ${spanOf(setupToken(current, leadMs))}${cheapest ? ' (cheapest)' : ''}`
 
 // What a switch of TTL leaves new sessions on: the keepalive state they start with, and the option that decides it.
-export const newSessionClause = (startsOn: boolean): string => `for new sessions, which start with keepalive ${startsOn ? 'on' : 'off'} (keepalive_default)`
+export const newSessionClause = (startsOn: boolean): string => `new sessions start ${startsOn ? 'on' : 'off'}: keepalive_default`
 
-// The opening that names the cheapest setup that is not worth changing to, and its saving in the unit shown: over `span` when no tail names
-// the pauses. `noted` puts the tokens note inside its parenthesis, where no later clause carries one.
-const nearOpening = (near: Near, unit: Unit, span?: string, noted = false): string => {
-  const amount = unit === 'dollars' ? dollars(near.savedUsd) : 'money'
-  const over = span === undefined ? '' : ` over ${span}`
-  const note = noted && unit === 'tokens' ? TOKENS_NOTE_INSIDE : ''
-  return `No other setup would have saved enough to change (${otherSetup(near.setup)} would have saved ${amount}${over}${note})`
+// A saving in the unit shown. In tokens a saving is a sum of prices, so it is named as money and the first row to say so points to the dollar unit.
+const amountOf = (usd: number, unit: Unit): string => (unit === 'dollars' ? dollars(usd) : 'money')
+
+// The parenthesis a row's figure ends in: the pauses it prices where it names them, and the pointer to the dollar unit where it is the first row
+// to state money in tokens.
+const parenOf = (scope: string | null, pointed: boolean): string => {
+  const parts = [...(scope === null ? [] : [scope]), ...(pointed ? [DOLLARS_ONLY] : [])]
+  return parts.length === 0 ? '' : ` (${parts.join('; ')})`
 }
 
-// The one sentence on a result, which opens by naming the setup you are on, at this session's lead `leadMs`. In tokens a saving is a sum of
-// prices, so it is named as money and the sentence points to the dollar unit.
-export const adviceLine = (result: Result, unit: Unit, leadMs: number): string => {
-  const note = unit === 'tokens' ? TOKENS_NOTE : ''
-  const current = result.kind === 'change' ? result.from : result.setup
-  const opening = openingOf(current, leadMs)
+// The row that names the cheapest setup that is not worth changing to, and its saving in the unit shown. `scope` names the pauses where no
+// row after it does.
+const nextBestRow = (near: Near, unit: Unit, scope: string | null, pointed: boolean): string =>
+  `next best: ${otherSetup(near.setup)} · would have saved ${amountOf(near.savedUsd, unit)}${parenOf(scope, pointed)}, too little to change`
+
+// How to make a change, the command first and the click after it. At the same TTL the click is made in this session, which a keepalive change
+// always leaves other than the change wants. At the other TTL a new session starts, and its start does what the target wants when it starts
+// keepalive as the target has it, or when the target has keepalive off and the new session's run sends nothing at the target TTL.
+const stepOf = ({ from, to, startsOn, run }: Extract<Result, { kind: 'change' }>): string => {
+  const onOrOff = to.keepalive ? 'on' : 'off'
+  const click = `${spanOf(printRequest(to.keepalive ? { kind: 'on', leadMs: run.leadMs, count: run.pinned } : { kind: 'off' }))} or click pie ${onOrOff}`
+  if (from.ttl === to.ttl) return click
+  const set = ttlSwitchOf(to.ttl)
+  const clause = newSessionClause(startsOn)
+  if (startsOn === to.keepalive) return `${set} (${clause})`
+  if (startsOn && refreshIntervalMs(run.leadMs, TTL_MS[to.ttl]) === null) return `${set} (${clause}, so run ${spanOf(setupToken({ ttl: to.ttl, keepalive: true }, run.leadMs))})`
+  return `${set} (${clause}); then ${spanOf(printRequest({ kind: 'default', mode: onOrOff }))} before the new session, or in it ${click}`
+}
+
+// The best-setup block on a result: its rows, which open with the setup you are on, at this session's lead `leadMs`. In tokens a saving is
+// named as money and the first row that states it points to the dollar unit, once.
+export const adviceLine = (result: Result, unit: Unit, leadMs: number): string[] => {
+  const tokens = unit === 'tokens'
   if (result.kind === 'even') {
     const { setup, near, baselineSavedUsd, of, source } = result
     const baseline = baselineOf(setup)
     const span = pausesOf(of, source)
-    // The opening already names the baseline and its saving: a tail would only repeat it.
-    if (near !== null && setupKey(near.setup) === setupKey(baseline)) return `${opening}. ${nearOpening(near, unit, span, true)}.`
+    // The next-best row already names the baseline and its saving: a tail would only repeat it.
+    if (near !== null && setupKey(near.setup) === setupKey(baseline)) return [setupRow(setup, leadMs), nextBestRow(near, unit, span, tokens)]
     const tail =
       baselineSavedUsd < HALF_CENT_USD
-        ? `${otherSetup(baseline)} would have cost about the same over ${span}`
-        : `${otherSetup(baseline)} would have cost a little less over ${span}, too little to change`
-    // The opening's figure is the one the note is on: the tail states none.
-    return near === null ? `${opening}, the cheapest setup; ${tail}.` : `${opening}. ${nearOpening(near, unit, undefined, true)}: ${tail}.`
+        ? `${otherSetup(baseline)} ≈ same cost (${span})`
+        : `${otherSetup(baseline)} a little cheaper (${span}), too little to change`
+    // The next-best row, where there is one, states the only money: the tail states none.
+    return near === null ? [setupRow(setup, leadMs, true), tail] : [setupRow(setup, leadMs), nextBestRow(near, unit, null, tokens), tail]
   }
   if (result.kind === 'best') {
     const { setup, savedUsd, of, source, near } = result
     const shown = dollars(savedUsd)
-    // "<$0.001" already says the saving is small: "about" before it would blur the bound.
-    const amount = unit === 'dollars' ? (shown.startsWith('<') ? shown : `about ${shown}`) : 'money'
-    const against = otherSetup(baselineOf(setup))
-    const span = pausesOf(of, source)
-    if (near === null) return `${opening}, the cheapest setup: it saves ${amount} over ${span} against ${against}${note}.`
-    return `${opening}. ${nearOpening(near, unit)}: your setup saves ${amount} over ${span} against ${against}${note}.`
+    // "<$0.001" already says the saving is small: "~" before it would blur the bound.
+    const amount = tokens ? 'money' : shown.startsWith('<') ? shown : `~${shown}`
+    const saves = `saves ${amount} vs ${otherSetup(baselineOf(setup))}${parenOf(pausesOf(of, source), tokens)}`
+    // The saves row states the money first, so the next-best row after it carries no pointer.
+    return near === null ? [setupRow(setup, leadMs, true), saves] : [setupRow(setup, leadMs), saves, nextBestRow(near, unit, null, false)]
   }
-  const { from, to, savedUsd, of, source, startsOn, run } = result
-  const amount = unit === 'dollars' ? dollars(savedUsd) : 'money'
-  // A command is one span the wrap keeps on a row, and the command comes first, so no punctuation follows it.
-  const spanOf = (command: string): string => command.split(' ').join(SPAN_SPACE)
-  const onOrOff = to.keepalive ? 'on' : 'off'
-  const click = `run ${spanOf(printRequest(to.keepalive ? { kind: 'on', leadMs: run.leadMs, count: run.pinned } : { kind: 'off' }))} or click the pie ${onOrOff}`
-  // At the same TTL the click is made in this session, which a keepalive change always leaves other than the change wants.
-  // At the other TTL a new session starts, and its start does what the target wants when it starts keepalive as the target has it, or
-  // when the target has keepalive off and the new session's run sends nothing at the target TTL.
-  const clause = newSessionClause(startsOn)
-  const how =
-    from.ttl === to.ttl
-      ? click
-      : startsOn === to.keepalive
-        ? `${ttlSwitchOf(to.ttl)} ${clause}`
-        : startsOn && refreshIntervalMs(run.leadMs, TTL_MS[to.ttl]) === null
-          ? `${ttlSwitchOf(to.ttl)} ${clause} and so run ${setupPhrase({ ttl: to.ttl, keepalive: true }, run.leadMs)}`
-          : `${ttlSwitchOf(to.ttl)} ${clause}; either run ${spanOf(printRequest({ kind: 'default', mode: onOrOff }))} before starting the new session, or in the new session ${click}`
-  return `${opening}. ${capital(otherSetup(to))} would have saved ${amount} over ${pausesOf(of, source)}${note}: ${how}.`
+  const { from, to, savedUsd, of, source } = result
+  const best = `best: ${otherSetup(to)} · would have saved ${amountOf(savedUsd, unit)}${parenOf(pausesOf(of, source), tokens)}`
+  return [setupRow(from, leadMs), best, `do: ${stepOf(result)}`]
 }
 
 // The rates a view's cached context pays: the model's, at the tier its prompt is priced at; null where its spends have no price
@@ -209,26 +212,30 @@ export const ratesOfView = (view: Extract<CacheView, { kind: 'known' }>, money: 
   return base === null ? null : tierOf(base, view.promptTokens)
 }
 
-// The sentence for these inputs, or '' when there is no result to give.
-export const adviceOf = (inputs: Inputs, unit: Unit): string => {
+// The best-setup block for these inputs, or no rows when there is no result to give.
+export const adviceOf = (inputs: Inputs, unit: Unit): string[] => {
   const result = bestSetupOf(inputs)
-  return result === null ? '' : adviceLine(result, unit, inputs.leadMs)
+  return result === null ? [] : adviceLine(result, unit, inputs.leadMs)
 }
 
-// The TTL line on a TTL that would have cost less (ttlAdviceOf), with the setup you are on and the setup it is priced against: the other TTL
-// as a new session starts it, so at the new session's lead, where it can be paused. It names its scope, every priced pause across sessions,
-// so it does not read as contradicting the best-setup sentence, which prices this session's pauses or the recent ones. The figure is in
+// The TTL block on a TTL that would have cost less (ttlAdviceOf): the setup you are on, unless `bestShown` says the best-setup block has it, then the
+// other TTL as a new session starts it, so at the new session's lead, where it can be paused. It names its scope, every priced pause across
+// sessions, so it does not read as contradicting the best-setup block, which prices this session's pauses or the recent ones. The figure is in
 // dollars in either unit.
-export const ttlLine = (a: { better: TtlLabel; savedUsd: number; of: number }, inputs: Inputs): string => {
+export const ttlLine = (a: { better: TtlLabel; savedUsd: number; of: number }, inputs: Inputs, bestShown = false): string[] => {
   const { fresh } = inputs
-  const target = setupPhrase({ ttl: a.better, keepalive: fresh.on }, fresh.leadMs)
-  const pauses = `${a.of} priced ${a.of === 1 ? 'pause' : 'pauses'}`
-  return `${openingOf(inputs.current, inputs.leadMs)}. ${capital(target)} would have saved ${dollars(a.savedUsd)} over ${pauses} across sessions: ${ttlSwitchOf(a.better)} ${newSessionClause(fresh.on)}.`
+  const target = spanOf(setupToken({ ttl: a.better, keepalive: fresh.on }, fresh.leadMs))
+  const pauses = `${a.of} priced ${a.of === 1 ? 'pause' : 'pauses'}, all sessions`
+  return [
+    ...(bestShown ? [] : [setupRow(inputs.current, inputs.leadMs)]),
+    `other TTL: ${target} · would have saved ${dollars(a.savedUsd)} (${pauses})`,
+    `do: ${ttlSwitchOf(a.better)} (${newSessionClause(fresh.on)})`,
+  ]
 }
 
-// The TTL line for these inputs, or '' while the current TTL would not have cost more.
-export const ttlLineOf = (inputs: Inputs): string => {
+// The TTL block for these inputs, or no rows while the current TTL would not have cost more.
+export const ttlLineOf = (inputs: Inputs, bestShown = false): string[] => {
   const { history, rates, leadMs, cap, current, pinned, fresh } = inputs
   const a = ttlAdviceOf(history, rates, leadMs, cap, current.ttl, { on: current.keepalive, pinned }, fresh)
-  return a === null ? '' : ttlLine(a, inputs)
+  return a === null ? [] : ttlLine(a, inputs, bestShown)
 }

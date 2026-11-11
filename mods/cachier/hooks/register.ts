@@ -61,7 +61,7 @@ import { answerOf, paneLayoutOf, type PaneRow, type PaneSize, type Setting, type
 import { stampLabel, withStamp } from './stamp'
 import { foldStatsEvents, INITIAL_STATS, pendingFor, rundownSections, sessionLineOf, type MissEvent, type LongPauseEvent } from './stats'
 import { lookupRows, readCache, type History, type Host, type Row } from './transcript'
-import { NO_KINDS, spendOf, TTL_WORDS, unitOf, uponOf, writeReadRatio, type Money } from './prices'
+import { NO_KINDS, spendOf, unitOf, uponOf, writeReadRatio, type Money } from './prices'
 import { priceCheck, priceList, priceReady, priceSink, priceSync, report, type PriceEvent } from './pricesync'
 
 type Dollar = EngineInterface
@@ -152,10 +152,10 @@ type Memo<T> = { pauses: readonly (readonly unknown[])[]; key: string; value: T 
 const memoised = <T>(memo: Memo<T> | null, pauses: readonly (readonly unknown[])[], key: string, make: () => T): Memo<T> =>
   memo !== null && memo.key === key && memo.pauses.every((p, i) => p === pauses[i]) ? memo : { pauses, key, value: make() }
 let learnedMemo: Memo<Learned | null> | null = null
-// The TTL line, memoised on the history it prices and the inputs it words.
-let ttlLineMemo: Memo<string> | null = null
-// The best-setup sentence, memoised on the pauses and inputs it prices.
-let sentenceMemo: Memo<string> | null = null
+// The TTL block's rows, memoised on the history it prices and the inputs it words, and on whether the best-setup block is shown.
+let ttlLineMemo: Memo<string[]> | null = null
+// The best-setup block's rows, memoised on the pauses and inputs it prices.
+let sentenceMemo: Memo<string[]> | null = null
 // This load's reset of the state an earlier load left, from session.start; unset until it starts.
 let restoring: Promise<string | null> | undefined
 const stampTimes = new Map<string, number | null>()
@@ -893,7 +893,7 @@ const snapshotNow = async ($: Dollar): Promise<Snapshot> => {
   const money = moneyFrom(unitHeld, view)
   const tally = (await $.state.get(TALLY)).value ?? INITIAL_TALLY
   const stats = (await $.state.get(STATS)).value ?? INITIAL_STATS
-  // The rebuild is priced once here: the figure and the 'Shown in tokens' reason both come from this spend.
+  // The rebuild is priced once here: the figure and the 'in tokens' reason both come from this spend.
   const rebuildPriced = raw.kind === 'known' ? rebuildSpendOf(raw, money) : null
   const rebuild = rebuildPriced === null ? '' : uponOf(rebuildPriced, money.unit)
   const reading = readingOf(raw, live, cold, nowMs, rebuild)
@@ -904,6 +904,8 @@ const snapshotNow = async ($: Dollar): Promise<Snapshot> => {
   const judged = (await $.state.get(JUDGED)).value ?? NO_JUDGED
   const run = runOf(held, defaultRun)
   const rundown = rundownSections(tally, stats, money)
+  // The best-setup block is worked out first: the TTL block leaves out the setup row it has when it is shown.
+  const best = sentenceNow(held, view, money)
   const balance = sessionBalanceLine(judged, money.unit)
   const refreshes = sessionLineOf(tally, money)
   const kept = keptOf(held, view, money, nowMs)
@@ -930,7 +932,7 @@ const snapshotNow = async ($: Dollar): Promise<Snapshot> => {
     // This session repeats the Keepalive section's refreshes line and balance, and the Advice section's misses line, word for word. Before the
     // first refresh the refreshes line is the fallback here, this section's own.
     session: [refreshes === '' ? 'session: no refreshes yet' : refreshes, balance, ...rundown.advice].filter((line) => line !== ''),
-    advice: [sentenceNow(held, view, money), ttlLineNow(held, view, money), ...rundown.advice, ...unitNotes(money, view, rebuildSpend, tally, stats)].filter((line) => line !== ''),
+    advice: [...best, ...ttlLineNow(held, view, money, best.length > 0), ...rundown.advice, ...unitNotes(money, view, rebuildSpend, tally, stats)],
     settings: settingsOf(raw, run, kept, tally, view, money, nowMs, unitPressedNow(unitHeld)),
   }
 }
@@ -986,12 +988,12 @@ const unitNotes = (money: Money, view: CacheView, rebuild: Spend | null, tally: 
     const ratio = writeReadRatio(money.list, money.model, money.ttl)
     return ratio === null || money.model === null
       ? []
-      : [`A ${TTL_WORDS[money.ttl]} cache write costs about ${Math.round(ratio)} cache reads on ${money.model}.`]
+      : [`${money.ttl} write ≈ ${Math.round(ratio)} reads (${money.model})`]
   }
   const ping = view.kind === 'known' ? spendOf(money.list, view.model, view.speed, { ...NO_KINDS, read: view.promptTokens }) : null
   const spends: (Spend | null)[] = [ping, rebuild, tally.session.spend, stats.misses.lapse.spend, stats.misses.cold.spend, stats.misses.unexplained.spend, stats.saved.spend, stats.saved.avoided, stats.ranOut.spend, stats.notNeeded.spend]
   const whys = new Set(spends.flatMap((sp) => (sp !== null && sp.usd === null && sp.why !== null ? [sp.why] : [])))
-  return [...whys].map((why) => `Shown in tokens: ${why}.`)
+  return [...whys].map((why) => `in tokens: ${why}`)
 }
 
 // One draw at a time: a unit switch's draw that comes while the tick's runs is skipped, and the next tick draws the figures, so two
@@ -1065,7 +1067,7 @@ const sessionLoad = async ($: Dollar, path: string) => {
 }
 
 // A tick reads this session's pauses again while the held path's read has not landed and none is running, so a failed read does not
-// leave the sentence on recent pauses for the rest of the session.
+// leave the best-setup block on recent pauses for the rest of the session.
 const sessionRetry = ($: Dollar) => {
   if (heldPath !== undefined && stored === undefined && sessionReading?.path !== heldPath) inBackground($, sessionLoad($, heldPath))
 }
@@ -1218,7 +1220,7 @@ const countLines = (k: KeepaliveState, view: CacheView, money: Money, nowMs: num
 // lead and pin, since it has no lastUsed.
 const newSessionRun = (d: Defaults) => ({ on: defaultMode === 'on', leadMs: d.leadMs, pinned: d.count })
 
-// The inputs both Advice sentences are priced and worded from, or null where neither gives anything: the view is not known, its model has
+// The inputs both Advice blocks are priced and worded from, or null where neither gives anything: the view is not known, its model has
 // no rates, or the options' defaults are not loaded yet. The "on" setups at this TTL run as keepalive does: the running run, or the one a
 // click on the pie would start. At the other TTL they run as the new session a switch needs would (newSessionRun), with no lastUsed to
 // start from.
@@ -1239,23 +1241,24 @@ const adviceInputs = (k: KeepaliveState, view: CacheView, money: Money): Inputs 
   }
 }
 
-// The Advice section's TTL line, once the recorded pauses say the other TTL would have cost less at today's prices: '' with no line. The
+// The Advice section's TTL block, once the recorded pauses say the other TTL would have cost less at today's prices: no rows otherwise. The
 // current TTL is priced in the mode keepalive is in, at the running run; the other as the new session a switch needs would run it. It prices
 // no session pauses, so it is memoised on the history alone and the inputs it words; with keepalive off a lead and pin that change neither
-// price nor words still rebuild it, which is harmless.
-const ttlLineNow = (k: KeepaliveState, view: CacheView, money: Money): string => {
+// price nor words still rebuild it, which is harmless. `bestShown` is whether the best-setup block is shown, which has the setup row the
+// TTL block then leaves out, so a block that appears or goes rebuilds this one.
+const ttlLineNow = (k: KeepaliveState, view: CacheView, money: Money, bestShown: boolean): string[] => {
   const inputs = adviceInputs(k, view, money)
-  if (inputs === null) return ''
-  const key = [JSON.stringify(inputs.rates), inputs.leadMs, inputs.cap, JSON.stringify(inputs.current), inputs.pinned, JSON.stringify(inputs.fresh)].join('|')
-  ttlLineMemo = memoised(ttlLineMemo, [history], key, () => ttlLineOf(inputs))
+  if (inputs === null) return []
+  const key = [JSON.stringify(inputs.rates), inputs.leadMs, inputs.cap, JSON.stringify(inputs.current), inputs.pinned, JSON.stringify(inputs.fresh), bestShown].join('|')
+  ttlLineMemo = memoised(ttlLineMemo, [history], key, () => ttlLineOf(inputs, bestShown))
   return ttlLineMemo.value
 }
 
-// The one sentence on the best setup, as the details pane and bare /keepalive show it: '' with no result. Pricing the history is the costly
-// part, so the sentence is memoised on the pauses and the inputs it prices, and every surface asks the same memo.
-const sentenceNow = (k: KeepaliveState, view: CacheView, money: Money): string => {
+// The best-setup block, as the details pane and bare /keepalive show it: no rows with no result. Pricing the history is the costly
+// part, so the block is memoised on the pauses and the inputs it prices, and every surface asks the same memo.
+const sentenceNow = (k: KeepaliveState, view: CacheView, money: Money): string[] => {
   const inputs = adviceInputs(k, view, money)
-  if (inputs === null) return ''
+  if (inputs === null) return []
   const key = [JSON.stringify(inputs.rates), inputs.leadMs, inputs.cap, JSON.stringify(inputs.current), inputs.pinned, JSON.stringify(inputs.fresh), money.unit].join('|')
   sentenceMemo = memoised(sentenceMemo, [inputs.session, history], key, () => adviceOf(inputs, money.unit))
   return sentenceMemo.value
