@@ -203,3 +203,7 @@ export const stopMissed = (refused: boolean, listed: readonly AgentInfo[] | unde
   const status = listed?.find(a => a.id === id)?.status
   return status !== undefined && NOT_ENDED.includes(status) ? `the list still shows it ${status}` : undefined
 }
+
+// The ids an idle sweep stops: the listed reviewers that are idle, that the state knows and does not store. The list shows every reviewer of the process whatever conversation it served, and no field of an entry tells conversations apart (the team follows the process's first session, not `$.session.id()`; measured on engine 2.1.311), so an entry counts only when its id is one the state knows, and the state keeps those across a /clear. A reviewer whose spawn is in flight has no stored id yet, so nothing is swept while one is.
+export const sweepable = (c: Conversation, listed: readonly AgentInfo[]): string[] =>
+  c.spawnsInFlight.length > 0 ? [] : listed.filter(a => a.status === 'idle' && standingOf(c, a.id) === 'former').map(a => a.id)

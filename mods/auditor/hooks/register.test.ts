@@ -41,6 +41,10 @@ type Opts = {
   reviewerIds?: string[]
   agents?: { id: string; name?: string; type?: string; status?: string; description?: string; teammateId?: string; spawnedBy?: string }[]
   listFails?: boolean
+  // Every agent list call rejects with this message.
+  listFailsWith?: string
+  // The first agent list call calls reached, then waits for until before the engine answers it.
+  firstListHold?: { until: Promise<void>; reached?: () => void }
   // What a tool answers, by name: `isError` fails the call and `deny` refuses it, and the record counts either as a failed call.
   tools?: Record<string, { text: string; isError?: boolean; deny?: string }>
   // A call that fails whatever its tool's answer says, picked by its input.
@@ -74,8 +78,9 @@ type Opts = {
   hold?: { path: string; until: Promise<void>; reached?: () => void }
   // Each $.session.send calls reached, then waits for `until` before the engine answers it.
   sendHold?: { until: Promise<void>; reached?: () => void }
-  // Each $.tool.call of this tool rejects.
+  // Each $.tool.call of this tool rejects, with this message when given.
   toolThrows?: string
+  toolThrowsMessage?: string
   // Each TaskStop call is refused with this reason, or only the first `stopRefusals` of them when that is given.
   stopRefuses?: string
   stopRefusals?: number
@@ -177,11 +182,18 @@ const engine = (on: any, opts: Opts = {}) => {
     return { value: seen.session }
   })
   let listHeld = false
+  let firstListHeld = false
   on('agent.list', () => {
     seen.listCalls++
+    if (opts.listFailsWith !== undefined) throw new Error(opts.listFailsWith)
     if (seen.listCalls === opts.listFailsAt) throw new Error('agent list unavailable')
     if (opts.listFails === true || (opts.listFailsAfterStop === true && seen.stops.length > 0)) throw new Error('agent list unavailable')
     const answer = { value: opts.agentsAfterStops?.(seen.stops.length) ?? opts.agents ?? [] }
+    if (opts.firstListHold !== undefined && !firstListHeld) {
+      firstListHeld = true
+      opts.firstListHold.reached?.()
+      return opts.firstListHold.until.then(() => answer)
+    }
     if (opts.listHold === undefined || listHeld || seen.stops.length === 0) return answer
     listHeld = true
     opts.listHold.reached?.()
@@ -220,7 +232,7 @@ const engine = (on: any, opts: Opts = {}) => {
     }
     if (e.tool === 'TaskStop' && opts.stopRefuses !== undefined && seen.stops.length <= (opts.stopRefusals ?? Infinity)) return { deny: opts.stopRefuses }
     if (e.tool === 'TaskStop' && opts.stopRefusalReasons?.[seen.stops.length - 1] !== undefined) return { deny: opts.stopRefusalReasons[seen.stops.length - 1] }
-    if (e.tool === opts.toolThrows) return Promise.reject(new Error('tool unavailable'))
+    if (e.tool === opts.toolThrows) return Promise.reject(new Error(opts.toolThrowsMessage ?? 'tool unavailable'))
     const answer = tools[e.tool] ?? { text: `ran ${e.tool}` }
     return answer.deny === undefined ? { ref: 1, result: null, text: answer.text, isError: answer.isError || opts.failsCall?.(e) === true } : { deny: answer.deny }
   })
@@ -8026,5 +8038,189 @@ describe('an idle reviewer', () => {
       expect(seen.conversation.review).toMatchObject({ number: 2, briefTo: 'spawn: reaped idle' })
       expect(stopped(seen)).toEqual(['ag1'])
     })
+  })
+})
+
+describe('an idle reviewer the state does not store is swept', () => {
+  const NO_SESSION_LIST = 'auditor: $.agent.list is not available in this mode: no session is bound in this process'
+  const stopped = (seen: any): string[] => seen.stops.map((s: any) => s.task_id)
+  const sweeps = (seen: any): string[] => debugLines(seen, 'sweeping idle reviewer')
+  const failures = (seen: any): string[] => debugLines(seen, 'idle reviewer sweep failed')
+  // A listed reviewer of the auditor's, idle unless said otherwise.
+  const entry = (id: string, over: Record<string, unknown> = {}) => ({ id, name: 'auditor-reviewer', type: 'auditor:reviewer', status: 'idle', spawnedBy: 'auditor', ...over })
+  // The list as it stands once `old1` has been stopped.
+  const withoutOld = (...others: ReturnType<typeof entry>[]) => (stops: number) => (stops >= 1 ? others : [entry('old1'), ...others])
+  const started = ($: any) => $.session.start({ cwd: '/', surface: null, isInteractive: true })
+  const SEED = { reviewerIds: ['old1'] }
+
+  test('a session start stops an idle reviewer the state knows and does not store, once, by its id, and logs one line for it', ON, async ($, on) => {
+    const seen = engine(on, { stateSeed: SEED, agentsAfterStops: withoutOld() })
+    await started($)
+    await drained()
+    expect(stopped(seen)).toEqual(['old1'])
+    expect(sweeps(seen)).toEqual(['auditor: sweeping idle reviewer old1, which the state does not store'])
+  })
+
+  test('a complete settle stops it, and not the stored reviewer', ON, async ($, on) => {
+    const seen = engine(on, { stateSeed: SEED, agentsAfterStops: withoutOld(entry('ag1')) })
+    await $.prompt.submit(COMPOSER('first'))
+    await $.classic.Stop(stop)
+    await turnEnded($, 'ag1', 'Nothing to note.')
+    await drained()
+    expect(seen.conversation.reviewer).toMatchObject({ id: 'ag1' })
+    expect(stopped(seen)).toEqual(['old1'])
+  })
+
+  test('the settle of an aborted reviewer turn stops it', ON, async ($, on) => {
+    const seen = engine(on, { stateSeed: SEED, agentsAfterStops: withoutOld(entry('ag1')) })
+    await $.prompt.submit(COMPOSER('first'))
+    await $.classic.Stop(stop)
+    await $.turn.complete({ ...TURN_END('ag1', ''), isAborted: true, reason: 'aborted' })
+    await drained()
+    expect(seen.conversation.reviewer).toMatchObject({ id: 'ag1' })
+    expect(stopped(seen)).toEqual(['old1'])
+  })
+
+  test('a give-back stops it', ON, async ($, on) => {
+    const seen = engine(on, { stateSeed: SEED, sendFails: 'ag1', refusal: 'Teammate "auditor-reviewer" was not messaged: the session was stopped and nobody has sent input since.', agents: [entry('old1'), entry('ag1')] })
+    await workerTurn($)
+    await $.turn.complete(TURN_END('ag1', 'Nothing to note.'))
+    await drained()
+    expect(stopped(seen)).toEqual(['old1', 'old1'])
+    await $.prompt.submit(COMPOSER('more'))
+    await step($, 'working')
+    await $.classic.Stop(stop)
+    await drained()
+    expect(logOf(seen, LOG_2)).toMatchObject({ status: 'incomplete', reason: 'given back: the session was stopped' })
+    expect(stopped(seen)).toEqual(['old1', 'old1', 'old1', 'old1'])
+  })
+
+  test('a swept id the list still shows idle afterwards is stopped a second time, and not a third', ON, async ($, on) => {
+    const seen = engine(on, { stateSeed: SEED, agents: [entry('old1')] })
+    await started($)
+    await drained()
+    expect(stopped(seen)).toEqual(['old1', 'old1'])
+    expect(debugLines(seen, 'left running')).toEqual(['auditor: reviewer old1 left running: two stops did not end it'])
+  })
+
+  test('a reviewer the rotation stops is not stopped a second time by the settle\'s own sweep', ON, async ($, on) => {
+    const seen = engine(on, { reviewerIds: ['ag1', 'ag2'], agents: [entry('ag1')] })
+    await workerTurn($)
+    STEP_USAGE = { ...USAGE, input_tokens: 80_001 }
+    try {
+      await step($, '', 'ag1')
+    } finally {
+      STEP_USAGE = null
+    }
+    await reviewed($, HANDBACK('Nothing to note.'), 'ag1')
+    await drained()
+    expect(sweeps(seen)).toEqual([])
+    expect(stopped(seen)).toEqual(['ag1', 'ag1'])
+  })
+
+  test('the stored reviewer, a running or waiting reviewer, the worker\'s own agent under a reviewer\'s name and an agent of another conversation are not stopped', ON, async ($, on) => {
+    const seen = engine(on, {
+      stateSeed: { reviewerIds: ['old1', 'old2', 'old3', 'ag1'], reviewer: { id: 'ag1', model: 'm' } },
+      agents: [entry('ag1'), entry('old2', { status: 'running' }), entry('old3', { status: 'waiting' }), entry('own1', { spawnedBy: undefined }), entry('other1', { teammateId: 'auditor-reviewer@session-other' })],
+    })
+    await started($)
+    await drained()
+    expect(stopped(seen)).toEqual([])
+    expect(sweeps(seen)).toEqual([])
+  })
+
+  test('the listed ids stay unswept while a spawn is in flight', ON, async ($, on) => {
+    const held = heldSpawn(1)
+    const seen = engine(on, { stateSeed: SEED, reviewerIds: ['ag1'], spawnHold: held.hold, agents: [entry('old1')] })
+    await $.prompt.submit(COMPOSER('first'))
+    const dispatching = $.classic.Stop(stop)
+    await held.reached
+    await started($)
+    await drained()
+    expect(stopped(seen)).toEqual([])
+    held.land()
+    await dispatching
+    await drained()
+  })
+
+  test('an id that becomes the stored reviewer between the list read and the stop is not stopped', ON, async ($, on) => {
+    const list = gate()
+    const reached = gate()
+    const seen = engine(on, { stateSeed: SEED, reviewerIds: ['old1'], firstListHold: { until: list.until, reached: reached.open }, agents: [entry('old1')] })
+    const sweeping = started($)
+    await reached.until
+    await workerTurn($)
+    expect(seen.conversation.reviewer).toMatchObject({ id: 'old1' })
+    list.open()
+    await sweeping
+    await drained()
+    expect(stopped(seen)).toEqual([])
+    expect(sweeps(seen)).toEqual([])
+  })
+
+  test('an id is not stopped when a spawn starts between the list read and the stop', ON, async ($, on) => {
+    // The sweep's writes after the list read: the first reads the conversation to decide, the second is the read just before the stop. The second is held while a spawn starts.
+    const armed = { on: false, writes: 0 }
+    const written = gate()
+    const landed = gate()
+    const list = gate()
+    const reached = gate()
+    const held = heldSpawn(1)
+    const seen = engine(on, { stateSeed: SEED, reviewerIds: ['ag1'], spawnHold: held.hold, agents: [entry('old1')], firstListHold: { until: list.until, reached: reached.open }, holdWrite: { when: () => armed.on && ++armed.writes === 2, until: landed.until, reached: written.open } })
+    await started($)
+    await reached.until
+    armed.on = true
+    list.open()
+    await written.until
+    await $.prompt.submit(COMPOSER('first'))
+    const dispatching = $.classic.Stop(stop)
+    await held.reached
+    expect(seen.conversation.spawnsInFlight.length).toBe(1)
+    landed.open()
+    await drained()
+    expect(stopped(seen)).toEqual([])
+    held.land()
+    await dispatching
+    await drained()
+  })
+
+  test('with no session bound, a list read that fails writes one plain skip line, with no stack and no failure', () => {
+    // The test engine cannot stage this: a hook that throws the no-session-bound error is skipped (see 'a reviewer stop with no session bound'), so the list is a hand-made `$`.
+    const logs: string[] = []
+    const $ = { agent: { list: () => Promise.reject(Object.assign(new Error(NO_SESSION_LIST), { name: 'HooksError' })) }, ui: { log: (text: string) => logs.push(text) } } as any
+    return register.sweepIdle($).then(() => {
+      expect(logs).toEqual(['auditor: idle reviewer sweep skipped: no session is bound in this mode'])
+    })
+  })
+
+  test('any other rejected list read is recorded as a failure, and the settle completes as it does without a sweep', ON, async ($, on) => {
+    const seen = engine(on, { stateSeed: SEED, listFails: true })
+    await $.prompt.submit(COMPOSER('first'))
+    await $.classic.Stop(stop)
+    await turnEnded($, 'ag1', 'Nothing to note.')
+    await drained()
+    expect(failures(seen).length).toBe(1)
+    expect(debugLines(seen, 'idle reviewer sweep skipped')).toEqual([])
+    expect(logOf(seen, LOG_1)).toMatchObject({ status: 'complete' })
+  })
+
+  test('any other thrown stop is recorded as a failure', ON, async ($, on) => {
+    const seen = engine(on, { stateSeed: SEED, agents: [entry('old1')], toolThrows: 'TaskStop' })
+    await started($)
+    await drained()
+    expect(debugLines(seen, 'reviewer stop failed').length).toBe(1)
+    expect(debugLines(seen, 'skipped')).toEqual([])
+  })
+
+  test('the first session start resolves while the agent list read is still pending', ON, async ($, on) => {
+    const list = gate()
+    const reached = gate()
+    const seen = engine(on, { stateSeed: SEED, firstListHold: { until: list.until, reached: reached.open }, agents: [entry('old1')] })
+    await started($)
+    await reached.until
+    expect(stopped(seen)).toEqual([])
+    list.open()
+    await drained()
+    expect(stopped(seen)).toEqual(['old1', 'old1'])
   })
 })

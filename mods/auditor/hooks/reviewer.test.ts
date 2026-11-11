@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'claude-code/testing'
 import type { AgentInfo } from 'claude-code'
 import type { Conversation } from '../types/index'
-import { adopt, idleTimerOf, isEndNotice, isHandBack, isNotice, isReviewerEntry, land, lapseOf, learn, learnName, letGo, markers, nameKnown, nameListed, originOf, reapIdle, reviewerNameOf, spawnName, spawning, standingOf, stopMissed, withTurnEnd } from './reviewer'
+import { adopt, idleTimerOf, isEndNotice, isHandBack, isNotice, isReviewerEntry, land, lapseOf, learn, learnName, letGo, markers, nameKnown, nameListed, originOf, reapIdle, reviewerNameOf, spawnName, spawning, standingOf, stopMissed, sweepable, withTurnEnd } from './reviewer'
 import type { Identity } from './reviewer'
 
 const ID: Identity = { plugin: 'auditor', name: 'auditor-reviewer', description: 'auditor review' }
@@ -484,5 +484,35 @@ describe('stopMissed', () => {
     expect(stopMissed(true, undefined, 'ag1')).toBe('the engine refused it')
     expect(stopMissed(true, [], 'ag1')).toBe('the engine refused it')
     expect(stopMissed(true, [listed('ag1', { status: 'killed' })], 'ag1')).toBe('the engine refused it')
+  })
+})
+
+describe('the idle reviewers a sweep stops', () => {
+  const former = (over: Partial<Conversation> = {}): Conversation => conversation({ review: undefined, reviewer: { id: 'ag2', model: 'm' }, reviewerIds: ['ag1', 'ag2', 'ag3'], ...over })
+
+  test('every listed idle reviewer the state knows and does not store is swept, in the list\'s order', () => {
+    expect(sweepable(former(), [listed('ag3', { status: 'idle' }), listed('ag2', { status: 'idle' }), listed('ag1', { status: 'idle' })])).toEqual(['ag3', 'ag1'])
+  })
+
+  test('the stored reviewer is not swept, idle or not', () => {
+    expect(sweepable(former(), [listed('ag2', { status: 'idle' })])).toEqual([])
+    expect(sweepable(former({ review: conversation().review }), [listed('ag2', { status: 'idle' })])).toEqual([])
+  })
+
+  test('an entry that is not idle is not swept', () => {
+    for (const status of ['pending', 'running', 'waiting', 'completed', 'failed', 'killed'] as const) expect(sweepable(former(), [listed('ag1', { status })])).toEqual([])
+  })
+
+  test('an entry the state does not know is not swept, whoever spawned it or whatever it is called', () => {
+    const agents = [listed('ag9', { status: 'idle', spawnedBy: 'auditor', type: 'auditor:reviewer', name: 'auditor-reviewer' }), listed('ag8', { status: 'idle', type: 'auditor:reviewer', name: 'auditor-reviewer-2' })]
+    expect(sweepable(former(), agents)).toEqual([])
+  })
+
+  test('nothing is swept while a spawn is in flight', () => {
+    expect(sweepable(former({ spawnsInFlight: [spawn()] }), [listed('ag1', { status: 'idle' })])).toEqual([])
+  })
+
+  test('a reviewer stored by no state at all is swept once the state knows it', () => {
+    expect(sweepable(former({ reviewer: undefined }), [listed('ag1', { status: 'idle' })])).toEqual(['ag1'])
   })
 })
