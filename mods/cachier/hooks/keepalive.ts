@@ -3,7 +3,7 @@
 // judged, and the debug line of a ping. register.ts holds the state, writes it, and makes the fork; nothing here reads the engine.
 import type { ModelApiError, ModelForkResult, ModelUsage, PluginOptions } from 'claude-code'
 import type { CacheView, HintCost, KeepaliveState, Spend, Tally, TallyState, Unit } from '../types'
-import { expiredAt, expiryOf } from './countdown'
+import { expiredAt, expiryOf, type Tone } from './countdown'
 import { addSpend, cachedOf, dollars, figureOf, NO_KINDS, NO_SPEND, readOf, spendOf, uponOf, writtenOf, type Money } from './prices'
 import { notBelowTtl, refreshIntervalMs, SECONDS_SUFFIX, secs, secsTerse } from './setup'
 
@@ -235,6 +235,17 @@ export const enable = (
 
 // The word the bare command's Keepalive heading carries: keepalive's state, one of five.
 export type Heading = 'off' | 'on, refreshing' | 'on, no count' | 'paused' | 'stopped'
+
+// The tone the pane draws each heading word in, from the pie's vocabulary. It follows keepalive's state where the pie follows the cache's time, so the two
+// differ on purpose: `on, no count` is amber (a waiting state worth a glance) while the pie is green, and `paused` is amber whatever the pie shows. Total
+// over `Heading`, so a state added later fails `tsc` until it has a tone.
+export const HEADING_TONE: Record<Heading, Tone> = {
+  off: 'gone',
+  'on, refreshing': 'on',
+  'on, no count': 'warning',
+  paused: 'warning',
+  stopped: 'alarm',
+}
 
 // What the bare command says about the state, and what the tick does with it. The heading word, the reason line (why keepalive is
 // paused or stopped, when it is) and the lines beneath it are what the command shows; the kind and a stop's reason are what the tick

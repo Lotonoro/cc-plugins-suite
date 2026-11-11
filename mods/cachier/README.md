@@ -53,12 +53,14 @@ pane has drawn this session it opens at 12 rows by 48 columns, and an open pane 
 scrolls them with the wheel. A click on that word while it is open closes it, as Esc or the person's close does. The click acts on the pane as the engine
 lists it: a pane closed some way cachier did not hear of (a reload, another plugin) is opened by the next click after a second,
 and a close another plugin refuses leaves the pane open to be closed by the next click. The pane shows the five sections a bare
-`/keepalive` answers with, in the same order with the same words, each heading in bold. The pane's text wraps at the width the pane is drawn at, so dragging the dock wider gives wider lines and fewer rows; each sentence's rows share one indent:
+`/keepalive` answers with, in the same order with the same words, each heading in bold; the Keepalive heading's state word is also coloured (below). The pane's text wraps at the width the pane is drawn at, so dragging the dock wider gives wider lines and fewer rows; each sentence's rows share one indent:
 
 - **Cache**: the cache's warmth, `warm · 3:12 left · 5m TTL`, or, once the cache has expired or been reset, `expired · rebuild ~$0.13` or
   `reset · rebuild ~$0.13` (the state alone where no figure is drawn). The rebuild figure is the context plus the last reply's output, which the next prompt writes with it, priced
   at the model that last wrote the cache, so after a model switch it is at the rates of the model switched from;
-- **Keepalive**: its state on the heading (`off`, `on, refreshing`, `paused`, `stopped`), and beneath it why it is paused or stopped and
+- **Keepalive**: its state on the heading (`off`, `on, refreshing`, `on, no count`, `paused`, `stopped`), the state word bold and coloured by state:
+  `on, refreshing` green, `paused` and `on, no count` amber, `stopped` red, `off` dim. These colours show keepalive's state, not the cache's time,
+  so they differ from the pie's (`on, no count` is amber here with a green pie, and `paused` is always amber here whatever the pie shows). Beneath the heading, why it is paused or stopped and
   whether it resumes or restarts on the next prompt (`count used · resumes on next prompt`), what the pie's colours warn of while it is amber or red (`pie: amber ≤¼ TTL left, red ≤⅒`), what a refresh costs
   and when the next is due (`refresh $0.004 (~19k cached) · every 4:45`, then `next in 4:44 · 24 left`; while the cache is warm, with a row of its own for what your
   next prompt pays to rebuild it, `if cold: rebuild ~$0.09 (~19k written)`; a run whose lead is not below the TTL states that row alone on a warm cache), how many
@@ -89,6 +91,7 @@ a short terminal the lower sections are scrolled to with the wheel.
 - **read** / **written**: a count of tokens read from or written to the cache, `~19k read`; `cached` after a count (`~19k cached`) is the context a refresh reads.
 - **kept**: a running pause keeps the count it started with until the next prompt recounts it (`kept from pause start; recounted next prompt`).
 - **`≤¼`** / **`≤⅒`**: the last quarter / tenth of the TTL left; the pie turns amber, then red.
+- **heading colours**: the Keepalive heading's state word in the pane is coloured by keepalive's state: green `on, refreshing` (refreshing the cache), amber `paused` and `on, no count` (waiting), red `stopped`, dim `off`. They show keepalive's state, not the cache's time, so they differ from the pie's colours.
 - **refresh**: a small request keepalive sends shortly before the cache expires, so it stays warm. Each costs one cache read of the whole context.
 - **lead**: how long before expiry a refresh is sent (`15s`); `lead raised to 16s (slow refresh)` says a slow refresh raised it, and the Settings row then reads `lead: 16s (raised: slow refresh)`.
 - **refreshes/pause**: the most refreshes one pause sends. **break-even**: the most that cost no more than the rewrite they avoid. **pinned**: a count you gave `/keepalive on <lead_s> <count>`. **cap**: `keepalive_count`, which bounds the break-even and learned counts. **learned**: the count your own pauses say is cheapest; **covers** `33:30` is how long that many refreshes keep the cache warm, and `10/13 pauses within` how many of your pauses ended inside it.

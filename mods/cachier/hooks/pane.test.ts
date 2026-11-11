@@ -1,6 +1,6 @@
 import { expect, test } from 'claude-code/testing'
 import { followDraw, isPaneOpen, lastRows, paneAlarm, PANE, pressSize, readPane, recordRows, recordSize, resizePane, syncPane, togglePane } from './pane'
-import { layoutOf, paneLayoutOf, WRAP } from './sections'
+import { layoutOf, paneLayoutOf, WRAP, type Snapshot } from './sections'
 
 // The engine's ui calls the pane makes, answered as the engine answers them: each open is recorded and listed in the engine's record of
 // open panes, each close removes it. `refuse` makes an open throw, `unplaced` makes it come back unplaced, `refuseClose` makes a close throw, `listed` is the record at the
@@ -524,7 +524,7 @@ test('the kept rows are pane rows: the press size before a draw takes its column
   const { $ } = engine()
   await syncPane($)
   expect(pressSize()).toEqual({ rows: 12, columns: WRAP })
-  const empty = { cache: [], keepalive: { state: 'off', lines: [] }, session: [], advice: [], settings: [] }
+  const empty: Snapshot = { cache: [], keepalive: { state: 'off', tone: 'gone', lines: [] }, session: [], advice: [], settings: [] }
   // @ts-expect-error 48-column rows are not pane rows
   recordRows(layoutOf(empty))
   syncPane($)

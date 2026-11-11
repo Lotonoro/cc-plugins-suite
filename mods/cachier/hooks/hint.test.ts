@@ -1,5 +1,6 @@
 import { describe, expect, test } from 'claude-code/testing'
 import type { HintState, Reading } from '../types'
+import type { Tone } from './countdown'
 import { footerLine, paneOf } from './hint'
 import { layoutOf, paneLayoutOf, type Snapshot } from './sections'
 
@@ -258,14 +259,19 @@ describe('footerLine: the pie\'s hover names the keepalive state its colour stan
 
 const SNAPSHOT: Snapshot = {
   cache: ['warm · 3:12 left · 5m TTL'],
-  keepalive: { state: 'off', lines: ['pie: amber ≤¼ TTL left, red ≤⅒'] },
+  keepalive: { state: 'off', tone: 'gone', lines: ['pie: amber ≤¼ TTL left, red ≤⅒'] },
   session: ['session: no refreshes yet'],
   advice: ['setup: 5m/off', 'best: 1h/off · would have saved $1.20 (10 recent pauses)', 'do: set "promptCacheTtl": "1h" in settings.json (new sessions start off: keepalive_default)'],
   settings: [{ name: 'unit', value: 'dollars', source: 'cost_unit', change: '/keepalive unit tokens|dollars' }],
 }
 const ROWS = paneLayoutOf(SNAPSHOT).rows
+// The Keepalive heading is the one row of SNAPSHOT that has runs.
+const RUN_AT = ROWS.findIndex((row) => row.runs !== undefined)
+// The text a built element holds, its strings in order, and the props it sets, none when it sets none.
+const textOf = (el: any): string => (typeof el === 'string' ? el : (el.children ?? []).map(textOf).join(''))
+const propsOf = (el: any) => el.props ?? {}
 
-describe('paneOf: the pane\'s rows, one element per row, wrapped by the engine, headings bold and nothing coloured', () => {
+describe('paneOf: the pane\'s rows, one element per row, wrapped by the engine, headings bold, and only the Keepalive state word coloured', () => {
   test('a heading and a blank are a Text at the left edge, a line a Text in a box indented two; every Text wraps', () => {
     const pane = paneOf(t, ROWS) as any
     expect(pane.children).toHaveLength(ROWS.length)
@@ -280,7 +286,11 @@ describe('paneOf: the pane\'s rows, one element per row, wrapped by the engine, 
         texts.push(child)
       }
     })
-    expect(texts.map((x) => x.children)).toEqual(ROWS.map((row) => [row.kind === 'blank' ? ' ' : row.text]))
+    // A row with no runs holds its text as its one child; the row with runs holds the same text across its pieces.
+    ROWS.forEach((row, i) => {
+      if (row.runs === undefined) expect(texts[i].children).toEqual([row.kind === 'blank' ? ' ' : row.text])
+      else expect(textOf(texts[i])).toBe(row.text)
+    })
     for (const x of texts) expect(x).toMatchObject({ type: 'Text', props: { wrap: 'wrap' } })
     expect(JSON.stringify(pane)).not.toContain('truncate')
   })
@@ -288,7 +298,47 @@ describe('paneOf: the pane\'s rows, one element per row, wrapped by the engine, 
   test('a heading row is bold and no other row is', () => {
     const pane = paneOf(t, ROWS) as any
     expect(JSON.stringify(pane).match(/"bold":true/g)).toHaveLength(5)
-    expect(pane.children.filter((child: any) => child.props.bold === true).map((child: any) => child.children[0])).toEqual(['Cache', 'Keepalive  off', 'This session', 'Advice', 'Settings'])
+    expect(pane.children.filter((child: any) => child.props.bold === true).map(textOf)).toEqual(['Cache', 'Keepalive  off', 'This session', 'Advice', 'Settings'])
+  })
+
+  test('the Keepalive heading is one bold Text that wraps, holding its title untoned and its state word in the state\'s tone', () => {
+    const heading = (paneOf(t, ROWS) as any).children[RUN_AT]
+    expect(heading.type).toBe('Text')
+    expect(propsOf(heading)).toEqual({ bold: true, wrap: 'wrap' })
+    expect(heading.children).toHaveLength(2)
+    const [title, state] = heading.children
+    expect(title).toMatchObject({ type: 'Text', children: ['Keepalive  '] })
+    expect(propsOf(title)).toEqual({})
+    expect(state).toMatchObject({ type: 'Text', children: ['off'] })
+    expect(propsOf(state)).toEqual({ dimColor: true })
+  })
+
+  test('a line with runs is the Text in its box indented two with the runs nested in order, each in its tone', () => {
+    const pane = paneOf(t, [{ kind: 'line', text: 'ab cd', runs: [{ text: 'ab ', tone: 'quiet' }, { text: 'cd', tone: 'alarm' }] }]) as any
+    expect(pane.children[0]).toMatchObject({ type: 'Box', props: { paddingLeft: 2 } })
+    const text = pane.children[0].children[0]
+    expect(text.type).toBe('Text')
+    expect(propsOf(text)).toEqual({ wrap: 'wrap' })
+    expect(text.children.map(textOf)).toEqual(['ab ', 'cd'])
+    expect(text.children.map(propsOf)).toEqual([{}, { color: 'error' }])
+  })
+
+  test('a run is drawn in the props the pie draws its tone in: one palette for the pane and the pie', () => {
+    const quarter: Reading = { words: '1:00', state: 'warm', quarter: 1, warn: 'quarter' }
+    const tenth: Reading = { words: '0:20', state: 'warm', quarter: 1, warn: 'tenth' }
+    const expired: Reading = { words: '~$0.42 to rebuild', state: 'expired', quarter: 0, warn: 'calm' }
+    // A footer whose pie is in each tone: keepalive refreshing, the normal colour, amber, red, and an expired cache with keepalive off.
+    const pies: Record<Tone, unknown> = {
+      on: footerLine(t, state({ cost: COST }), true, noop, noop),
+      quiet: footerLine(t, state(), false, noop, noop),
+      warning: footerLine(t, state({ reading: quarter }), false, noop, noop),
+      alarm: footerLine(t, state({ reading: tenth }), false, noop, noop),
+      gone: footerLine(t, state({ reading: expired }), false, noop, noop),
+    }
+    for (const [tone, line] of Object.entries(pies)) {
+      const pane = paneOf(t, [{ kind: 'line', text: 'x', runs: [{ text: 'x', tone: tone as Tone }] }]) as any
+      expect(propsOf(pane.children[0].children[0].children[0])).toEqual(toneOf(pieOf(line)))
+    }
   })
 
   test('the tree is the same whatever the width: it takes none', () => {
@@ -298,9 +348,17 @@ describe('paneOf: the pane\'s rows, one element per row, wrapped by the engine, 
     expect(pane.children[0].children[0].children).toEqual([long])
   })
 
-  test('no row is coloured, and no button, hover or absolute position is in it', () => {
-    const drawn = JSON.stringify(paneOf(t, ROWS))
-    expect(drawn).not.toMatch(/"color"|"dimColor"|"backgroundColor"|"type":"Button"|hover|absolute/)
+  test('the state word is the one coloured piece: no other row, nor the heading\'s title, has a colour or a dim', () => {
+    const pane = paneOf(t, ROWS) as any
+    const [title, state] = pane.children[RUN_AT].children
+    expect(propsOf(state)).toEqual({ dimColor: true })
+    const rest = [...pane.children.filter((_: unknown, i: number) => i !== RUN_AT), title]
+    expect(rest).toHaveLength(ROWS.length)
+    expect(JSON.stringify(rest)).not.toMatch(/"color"|"dimColor"|"backgroundColor"/)
+  })
+
+  test('no background, button, hover or absolute position is in the pane', () => {
+    expect(JSON.stringify(paneOf(t, ROWS))).not.toMatch(/"backgroundColor"|"type":"Button"|hover|absolute/)
   })
 
   test('the 48-column layout\'s rows are refused by the type', () => {

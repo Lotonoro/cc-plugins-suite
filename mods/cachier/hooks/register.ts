@@ -15,6 +15,7 @@ import {
   failureOf,
   forkSpend,
   gapOpen,
+  HEADING_TONE,
   INITIAL,
   INITIAL_TALLY,
   isUserPrompt,
@@ -922,6 +923,7 @@ const snapshotNow = async ($: Dollar): Promise<Snapshot> => {
     cache: [warmthOf(reading, raw.kind === 'known' ? raw.ttlLabel : '5m', rebuild)].filter((line) => line !== ''),
     keepalive: {
       state: verdict.heading,
+      tone: HEADING_TONE[verdict.heading],
       lines: [
         ...(verdict.why === null ? [] : [verdict.why]),
         ...(colour === null ? [] : [colour]),

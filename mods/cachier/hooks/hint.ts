@@ -12,7 +12,8 @@ type Table = {
 
 // The pie's glyph by its quarter step: empty at 0 (cold, expired, or nothing to count), full above three quarters of the TTL left.
 const GLYPHS = ['○', '◔', '◑', '◕', '●']
-// The pie's colour as theme tokens, so it follows the person's theme. The words beside it (the time, the rebuild figure, `reset` or `no count`) are dim, never coloured.
+// The pie's colour as theme tokens, so it follows the person's theme, and the colour of the pane's toned runs, so the two name one colour per tone. The words
+// beside the pie (the time, the rebuild figure, `reset` or `no count`) are dim, never coloured.
 const TONE_PROPS: Record<Tone, Partial<TextProps>> = {
   on: { color: 'success' },
   quiet: {},
@@ -76,14 +77,20 @@ export const footerLine = (t: Table, state: HintState | null, on: boolean, onTog
   return t.Box({ flexDirection: 'row', children: [pieBox, t.Text({ dimColor: true, children: [' '] }), time, ...cueText] })
 }
 
-// The details pane's body: the pane's rows, one element each, headings bold and nothing else styled. Every Text wraps, so the engine wraps a
-// sentence at the width the pane is drawn at; a line sits in a box indented two columns, so each row it wraps into starts at that indent.
+// A pane row's Text children: its text alone, or its runs, each a Text in its tone's props. A run sets no weight of its own, so it takes its row's: a
+// heading's runs stay bold, since the terminal cannot draw a lighter weight inside a bold Text, and a dim one is the theme's dim colour, not faint.
+const childrenOf = (t: Table, row: PaneRow) =>
+  row.runs === undefined ? [row.text] : row.runs.map((run) => t.Text({ ...TONE_PROPS[run.tone], children: [run.text] }))
+
+// The details pane's body: the pane's rows, one element each, headings bold and nothing else styled but a row's runs. Every Text wraps, so the engine wraps a
+// sentence at the width the pane is drawn at; a line sits in a box indented two columns, so each row it wraps into starts at that indent. A row's runs
+// are nested in its one Text, not drawn as sibling Texts in a Box, which the engine would wrap as separate pieces rather than as one text.
 // A blank row is one space, so the row is drawn whether or not the engine gives an empty Text a line.
 export const paneOf = (t: Table, rows: PaneRow[]): RenderElement =>
   t.Box({
     flexDirection: 'column',
     children: rows.map((row) => {
-      if (row.kind === 'line') return t.Box({ paddingLeft: 2, children: [t.Text({ wrap: 'wrap', children: [row.text] })] })
-      return t.Text({ ...(row.kind === 'heading' ? { bold: true } : {}), wrap: 'wrap', children: [row.kind === 'blank' ? ' ' : row.text] })
+      if (row.kind === 'line') return t.Box({ paddingLeft: 2, children: [t.Text({ wrap: 'wrap', children: childrenOf(t, row) })] })
+      return t.Text({ ...(row.kind === 'heading' ? { bold: true } : {}), wrap: 'wrap', children: row.kind === 'blank' ? [' '] : childrenOf(t, row) })
     }),
   })

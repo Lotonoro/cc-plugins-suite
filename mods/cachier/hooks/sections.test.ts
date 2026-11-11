@@ -1,4 +1,5 @@
 import { describe, expect, test } from 'claude-code/testing'
+import type { Tone } from './countdown'
 import { answerOf, layoutOf, paneLayoutOf, sectionsOf, spanOf, SPAN_SPACE, wrapLine, WRAP, type AnswerRow, type PaneRow, type Setting, type Snapshot } from './sections'
 
 // The builder takes the figures and sentences as plain values: no engine, no `$`. A command in a setting's change is one span, as the command gives it.
@@ -11,12 +12,12 @@ const SETTINGS: Setting[] = [
 ]
 const FULL: Snapshot = {
   cache: ['warm · 3:12 left · 5m TTL'],
-  keepalive: { state: 'on, refreshing', lines: ['next in 4:59 · 3 left', 'next refresh $0.006 (~33k read)'] },
+  keepalive: { state: 'on, refreshing', tone: 'on', lines: ['next in 4:59 · 3 left', 'next refresh $0.006 (~33k read)'] },
   session: ['session: 2 refreshes · $0.007', 'misses: 1 (lapse 1) · $0.10 rewritten'],
   advice: ['setup: 5m/off', 'other TTL: 1h/off · would have saved $4.74 (10 priced pauses, all sessions)', 'do: set "promptCacheTtl": "1h" in settings.json (new sessions start off: keepalive_default)'],
   settings: SETTINGS,
 }
-const EMPTY: Snapshot = { cache: [], keepalive: { state: 'off', lines: [] }, session: [], advice: [], settings: [] }
+const EMPTY: Snapshot = { cache: [], keepalive: { state: 'off', tone: 'gone', lines: [] }, session: [], advice: [], settings: [] }
 
 describe('sectionsOf: the five sections in order, each with its lines', () => {
   test('the sections come Cache, Keepalive, This session, Advice, Settings', () => {
@@ -29,9 +30,9 @@ describe('sectionsOf: the five sections in order, each with its lines', () => {
     expect(sectionsOf({ ...EMPTY, session: ['session: no refreshes yet'] }).map((s) => s.title)).toEqual(['Keepalive', 'This session'])
   })
 
-  test('a section that carries a state is never left out: the Keepalive section is there with no line, and only it carries a state', () => {
-    expect(sectionsOf(EMPTY)).toEqual([{ title: 'Keepalive', state: 'off', lines: [] }])
-    expect(sectionsOf(FULL).map((s) => s.state)).toEqual([null, 'on, refreshing', null, null, null])
+  test('a section that carries a state is never left out: the Keepalive section is there with no line, and only it carries a state, which comes with its tone', () => {
+    expect(sectionsOf(EMPTY)).toEqual([{ title: 'Keepalive', state: { text: 'off', tone: 'gone' }, lines: [] }])
+    expect(sectionsOf(FULL).map((s) => s.state)).toEqual([null, { text: 'on, refreshing', tone: 'on' }, null, null, null])
   })
 
   test('a setting is one line: its name, its value, its source in brackets when there is one, and its change, with no full stop', () => {
@@ -118,7 +119,7 @@ describe('wrapLine: at the wrap width, continuation lines indented, no word lost
 
 describe('answerOf: the sections as the bare command answers them', () => {
   test('each section is its name on a line of its own, then its lines, and sections are separated by a blank line', () => {
-    const text = answerOf({ ...EMPTY, cache: ['warm'], keepalive: { state: 'paused', lines: ['why'] } })
+    const text = answerOf({ ...EMPTY, cache: ['warm'], keepalive: { state: 'paused', tone: 'warning', lines: ['why'] } })
     expect(text).toBe('Cache\n  warm\n\nKeepalive  paused\n  why')
   })
 
@@ -136,7 +137,7 @@ describe('answerOf: the sections as the bare command answers them', () => {
 describe('layoutOf: the rows the answer is joined from, a heading row marked and no other row', () => {
   test('the rows, joined, are the answer: each section a heading row then its wrapped lines, and one blank row between sections', () => {
     expect(layoutOf(FULL).map((row) => row.text).join('\n')).toBe(answerOf(FULL))
-    expect(layoutOf({ ...EMPTY, cache: ['warm'], keepalive: { state: 'paused', lines: ['why'] } }).map((row) => row.text)).toEqual(['Cache', '  warm', '', 'Keepalive  paused', '  why'])
+    expect(layoutOf({ ...EMPTY, cache: ['warm'], keepalive: { state: 'paused', tone: 'warning', lines: ['why'] } }).map((row) => row.text)).toEqual(['Cache', '  warm', '', 'Keepalive  paused', '  why'])
   })
 
   test('only the heading rows are marked, in an answer with all five sections and in one with a section left out', () => {
@@ -182,7 +183,7 @@ const CMD = `run /keepalive${SPAN_SPACE}on${SPAN_SPACE}15 or click the pie on, a
 
 describe('paneLayoutOf: the pane\'s rows, kinded and unwrapped, with the size it asks for', () => {
   test('a heading, each line whole, and one blank between sections, each with its kind and no indent', () => {
-    const { rows } = paneLayoutOf({ ...EMPTY, cache: ['warm'], keepalive: { state: 'paused', lines: [CMD] } })
+    const { rows } = paneLayoutOf({ ...EMPTY, cache: ['warm'], keepalive: { state: 'paused', tone: 'warning', lines: [CMD] } })
     expect(rows.map((row) => row.kind)).toEqual(['heading', 'line', 'blank', 'heading', 'line'])
     expect(rows.map((row) => row.text)).toEqual(['Cache', 'warm', '', 'Keepalive  paused', CMD.split(SPAN_SPACE).join(' ')])
   })
@@ -223,5 +224,48 @@ describe('paneLayoutOf: the pane\'s rows, kinded and unwrapped, with the size it
     // @ts-expect-error a 48-column row is not a pane row
     const asPane: PaneRow = answer
     expect([asAnswer, asPane]).toHaveLength(2)
+  })
+})
+
+// The states a Keepalive heading carries and the tone each is drawn in, as the builder is handed them: it knows no state's words.
+const STATES: { word: string; tone: Tone }[] = [
+  { word: 'off', tone: 'gone' },
+  { word: 'on, refreshing', tone: 'on' },
+  { word: 'on, no count', tone: 'warning' },
+  { word: 'paused', tone: 'warning' },
+  { word: 'stopped', tone: 'alarm' },
+]
+const TONES: Tone[] = ['on', 'quiet', 'warning', 'alarm', 'gone']
+const stated = (word: string, tone: Tone, base: Snapshot = FULL): Snapshot => ({ ...base, keepalive: { state: word, tone, lines: ['why'] } })
+
+describe('paneLayoutOf: toned runs, the pieces of a row\'s text each drawn in a tone', () => {
+  test('the Keepalive heading holds its title with the gap untoned, then its state word in the state\'s tone, in each state', () => {
+    for (const { word, tone } of STATES) {
+      const heading = paneLayoutOf(stated(word, tone)).rows.find((row) => row.kind === 'heading' && row.text.startsWith('Keepalive'))
+      expect(heading?.text).toBe(`Keepalive  ${word}`)
+      expect(heading?.runs).toEqual([{ text: 'Keepalive  ', tone: 'quiet' }, { text: word, tone }])
+    }
+  })
+
+  test('each row with runs reads exactly its text when they are joined, and every row other than the Keepalive heading has none, in each state', () => {
+    for (const { word, tone } of STATES) {
+      for (const base of [FULL, EMPTY, { ...FULL, advice: [], session: [] }]) {
+        const { rows } = paneLayoutOf(stated(word, tone, base))
+        for (const row of rows) if (row.runs !== undefined) expect(row.runs.map((run) => run.text).join('')).toBe(row.text)
+        expect(rows.filter((row) => row.runs !== undefined).map((row) => row.text)).toEqual([`Keepalive  ${word}`])
+      }
+    }
+  })
+
+  test('a tone adds no text: the answer, the 48-column rows, the pane rows\' text and the size it asks for are the same in every tone', () => {
+    const plain = stated('paused', 'warning')
+    for (const tone of TONES) {
+      const toned = stated('paused', tone)
+      expect(answerOf(toned)).toBe(answerOf(plain))
+      expect(layoutOf(toned)).toEqual(layoutOf(plain))
+      expect(paneLayoutOf(toned).rows.map((row) => row.text)).toEqual(paneLayoutOf(plain).rows.map((row) => row.text))
+      expect(paneLayoutOf(toned).size).toEqual(paneLayoutOf(plain).size)
+    }
+    expect(layoutOf(plain).some((row) => 'runs' in row)).toBe(false)
   })
 })

@@ -1,7 +1,8 @@
 // The five sections bare `/keepalive` answers with: Cache, Keepalive, This session, Advice and Settings. A pure builder: the command gathers the figures
 // and sentences into a snapshot, and this turns them into sections, laid out unwrapped with its size for the pane and wrapped at 48 columns for the command. It
-// takes no engine handle, so it is tested without one. It knows no state's words: the Keepalive part brings its state as a string, and the
-// other parts bring finished lines, the This session fallback included.
+// takes no engine handle, so it is tested without one. It knows no state's words: the Keepalive part brings its state as a string beside the
+// tone to draw it in, and the other parts bring finished lines, the This session fallback included. It imports the pie's tone type and nothing else.
+import type { Tone } from './countdown'
 
 // The width a line is wrapped at, counting its indent.
 export const WRAP = 48
@@ -13,14 +14,18 @@ export type Setting = { name: string; value: string; source: string | null; chan
 // lines are formed here.
 export type Snapshot = {
   cache: string[]
-  keepalive: { state: string; lines: string[] }
+  keepalive: { state: string; tone: Tone; lines: string[] }
   session: string[]
   advice: string[]
   settings: Setting[]
 }
 
-// A section's state is written on its heading beside the title; a section that carries one is never left out.
-export type Section = { title: 'Cache' | 'Keepalive' | 'This session' | 'Advice' | 'Settings'; state: string | null; lines: string[] }
+// A piece of a pane row's text and the tone it is drawn in, one of the pie's. The pieces of a row, joined, are its text.
+export type Run = { text: string; tone: Tone }
+
+// A section's state is written on its heading beside the title, in its tone, so the two are one value: a section with no state has no tone. A
+// section that carries a state is never left out.
+export type Section = { title: 'Cache' | 'Keepalive' | 'This session' | 'Advice' | 'Settings'; state: Run | null; lines: string[] }
 
 // One row of the command's 48-column layout. A section's heading row carries the heading mark, so a drawing bolds it without reading its
 // text; no other row is marked. Each row's indent is in its text, and `wrapped` is the field only this layout's rows have, so a pane row is
@@ -29,8 +34,9 @@ export type AnswerRow = { text: string; heading?: boolean; wrapped: true }
 
 // One row of the pane's layout: a heading, a line (a whole sentence or figure, which the drawing indents) or a blank between sections. The
 // row states its kind, so a drawing reads no text to tell them apart, and carries no indent. `kind` is the field only this layout's rows
-// have, so an answer row is not accepted where a pane row is expected.
-export type PaneRow = { kind: 'heading' | 'line' | 'blank'; text: string }
+// have, so an answer row is not accepted where a pane row is expected. A row whose pieces are drawn in tones carries them as `runs`, so a
+// drawing reads no text to find them either; the others carry none and are drawn as their text.
+export type PaneRow = { kind: 'heading' | 'line' | 'blank'; text: string; runs?: Run[] }
 
 // The rows and columns the pane asks for.
 export type PaneSize = { rows: number; columns: number }
@@ -41,7 +47,7 @@ const settingLine = (s: Setting): string => `${s.name}: ${s.value}${s.source ===
 export const sectionsOf = (snap: Snapshot): Section[] =>
   [
     { title: 'Cache' as const, state: null, lines: snap.cache },
-    { title: 'Keepalive' as const, state: snap.keepalive.state, lines: snap.keepalive.lines },
+    { title: 'Keepalive' as const, state: { text: snap.keepalive.state, tone: snap.keepalive.tone }, lines: snap.keepalive.lines },
     { title: 'This session' as const, state: null, lines: snap.session },
     { title: 'Advice' as const, state: null, lines: snap.advice },
     { title: 'Settings' as const, state: null, lines: snap.settings.map(settingLine) },
@@ -72,7 +78,12 @@ export const wrapLine = (text: string, width = WRAP, first = '  ', rest = '    '
   return lines
 }
 
-const headingOf = (section: Section): string => (section.state === null ? section.title : `${section.title}  ${section.state}`)
+// A heading's pieces: the title, with the two-space gap before a state untoned, then the state in its tone. The heading's text is these joined,
+// so the text and the pieces cannot disagree.
+const headingRunsOf = (section: Section): Run[] =>
+  section.state === null ? [{ text: section.title, tone: 'quiet' }] : [{ text: `${section.title}  `, tone: 'quiet' }, section.state]
+
+const headingOf = (section: Section): string => headingRunsOf(section).map((run) => run.text).join('')
 
 // The sections as the command's rows: each section's heading row, its lines wrapped beneath it, and one blank row between sections.
 const answerRowsOf = (sections: Section[]): AnswerRow[] =>
@@ -86,12 +97,13 @@ const answerRowsOf = (sections: Section[]): AnswerRow[] =>
 export const layoutOf = (snap: Snapshot): AnswerRow[] => answerRowsOf(sectionsOf(snap))
 
 // The pane's rows: a heading per section, each line whole with its spans printed as plain spaces, and one blank row between sections; and the
-// size the pane asks for, the count and longest row of the same sections wrapped at `WRAP`, so it depends on the content alone.
+// size the pane asks for, the count and longest row of the same sections wrapped at `WRAP`, so it depends on the content alone. A heading that
+// carries a state also carries its pieces as runs, which the text of the answer and the size do not read.
 export const paneLayoutOf = (snap: Snapshot): { rows: PaneRow[]; size: PaneSize } => {
   const sections = sectionsOf(snap)
   const rows = sections.flatMap((section, i): PaneRow[] => [
     ...(i === 0 ? [] : [{ kind: 'blank' as const, text: '' }]),
-    { kind: 'heading' as const, text: headingOf(section) },
+    { kind: 'heading' as const, text: headingOf(section), ...(section.state === null ? {} : { runs: headingRunsOf(section) }) },
     ...section.lines.map((line) => ({ kind: 'line' as const, text: line.split(SPAN_SPACE).join(' ') })),
   ])
   const wrapped = answerRowsOf(sections)

@@ -234,7 +234,8 @@ const pressPie = async ($: any) => {
   await m.press({ key: 'pie' })
   await m.unmount()
 }
-// Everything the line and the details draw, as text: the footer's drawing, then the pane's.
+// Everything the line and the details draw, as text: the footer's drawing, then the pane's. A colour in it may be the pane's (the Keepalive state word
+// is coloured), so a pie-colour assertion taken while the pane draws the colour it asserts or denies reads the footer alone, with `pieDrawn`.
 const drawnHint = async ($: any) => {
   const m = await mountHint($)
   const pane = await mountPane($)
@@ -3708,6 +3709,9 @@ const countReads = (on: any, keys: string[]) => {
 // A blank row is drawn as one space, and read back as the empty row the command's answer has.
 const rowsOf = async (pane: any): Promise<string[]> => ((await pane.drawn()) as any).children.map(textOf).map((row: string) => (row === ' ' ? '' : row))
 const boldRows = async (pane: any): Promise<string[]> => ((await pane.drawn()) as any).children.filter((row: any) => JSON.stringify(row).includes('"bold":true')).map(textOf)
+// The Keepalive heading's row in a drawing of the pane, and the props a drawn element sets, none when it sets none.
+const keepaliveRow = (tree: any): any => tree.children.find((row: any) => textOf(row).startsWith('Keepalive'))
+const propsOf = (el: any): Record<string, unknown> => el.props ?? {}
 
 describe('the details pane draws the sections /keepalive answers with, built by its draw alone', () => {
   const opts = { options: { keepalive_lead_s: 15, keepalive_count: 3 } }
@@ -3733,7 +3737,7 @@ describe('the details pane draws the sections /keepalive answers with, built by 
     await pane.unmount()
   })
 
-  test('each section heading is drawn bold, and no row is bold or coloured otherwise', opts, async ($, on) => {
+  test('each section heading is drawn bold, and no row is bold or coloured otherwise but the Keepalive state word', opts, async ($, on) => {
     kaWorld(on, cached())
     const clock = mock.clock(on, { now: T0 })
     await $.classic.SessionStart({ source: 'startup', transcript_path: PATH })
@@ -3743,9 +3747,85 @@ describe('the details pane draws the sections /keepalive answers with, built by 
     const headings = rows.filter((row) => /^(Cache|Keepalive(  .+)?|This session|Advice|Settings)$/.test(row))
     expect(headings.length).toBeGreaterThanOrEqual(3)
     expect(await boldRows(pane)).toEqual(headings)
-    expect(JSON.stringify(await pane.drawn())).not.toMatch(/"color"|"dimColor"|"backgroundColor"/)
+    // The one coloured piece is named: keepalive is off here, so its state word is dim. Every other row, and the heading's title, carry no colour.
+    const tree = (await pane.drawn()) as any
+    const heading = keepaliveRow(tree)
+    expect(heading.children).toHaveLength(2)
+    expect(propsOf(heading.children[1])).toEqual({ dimColor: true })
+    const rest = [...tree.children.filter((row: any) => row !== heading), heading.children[0]]
+    expect(rest).toHaveLength(tree.children.length)
+    expect(JSON.stringify(rest)).not.toMatch(/"color"|"dimColor"|"backgroundColor"/)
     await pane.unmount()
   })
+
+  // The five states the Keepalive heading names, each with how a session reaches it and the props its state word is drawn in.
+  const HEADING_STATES: { word: string; props: Record<string, string | boolean>; reach: ($: any, on: any) => Promise<unknown> }[] = [
+    { word: 'off', props: { dimColor: true }, reach: ($, on) => startedWorld($, on) },
+    {
+      word: 'on, refreshing',
+      props: { color: 'success' },
+      reach: async ($, on) => {
+        const clock = await startedWorld($, on)
+        await toggle($, 'on 15')
+        await clock.advance(1000)
+      },
+    },
+    {
+      word: 'on, no count',
+      props: { color: 'warning' },
+      reach: async ($, on) => {
+        const clock = await startedWorld($, on, { text: '', exists: false })
+        await toggle($, 'on 15')
+        await clock.advance(1000)
+      },
+    },
+    {
+      word: 'paused',
+      props: { color: 'warning' },
+      reach: async ($, on) => {
+        const clock = await startedWorld($, on)
+        await toggle($, 'on 400')
+        await clock.advance(1000)
+      },
+    },
+    {
+      word: 'stopped',
+      props: { color: 'error' },
+      reach: async ($, on) => {
+        const doc: any = opusCached()
+        doc.fork = { isAnswered: false, reason: 'empty-reply', usage: { ...ZERO, cache_creation_input_tokens: 18000 } }
+        const clock = await startedWorld($, on, doc)
+        await toggle($, 'on 60 2')
+        await mainStep($)
+        await turnEnd($)
+        await clock.advance(241000)
+      },
+    },
+  ]
+  for (const s of HEADING_STATES) {
+    test(`keepalive ${s.word}: the Keepalive heading is one bold Text, its title untoned and its state word in the state's tone, and no other row is coloured`, async ($, on) => {
+      await s.reach($, on)
+      const pane = await mountPane($)
+      const tree = (await pane.drawn()) as any
+      const heading = keepaliveRow(tree)
+      expect(textOf(heading)).toBe(`Keepalive  ${s.word}`)
+      expect(heading.type).toBe('Text')
+      expect(propsOf(heading)).toEqual({ bold: true, wrap: 'wrap' })
+      expect(heading.children).toHaveLength(2)
+      const [title, state] = heading.children
+      expect(title).toMatchObject({ type: 'Text', children: ['Keepalive  '] })
+      expect(propsOf(title)).toEqual({})
+      expect(state).toMatchObject({ type: 'Text', children: [s.word] })
+      expect(propsOf(state)).toEqual(s.props)
+      // Every other row, whole, and the title are drawn with no colour or dim.
+      const rest = [...tree.children.filter((row: any) => row !== heading), title]
+      expect(rest).toHaveLength(tree.children.length)
+      expect(JSON.stringify(rest)).not.toMatch(/"color"|"dimColor"|"backgroundColor"/)
+      // The bare answer names the state in the same words, as plain text.
+      expect((await commandText($, '')).split('\n')).toContain(`Keepalive  ${s.word}`)
+      await pane.unmount()
+    })
+  }
 
   test('the pane\'s rows are the command\'s answer: the same snapshot is gathered once per surface and laid out alike', opts, async ($, on) => {
     kaWorld(on, cached())
@@ -5600,7 +5680,7 @@ describe("the pie's colour: keepalive's mode on the footer line", () => {
     expect(await hint($)).toBe('4:59')
     await toggle($, 'on 60 1')
     await clock.advance(1000)
-    expect(await drawnHint($)).toContain('"color":"success"')
+    expect((await pieDrawn($)).pie).toContain('"color":"success"')
     await mainStep($)
     await turnEnd($)
     await clock.advance(20 * MIN)
@@ -6670,7 +6750,7 @@ describe('the Keepalive section: the colour sentence wherever no refresh is comi
     const clock = await started($, on)
     await toggle($, 'on 15')
     await clock.advance(240000)
-    expect(await drawnHint($)).toContain('"color":"success"')
+    expect((await pieDrawn($)).pie).toContain('"color":"success"')
     const text = await toggle($, '')
     expect(text).toContain('Keepalive  on, refreshing')
     expect(text).not.toContain('pie: amber')
@@ -7001,7 +7081,7 @@ describe('the Keepalive section: the colour sentence wherever no refresh is comi
     const clock = await started($, on)
     await toggle($, 'on 15')
     await clock.advance(1000)
-    expect(await drawnHint($)).toContain('"color":"success"')
+    expect((await pieDrawn($)).pie).toContain('"color":"success"')
     expect((await toggle($, '')).split(SENTENCE).length - 1).toBe(0)
   })
 
