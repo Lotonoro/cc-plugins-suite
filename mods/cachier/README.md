@@ -90,7 +90,7 @@ a short terminal the lower sections are scrolled to with the wheel.
 - **kept**: a running pause keeps the count it started with until the next prompt recounts it (`kept from pause start; recounted next prompt`).
 - **`≤¼`** / **`≤⅒`**: the last quarter / tenth of the TTL left; the pie turns amber, then red.
 - **refresh**: a small request keepalive sends shortly before the cache expires, so it stays warm. Each costs one cache read of the whole context.
-- **lead**: how long before expiry a refresh is sent (`15s`); `lead raised to 16s (slow refresh)` says a slow refresh raised it.
+- **lead**: how long before expiry a refresh is sent (`15s`); `lead raised to 16s (slow refresh)` says a slow refresh raised it, and the Settings row then reads `lead: 16s (raised: slow refresh)`.
 - **refreshes/pause**: the most refreshes one pause sends. **break-even**: the most that cost no more than the rewrite they avoid. **pinned**: a count you gave `/keepalive on <lead_s> <count>`. **cap**: `keepalive_count`, which bounds the break-even and learned counts. **learned**: the count your own pauses say is cheapest; **covers** `33:30` is how long that many refreshes keep the cache warm, and `10/13 pauses within` how many of your pauses ended inside it.
 - **pays off if back in a–b**: keepalive on costs less than off if you return between those times (`–` is a range); `never pays off on this context` says no return time does.
 - **resumes / restarts on next prompt**: a pause by design (`count used`, `cache expired`) resumes; a failure stop restarts.
@@ -102,6 +102,7 @@ a short terminal the lower sections are scrolled to with the wheel.
 - **other TTL**: the other cache lifetime, priced against yours over every priced pause as a new session would run it; its `other TTL:` row shows once it would have cost less.
 - **recent pauses**: the newest priced pauses across sessions (up to 50), which are priced when this session has fewer than five; `5 pauses this session` says the session's own were priced. **priced pauses, all sessions**: every recorded pause with its context, which the other TTL is priced over.
 - **start mode**: whether new sessions start keepalive on or off, which `keepalive_default` decides, as `new sessions start on: keepalive_default` says.
+- **unit**: whether figures are shown in dollars or in tokens; `cost_unit` sets it for new sessions, and `switched this session` says `/keepalive unit` changed it.
 - **`do:`**: how to make the change, the command first and the click after it (`do: /keepalive on 15 or click pie on`); a change of TTL sets `promptCacheTtl` for new sessions.
 - **`(cheapest)`**: no setup priced would have cost less than yours. **`vs`**: the setup a saving is stated against (`saves ~$4.40 vs 5m/off`). **`≈ same cost`**: that setup would have cost about the same, within half a cent. **`a little cheaper`**: it would have cost a little less, too little to change.
 - **in tokens**: a figure with no dollars is shown in tokens, and `in tokens: no price for …` says why. In the tokens unit a saving is stated as `money`, with `$ only, /keepalive unit dollars` pointing to the dollars that state it.

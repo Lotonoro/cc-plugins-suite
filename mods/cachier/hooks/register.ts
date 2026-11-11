@@ -28,6 +28,7 @@ import {
   pastHalfTtl,
   pastHalfTtlStop,
   raisedLeadOf,
+  SLOW_REFRESH,
   rearm,
   outcomeOf,
   refused,
@@ -57,7 +58,8 @@ import { appended, HISTORY_BOUND, keyOf, KEY_PREFIX, merged, recordOf, recordsOf
 import { adviceOf, ratesOfView, ttlLineOf, type Inputs } from './advice'
 import { learnedLine, learnedOf, ttlSwitchOf, type Learned } from './learn'
 import { breakEvenLine, countLineOf, judge, KEPT_COUNT, ratioOf, rebuildSpendOf, runCountOf, sessionBalanceLine, NO_JUDGED, pauseOf, type Pause } from './verdict'
-import { answerOf, paneLayoutOf, type PaneRow, type PaneSize, type Setting, type Snapshot } from './sections'
+import { answerOf, paneLayoutOf, spanOf, type PaneRow, type PaneSize, type Setting, type Snapshot } from './sections'
+import { secsTerse } from './setup'
 import { stampLabel, withStamp } from './stamp'
 import { foldStatsEvents, INITIAL_STATS, pendingFor, rundownSections, sessionLineOf, type MissEvent, type LongPauseEvent } from './stats'
 import { lookupRows, readCache, type History, type Host, type Row } from './transcript'
@@ -852,30 +854,32 @@ export const pressCountdown = async ($: Dollar, defaults: Defaults) => {
 const settingsOf = (raw: CacheView, run: { leadMs: number; count: number | null } | undefined, kept: number | null, tally: TallyState, view: CacheView, money: Money, nowMs: number, unitPressed: boolean): Setting[] => {
   const known = raw.kind === 'known'
   const hour = known && raw.ttlLabel === '1h'
+  // The TTL a switch steps to: the label's other value, the 1-hour one while none is read.
+  const other = hour ? '5m' : '1h'
   const pinned = run?.count ?? null
   const learned = pinned === null && run !== undefined && view.kind === 'known' && learnedNow(view, money, run.leadMs, nowMs) !== null
   return [
     {
       name: 'TTL',
-      value: known ? (hour ? '1 h' : '5 min') : 'not read yet',
-      source: known ? 'read from the last response' : null,
-      change: hour ? `${ttlSwitchOf('5m')} for 5 min (new sessions)` : `${ttlSwitchOf('1h')} for 1 h (new sessions)`,
+      value: known ? raw.ttlLabel : 'not read yet',
+      source: known ? 'last response' : null,
+      change: `${ttlSwitchOf(other)} for ${other} (new sessions)`,
     },
     {
       name: 'lead',
-      value: run === undefined ? 'not set' : `${run.leadMs / 1000} s`,
-      source: tally.raisedMs === null ? null : 'raised after a slow refresh',
-      change: '/keepalive on <lead seconds>',
+      value: run === undefined ? 'not set' : secsTerse(run.leadMs),
+      source: tally.raisedMs === null ? null : `raised: ${SLOW_REFRESH}`,
+      change: spanOf('/keepalive on <lead_s>'),
     },
     {
-      name: 'refreshes a pause',
+      name: 'refreshes/pause',
       value: pinned !== null ? `${pinned}, pinned` : kept !== null ? `${kept}` : learned ? 'learned' : 'break-even',
       // The cap bounds the break-even and learned counts, never a pinned one (runCountOf) or a kept one.
-      source: pinned !== null ? null : kept !== null ? KEPT_COUNT : defaultRun?.cap == null ? null : 'keepalive_count caps it',
-      change: '/keepalive on <lead seconds> <refreshes>, or keepalive_count',
+      source: pinned !== null ? null : kept !== null ? KEPT_COUNT : defaultRun?.cap == null ? null : 'keepalive_count cap',
+      change: `${spanOf('/keepalive on <lead_s> <count>')} or keepalive_count`,
     },
-    { name: 'start mode', value: defaultMode, source: 'keepalive_default option', change: '/keepalive default on|off, for new sessions' },
-    { name: 'unit', value: money.unit, source: unitPressed ? 'switched this session' : 'cost_unit option', change: '/keepalive unit tokens|dollars' },
+    { name: 'start mode', value: defaultMode, source: 'keepalive_default', change: `${spanOf('/keepalive default on|off')} (new sessions)` },
+    { name: 'unit', value: money.unit, source: unitPressed ? 'switched this session' : 'cost_unit', change: spanOf('/keepalive unit tokens|dollars') },
   ]
 }
 

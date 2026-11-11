@@ -1,13 +1,13 @@
 import { describe, expect, test } from 'claude-code/testing'
-import { answerOf, layoutOf, paneLayoutOf, sectionsOf, SPAN_SPACE, wrapLine, WRAP, type AnswerRow, type PaneRow, type Setting, type Snapshot } from './sections'
+import { answerOf, layoutOf, paneLayoutOf, sectionsOf, spanOf, SPAN_SPACE, wrapLine, WRAP, type AnswerRow, type PaneRow, type Setting, type Snapshot } from './sections'
 
-// The builder takes the figures and sentences as plain values: no engine, no `$`.
+// The builder takes the figures and sentences as plain values: no engine, no `$`. A command in a setting's change is one span, as the command gives it.
 const SETTINGS: Setting[] = [
-  { name: 'TTL', value: '5 min', source: 'read from the last response', change: 'set "promptCacheTtl": "1h" in settings.json for 1 h (new sessions)' },
-  { name: 'lead', value: '15 s', source: null, change: '/keepalive on <lead seconds>' },
-  { name: 'refreshes a pause', value: 'break-even, 24', source: 'keepalive_count caps it', change: 'keepalive_count' },
-  { name: 'start mode', value: 'off', source: 'keepalive_default option', change: '/keepalive default on|off, for new sessions' },
-  { name: 'unit', value: 'dollars', source: 'cost_unit option', change: '/keepalive unit tokens|dollars' },
+  { name: 'TTL', value: '5m', source: 'last response', change: 'set "promptCacheTtl": "1h" in settings.json for 1h (new sessions)' },
+  { name: 'lead', value: '15s', source: null, change: spanOf('/keepalive on <lead_s>') },
+  { name: 'refreshes/pause', value: 'break-even', source: 'keepalive_count cap', change: `${spanOf('/keepalive on <lead_s> <count>')} or keepalive_count` },
+  { name: 'start mode', value: 'off', source: 'keepalive_default', change: `${spanOf('/keepalive default on|off')} (new sessions)` },
+  { name: 'unit', value: 'dollars', source: 'cost_unit', change: spanOf('/keepalive unit tokens|dollars') },
 ]
 const FULL: Snapshot = {
   cache: ['warm · 3:12 left · 5m TTL'],
@@ -34,10 +34,51 @@ describe('sectionsOf: the five sections in order, each with its lines', () => {
     expect(sectionsOf(FULL).map((s) => s.state)).toEqual([null, 'on, refreshing', null, null, null])
   })
 
-  test('a setting is one line: its name, its value, its source in brackets when there is one, and its change', () => {
+  test('a setting is one line: its name, its value, its source in brackets when there is one, and its change, with no full stop', () => {
     const lines = sectionsOf({ ...EMPTY, settings: SETTINGS }).find((s) => s.title === 'Settings')!.lines
-    expect(lines[0]).toBe('TTL 5 min (read from the last response): set "promptCacheTtl": "1h" in settings.json for 1 h (new sessions).')
-    expect(lines[1]).toBe('lead 15 s: /keepalive on <lead seconds>.')
+    expect(lines).toHaveLength(5)
+    expect(lines[0]).toBe('TTL: 5m (last response) · set "promptCacheTtl": "1h" in settings.json for 1h (new sessions)')
+    expect(lines[1]).toBe(`lead: 15s · ${['/keepalive', 'on', '<lead_s>'].join(SPAN_SPACE)}`)
+    expect(lines[2]).toBe(`refreshes/pause: break-even (keepalive_count cap) · ${['/keepalive', 'on', '<lead_s>', '<count>'].join(SPAN_SPACE)} or keepalive_count`)
+    expect(lines.some((line) => line.endsWith('.'))).toBe(false)
+  })
+
+  test('the Settings rows at 48 columns keep each command whole on a row, the TTL step wrapping as words', () => {
+    const rows = layoutOf({ ...EMPTY, settings: SETTINGS }).map((row) => row.text)
+    expect(rows.slice(rows.indexOf('Settings') + 1)).toEqual([
+      '  TTL: 5m (last response) · set',
+      '    "promptCacheTtl": "1h" in settings.json for',
+      '    1h (new sessions)',
+      '  lead: 15s · /keepalive on <lead_s>',
+      '  refreshes/pause: break-even (keepalive_count',
+      '    cap) · /keepalive on <lead_s> <count> or',
+      '    keepalive_count',
+      '  start mode: off (keepalive_default) ·',
+      '    /keepalive default on|off (new sessions)',
+      '  unit: dollars (cost_unit) ·',
+      '    /keepalive unit tokens|dollars',
+    ])
+  })
+})
+
+describe('spanOf: the words of a command or a setup token joined into one unbreakable span', () => {
+  test('each space becomes the span space, and a text with none is unchanged', () => {
+    expect(spanOf('/keepalive on <lead_s> <count>')).toBe(['/keepalive', 'on', '<lead_s>', '<count>'].join(SPAN_SPACE))
+    expect(spanOf('5m/paused (lead 300s ≥ 300s TTL)')).toBe(['5m/paused', '(lead', '300s', '≥', '300s', 'TTL)'].join(SPAN_SPACE))
+    expect(spanOf('keepalive_count')).toBe('keepalive_count')
+  })
+
+  test('a span moves whole to the next row where the same words, unjoined, would break between them', () => {
+    const lead = 'refreshes/pause: break-even · '
+    expect(wrapLine(`${lead}${spanOf('/keepalive on <lead_s> <count>')} or keepalive_count`)).toEqual([
+      '  refreshes/pause: break-even ·',
+      '    /keepalive on <lead_s> <count> or',
+      '    keepalive_count',
+    ])
+    expect(wrapLine(`${lead}/keepalive on <lead_s> <count> or keepalive_count`)).toEqual([
+      '  refreshes/pause: break-even · /keepalive on',
+      '    <lead_s> <count> or keepalive_count',
+    ])
   })
 })
 

@@ -16,7 +16,7 @@ import type { PauseRecord } from './history'
 import { pausesCost, priceable, ttlAdviceOf, ttlSwitchOf, type TtlRates } from './learn'
 import { dollars, DOLLARS_ONLY, pricedSpeed, ratesFor, TTL_MS, tierOf, type Money } from './prices'
 import { printRequest } from './keepalive'
-import { SPAN_SPACE } from './sections'
+import { spanOf } from './sections'
 import { refreshIntervalMs, setupToken, type Setup } from './setup'
 
 // Whether the pauses priced are this session's, or the newest recent ones across sessions.
@@ -128,9 +128,6 @@ const pausesOf = (of: number, source: Source): string => {
   const noun = of === 1 ? 'pause' : 'pauses'
   return source === 'session' ? `${of} ${noun} this session` : `${of} recent ${noun}`
 }
-
-// A command or a setup token is one span: the wrap keeps it whole on a row, and the answer and the pane print each space in it as a plain one.
-const spanOf = (text: string): string => text.split(' ').join(SPAN_SPACE)
 
 // A target, near or baseline setup is never an "on" that sends nothing: bestSetupOf prices such a setup as its "off" twin and a tie puts
 // that first. So it is named at a lead no TTL reaches, and reads on or off as it is priced. A setup at the other TTL runs as a new session

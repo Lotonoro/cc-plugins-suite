@@ -261,7 +261,7 @@ const SNAPSHOT: Snapshot = {
   keepalive: { state: 'off', lines: ['pie: amber ≤¼ TTL left, red ≤⅒'] },
   session: ['session: no refreshes yet'],
   advice: ['setup: 5m/off', 'best: 1h/off · would have saved $1.20 (10 recent pauses)', 'do: set "promptCacheTtl": "1h" in settings.json (new sessions start off: keepalive_default)'],
-  settings: [{ name: 'unit', value: 'dollars', source: 'cost_unit option', change: '/keepalive unit tokens|dollars' }],
+  settings: [{ name: 'unit', value: 'dollars', source: 'cost_unit', change: '/keepalive unit tokens|dollars' }],
 }
 const ROWS = paneLayoutOf(SNAPSHOT).rows
 

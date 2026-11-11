@@ -43,6 +43,8 @@ const world = (on: any, doc: { text: string; broken?: boolean; exists?: boolean;
     panes: new Set<string>(),
     opens: [] as any[],
     closes: [] as any[],
+    // The commands the plugin registered, as it registered them.
+    commands: [] as any[],
   }
   // `getHold` holds the `nth` read of its key, the first by default: the value is read at once and answered when the hold settles, so a
   // write that lands meanwhile is not in the answer.
@@ -90,7 +92,10 @@ const world = (on: any, doc: { text: string; broken?: boolean; exists?: boolean;
   })
   on('session.end', (_$: any, e: any) => ({ sessionId: e.sessionId }))
   on('session.start', (_$: any, e: any) => ({ cwd: e.cwd }))
-  on('command.register', () => ({ value: undefined }))
+  on('command.register', (_$: any, e: any) => {
+    rec.commands.push(e)
+    return { value: undefined }
+  })
   on('ui.invalidate', (_$: any, e: any, next: any) => {
     rec.invalidations.push(e.event)
     return next(e)
@@ -2312,7 +2317,13 @@ describe('keepalive: the queue and the race', () => {
     expect(debugOf(rec, 'cachier lead')[0].to_s).toBeGreaterThanOrEqual(16)
     expect(lastStatus(rec) ?? '').not.toContain('keepalive stopped')
     await clock.advance(1000)
-    expect(await toggle($, '')).toContain('lead raised to 16s (slow refresh)')
+    const answer = await toggle($, '')
+    expect(answer).toContain('lead raised to 16s (slow refresh)')
+    // The Settings row names the same raise, beside the Keepalive section's row, in the answer and in the pane.
+    const row = 'lead: 16s (raised: slow refresh) · /keepalive on <lead_s>'
+    expect(answer).toContain(row)
+    expect(await drawnPane($)).toContain(row)
+    expect(await drawnPane($)).toContain('lead raised to 16s (slow refresh)')
   })
 
   test('a faster ping after a raise never lowers the lead', async ($, on) => {
@@ -2359,9 +2370,15 @@ describe('keepalive: the queue and the race', () => {
     release()
     await clock.advance(1000)
     expect(await toggle($, '')).toContain('lead raised to 16s (slow refresh)')
+    const raised = await drawnPane($)
     expect(await toggle($, 'on 30 3')).toContain('lead 30 s')
     await clock.advance(1000)
     expect(await drawnHint($)).not.toContain('lead raised')
+    // The Settings row goes with the note: the new lead and no raise, where the row before it named one.
+    const cleared = await drawnPane($)
+    expect(cleared).not.toContain('raised')
+    expect(cleared).toContain('lead: 30s · /keepalive on <lead_s>')
+    expect(raised).toContain('lead: 16s (raised: slow refresh) · /keepalive on <lead_s>')
     expect(rec.forks.length).toBe(1)
   })
 
@@ -2480,6 +2497,8 @@ describe('keepalive: the queue and the race', () => {
     const status = await toggle($, '')
     expect(status).not.toMatch(/(^|\s)pause: /)
     expect(status).toContain('session: 1 refresh · ~19k read')
+    // The Settings row `refreshes/pause: …` is no pause tally: the anchor wants a space or the start before `pause:`.
+    expect(status).toContain('refreshes/pause: ')
   })
 
   test('each ping leaves one debug line: its time, lead, TTL, generation, round trip, usage, and outcome', async ($, on) => {
@@ -2515,6 +2534,7 @@ describe('keepalive: the queue and the race', () => {
     await clock.advance(1000)
     expect(await drawnPane($)).not.toMatch(/(^|\s)pause: /)
     expect(await drawnPane($)).toContain('session: 1 refresh · ~19k read')
+    expect(await drawnPane($)).toContain('refreshes/pause: ')
   })
 
   test('a bridge prompt re-arms an armed keepalive; a peer prompt does not', async ($, on) => {
@@ -2823,8 +2843,8 @@ describe('the low-key UI: the footer line, the click, the gutter, and what the s
     // The model is switched before any refresh: the cache is cold, and the count the run sends was worked out for the warm cache.
     await $.classic.PostModelSwitch({ from_model: 'claude-opus-5-5', to_model: 'claude-sonnet-5-5', requested_model: 'claude-sonnet-5-5', source: 'command', prompt_cache_warm: false, cache_ttl: '5m', context_tokens: 1, estimated_cache_write_usd: 0, pricing: 'catalog' } as any)
     const text = await toggle($, '')
-    expect(text).toContain('refreshes a pause break-even')
     expect(text).not.toContain('kept from pause start')
+    expect(text).toContain('refreshes/pause: break-even')
   })
 
   test('a cache miss in the transcript shows in the pane with keepalive off, and no refresh figure on the line',async ($, on) => {
@@ -2998,7 +3018,7 @@ describe('the low-key UI: the footer line, the click, the gutter, and what the s
     await clock.advance(1000)
     expect(rec.toasts).toEqual([])
     expect(await toggle($, '')).toContain('5 left')
-    expect(await toggle($, '')).toContain('30 s')
+    expect(await toggle($, '')).toContain('lead: 30s')
     await m.unmount()
   })
 
@@ -3016,7 +3036,7 @@ describe('the low-key UI: the footer line, the click, the gutter, and what the s
     await m.drawn()
     await clock.advance(1000)
     expect(await toggle($, '')).toContain('5 left')
-    expect(await toggle($, '')).toContain('30 s')
+    expect(await toggle($, '')).toContain('lead: 30s')
     expect(rec.toasts).toEqual([])
     await m.unmount()
   })
@@ -3556,7 +3576,7 @@ describe('the details pane: a click on the time opens it at its size, a second c
     expect(await toggle($, 'on 240 3')).toContain('keepalive on')
     expect(await toggle($, 'off')).toContain('keepalive off')
     await clock.advance(1000)
-    expect(await drawnPane($)).toContain('lead 240 s: /keepalive on <lead seconds>.')
+    expect(await drawnPane($)).toContain('lead: 240s · /keepalive on <lead_s>')
   })
 
   test('after a pie press, the next tick re-opens an open pane at the rows and columns its new draw took', { options: { keepalive_lead_s: 15, keepalive_count: 3 } }, async ($, on) => {
@@ -4614,7 +4634,8 @@ describe('the cost unit: dollars at list prices, or tokens, switched by /keepali
     expect(await toggle($, 'unit dollars')).toBe('figures show in dollars for this session.')
     expect(JSON.stringify(await m.drawn())).toContain('keep warm $0.004/refresh')
     // Back in dollars, keepalive reads as it did before the switch: the unit is all that moved.
-    expect(await toggle($, '')).toBe(before.replace('unit dollars (cost_unit option)', 'unit dollars (switched this session)'))
+    expect(before).toContain('unit: dollars (cost_unit)')
+    expect(await toggle($, '')).toBe(before.replace('unit: dollars (cost_unit)', 'unit: dollars (switched this session)'))
     await m.unmount()
   })
 
@@ -5212,7 +5233,7 @@ describe('the default mode: the one a session starts in, set by /keepalive defau
     const clock = mock.clock(on, { now: T0 })
     await $.classic.SessionStart({ source: 'startup', transcript_path: PATH })
     await clock.advance(1000)
-    expect(await toggle($, '')).toMatch(/start mode off \(keepalive_default option\)/)
+    expect(await toggle($, '')).toMatch(/start mode: off \(keepalive_default\)/)
     expect(await toggle($, 'default on')).toBe('keepalive default: on. Sessions started from now on start with keepalive on; this one stays as it is.')
     expect(await toggle($, '')).toMatch(/Keepalive {2}off/)
     expect(await toggle($, 'default off')).toBe('keepalive default unchanged: policy')
@@ -5489,7 +5510,12 @@ describe('the learned count: an unpinned run sends what the stored pauses say, a
     await mainStep($)
     await turnEnd($)
     await clock.advance(1000)
-    expect(await toggle($, '')).toContain('refreshes a pause 1 (kept from pause start; recounted next prompt)')
+    expect(await toggle($, '')).toContain('refreshes/pause: 1 (kept from pause start; recounted next prompt)')
+    // The whole row, in the pane and in the answer; the answer wraps the long source and moves the command whole to the row after it.
+    const row = 'refreshes/pause: 1 (kept from pause start; recounted next prompt) · /keepalive on <lead_s> <count> or keepalive_count'
+    expect(await toggle($, '')).toContain(row)
+    expect(await drawnPane($)).toContain(row)
+    expect(await commandText($, '')).toContain(['  refreshes/pause: 1 (kept from pause start;', '    recounted next prompt) ·', '    /keepalive on <lead_s> <count> or', '    keepalive_count'].join('\n'))
   })
 
   test('the count line says the count a pause started with when the learned count now differs from it, as Settings does', { timeoutMs: 60000, options: { keepalive_lead_s: 60, keepalive_count: 1 } }, async ($, on) => {
@@ -5512,7 +5538,7 @@ describe('the learned count: an unpinned run sends what the stored pauses say, a
     await clock.advance(1000)
     const text = await toggle($, '')
     expect(text).toContain('max 1 refresh/pause (kept from pause start; recounted next prompt)')
-    expect(text).toContain('refreshes a pause 1 (kept from pause start; recounted next prompt)')
+    expect(text).toContain('refreshes/pause: 1 (kept from pause start; recounted next prompt)')
   })
 
   test('the count line says the count a pause started with when it equals break-even and a different learned count now stands', { options: { keepalive_lead_s: 60, keepalive_count: 24 } }, async ($, on) => {
@@ -5535,7 +5561,7 @@ describe('the learned count: an unpinned run sends what the stored pauses say, a
     await clock.advance(1000)
     const text = await toggle($, '')
     expect(text).toContain('max 24 refreshes/pause (kept from pause start; recounted next prompt)')
-    expect(text).toContain('refreshes a pause 24 (kept from pause start; recounted next prompt)')
+    expect(text).toContain('refreshes/pause: 24 (kept from pause start; recounted next prompt)')
   })
 })
 
@@ -5792,12 +5818,11 @@ describe('the bare command answers five sections, in order: Cache, Keepalive, Th
     await $.classic.SessionStart({ source: 'startup', transcript_path: PATH })
     await clock.advance(1000)
     const text = await toggle($, '')
-    expect(text).toContain('TTL 5 min (read from the last response): set "promptCacheTtl": "1h" in settings.json for 1 h (new sessions).')
-    expect(text).toContain('lead 15 s: /keepalive on <lead seconds>.')
-    expect(text).toContain('refreshes a pause')
-    expect(text).toContain('keepalive_count')
-    expect(text).toContain('start mode off (keepalive_default option): /keepalive default on|off, for new sessions.')
-    expect(text).toContain('unit dollars (cost_unit option): /keepalive unit tokens|dollars.')
+    expect(text).toContain('TTL: 5m (last response) · set "promptCacheTtl": "1h" in settings.json for 1h (new sessions)')
+    expect(text).toContain('lead: 15s · /keepalive on <lead_s>')
+    expect(text).toContain('refreshes/pause: break-even · /keepalive on <lead_s> <count> or keepalive_count')
+    expect(text).toContain('start mode: off (keepalive_default) · /keepalive default on|off (new sessions)')
+    expect(text).toContain('unit: dollars (cost_unit) · /keepalive unit tokens|dollars')
   })
 
   test('a run whose cost the answer states has the refresh cost in the Keepalive section, before Settings', async ($, on) => {
@@ -5906,7 +5931,7 @@ describe('the This session section: the session figures, copied from the Keepali
     await clock.advance(240500)
     await clock.advance(1000)
     const text = await commandText($, '')
-    expect(text).toContain('unit dollars (cost_unit option)')
+    expect(text).toContain('unit: dollars (cost_unit)')
     const session = 'session: 1 refresh · ~19k read'
     expect(sectionLines(text, 'This session')?.[0]).toBe(session)
     expect(sectionLines(text, 'Keepalive')).toContain(session)
@@ -6072,17 +6097,17 @@ describe('the bare command answers whole: the text its sections lay out, for fix
         '  session: no refreshes yet',
         '',
         'Settings',
-        '  TTL 5 min (read from the last response): set',
+        '  TTL: 5m (last response) · set',
         '    "promptCacheTtl": "1h" in settings.json for',
-        '    1 h (new sessions).',
-        '  lead 15 s: /keepalive on <lead seconds>.',
-        '  refreshes a pause break-even: /keepalive on',
-        '    <lead seconds> <refreshes>, or',
-        '    keepalive_count.',
-        '  start mode off (keepalive_default option):',
-        '    /keepalive default on|off, for new sessions.',
-        '  unit dollars (cost_unit option): /keepalive',
-        '    unit tokens|dollars.',
+        '    1h (new sessions)',
+        '  lead: 15s · /keepalive on <lead_s>',
+        '  refreshes/pause: break-even ·',
+        '    /keepalive on <lead_s> <count> or',
+        '    keepalive_count',
+        '  start mode: off (keepalive_default) ·',
+        '    /keepalive default on|off (new sessions)',
+        '  unit: dollars (cost_unit) ·',
+        '    /keepalive unit tokens|dollars',
       ].join('\n'),
     )
   })
@@ -6109,17 +6134,17 @@ describe('the bare command answers whole: the text its sections lay out, for fix
         '  session: no refreshes yet',
         '',
         'Settings',
-        '  TTL 5 min (read from the last response): set',
+        '  TTL: 5m (last response) · set',
         '    "promptCacheTtl": "1h" in settings.json for',
-        '    1 h (new sessions).',
-        '  lead 15 s: /keepalive on <lead seconds>.',
-        '  refreshes a pause break-even: /keepalive on',
-        '    <lead seconds> <refreshes>, or',
-        '    keepalive_count.',
-        '  start mode off (keepalive_default option):',
-        '    /keepalive default on|off, for new sessions.',
-        '  unit dollars (cost_unit option): /keepalive',
-        '    unit tokens|dollars.',
+        '    1h (new sessions)',
+        '  lead: 15s · /keepalive on <lead_s>',
+        '  refreshes/pause: break-even ·',
+        '    /keepalive on <lead_s> <count> or',
+        '    keepalive_count',
+        '  start mode: off (keepalive_default) ·',
+        '    /keepalive default on|off (new sessions)',
+        '  unit: dollars (cost_unit) ·',
+        '    /keepalive unit tokens|dollars',
       ].join('\n'),
     )
   })
@@ -6146,17 +6171,17 @@ describe('the bare command answers whole: the text its sections lay out, for fix
         '  session: no refreshes yet',
         '',
         'Settings',
-        '  TTL 5 min (read from the last response): set',
+        '  TTL: 5m (last response) · set',
         '    "promptCacheTtl": "1h" in settings.json for',
-        '    1 h (new sessions).',
-        '  lead 60 s: /keepalive on <lead seconds>.',
-        '  refreshes a pause 2, pinned: /keepalive on',
-        '    <lead seconds> <refreshes>, or',
-        '    keepalive_count.',
-        '  start mode off (keepalive_default option):',
-        '    /keepalive default on|off, for new sessions.',
-        '  unit dollars (cost_unit option): /keepalive',
-        '    unit tokens|dollars.',
+        '    1h (new sessions)',
+        '  lead: 60s · /keepalive on <lead_s>',
+        '  refreshes/pause: 2, pinned ·',
+        '    /keepalive on <lead_s> <count> or',
+        '    keepalive_count',
+        '  start mode: off (keepalive_default) ·',
+        '    /keepalive default on|off (new sessions)',
+        '  unit: dollars (cost_unit) ·',
+        '    /keepalive unit tokens|dollars',
       ].join('\n'),
     )
   })
@@ -6182,17 +6207,17 @@ describe('the bare command answers whole: the text its sections lay out, for fix
         '  session: no refreshes yet',
         '',
         'Settings',
-        '  TTL 5 min (read from the last response): set',
+        '  TTL: 5m (last response) · set',
         '    "promptCacheTtl": "1h" in settings.json for',
-        '    1 h (new sessions).',
-        '  lead 15 s: /keepalive on <lead seconds>.',
-        '  refreshes a pause break-even: /keepalive on',
-        '    <lead seconds> <refreshes>, or',
-        '    keepalive_count.',
-        '  start mode off (keepalive_default option):',
-        '    /keepalive default on|off, for new sessions.',
-        '  unit dollars (cost_unit option): /keepalive',
-        '    unit tokens|dollars.',
+        '    1h (new sessions)',
+        '  lead: 15s · /keepalive on <lead_s>',
+        '  refreshes/pause: break-even ·',
+        '    /keepalive on <lead_s> <count> or',
+        '    keepalive_count',
+        '  start mode: off (keepalive_default) ·',
+        '    /keepalive default on|off (new sessions)',
+        '  unit: dollars (cost_unit) ·',
+        '    /keepalive unit tokens|dollars',
       ].join('\n'),
     )
   })
@@ -6222,17 +6247,17 @@ describe('the bare command answers whole: the text its sections lay out, for fix
         '  5m write ≈ 25 reads (claude-opus-5-5)',
         '',
         'Settings',
-        '  TTL 5 min (read from the last response): set',
+        '  TTL: 5m (last response) · set',
         '    "promptCacheTtl": "1h" in settings.json for',
-        '    1 h (new sessions).',
-        '  lead 15 s: /keepalive on <lead seconds>.',
-        '  refreshes a pause break-even: /keepalive on',
-        '    <lead seconds> <refreshes>, or',
-        '    keepalive_count.',
-        '  start mode off (keepalive_default option):',
-        '    /keepalive default on|off, for new sessions.',
-        '  unit tokens (switched this session):',
-        '    /keepalive unit tokens|dollars.',
+        '    1h (new sessions)',
+        '  lead: 15s · /keepalive on <lead_s>',
+        '  refreshes/pause: break-even ·',
+        '    /keepalive on <lead_s> <count> or',
+        '    keepalive_count',
+        '  start mode: off (keepalive_default) ·',
+        '    /keepalive default on|off (new sessions)',
+        '  unit: tokens (switched this session) ·',
+        '    /keepalive unit tokens|dollars',
       ].join('\n'),
     )
   })
@@ -6283,11 +6308,11 @@ describe('the bare command answers whole: the text its sections lay out, for fix
           '  in tokens: no price for an unnamed model',
           '',
           'Settings',
-          '  TTL 5 min (read from the last response): set "promptCacheTtl": "1h" in settings.json for 1 h (new sessions).',
-          '  lead 60 s: /keepalive on <lead seconds>.',
-          '  refreshes a pause 2, pinned: /keepalive on <lead seconds> <refreshes>, or keepalive_count.',
-          '  start mode off (keepalive_default option): /keepalive default on|off, for new sessions.',
-          '  unit dollars (cost_unit option): /keepalive unit tokens|dollars.',
+          '  TTL: 5m (last response) · set "promptCacheTtl": "1h" in settings.json for 1h (new sessions)',
+          '  lead: 60s · /keepalive on <lead_s>',
+          '  refreshes/pause: 2, pinned · /keepalive on <lead_s> <count> or keepalive_count',
+          '  start mode: off (keepalive_default) · /keepalive default on|off (new sessions)',
+          '  unit: dollars (cost_unit) · /keepalive unit tokens|dollars',
         ].join('\n'),
       )
       // The accepted window: the heading reads paused while the reset is being recorded, and the pie is still green with keepalive on.
@@ -6353,17 +6378,17 @@ describe('the bare command answers whole: the text its sections lay out, for fix
         '  misses: 1 (lapse 1) · $0.20 rewritten',
         '',
         'Settings',
-        '  TTL 5 min (read from the last response): set',
+        '  TTL: 5m (last response) · set',
         '    "promptCacheTtl": "1h" in settings.json for',
-        '    1 h (new sessions).',
-        '  lead 15 s: /keepalive on <lead seconds>.',
-        '  refreshes a pause break-even (keepalive_count',
-        '    caps it): /keepalive on <lead seconds>',
-        '    <refreshes>, or keepalive_count.',
-        '  start mode off (keepalive_default option):',
-        '    /keepalive default on|off, for new sessions.',
-        '  unit dollars (cost_unit option): /keepalive',
-        '    unit tokens|dollars.',
+        '    1h (new sessions)',
+        '  lead: 15s · /keepalive on <lead_s>',
+        '  refreshes/pause: break-even (keepalive_count',
+        '    cap) · /keepalive on <lead_s> <count> or',
+        '    keepalive_count',
+        '  start mode: off (keepalive_default) ·',
+        '    /keepalive default on|off (new sessions)',
+        '  unit: dollars (cost_unit) ·',
+        '    /keepalive unit tokens|dollars',
       ].join('\n'),
     )
   })
@@ -6384,17 +6409,17 @@ describe('the bare command answers whole: the text its sections lay out, for fix
         '  session: no refreshes yet',
         '',
         'Settings',
-        '  TTL 5 min (read from the last response): set',
+        '  TTL: 5m (last response) · set',
         '    "promptCacheTtl": "1h" in settings.json for',
-        '    1 h (new sessions).',
-        '  lead 15 s: /keepalive on <lead seconds>.',
-        '  refreshes a pause break-even: /keepalive on',
-        '    <lead seconds> <refreshes>, or',
-        '    keepalive_count.',
-        '  start mode off (keepalive_default option):',
-        '    /keepalive default on|off, for new sessions.',
-        '  unit dollars (cost_unit option): /keepalive',
-        '    unit tokens|dollars.',
+        '    1h (new sessions)',
+        '  lead: 15s · /keepalive on <lead_s>',
+        '  refreshes/pause: break-even ·',
+        '    /keepalive on <lead_s> <count> or',
+        '    keepalive_count',
+        '  start mode: off (keepalive_default) ·',
+        '    /keepalive default on|off (new sessions)',
+        '  unit: dollars (cost_unit) ·',
+        '    /keepalive unit tokens|dollars',
       ].join('\n'),
     )
   })
@@ -6424,17 +6449,17 @@ describe('the bare command answers whole: the text its sections lay out, for fix
         '  session: no refreshes yet',
         '',
         'Settings',
-        '  TTL 5 min (read from the last response): set',
+        '  TTL: 5m (last response) · set',
         '    "promptCacheTtl": "1h" in settings.json for',
-        '    1 h (new sessions).',
-        '  lead 15 s: /keepalive on <lead seconds>.',
-        '  refreshes a pause break-even: /keepalive on',
-        '    <lead seconds> <refreshes>, or',
-        '    keepalive_count.',
-        '  start mode off (keepalive_default option):',
-        '    /keepalive default on|off, for new sessions.',
-        '  unit dollars (cost_unit option): /keepalive',
-        '    unit tokens|dollars.',
+        '    1h (new sessions)',
+        '  lead: 15s · /keepalive on <lead_s>',
+        '  refreshes/pause: break-even ·',
+        '    /keepalive on <lead_s> <count> or',
+        '    keepalive_count',
+        '  start mode: off (keepalive_default) ·',
+        '    /keepalive default on|off (new sessions)',
+        '  unit: dollars (cost_unit) ·',
+        '    /keepalive unit tokens|dollars',
       ].join('\n'),
     )
   })
@@ -6455,18 +6480,115 @@ describe('the bare command answers whole: the text its sections lay out, for fix
         '  session: no refreshes yet',
         '',
         'Settings',
-        '  TTL 5 min (read from the last response): set',
+        '  TTL: 5m (last response) · set',
         '    "promptCacheTtl": "1h" in settings.json for',
-        '    1 h (new sessions).',
-        '  lead 15 s: /keepalive on <lead seconds>.',
-        '  refreshes a pause break-even: /keepalive on',
-        '    <lead seconds> <refreshes>, or',
-        '    keepalive_count.',
-        '  start mode off (keepalive_default option):',
-        '    /keepalive default on|off, for new sessions.',
-        '  unit tokens (switched this session):',
-        '    /keepalive unit tokens|dollars.',
+        '    1h (new sessions)',
+        '  lead: 15s · /keepalive on <lead_s>',
+        '  refreshes/pause: break-even ·',
+        '    /keepalive on <lead_s> <count> or',
+        '    keepalive_count',
+        '  start mode: off (keepalive_default) ·',
+        '    /keepalive default on|off (new sessions)',
+        '  unit: tokens (switched this session) ·',
+        '    /keepalive unit tokens|dollars',
       ].join('\n'),
+    )
+  })
+})
+
+// The Settings lines as each surface states them: the command's, each line's wrapped rows joined back into one, and the pane's rows, each whole.
+const settingsLines = async ($: any): Promise<{ answer: string[]; pane: string[] }> => {
+  const rows = await paneRows($)
+  return { answer: sectionLines(await commandText($, ''), 'Settings') ?? [], pane: rows.slice(rows.indexOf('Settings') + 1) }
+}
+// What no Settings row holds, tested on each row so that a row cannot hide in an answer joined into one string: a closing full stop, the
+// spelled-out placeholder `lead seconds`, the old name `refreshes a pause`, a source ending ` option)`, and a seconds figure spaced from its `s`.
+const expectTerseRows = (rows: string[]) => {
+  expect(rows.some((row) => row.endsWith('.'))).toBe(false)
+  for (const old of [/lead seconds/, /refreshes a pause/, / option\)/, /\d s\b/]) expect(rows.some((row) => old.test(row))).toBe(false)
+}
+
+describe('the Settings rows: each is `name: value (source) · change`, the same in the pane and in the bare answer', () => {
+  const SET_1H = 'set "promptCacheTtl": "1h" in settings.json for 1h (new sessions)'
+  const SET_5M = 'set "promptCacheTtl": "5m" in settings.json for 5m (new sessions)'
+  const COUNT = '/keepalive on <lead_s> <count> or keepalive_count'
+  const DEFAULT_ROWS = [
+    `TTL: 5m (last response) · ${SET_1H}`,
+    'lead: 15s · /keepalive on <lead_s>',
+    `refreshes/pause: break-even · ${COUNT}`,
+    'start mode: off (keepalive_default) · /keepalive default on|off (new sessions)',
+    'unit: dollars (cost_unit) · /keepalive unit tokens|dollars',
+  ]
+
+  test('five settings in a fixed order, each one row of its name, its value, its source where it has one and its change', async ($, on) => {
+    await startedWorld($, on)
+    const { answer, pane } = await settingsLines($)
+    expect(answer).toEqual(DEFAULT_ROWS)
+    expect(pane).toEqual(DEFAULT_ROWS)
+    expectTerseRows(answer)
+    expectTerseRows(pane)
+  })
+
+  // Each state changes some of the rows; every row it names stands in the pane and in the answer beside the other four, with no row wider than
+  // the 48 columns the answer wraps to.
+  type State = { name: string; options?: Record<string, number | string>; rows: string[]; run: ($: any, on: any) => Promise<unknown> }
+  const STATES: State[] = [
+    { name: 'a 1-hour cache: the TTL row steps back to 5m', rows: [`TTL: 1h (last response) · ${SET_5M}`], run: ($, on) => startedWorld($, on, cached(ONE_HOUR)) },
+    {
+      // The lead reads the options' here too: it stands until a command sets one, so no state of the command reads `lead: not set`.
+      name: 'before any session has started: the TTL is not read yet',
+      rows: [`TTL: not read yet · ${SET_1H}`, 'lead: 15s · /keepalive on <lead_s>'],
+      run: async ($, on) => {
+        kaWorld(on, opusCached())
+        mock.clock(on, { now: T0 })
+      },
+    },
+    {
+      name: 'a count pinned by a command: the command\'s lead and the pinned count',
+      rows: ['lead: 60s · /keepalive on <lead_s>', `refreshes/pause: 2, pinned · ${COUNT}`],
+      run: async ($, on) => {
+        const clock = await startedWorld($, on)
+        await toggle($, 'on 60 2')
+        await clock.advance(1000)
+      },
+    },
+    { name: 'a keepalive_count cap on the break-even count', options: { keepalive_count: 6 }, rows: [`refreshes/pause: break-even (keepalive_count cap) · ${COUNT}`], run: ($, on) => startedWorld($, on) },
+    { name: 'a count learned from the stored pauses', rows: [`refreshes/pause: learned · ${COUNT}`], run: ($, on) => startedWorld($, on, { ...opusCached(), store: LONG_PAUSES }) },
+    { name: 'new sessions that start on', options: { keepalive_default: 'on' }, rows: ['start mode: on (keepalive_default) · /keepalive default on|off (new sessions)'], run: ($, on) => startedWorld($, on) },
+    {
+      name: 'a unit switched this session',
+      rows: ['unit: tokens (switched this session) · /keepalive unit tokens|dollars'],
+      run: async ($, on) => {
+        await startedWorld($, on)
+        await toggle($, 'unit tokens')
+      },
+    },
+    { name: 'a unit the cost_unit option sets', options: { cost_unit: 'tokens' }, rows: ['unit: tokens (cost_unit) · /keepalive unit tokens|dollars'], run: ($, on) => startedWorld($, on) },
+  ]
+  for (const s of STATES) {
+    test(s.name, { options: s.options }, async ($, on) => {
+      await s.run($, on)
+      const { answer, pane } = await settingsLines($)
+      expect(answer).toHaveLength(5)
+      expect(pane).toHaveLength(5)
+      for (const row of s.rows) {
+        expect(answer).toContain(row)
+        expect(pane).toContain(row)
+      }
+      expectTerseRows(answer)
+      expectTerseRows(pane)
+      expect(widthOf((await commandText($, '')).split('\n'))).toBeLessThanOrEqual(48)
+    })
+  }
+
+  test('the usage line and the command\'s argument hint keep their placeholders, `<lead seconds> [refreshes]`', async ($, on) => {
+    const rec = kaWorld(on, opusCached())
+    mock.clock(on, { now: T0 })
+    await $.session.start({ cwd: '/home/test', surface: 'terminal', isInteractive: true } as any)
+    await $.classic.SessionStart({ source: 'startup', transcript_path: PATH })
+    expect(rec.commands.map((c) => c.argumentHint)).toEqual(['<lead seconds> [refreshes] | off | default on|off | unit dollars|tokens'])
+    expect(await commandText($, 'nonsense')).toBe(
+      'usage: /keepalive on <lead seconds> [refreshes], /keepalive off, /keepalive default on|off, or /keepalive unit dollars|tokens. Without refreshes, each run sends the count learned from your pauses, else the break-even count. The default is the mode new sessions start in.',
     )
   })
 })

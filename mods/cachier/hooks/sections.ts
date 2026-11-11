@@ -35,7 +35,7 @@ export type PaneRow = { kind: 'heading' | 'line' | 'blank'; text: string }
 // The rows and columns the pane asks for.
 export type PaneSize = { rows: number; columns: number }
 
-const settingLine = (s: Setting): string => `${s.name} ${s.value}${s.source === null ? '' : ` (${s.source})`}: ${s.change}.`
+const settingLine = (s: Setting): string => `${s.name}: ${s.value}${s.source === null ? '' : ` (${s.source})`} · ${s.change}`
 
 // The sections, in order, each with its lines. A section with no line and no state is left out.
 export const sectionsOf = (snap: Snapshot): Section[] =>
@@ -50,6 +50,9 @@ export const sectionsOf = (snap: Snapshot): Section[] =>
 // The space a sentence joins the words of an unbreakable span with, such as a command: the wrap keeps the span on one row and prints each
 // as a plain space, so the answer's text carries none.
 export const SPAN_SPACE = '\u00a0'
+
+// A command or a setup token is one span: the wrap keeps it whole on a row, and the answer and the pane print each space in it as a plain one.
+export const spanOf = (text: string): string => text.split(' ').join(SPAN_SPACE)
 
 // A sentence wrapped at the width: the first line indented two, each continuation four, no word broken and no span broken.
 export const wrapLine = (text: string, width = WRAP, first = '  ', rest = '    '): string[] => {

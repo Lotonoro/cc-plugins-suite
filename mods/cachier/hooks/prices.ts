@@ -1,7 +1,7 @@
 // Anthropic's list prices, and every figure worded from them: a spend counted in tokens and in dollars, and how either is
 // shown. A figure with no price keeps its tokens and says why it has no dollars.
 import type { Kinds, Spend, TtlLabel, Unit } from '../types'
-import { SPAN_SPACE } from './sections'
+import { spanOf } from './sections'
 
 // A model's per-token rates, and the higher ones a prompt above `threshold` tokens pays, where the model has them.
 export type Rates = Kinds & { above: (Kinds & { threshold: number }) | null }
@@ -173,7 +173,7 @@ export const writtenOf = (n: number): string => `${kTokens(n)} written`
 
 // What a saving or a balance in tokens says in place of its dollars, which only the dollar unit states. The command is one span, so the
 // wrap keeps it whole on a row; `$ only,` wraps as words.
-export const DOLLARS_ONLY = `$ only, /keepalive${SPAN_SPACE}unit${SPAN_SPACE}dollars`
+export const DOLLARS_ONLY = `$ only, ${spanOf('/keepalive unit dollars')}`
 
 // A spend in the unit shown: its dollars, or its tokens by what the cache did with them. A spend with no price is in tokens.
 export const figureOf = (spend: Spend, unit: Unit): string => {

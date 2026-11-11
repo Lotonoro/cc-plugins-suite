@@ -561,8 +561,11 @@ export const pastHalfTtlStop = (rtMs: number, raisedMs: number, ttlMs: number): 
 // to whole seconds. A lead is never lowered, so without such a round trip the lead is `leadMs` unchanged.
 export const raisedLeadOf = (leadMs: number, rtMs: number): number => (rtMs > leadMs / 2 ? Math.ceil((2 * rtMs) / 1000) * 1000 : leadMs)
 
+// Why a lead is raised, as the details pane's raise row and the Settings lead's source both say it.
+export const SLOW_REFRESH = 'slow refresh'
+
 // The details pane's row for a raised lead.
-export const raiseNote = (leadMs: number): string => `lead raised to ${secsTerse(leadMs)} (slow refresh)`
+export const raiseNote = (leadMs: number): string => `lead raised to ${secsTerse(leadMs)} (${SLOW_REFRESH})`
 
 // The `/keepalive on` answer's lead-in to the rebuild figure.
 const REBUILD_LEAD = 'if it goes cold, your next prompt rebuilds it: '
