@@ -57,6 +57,8 @@ export const readingOf = (view: CacheView, liveMs: number | null, cold: ColdMark
 // quarter and red in its last tenth, where a prompt can still keep it warm. An expired cache is red with keepalive on (only a click or a
 // prompt resumes it) and dim off, where nothing is left to act on.
 export type Tone = 'on' | 'quiet' | 'warning' | 'alarm' | 'gone'
+// A piece of a line's text and the tone it is drawn in, one of the pie's. The pieces of a line, joined, are its text.
+export type Run = { text: string; tone: Tone }
 // The word for a reset cache: the footer's cold word and the Cache line's `reset` read this one constant.
 const RESET = 'reset'
 // The footer's word with keepalive on and no reading: nothing is counted, which is true of every no-reading state.
@@ -75,6 +77,11 @@ export const footerOf = (reading: Reading | null, on: boolean, refreshing: boole
   if (reading.state === 'expired') return { quarter: 0, words: reading.words, tone: on ? 'alarm' : 'gone' }
   return { quarter: reading.quarter, words: reading.words, tone: refreshing ? 'on' : WARN_TONE[reading.warn] }
 }
+
+// The pie's glyph by its quarter step: empty at 0 (cold, expired, or nothing to count), full above three quarters of the TTL left. The footer draws it, and
+// the Cache line opens with it. The step is `Reading`'s, 0 to 4.
+const GLYPHS = ['○', '◔', '◑', '◕', '●']
+export const glyphOf = (quarter: number): string => GLYPHS[quarter]!
 
 // The cue after the footer's words for a price read's phase: a glyph and its tone. Running is dim, landed the normal text colour, failed amber.
 export type CueMark = { glyph: string; tone: 'dim' | 'plain' | 'warning' }
@@ -116,13 +123,21 @@ export const pieOf = (reading: Reading | null, on: boolean, refresh: string | nu
 // reason only where this holds, so the two cannot disagree.
 export const rebuildDrawnOf = (reading: Reading | null, rebuild: string): boolean => reading !== null && reading.state !== 'warm' && rebuild !== ''
 
-// The Cache section's line: the cache's warmth, its time left and its TTL label `ttl`, or cold or expired with the figure to rebuild
-// it (`rebuild`, empty for none). Empty when there is no reading to count from.
+// The cache's warmth, which the Cache section's line states after the pie: its time left and its TTL label `ttl`, or cold or expired with the figure to
+// rebuild it (`rebuild`, empty for none). Empty when there is no reading to count from.
 export const warmthOf = (reading: Reading | null, ttl: '1h' | '5m', rebuild: string): string => {
   if (reading === null) return ''
   if (reading.state === 'warm') return `warm · ${reading.words} left · ${ttl} TTL`
   const state = reading.state === 'expired' ? 'expired' : RESET
   return rebuildDrawnOf(reading, rebuild) ? `${state} · rebuild ${rebuild}` : state
+}
+
+// The Cache section's line as its pieces: the pie's glyph in the pie's tone, then a space and the warmth untoned. `pie` is the judgement of the same
+// reading that words the colour sentence (`pieOf`), so the glyph agrees with the sentence. Null when there is no reading to count from, so the glyph never
+// stands alone; where there is a reading the pie has a footer to give the glyph and the tone.
+export const cacheLineOf = (reading: Reading | null, ttl: '1h' | '5m', rebuild: string, pie: Pie): Run[] | null => {
+  if (reading === null || pie.footer === null) return null
+  return [{ text: glyphOf(pie.footer.quarter), tone: pie.footer.tone }, { text: ` ${warmthOf(reading, ttl, rebuild)}`, tone: 'quiet' }]
 }
 
 // A cold mark lifts when a touch after it is known: the reading's, or a live request start.

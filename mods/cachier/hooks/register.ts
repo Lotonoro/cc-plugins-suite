@@ -1,7 +1,7 @@
 import type { EngineInterface, Register, RenderElement } from 'claude-code'
 import type { ModelForkResult, ModelUsage } from 'claude-code'
 import type { CacheView, ColdMark, HintCost, HintState, Judged, KeepaliveState, PriceCue, Spend, StatsState, TallyState, Unit } from '../types'
-import { expiredAt, expiryOf, pieOf, readingOf, rebuildDrawnOf, settleCold, touchedAt, warmthOf } from './countdown'
+import { cacheLineOf, expiredAt, expiryOf, pieOf, readingOf, rebuildDrawnOf, settleCold, touchedAt } from './countdown'
 import {
   coldBegun,
   coldLanded,
@@ -915,18 +915,20 @@ const snapshotNow = async ($: Dollar): Promise<Snapshot> => {
   const refreshes = sessionLineOf(tally, money)
   const kept = keptOf(held, view, money, nowMs)
   const verdict = step(held, view, live, gapOpen(held), nowMs, money, rebuildPriced)
-  // The pie's own judgement, from the held state and the view under the cold mark, so the sentence agrees with the heading above it.
-  const { colour } = pieOf(reading, held.config !== null, costOf(held, view, money, pair)?.label ?? null, held.stop !== null)
+  // The pie's own judgement, from the held state and the view under the cold mark, judged once: the Cache line's glyph and the Keepalive section's
+  // colour sentence both read it, so the sentence agrees with the heading above it and with the glyph.
+  const pie = pieOf(reading, held.config !== null, costOf(held, view, money, pair)?.label ?? null, held.stop !== null)
+  const cache = cacheLineOf(reading, raw.kind === 'known' ? raw.ttlLabel : '5m', rebuild, pie)
   // While keepalive is off, the offer a press would start: the same figure the tick writes, from the same inputs.
   const offer = held.config === null && defaultRun !== undefined ? offerNow(held, view, money, nowMs, defaultRun, pair) : null
   return {
-    cache: [warmthOf(reading, raw.kind === 'known' ? raw.ttlLabel : '5m', rebuild)].filter((line) => line !== ''),
+    cache: cache === null ? [] : [cache],
     keepalive: {
       state: verdict.heading,
       tone: HEADING_TONE[verdict.heading],
       lines: [
         ...(verdict.why === null ? [] : [verdict.why]),
-        ...(colour === null ? [] : [colour]),
+        ...(pie.colour === null ? [] : [pie.colour]),
         ...(offer === null ? [] : offer.lines),
         ...verdict.lines,
         ...countLines(held, view, money, nowMs, kept),

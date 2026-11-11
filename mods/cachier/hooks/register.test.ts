@@ -235,7 +235,8 @@ const pressPie = async ($: any) => {
   await m.unmount()
 }
 // Everything the line and the details draw, as text: the footer's drawing, then the pane's. A colour in it may be the pane's (the Keepalive state word
-// is coloured), so a pie-colour assertion taken while the pane draws the colour it asserts or denies reads the footer alone, with `pieDrawn`.
+// and the Cache line's pie are coloured, the pie in the footer's own tone), so a pie-colour assertion that the pie is drawn in a colour reads the footer
+// alone, with `pieDrawn`; one that denies a colour reads both, since the pane's pie is drawn in the footer's tone.
 const drawnHint = async ($: any) => {
   const m = await mountHint($)
   const pane = await mountPane($)
@@ -974,7 +975,7 @@ describe('keepalive', () => {
     const text = await toggle($, '')
     expect(text).toContain('Keepalive  on, refreshing')
     expect(text).toContain('next in ')
-    expect(text).toMatch(/Cache warm · (4:\d\d|5:00) left · 5m TTL/)
+    expect(text).toMatch(/Cache ● warm · (4:\d\d|5:00) left · 5m TTL/)
   })
 
   test('the debug line of an empty reply that read the cache says empty reply, and keepalive stays on', { options: { keepalive_lead_s: 60, keepalive_count: 9 } }, async ($, on) => {
@@ -1415,7 +1416,7 @@ describe('keepalive', () => {
     try {
       expect(holding).toBe(true)
       expect(await toggle($, '')).toContain('Keepalive  paused count used · resumes on next prompt')
-      expect(await drawnHint($)).toContain('"color":"success"')
+      expect((await pieDrawn($)).pie).toContain('"color":"success"')
     } finally {
       release()
     }
@@ -3549,7 +3550,7 @@ describe('the details pane: a click on the time opens it at its size, a second c
     await clock.advance(1000)
     const rows = await paneRows($)
     expect(rows[0]).toBe('Cache')
-    expect(rows.find((row) => row.startsWith('warm · '))).toMatch(/^warm · \d+:\d\d left · 5m TTL$/)
+    expect(rows.find((row) => /^[○◔◑◕●] warm · /.test(row))).toMatch(/^● warm · \d+:\d\d left · 5m TTL$/)
     expect(rows.indexOf('Keepalive  off')).toBeGreaterThan(1)
     expect(JSON.stringify(rows)).not.toMatch(/earlier:|learned|long pauses:|misses:/)
   })
@@ -3712,6 +3713,14 @@ const boldRows = async (pane: any): Promise<string[]> => ((await pane.drawn()) a
 // The Keepalive heading's row in a drawing of the pane, and the props a drawn element sets, none when it sets none.
 const keepaliveRow = (tree: any): any => tree.children.find((row: any) => textOf(row).startsWith('Keepalive'))
 const propsOf = (el: any): Record<string, unknown> => el.props ?? {}
+// The Cache line's row in a drawing of the pane, the row under the Cache heading, or undefined where there is no Cache section; its pie, the first of the
+// two Texts nested in the line's Text; and the row without its pie.
+const cacheRow = (tree: any): any => {
+  const at = tree.children.findIndex((row: any) => textOf(row) === 'Cache')
+  return at < 0 ? undefined : tree.children[at + 1]
+}
+const pieOfRow = (row: any): any => row.children[0].children[0]
+const withoutPie = (row: any): any => ({ ...row, children: [{ ...row.children[0], children: row.children[0].children.slice(1) }] })
 
 describe('the details pane draws the sections /keepalive answers with, built by its draw alone', () => {
   const opts = { options: { keepalive_lead_s: 15, keepalive_count: 3 } }
@@ -3747,7 +3756,8 @@ describe('the details pane draws the sections /keepalive answers with, built by 
     const headings = rows.filter((row) => /^(Cache|Keepalive(  .+)?|This session|Advice|Settings)$/.test(row))
     expect(headings.length).toBeGreaterThanOrEqual(3)
     expect(await boldRows(pane)).toEqual(headings)
-    // The one coloured piece is named: keepalive is off here, so its state word is dim. Every other row, and the heading's title, carry no colour.
+    // The one coloured piece is named: keepalive is off here, so its state word is dim. Every other row, and the heading's title, carry no colour; the Cache
+    // line's pie too, since a calm warm cache with keepalive off is drawn in the normal colour.
     const tree = (await pane.drawn()) as any
     const heading = keepaliveRow(tree)
     expect(heading.children).toHaveLength(2)
@@ -3758,12 +3768,16 @@ describe('the details pane draws the sections /keepalive answers with, built by 
     await pane.unmount()
   })
 
-  // The five states the Keepalive heading names, each with how a session reaches it and the props its state word is drawn in.
-  const HEADING_STATES: { word: string; props: Record<string, string | boolean>; reach: ($: any, on: any) => Promise<unknown> }[] = [
-    { word: 'off', props: { dimColor: true }, reach: ($, on) => startedWorld($, on) },
+  // The five states the Keepalive heading names, each with how a session reaches it, the props its state word is drawn in, and the glyph and props the Cache
+  // line's pie is drawn in there, as the footer's pie is (`null` where the state has no Cache line). The pie follows the cache's time and keepalive's
+  // refreshing, not the heading: refreshing is green, a calm warm cache paused is the normal colour, and the stopped state's cache is in its last quarter, so amber.
+  type Pie = { glyph: string; props: Record<string, string | boolean> }
+  const HEADING_STATES: { word: string; props: Record<string, string | boolean>; pie: Pie | null; reach: ($: any, on: any) => Promise<unknown> }[] = [
+    { word: 'off', props: { dimColor: true }, pie: { glyph: '●', props: {} }, reach: ($, on) => startedWorld($, on) },
     {
       word: 'on, refreshing',
       props: { color: 'success' },
+      pie: { glyph: '●', props: { color: 'success' } },
       reach: async ($, on) => {
         const clock = await startedWorld($, on)
         await toggle($, 'on 15')
@@ -3773,6 +3787,7 @@ describe('the details pane draws the sections /keepalive answers with, built by 
     {
       word: 'on, no count',
       props: { color: 'warning' },
+      pie: null,
       reach: async ($, on) => {
         const clock = await startedWorld($, on, { text: '', exists: false })
         await toggle($, 'on 15')
@@ -3782,6 +3797,7 @@ describe('the details pane draws the sections /keepalive answers with, built by 
     {
       word: 'paused',
       props: { color: 'warning' },
+      pie: { glyph: '●', props: {} },
       reach: async ($, on) => {
         const clock = await startedWorld($, on)
         await toggle($, 'on 400')
@@ -3791,6 +3807,7 @@ describe('the details pane draws the sections /keepalive answers with, built by 
     {
       word: 'stopped',
       props: { color: 'error' },
+      pie: { glyph: '◔', props: { color: 'warning' } },
       reach: async ($, on) => {
         const doc: any = opusCached()
         doc.fork = { isAnswered: false, reason: 'empty-reply', usage: { ...ZERO, cache_creation_input_tokens: 18000 } }
@@ -3803,7 +3820,7 @@ describe('the details pane draws the sections /keepalive answers with, built by 
     },
   ]
   for (const s of HEADING_STATES) {
-    test(`keepalive ${s.word}: the Keepalive heading is one bold Text, its title untoned and its state word in the state's tone, and no other row is coloured`, async ($, on) => {
+    test(`keepalive ${s.word}: the Keepalive heading is one bold Text, its title untoned and its state word in the state's tone, and no other row is coloured but the Cache line's pie`, async ($, on) => {
       await s.reach($, on)
       const pane = await mountPane($)
       const tree = (await pane.drawn()) as any
@@ -3817,8 +3834,15 @@ describe('the details pane draws the sections /keepalive answers with, built by 
       expect(propsOf(title)).toEqual({})
       expect(state).toMatchObject({ type: 'Text', children: [s.word] })
       expect(propsOf(state)).toEqual(s.props)
-      // Every other row, whole, and the title are drawn with no colour or dim.
-      const rest = [...tree.children.filter((row: any) => row !== heading), title]
+      // The Cache line's pie is the glyph and the props the state names, or the state has no Cache line. Every other row, whole, the title, and the Cache line
+      // without its pie are drawn with no colour or dim.
+      const cache = cacheRow(tree)
+      if (s.pie === null) expect(cache).toBeUndefined()
+      else {
+        expect(textOf(pieOfRow(cache))).toBe(s.pie.glyph)
+        expect(propsOf(pieOfRow(cache))).toEqual(s.pie.props)
+      }
+      const rest = [...tree.children.filter((row: any) => row !== heading && row !== cache), title, ...(cache === undefined ? [] : [withoutPie(cache)])]
       expect(rest).toHaveLength(tree.children.length)
       expect(JSON.stringify(rest)).not.toMatch(/"color"|"dimColor"|"backgroundColor"/)
       // The bare answer names the state in the same words, as plain text.
@@ -4216,7 +4240,7 @@ describe('the words the user reads: no /keepalive answer, status line or pane sa
     expect(said[2]).toContain('count used · resumes on next prompt')
     expect(said[3]).toContain('keepalive stopped: API error 529 (overloaded)')
     expect(said[4]).toContain('Keepalive  stopped API error 529 (overloaded) · restarts on next prompt')
-    expect(said[8]).toContain('"children":["reset · rebuild ~19k tokens"]')
+    expect(said[8]).toContain('"children":[" reset · rebuild ~19k tokens"]')
     // The pair says cold only inside the two phrases that name it.
     for (const s of said) expect(s.replace(/if cold|if it goes cold/gi, '')).not.toMatch(/ping|armed|cold|\bpar\b/i)
     expect(said[0]).toMatch(/if cold: rebuild|if it goes cold/)
@@ -4633,7 +4657,7 @@ describe('the pair: keeping the cache warm against rebuilding it if it goes cold
     expect(JSON.stringify(await m.drawn())).not.toMatch(/keep warm|if cold/)
     const text = (await toggle($, '')).replace(/\n\s*/g, ' ')
     expect(text).not.toMatch(/ refresh [$~]| if cold:| every \d/)
-    expect(text).toContain('Cache reset · rebuild')
+    expect(text).toContain('Cache ○ reset · rebuild')
     await m.unmount()
   })
 
@@ -4645,7 +4669,7 @@ describe('the pair: keeping the cache warm against rebuilding it if it goes cold
     const text = (await toggle($, '')).replace(/\n\s*/g, ' ')
     expect(text).toContain('Keepalive  on, no count')
     expect(text).not.toMatch(/ refresh [$~]| if cold:| every \d/)
-    expect(text).toMatch(/Cache reset · rebuild ~\$[\d.]+/)
+    expect(text).toMatch(/Cache ○ reset · rebuild ~\$[\d.]+/)
   })
 })
 
@@ -5881,7 +5905,7 @@ describe('the bare command answers five sections, in order: Cache, Keepalive, Th
     const text = await commandText($, '')
     const headings = text.split('\n').filter((line: string) => ['Cache', 'This session', 'Advice', 'Settings'].includes(line) || line.startsWith('Keepalive'))
     expect(headings).toEqual(['Cache', 'Keepalive  off', 'This session', 'Advice', 'Settings'])
-    expect(text.startsWith('Cache\n  warm · ')).toBe(true)
+    expect(text.startsWith('Cache\n  ● warm · ')).toBe(true)
   })
 
   test('a section with no figure is absent: with nothing learned, missed or advised, there is no Advice heading', async ($, on) => {
@@ -6164,7 +6188,7 @@ describe('the bare command answers whole: the text its sections lay out, for fix
     expect(await commandText($, '')).toBe(
       [
         'Cache',
-        '  warm · 4:59 left · 5m TTL',
+        '  ● warm · 4:59 left · 5m TTL',
         '',
         'Keepalive  on, refreshing',
         '  refresh $0.004 (~19k cached) · every 4:45',
@@ -6200,7 +6224,7 @@ describe('the bare command answers whole: the text its sections lay out, for fix
     expect(await commandText($, '')).toBe(
       [
         'Cache',
-        '  warm · 4:59 left · 5m TTL',
+        '  ● warm · 4:59 left · 5m TTL',
         '',
         'Keepalive  off',
         '  pie: amber ≤¼ TTL left, red ≤⅒',
@@ -6238,7 +6262,7 @@ describe('the bare command answers whole: the text its sections lay out, for fix
     expect(await commandText($, '')).toBe(
       [
         'Cache',
-        '  warm · 4:59 left · 5m TTL',
+        '  ● warm · 4:59 left · 5m TTL',
         '',
         'Keepalive  on, refreshing',
         '  refresh $0.004 (~19k cached) · every 4 min',
@@ -6274,7 +6298,7 @@ describe('the bare command answers whole: the text its sections lay out, for fix
     expect(await commandText($, '')).toBe(
       [
         'Cache',
-        '  expired · rebuild ~$0.13',
+        '  ○ expired · rebuild ~$0.13',
         '',
         'Keepalive  off',
         '  pie: amber ≤¼ TTL left, red ≤⅒',
@@ -6311,7 +6335,7 @@ describe('the bare command answers whole: the text its sections lay out, for fix
     expect(await commandText($, '')).toBe(
       [
         'Cache',
-        '  expired · rebuild ~26k tokens',
+        '  ○ expired · rebuild ~26k tokens',
         '',
         'Keepalive  off',
         '  pie: amber ≤¼ TTL left, red ≤⅒',
@@ -6373,7 +6397,7 @@ describe('the bare command answers whole: the text its sections lay out, for fix
       expect((await commandText($, '')).replace(/\n {4}/g, ' ')).toBe(
         [
           'Cache',
-          '  warm · 5:00 left · 5m TTL',
+          '  ● warm · 5:00 left · 5m TTL',
           '',
           'Keepalive  paused',
           '  recording cache reset',
@@ -6396,7 +6420,7 @@ describe('the bare command answers whole: the text its sections lay out, for fix
         ].join('\n'),
       )
       // The accepted window: the heading reads paused while the reset is being recorded, and the pie is still green with keepalive on.
-      expect(await drawnHint($)).toContain('"color":"success"')
+      expect((await pieDrawn($)).pie).toContain('"color":"success"')
     } finally {
       release()
     }
@@ -6438,7 +6462,7 @@ describe('the bare command answers whole: the text its sections lay out, for fix
     expect(await commandText($, '')).toBe(
       [
         'Cache',
-        '  expired · rebuild ~$0.20',
+        '  ○ expired · rebuild ~$0.20',
         '',
         'Keepalive  off',
         '  pie: amber ≤¼ TTL left, red ≤⅒',
@@ -6520,7 +6544,7 @@ describe('the bare command answers whole: the text its sections lay out, for fix
     expect(await commandText($, '')).toBe(
       [
         'Cache',
-        '  reset · rebuild ~$0.13',
+        '  ○ reset · rebuild ~$0.13',
         '',
         'Keepalive  off',
         '  pie: amber ≤¼ TTL left, red ≤⅒',
@@ -6551,7 +6575,7 @@ describe('the bare command answers whole: the text its sections lay out, for fix
     expect(await commandText($, '')).toBe(
       [
         'Cache',
-        '  reset · rebuild ~26k tokens',
+        '  ○ reset · rebuild ~26k tokens',
         '',
         'Keepalive  off',
         '  pie: amber ≤¼ TTL left, red ≤⅒',
@@ -6795,17 +6819,17 @@ describe('the Keepalive section: the colour sentence wherever no refresh is comi
     await turnEnd($)
     await clock.advance(1000)
     const text = await toggle($, '')
-    expect(text).toContain('Cache expired · rebuild')
+    expect(text).toContain('Cache ○ expired · rebuild')
     expect(text).toContain(`Keepalive  paused cache expired · resumes on next prompt ${SENTENCE}`)
     expect(text.split(SENTENCE).length - 1).toBe(1)
-    expect(await drawnHint($)).toContain('"color":"error"')
+    expect((await pieDrawn($)).pie).toContain('"color":"error"')
   })
 
   test('an expired cache with keepalive off: the sentence is there once, as the pane has it', async ($, on) => {
     const clock = await started($, on)
     await clock.advance(20 * MIN)
     const text = await toggle($, '')
-    expect(text).toContain('Cache expired · rebuild')
+    expect(text).toContain('Cache ○ expired · rebuild')
     expect(text).toContain(`Keepalive  off ${SENTENCE}`)
     expect(text.split(SENTENCE).length - 1).toBe(1)
   })
@@ -6813,7 +6837,8 @@ describe('the Keepalive section: the colour sentence wherever no refresh is comi
   test('with no reading to count from, keepalive off: the sentence is there once, and there is no cache line', async ($, on) => {
     await started($, on, { text: '', exists: false })
     const lines = (await commandText($, '')).split('\n')
-    expect(lines.filter((line: string) => line === 'Cache' || /^\s*(warm|expired|reset)\b/.test(line))).toEqual([])
+    expect(lines.filter((line: string) => line === 'Cache' || /^\s*([○◔◑◕●] )?(warm|expired|reset)\b/.test(line))).toEqual([])
+    expect(lines.join('\n')).not.toMatch(/[○◔◑◕●]/)
     const text = await toggle($, '')
     expect(text).toContain(`Keepalive  off ${SENTENCE}`)
     expect(text.split(SENTENCE).length - 1).toBe(1)
@@ -6848,10 +6873,10 @@ describe('the Keepalive section: the colour sentence wherever no refresh is comi
     try {
       expect(holding).toBe(true)
       const text = await toggle($, '')
-      expect(text).toContain('Cache warm · 0:50 left · 5m TTL')
+      expect(text).toContain('Cache ◔ warm · 0:50 left · 5m TTL')
       expect(text).toContain('Keepalive  paused recording cache reset')
       expect(text).not.toContain('pie: amber')
-      expect(await drawnHint($)).toContain('"color":"success"')
+      expect((await pieDrawn($)).pie).toContain('"color":"success"')
     } finally {
       release()
     }
@@ -6887,11 +6912,11 @@ describe('the Keepalive section: the colour sentence wherever no refresh is comi
     try {
       expect(holding).toBe(true)
       const text = await toggle($, '')
-      expect(text).toContain('Cache reset')
+      expect(text).toContain('Cache ○ reset')
       expect(text).toContain('Keepalive  paused recording cache reset')
       expect(text).toContain(`recording cache reset ${SENTENCE}`)
       expect(text.split(SENTENCE).length - 1).toBe(1)
-      expect(await drawnHint($)).toContain('"color":"success"')
+      expect((await pieDrawn($)).pie).toContain('"color":"success"')
       await clock.advance(1000)
       expect(await hint($)).toBe('reset')
     } finally {
@@ -7001,7 +7026,7 @@ describe('the Keepalive section: the colour sentence wherever no refresh is comi
       const text = await toggle($, '')
       expect(text).toContain('Keepalive  paused count used')
       expect(text).not.toContain('pie: amber')
-      expect(await drawnHint($)).toContain('"color":"success"')
+      expect((await pieDrawn($)).pie).toContain('"color":"success"')
     } finally {
       release()
     }
@@ -7037,10 +7062,10 @@ describe('the Keepalive section: the colour sentence wherever no refresh is comi
     const once = async () => (await toggle($, '')).split(SENTENCE).length - 1
     expect(await once()).toBe(1)
     await clock.advance(239000)
-    expect(await drawnHint($)).toContain('"color":"warning"')
+    expect((await pieDrawn($)).pie).toContain('"color":"warning"')
     expect(await once()).toBe(1)
     await clock.advance(40000)
-    expect(await drawnHint($)).toContain('"color":"error"')
+    expect((await pieDrawn($)).pie).toContain('"color":"error"')
     expect(await once()).toBe(1)
   })
 
@@ -7776,8 +7801,8 @@ describe("a warm cache of 1h TTL", () => {
     const clock = mock.clock(on, { now: T0 })
     await $.classic.SessionStart({ source: 'startup', transcript_path: PATH })
     await clock.advance(1000)
-    expect((await commandText($, '')).split('\n').some((line: string) => /^ {2}warm · \d+:\d\d:?\d* left · 1h TTL$/.test(line))).toBe(true)
-    expect((await paneRows($)).some((row: string) => /^warm · \d+:\d\d:?\d* left · 1h TTL$/.test(row))).toBe(true)
+    expect((await commandText($, '')).split('\n').some((line: string) => /^ {2}● warm · \d+:\d\d:?\d* left · 1h TTL$/.test(line))).toBe(true)
+    expect((await paneRows($)).some((row: string) => /^● warm · \d+:\d\d:?\d* left · 1h TTL$/.test(row))).toBe(true)
   })
 })
 
@@ -7826,8 +7851,8 @@ describe("the rebuild figure under a cold mark: priced at the model that last wr
     await clock.advance(1000)
     await $.classic.PostModelSwitch(SWITCH)
     await clock.advance(1000)
-    expect((await commandText($, '')).split('\n')).toContain('  reset')
-    expect(await paneRows($)).toContain('reset')
+    expect((await commandText($, '')).split('\n')).toContain('  ○ reset')
+    expect(await paneRows($)).toContain('○ reset')
   })
 
   test("the figure is the stored cache's TTL's write rate", async ($, on) => {
@@ -7899,7 +7924,9 @@ describe("the rebuild figure under a cold mark: priced at the model that last wr
     expect(answer.startsWith('Keepalive')).toBe(true)
     expect(answer).not.toContain('in tokens:')
     const rows = await paneRows($)
-    expect(rows.filter((row: string) => row === 'Cache' || /^\s*(warm|expired|reset)\b/.test(row))).toEqual([])
+    expect(rows.filter((row: string) => row === 'Cache' || /^\s*([○◔◑◕●] )?(warm|expired|reset)\b/.test(row))).toEqual([])
+    expect(rows.join('\n')).not.toMatch(/[○◔◑◕●]/)
+    expect(answer).not.toMatch(/[○◔◑◕●]/)
   })
 })
 
@@ -8614,4 +8641,190 @@ describe('the pie follows a standing stop: red beside reset or no count with kee
     expect(await m.find({ type: 'Button', key: 'pie' })).toBeUndefined()
     await m.unmount()
   })
+})
+
+// The footer's pie as drawn, once the tick has caught up: its glyph, and the props of the Text that draws it.
+const footerPie = async ($: any): Promise<{ glyph: string; props: Record<string, unknown> } | undefined> => {
+  const m = await mountHint($)
+  const pie = (await m.find({ type: 'Button', key: 'pie' })) as any
+  await m.unmount()
+  return pie === undefined ? undefined : { glyph: textOf(pie), props: propsOf(pie.children[0]) }
+}
+
+describe('the Cache line opens with the pie: the footer\'s glyph in the bare answer, and in the pane in the footer\'s colour, dim or plain', () => {
+  // Each state names the glyph and the props the footer's pie is drawn in there as literals, so the pane and the footer are held to them, not only to each other.
+  const STATES: { name: string; word: 'warm' | 'expired' | 'reset'; glyph: string; props: Record<string, string | boolean>; reach: ($: any, on: any) => Promise<unknown> }[] = [
+    { name: 'a fresh warm cache, keepalive off: the full pie in the normal colour', word: 'warm', glyph: '●', props: {}, reach: ($, on) => startedWorld($, on) },
+    {
+      name: 'three quarters left, keepalive off',
+      word: 'warm',
+      glyph: '◕',
+      props: {},
+      reach: async ($, on) => (await startedWorld($, on)).advance(110000),
+    },
+    {
+      name: 'two quarters left, keepalive off',
+      word: 'warm',
+      glyph: '◑',
+      props: {},
+      reach: async ($, on) => (await startedWorld($, on)).advance(160000),
+    },
+    {
+      name: 'the last quarter, keepalive off: amber',
+      word: 'warm',
+      glyph: '◔',
+      props: { color: 'warning' },
+      reach: async ($, on) => (await startedWorld($, on)).advance(240000),
+    },
+    {
+      name: 'the last tenth, keepalive off: red',
+      word: 'warm',
+      glyph: '◔',
+      props: { color: 'error' },
+      reach: async ($, on) => (await startedWorld($, on)).advance(280000),
+    },
+    {
+      name: 'keepalive refreshing a fresh cache: green',
+      word: 'warm',
+      glyph: '●',
+      props: { color: 'success' },
+      reach: async ($, on) => {
+        const clock = await startedWorld($, on)
+        await toggle($, 'on 15')
+        await clock.advance(1000)
+      },
+    },
+    {
+      name: 'keepalive refreshing, in the last quarter: green',
+      word: 'warm',
+      glyph: '◔',
+      props: { color: 'success' },
+      reach: async ($, on) => {
+        const clock = await startedWorld($, on)
+        await toggle($, 'on 15')
+        await clock.advance(240000)
+      },
+    },
+    {
+      name: 'keepalive on with a lead at the TTL, so paused, on a fresh cache: the normal colour',
+      word: 'warm',
+      glyph: '●',
+      props: {},
+      reach: async ($, on) => {
+        const clock = await startedWorld($, on)
+        await toggle($, 'on 300')
+        await clock.advance(1000)
+      },
+    },
+    { name: 'an expired cache, keepalive off: the empty pie, dim', word: 'expired', glyph: '○', props: { dimColor: true }, reach: async ($, on) => (await startedWorld($, on)).advance(310000) },
+    {
+      name: 'an expired cache, keepalive on: the empty pie, red',
+      word: 'expired',
+      glyph: '○',
+      props: { color: 'error' },
+      reach: async ($, on) => {
+        const clock = await startedWorld($, on)
+        await toggle($, 'on 60 2')
+        await mainStep($)
+        await clock.advance(310000)
+        await turnEnd($)
+        await clock.advance(1000)
+      },
+    },
+    {
+      name: 'a reset cache, keepalive off: the empty pie, dim',
+      word: 'reset',
+      glyph: '○',
+      props: { dimColor: true },
+      reach: async ($, on) => {
+        const clock = await startedWorld($, on)
+        await SWITCH($)
+        await clock.advance(1000)
+      },
+    },
+    {
+      name: 'a reset cache, keepalive on: the empty pie, green',
+      word: 'reset',
+      glyph: '○',
+      props: { color: 'success' },
+      reach: async ($, on) => {
+        const clock = await startedWorld($, on)
+        await toggle($, 'on 60 2')
+        await SWITCH($)
+        await clock.advance(1000)
+      },
+    },
+    {
+      name: 'a reset cache over a recorded stop, keepalive on: the empty pie, red',
+      word: 'reset',
+      glyph: '○',
+      props: { color: 'error' },
+      reach: async ($, on) => {
+        const clock = await startedWorld($, on)
+        await countUsed($, clock)
+        await SWITCH($)
+        await clock.advance(1000)
+      },
+    },
+  ]
+  for (const s of STATES) {
+    test(s.name, async ($, on) => {
+      await s.reach($, on)
+      const footer = await footerPie($)
+      expect(footer).toEqual({ glyph: s.glyph, props: s.props })
+      // The bare answer: the line under the Cache heading opens with the glyph and a space, then the cache's state.
+      const answer = (await commandText($, '')).split('\n')
+      expect(answer[0]).toBe('Cache')
+      expect(answer[1]).toMatch(new RegExp(`^ {2}${s.glyph} ${s.word}\\b`))
+      // The pane: the glyph in the footer's props, then the line's words, each its own Text and the words with no colour or dim.
+      const pane = await mountPane($)
+      const row = cacheRow((await pane.drawn()) as any)
+      await pane.unmount()
+      const pieces = row.children[0].children
+      expect(pieces).toHaveLength(2)
+      const [glyph, words] = pieces
+      expect(textOf(glyph)).toBe(s.glyph)
+      expect(propsOf(glyph)).toEqual(footer?.props)
+      expect(propsOf(words)).toEqual({})
+      expect(textOf(words)).toMatch(new RegExp(`^ ${s.word}\\b`))
+      expect(textOf(glyph) + textOf(words)).toBe(answer[1]!.trim())
+    })
+  }
+
+  // The footer draws the empty pie beside `no count` here with keepalive on, and nothing with it off; the Cache section is absent either way.
+  const NONE: { name: string; footer: string | null; reach: ($: any, on: any) => Promise<unknown> }[] = [
+    { name: 'no transcript, keepalive off', footer: null, reach: ($, on) => startedWorld($, on, { text: '', exists: false }) },
+    {
+      name: 'no transcript, keepalive on',
+      footer: 'no count',
+      reach: async ($, on) => {
+        const clock = await startedWorld($, on, { text: '', exists: false })
+        await toggle($, 'on 15')
+        await clock.advance(1000)
+      },
+    },
+    {
+      name: 'after a /clear',
+      footer: null,
+      reach: async ($, on) => {
+        const clock = await startedWorld($, on)
+        await $.classic.SessionStart({ source: 'clear', transcript_path: PATH })
+        await clock.advance(1000)
+      },
+    },
+  ]
+  for (const s of NONE) {
+    test(`with nothing to count (${s.name}) there is no Cache section and no glyph, in the bare answer or the pane`, async ($, on) => {
+      await s.reach($, on)
+      expect((await pieDrawn($)).words).toBe(s.footer ?? '')
+      const answer = await commandText($, '')
+      expect(answer.split('\n')).not.toContain('Cache')
+      expect(answer).not.toMatch(/[○◔◑◕●]/)
+      const pane = await mountPane($)
+      const tree = (await pane.drawn()) as any
+      await pane.unmount()
+      expect(cacheRow(tree)).toBeUndefined()
+      expect(JSON.stringify(tree)).not.toMatch(/[○◔◑◕●]/)
+    })
+  }
 })

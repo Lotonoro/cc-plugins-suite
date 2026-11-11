@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'claude-code/testing'
-import { COLOUR_SENTENCE, clockOf, cueOf, expiredAt, expiryOf, footerOf, pieOf, readingOf, refreshingOf, settleCold, touchedAt, touchOf, warmthOf, type PieState, type Tone } from './countdown'
+import { COLOUR_SENTENCE, cacheLineOf, clockOf, cueOf, expiredAt, expiryOf, footerOf, glyphOf, pieOf, readingOf, refreshingOf, settleCold, touchedAt, touchOf, warmthOf, type PieState, type Tone } from './countdown'
 
 const T = 1_000_000
 const known = { kind: 'known' as const, touchMs: T, ttlMs: 300000, ttlLabel: '5m' as const, promptTokens: 1, outputTokens: 0, model: null, speed: null }
@@ -140,7 +140,7 @@ describe('footerOf with a recorded stop standing: red over nothing to count and 
   })
 })
 
-describe('warmthOf: the details\' first line, the cache\'s state with its figure when one is drawn', () => {
+describe('warmthOf: the Cache line\'s words after the pie, the cache\'s state with its figure when one is drawn', () => {
   test('a warm cache gives its time left and its TTL label', () => {
     expect(warmthOf(readingOf(known, null, null, T + 1000, UPON), '5m', UPON)).toBe('warm · 4:59 left · 5m TTL')
     expect(warmthOf(readingOf(hour, null, null, T + 1000, UPON), '1h', UPON)).toBe('warm · 59:59 left · 1h TTL')
@@ -157,6 +157,84 @@ describe('warmthOf: the details\' first line, the cache\'s state with its figure
   test('with nothing to count there is no line', () => {
     expect(warmthOf(null, '5m', UPON)).toBe('')
     expect(warmthOf(readingOf(known, null, { reason: 'cleared', atMs: T }, T, UPON), '5m', UPON)).toBe('')
+  })
+})
+
+describe('glyphOf: the pie\'s glyph by its quarter step', () => {
+  test('empty at 0, a quarter fuller at each step, and full at 4', () => {
+    expect([0, 1, 2, 3, 4].map(glyphOf)).toEqual(['○', '◔', '◑', '◕', '●'])
+  })
+})
+
+// The Cache line's pieces from the reading and the pie's judgement of it. The expected glyph and tone are literals, not read from footerOf: the
+// last test then holds the glyph and tone to the footer's own.
+describe('cacheLineOf: the Cache line as pieces, the pie\'s glyph in the pie\'s tone and then a space and the warmth untoned', () => {
+  const FIGURE = '$0.004/refresh'
+  const fresh = readingOf(known, null, null, T + 1000, UPON)
+  const warm = readingOf(known, null, null, T + 108000, UPON)
+  const half = readingOf(known, null, null, T + 160000, UPON)
+  const quarter = readingOf(known, null, null, T + 240000, UPON)
+  const tenth = readingOf(known, null, null, T + 280000, UPON)
+  const expired = readingOf(known, null, null, T + 300000, UPON)
+  const cold = readingOf(known, null, COLD, T, UPON)
+  type Case = {
+    name: string
+    reading: ReturnType<typeof readingOf>
+    ttl?: '1h' | '5m'
+    rebuild?: string
+    on: boolean
+    refresh?: string
+    stopped?: boolean
+    glyph: string
+    tone: Tone
+    rest: string
+  }
+  const cases: Case[] = [
+    { name: 'a fresh cache, keepalive off: the full pie in the normal colour', reading: fresh, on: false, glyph: '●', tone: 'quiet', rest: 'warm · 4:59 left · 5m TTL' },
+    { name: 'three quarters left, keepalive off', reading: warm, on: false, glyph: '◕', tone: 'quiet', rest: 'warm · 3:12 left · 5m TTL' },
+    { name: 'two quarters left, keepalive off', reading: half, on: false, glyph: '◑', tone: 'quiet', rest: 'warm · 2:20 left · 5m TTL' },
+    { name: 'the last quarter, keepalive off: amber', reading: quarter, on: false, glyph: '◔', tone: 'warning', rest: 'warm · 1:00 left · 5m TTL' },
+    { name: 'the last tenth, keepalive off: red', reading: tenth, on: false, glyph: '◔', tone: 'alarm', rest: 'warm · 0:20 left · 5m TTL' },
+    { name: 'a warm cache keepalive refreshes: green', reading: warm, on: true, refresh: FIGURE, glyph: '◕', tone: 'on', rest: 'warm · 3:12 left · 5m TTL' },
+    { name: 'the last tenth keepalive refreshes: still green', reading: tenth, on: true, refresh: FIGURE, glyph: '◔', tone: 'on', rest: 'warm · 0:20 left · 5m TTL' },
+    { name: 'keepalive on with no refresh to send, on a calm cache: the normal colour', reading: warm, on: true, glyph: '◕', tone: 'quiet', rest: 'warm · 3:12 left · 5m TTL' },
+    { name: 'keepalive on with no refresh to send, in the last tenth: red', reading: tenth, on: true, glyph: '◔', tone: 'alarm', rest: 'warm · 0:20 left · 5m TTL' },
+    { name: 'an expired cache, keepalive off: the empty pie, dim', reading: expired, on: false, glyph: '○', tone: 'gone', rest: 'expired · rebuild ~$0.42' },
+    { name: 'an expired cache, keepalive on: the empty pie, red', reading: expired, on: true, glyph: '○', tone: 'alarm', rest: 'expired · rebuild ~$0.42' },
+    { name: 'a reset cache, keepalive off: the empty pie, dim', reading: cold, on: false, glyph: '○', tone: 'gone', rest: 'reset · rebuild ~$0.42' },
+    { name: 'a reset cache, keepalive on: the empty pie, green', reading: cold, on: true, glyph: '○', tone: 'on', rest: 'reset · rebuild ~$0.42' },
+    { name: 'a reset cache, keepalive on and a stop recorded: the empty pie, red', reading: cold, on: true, stopped: true, glyph: '○', tone: 'alarm', rest: 'reset · rebuild ~$0.42' },
+    { name: 'a reset cache with no rebuild figure: the state alone after the pie', reading: readingOf(known, null, COLD, T, ''), rebuild: '', on: false, glyph: '○', tone: 'gone', rest: 'reset' },
+    { name: 'a 1h TTL', reading: readingOf(hour, null, null, T + 1000, UPON), ttl: '1h', on: false, glyph: '●', tone: 'quiet', rest: 'warm · 59:59 left · 1h TTL' },
+  ]
+  const lineOf = (c: Case) => cacheLineOf(c.reading, c.ttl ?? '5m', c.rebuild ?? UPON, pieOf(c.reading, c.on, c.refresh ?? null, c.stopped ?? false))
+
+  for (const c of cases) {
+    test(c.name, () => {
+      expect(lineOf(c)).toEqual([{ text: c.glyph, tone: c.tone }, { text: ` ${c.rest}`, tone: 'quiet' }])
+    })
+  }
+
+  test('the pieces joined are the glyph, a space and the warmth line', () => {
+    for (const c of cases) {
+      const text = lineOf(c)?.map((run) => run.text).join('')
+      expect(text).toBe(`${c.glyph} ${warmthOf(c.reading, c.ttl ?? '5m', c.rebuild ?? UPON)}`)
+    }
+  })
+
+  test('with nothing to count there is no line, whatever keepalive and a recorded stop say, and none after a /clear', () => {
+    for (const [on, stopped] of [[false, false], [true, false], [true, true]] as const) expect(cacheLineOf(null, '5m', UPON, pieOf(null, on, null, stopped))).toBeNull()
+    const cleared = readingOf(known, null, { reason: 'cleared', atMs: T }, T, UPON)
+    expect(cacheLineOf(cleared, '5m', UPON, pieOf(cleared, false, null, false))).toBeNull()
+    expect(cacheLineOf(cleared, '5m', UPON, pieOf(cleared, true, FIGURE, false))).toBeNull()
+  })
+
+  test('the glyph and its tone are the footer\'s pie\'s, from the one judgement', () => {
+    for (const c of cases) {
+      const pie = pieOf(c.reading, c.on, c.refresh ?? null, c.stopped ?? false)
+      expect(pie.footer).not.toBeNull()
+      expect(lineOf(c)?.[0]).toEqual({ text: glyphOf(pie.footer!.quarter), tone: pie.footer!.tone })
+    }
   })
 })
 

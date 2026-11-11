@@ -1,6 +1,6 @@
 import type { ButtonProps, BoxProps, ElementConstructor, RenderElement, TextProps } from 'claude-code'
 import type { HintState, PriceCue } from '../types'
-import { cueOf, pieOf, type CueMark, type PieState, type Tone } from './countdown'
+import { cueOf, glyphOf, pieOf, type CueMark, type PieState, type Tone } from './countdown'
 import type { PaneRow } from './sections'
 
 // The elements the footer line and the details pane are built from, as the surface's table hands them out.
@@ -10,8 +10,6 @@ type Table = {
   Button: ElementConstructor<ButtonProps>
 }
 
-// The pie's glyph by its quarter step: empty at 0 (cold, expired, or nothing to count), full above three quarters of the TTL left.
-const GLYPHS = ['○', '◔', '◑', '◕', '●']
 // The pie's colour as theme tokens, so it follows the person's theme, and the colour of the pane's toned runs, so the two name one colour per tone. The words
 // beside the pie (the time, the rebuild figure, `reset` or `no count`) are dim, never coloured.
 const TONE_PROPS: Record<Tone, Partial<TextProps>> = {
@@ -57,7 +55,7 @@ export const footerLine = (t: Table, state: HintState | null, on: boolean, onTog
     key: 'pie',
     plain: true,
     onPress: () => onToggle(),
-    children: [t.Text({ ...TONE_PROPS[footer.tone], children: [GLYPHS[footer.quarter]] })],
+    children: [t.Text({ ...TONE_PROPS[footer.tone], children: [glyphOf(footer.quarter)] })],
   })
   // The pie's box is its popup's anchor.
   const pieBox = t.Box({ key: 'pie-box', flexDirection: 'row', children: [pie, popup(t, STATE_WORDS[judged.state])] })
