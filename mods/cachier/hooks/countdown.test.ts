@@ -316,11 +316,18 @@ describe('pieOf: the pie\'s tone, its keepalive state and the colour sentence, f
     })
   }
 
-  test('the sentence is the pane\'s words, and the footer is footerOf\'s over refreshingOf', () => {
+  test('the sentence is the pane\'s words as pieces, and the footer is footerOf\'s over refreshingOf', () => {
     const quarter = readingOf(known, null, null, T + 250000, UPON)
-    expect(pieOf(quarter, false, null, false).colour).toBe('pie: amber ≤¼ TTL left, red ≤⅒')
+    expect(pieOf(quarter, false, null, false).colour).toEqual(COLOUR_SENTENCE)
+    expect(COLOUR_SENTENCE.map((run) => run.text).join('')).toBe('pie: amber ≤¼ TTL left, red ≤⅒')
     expect(pieOf(quarter, true, FIGURE, false).footer).toEqual(footerOf(quarter, true, refreshingOf(true, quarter, FIGURE), false))
     expect(pieOf(null, false, null, false)).toEqual({ footer: null, state: null, colour: COLOUR_SENTENCE })
+  })
+
+  // The footer's tones at the quarter and tenth steps are `warning` and `alarm`, which the sentence's two colour words take, so the legend and the pie agree. The
+  // expectation is written here, not read from the sentence or the footer's table: any other tone on any piece fails it.
+  test('the sentence tones `amber` warning and `red` alarm, and every other piece quiet', () => {
+    expect(COLOUR_SENTENCE.filter((run) => run.tone !== 'quiet')).toEqual([{ text: 'amber', tone: 'warning' }, { text: 'red', tone: 'alarm' }])
   })
 })
 

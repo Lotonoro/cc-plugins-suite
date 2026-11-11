@@ -53,7 +53,7 @@ pane has drawn this session it opens at 12 rows by 48 columns, and an open pane 
 scrolls them with the wheel. A click on that word while it is open closes it, as Esc or the person's close does. The click acts on the pane as the engine
 lists it: a pane closed some way cachier did not hear of (a reload, another plugin) is opened by the next click after a second,
 and a close another plugin refuses leaves the pane open to be closed by the next click. The pane shows the five sections a bare
-`/keepalive` answers with, in the same order with the same words, each heading in bold; the Keepalive heading's state word and the pie on the Cache line are also coloured (below). The pane's text wraps at the width the pane is drawn at, so dragging the dock wider gives wider lines and fewer rows; each sentence's rows share one indent:
+`/keepalive` answers with, in the same order with the same words, each heading in bold; the Keepalive heading's state word, the pie on the Cache line, and `amber` and `red` in the pie line are also coloured (below). The pane's text wraps at the width the pane is drawn at, so dragging the dock wider gives wider lines and fewer rows; each sentence's rows share one indent:
 
 - **Cache**: the cache's warmth after the footer's pie, `◕ warm · 3:12 left · 5m TTL`, or, once the cache has expired or been reset, `○ expired · rebuild ~$0.13` or
   `○ reset · rebuild ~$0.13` (the state alone where no figure is drawn). The pie is the footer's: in the pane it is drawn in the colour the footer draws it in
@@ -62,7 +62,7 @@ and a close another plugin refuses leaves the pane open to be closed by the next
 - **Keepalive**: its state on the heading (`off`, `on, refreshing`, `on, no count`, `paused`, `stopped`), the state word bold and coloured by state:
   `on, refreshing` green, `paused` and `on, no count` amber, `stopped` red, `off` dim. These colours show keepalive's state, not the cache's time,
   so they differ from the pie's (`on, no count` is amber here with a green pie, and `paused` is always amber here whatever the pie shows). Beneath the heading, why it is paused or stopped and
-  whether it resumes or restarts on the next prompt (`count used · resumes on next prompt`), what the pie's colours warn of while it is amber or red (`pie: amber ≤¼ TTL left, red ≤⅒`), what a refresh costs
+  whether it resumes or restarts on the next prompt (`count used · resumes on next prompt`), what the pie's colours warn of while it is amber or red (`pie: amber ≤¼ TTL left, red ≤⅒`, with `amber` and `red` drawn in those colours), what a refresh costs
   and when the next is due (`refresh $0.004 (~19k cached) · every 4:45`, then `next in 4:44 · 24 left`; while the cache is warm, with a row of its own for what your
   next prompt pays to rebuild it, `if cold: rebuild ~$0.09 (~19k written)`; a run whose lead is not below the TTL states that row alone on a warm cache), how many
   refreshes a pause sends (`max 24 refreshes/pause (break-even)`), when keepalive pays off (`pays off if back in 5:00–1:54:00`), and this
@@ -93,6 +93,7 @@ a short terminal the lower sections are scrolled to with the wheel.
 - **kept**: a running pause keeps the count it started with until the next prompt recounts it (`kept from pause start; recounted next prompt`).
 - **`○ ◔ ◑ ◕ ●`**: the time left in quarters, as the footer's pie; `○` also means cold, expired or nothing to count (see [The footer line](#the-footer-line)).
 - **`≤¼`** / **`≤⅒`**: the last quarter / tenth of the TTL left; the pie turns amber, then red.
+- **`amber`** / **`red`** in the `pie:` line: drawn in those colours in the pane, as a legend for the pie's colours, not a state; the bare `/keepalive` answer states them as plain words.
 - **heading colours**: the Keepalive heading's state word in the pane is coloured by keepalive's state: green `on, refreshing` (refreshing the cache), amber `paused` and `on, no count` (waiting), red `stopped`, dim `off`. They show keepalive's state, not the cache's time, so they differ from the pie's colours.
 - **refresh**: a small request keepalive sends shortly before the cache expires, so it stays warm. Each costs one cache read of the whole context.
 - **lead**: how long before expiry a refresh is sent (`15s`); `lead raised to 16s (slow refresh)` says a slow refresh raised it, and the Settings row then reads `lead: 16s (raised: slow refresh)`.

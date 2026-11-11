@@ -96,8 +96,17 @@ export const cueOf = (cue: PriceCue | null): CueMark | null => (cue === null ? n
 export const refreshingOf = (on: boolean, reading: Reading | null, refresh: string | null): boolean =>
   on && refresh !== null && reading?.state === 'warm'
 
-// What the pie's colours warn of where no refresh is coming, worded in the Keepalive section while the pie is amber or red.
-export const COLOUR_SENTENCE = 'pie: amber ≤¼ TTL left, red ≤⅒'
+// What the pie's colours warn of, as the pieces of the Keepalive section's line wherever no refresh is coming (`pieOf` decides where). `amber` and `red` take the
+// tones the pie takes at the quarter and tenth steps (`WARN_TONE`), so those tones cannot drift from the pie's; the words and the thresholds `¼` and `⅒` are paired
+// with the steps by hand. They are drawn in those tones whatever the pie's own: a legend for the pie's colours, not a state. The rest of the line has no tone, and
+// the pieces joined are the sentence.
+export const COLOUR_SENTENCE: Run[] = [
+  { text: 'pie: ', tone: 'quiet' },
+  { text: 'amber', tone: WARN_TONE.quarter },
+  { text: ' ≤¼ TTL left, ', tone: 'quiet' },
+  { text: 'red', tone: WARN_TONE.tenth },
+  { text: ' ≤⅒', tone: 'quiet' },
+]
 
 // The keepalive state the pie's hover names: off with keepalive off, else on for the green tone and paused for any other.
 export type PieState = 'on' | 'paused' | 'off'
@@ -106,10 +115,10 @@ const STATE_OF_TONE: Record<Tone, 'on' | 'paused'> = { on: 'on', quiet: 'paused'
 
 // The pie's whole judgement from its inputs: the reading, whether keepalive is on, the label of the refresh figure (null when none holds),
 // and whether a recorded stop stands. `footer` is what the pie draws, tone included, null exactly where `footerOf` gives none, and `state` is
-// the keepalive state its hover names, null exactly then. `colour` is the sentence wording where no refresh is coming: not refreshing, and
+// the keepalive state its hover names, null exactly then. `colour` is the sentence's pieces where no refresh is coming: not refreshing, and
 // either keepalive is off or a reading is held, whatever the pie's tone. So it is absent only while keepalive refreshes, and with keepalive
 // on and nothing to count.
-export type Pie = { footer: null; state: null; colour: string | null } | { footer: Footer; state: PieState; colour: string | null }
+export type Pie = { footer: null; state: null; colour: Run[] | null } | { footer: Footer; state: PieState; colour: Run[] | null }
 export const pieOf = (reading: Reading | null, on: boolean, refresh: string | null, stopped: boolean): Pie => {
   const refreshing = refreshingOf(on, reading, refresh)
   const warns = !refreshing && (!on || reading !== null)
@@ -133,7 +142,7 @@ export const warmthOf = (reading: Reading | null, ttl: '1h' | '5m', rebuild: str
 }
 
 // The Cache section's line as its pieces: the pie's glyph in the pie's tone, then a space and the warmth untoned. `pie` is the judgement of the same
-// reading that words the colour sentence (`pieOf`), so the glyph agrees with the sentence. Null when there is no reading to count from, so the glyph never
+// reading that gives the colour sentence's pieces (`pieOf`), so the glyph agrees with the sentence. Null when there is no reading to count from, so the glyph never
 // stands alone; where there is a reading the pie has a footer to give the glyph and the tone.
 export const cacheLineOf = (reading: Reading | null, ttl: '1h' | '5m', rebuild: string, pie: Pie): Run[] | null => {
   if (reading === null || pie.footer === null) return null

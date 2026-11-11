@@ -234,9 +234,9 @@ const pressPie = async ($: any) => {
   await m.press({ key: 'pie' })
   await m.unmount()
 }
-// Everything the line and the details draw, as text: the footer's drawing, then the pane's. A colour in it may be the pane's (the Keepalive state word
-// and the Cache line's pie are coloured, the pie in the footer's own tone), so a pie-colour assertion that the pie is drawn in a colour reads the footer
-// alone, with `pieDrawn`; one that denies a colour reads both, since the pane's pie is drawn in the footer's tone.
+// Everything the line and the details draw, as text: the footer's drawing, then the pane's. A colour in it may be the pane's (the Keepalive state word,
+// the Cache line's pie in the footer's own tone, and `amber` and `red` in the pie line, in the warning and error colours), so a pie-colour assertion that
+// the pie is drawn in a colour reads the footer alone, with `pieDrawn`; one that denies a colour reads both, since the pane's pie is drawn in the footer's tone.
 const drawnHint = async ($: any) => {
   const m = await mountHint($)
   const pane = await mountPane($)
@@ -3721,6 +3721,15 @@ const cacheRow = (tree: any): any => {
 }
 const pieOfRow = (row: any): any => row.children[0].children[0]
 const withoutPie = (row: any): any => ({ ...row, children: [{ ...row.children[0], children: row.children[0].children.slice(1) }] })
+// The pie line, which the Keepalive section words wherever no refresh is coming: its row in a drawing of the pane, or undefined where the pane shows none (a test
+// finds the row by its words; the drawing reads none); and the row without its `amber` and `red`, for a negative that denies any other colour or dim. The helper
+// only strips the two words; their tones are pinned by the pie line describe block below and by the countdown tests.
+const PIE_LINE = 'pie: amber ≤¼ TTL left, red ≤⅒'
+const pieLineRow = (tree: any): any => tree.children.find((row: any) => textOf(row) === PIE_LINE)
+const withoutColourWords = (row: any): any => ({
+  ...row,
+  children: [{ ...row.children[0], children: row.children[0].children.filter((piece: any) => !['amber', 'red'].includes(textOf(piece))) }],
+})
 
 describe('the details pane draws the sections /keepalive answers with, built by its draw alone', () => {
   const opts = { options: { keepalive_lead_s: 15, keepalive_count: 3 } }
@@ -3746,7 +3755,7 @@ describe('the details pane draws the sections /keepalive answers with, built by 
     await pane.unmount()
   })
 
-  test('each section heading is drawn bold, and no row is bold or coloured otherwise but the Keepalive state word', opts, async ($, on) => {
+  test('each section heading is drawn bold, and no row is bold or coloured otherwise but the Keepalive state word and the pie line\'s amber and red', opts, async ($, on) => {
     kaWorld(on, cached())
     const clock = mock.clock(on, { now: T0 })
     await $.classic.SessionStart({ source: 'startup', transcript_path: PATH })
@@ -3756,13 +3765,15 @@ describe('the details pane draws the sections /keepalive answers with, built by 
     const headings = rows.filter((row) => /^(Cache|Keepalive(  .+)?|This session|Advice|Settings)$/.test(row))
     expect(headings.length).toBeGreaterThanOrEqual(3)
     expect(await boldRows(pane)).toEqual(headings)
-    // The one coloured piece is named: keepalive is off here, so its state word is dim. Every other row, and the heading's title, carry no colour; the Cache
-    // line's pie too, since a calm warm cache with keepalive off is drawn in the normal colour.
+    // The coloured pieces are named: keepalive is off here, so its state word is dim, and the pie line shows with `amber` and `red` coloured. Every other row, the
+    // heading's title and the rest of the pie line carry no colour; the Cache line's pie too, since a calm warm cache with keepalive off is drawn in the normal
+    // colour.
     const tree = (await pane.drawn()) as any
     const heading = keepaliveRow(tree)
     expect(heading.children).toHaveLength(2)
     expect(propsOf(heading.children[1])).toEqual({ dimColor: true })
-    const rest = [...tree.children.filter((row: any) => row !== heading), heading.children[0]]
+    const line = pieLineRow(tree)
+    const rest = [...tree.children.filter((row: any) => row !== heading && row !== line), heading.children[0], ...(line === undefined ? [] : [withoutColourWords(line)])]
     expect(rest).toHaveLength(tree.children.length)
     expect(JSON.stringify(rest)).not.toMatch(/"color"|"dimColor"|"backgroundColor"/)
     await pane.unmount()
@@ -3820,7 +3831,7 @@ describe('the details pane draws the sections /keepalive answers with, built by 
     },
   ]
   for (const s of HEADING_STATES) {
-    test(`keepalive ${s.word}: the Keepalive heading is one bold Text, its title untoned and its state word in the state's tone, and no other row is coloured but the Cache line's pie`, async ($, on) => {
+    test(`keepalive ${s.word}: the Keepalive heading is one bold Text, its title untoned and its state word in the state's tone, and no other row is coloured but the Cache line's pie and the pie line's amber and red`, async ($, on) => {
       await s.reach($, on)
       const pane = await mountPane($)
       const tree = (await pane.drawn()) as any
@@ -3834,15 +3845,21 @@ describe('the details pane draws the sections /keepalive answers with, built by 
       expect(propsOf(title)).toEqual({})
       expect(state).toMatchObject({ type: 'Text', children: [s.word] })
       expect(propsOf(state)).toEqual(s.props)
-      // The Cache line's pie is the glyph and the props the state names, or the state has no Cache line. Every other row, whole, the title, and the Cache line
-      // without its pie are drawn with no colour or dim.
+      // The Cache line's pie is the glyph and the props the state names, or the state has no Cache line. Every other row, whole, the title, the Cache line
+      // without its pie and the pie line without its `amber` and `red`, where the state shows that line, are drawn with no colour or dim.
       const cache = cacheRow(tree)
       if (s.pie === null) expect(cache).toBeUndefined()
       else {
         expect(textOf(pieOfRow(cache))).toBe(s.pie.glyph)
         expect(propsOf(pieOfRow(cache))).toEqual(s.pie.props)
       }
-      const rest = [...tree.children.filter((row: any) => row !== heading && row !== cache), title, ...(cache === undefined ? [] : [withoutPie(cache)])]
+      const line = pieLineRow(tree)
+      const rest = [
+        ...tree.children.filter((row: any) => row !== heading && row !== cache && row !== line),
+        title,
+        ...(cache === undefined ? [] : [withoutPie(cache)]),
+        ...(line === undefined ? [] : [withoutColourWords(line)]),
+      ]
       expect(rest).toHaveLength(tree.children.length)
       expect(JSON.stringify(rest)).not.toMatch(/"color"|"dimColor"|"backgroundColor"/)
       // The bare answer names the state in the same words, as plain text.
@@ -8825,6 +8842,71 @@ describe('the Cache line opens with the pie: the footer\'s glyph in the bare ans
       await pane.unmount()
       expect(cacheRow(tree)).toBeUndefined()
       expect(JSON.stringify(tree)).not.toMatch(/[○◔◑◕●]/)
+    })
+  }
+})
+
+describe('the pie line draws amber in the warning colour and red in the error colour, in each state that shows it, and the bare answer states it as plain text', () => {
+  // The states that show the line, each with how a session reaches it. The line shows wherever no refresh is coming, whatever the pie's colour: a calm pie, an amber
+  // one, a red one and a dim one stand beside the same two colour words.
+  const STATES: { name: string; reach: ($: any, on: any) => Promise<unknown> }[] = [
+    { name: 'keepalive off, a fresh warm cache: the pie in the normal colour', reach: ($, on) => startedWorld($, on) },
+    { name: 'keepalive off, the last quarter: the pie amber', reach: async ($, on) => (await startedWorld($, on)).advance(240000) },
+    { name: 'keepalive off, the last tenth: the pie red', reach: async ($, on) => (await startedWorld($, on)).advance(280000) },
+    { name: 'keepalive off, an expired cache: the pie dim', reach: async ($, on) => (await startedWorld($, on)).advance(310000) },
+    {
+      name: 'keepalive off, a reset cache: the pie dim',
+      reach: async ($, on) => {
+        const clock = await startedWorld($, on)
+        await SWITCH($)
+        await clock.advance(1000)
+      },
+    },
+    { name: 'keepalive off with nothing to count', reach: ($, on) => startedWorld($, on, { text: '', exists: false }) },
+    {
+      name: 'keepalive on with a lead at the TTL, so paused: the pie in the normal colour',
+      reach: async ($, on) => {
+        const clock = await startedWorld($, on)
+        await toggle($, 'on 300')
+        await clock.advance(1000)
+      },
+    },
+    { name: 'keepalive stopped with its count used', reach: async ($, on) => countUsed($, await startedWorld($, on)) },
+    {
+      name: 'keepalive on, an expired cache: the pie red',
+      reach: async ($, on) => {
+        const clock = await startedWorld($, on)
+        await toggle($, 'on 60 2')
+        await mainStep($)
+        await clock.advance(310000)
+        await turnEnd($)
+        await clock.advance(1000)
+      },
+    },
+    {
+      name: 'keepalive on, a reset cache: the pie green',
+      reach: async ($, on) => {
+        const clock = await startedWorld($, on)
+        await toggle($, 'on 60 2')
+        await SWITCH($)
+        await clock.advance(1000)
+      },
+    },
+  ]
+  for (const s of STATES) {
+    test(s.name, async ($, on) => {
+      await s.reach($, on)
+      const pane = await mountPane($)
+      const tree = (await pane.drawn()) as any
+      await pane.unmount()
+      // The pieces of the line with a colour or dim are `amber` in the warning colour and `red` in the error colour, in that order, so the rest of the line has none.
+      const line = pieLineRow(tree)
+      expect(line).toBeDefined()
+      const toned = line.children[0].children.filter((piece: any) => Object.keys(propsOf(piece)).length > 0)
+      expect(toned.map((piece: any) => [textOf(piece), propsOf(piece)])).toEqual([['amber', { color: 'warning' }], ['red', { color: 'error' }]])
+      // The bare answer states the line once, as plain text in its one row.
+      const answer = (await commandText($, '')).split('\n')
+      expect(answer.filter((row) => row.includes(PIE_LINE))).toEqual([`  ${PIE_LINE}`])
     })
   }
 })
