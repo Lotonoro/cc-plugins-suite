@@ -148,8 +148,8 @@ export const wrapText = (text: string, width: number): string[] => text.split(/\
 const ELLIPSIS = '…'
 
 // A text cut at its end to `room` columns: whole when it fits, otherwise the longest start that ends at a cut point (columns.ts) and leaves a column for the ellipsis, then the
-// ellipsis. That start never splits a measured sequence, separates a mark from its letter or ends on a joiner (which would join the ellipsis to what was kept), so a run of
-// unmeasured parts joined by U+200D is kept whole or dropped. Nothing where the room has no column.
+// ellipsis. That start never splits a measured sequence, separates a mark from its letter or ends on a joiner, alone or followed by code points that draw nothing (which would
+// join the ellipsis to what was kept), so a run of unmeasured parts joined by U+200D is kept whole or dropped. Nothing where the room has no column.
 export const cutToColumns = (text: string, room: number): string => {
   if (room < 1) return ''
   const units = unitsOf(text)

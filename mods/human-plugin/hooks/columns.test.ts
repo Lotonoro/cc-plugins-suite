@@ -1,5 +1,5 @@
 import { expect, test } from 'claude-code/testing'
-import { PACKED, displayColumns, unitsOf } from './columns'
+import { PACKED, displayColumns, isCutPoint, unitsOf, type Unit } from './columns'
 import { SEQUENCES } from './sequences'
 
 // Code points written as numbers, so no editor or encoding changes a joiner or a variation selector that draws as nothing.
@@ -152,7 +152,7 @@ test('a sequence that starts or ends on a joiner is not a unit, and counts as it
 test('the longest sequence that starts at a point is the unit: the man with a light skin tone is 2 alone, and the kiss that starts with him is 4, not 2 and the rest', () => {
   expect(displayColumns(cps(0x1f468, 0x1f3fb))).toBe(2)
   expect(displayColumns(KISS)).toBe(4)
-  expect(unitsOf(KISS)).toEqual([{ text: KISS, columns: 4 }])
+  expect(unitsOf(KISS)).toEqual([{ text: KISS, columns: 4, joins: false }])
 })
 
 test('a text of measured sequences and ASCII measures as the sum of its units, and its units read back as the text', () => {
@@ -163,7 +163,7 @@ test('a text of measured sequences and ASCII measures as the sum of its units, a
 
 test('the units of a text: each whole code point, a surrogate pair one, the selector after a code point kept with it, and the sum is the text\'s columns', () => {
   expect(unitsOf('')).toEqual([])
-  expect(unitsOf(`a${cps(0x20000)}`)).toEqual([{ text: 'a', columns: 1 }, { text: cps(0x20000), columns: 2 }])
+  expect(unitsOf(`a${cps(0x20000)}`)).toEqual([{ text: 'a', columns: 1, joins: false }, { text: cps(0x20000), columns: 2, joins: false }])
   expect(unitsOf(cps(0x2764, 0xfe0f, 0x200d, 0x61)).map(({ columns }) => columns)).toEqual([2, 0, 1])
   expect(unitsOf(cps(0x2705, 0xfe0f)).map(({ columns }) => columns)).toEqual([2])
   expect(unitsOf('\ud800a').map(({ text, columns }) => [text.length, columns])).toEqual([[1, 2], [1, 1]])
@@ -171,6 +171,54 @@ test('the units of a text: each whole code point, a surrogate pair one, the sele
     expect(unitsOf(text).reduce((sum, { columns }) => sum + columns, 0), text).toBe(displayColumns(text))
     expect(unitsOf(text).map(({ text: unit }) => unit).join(''), text).toBe(text)
   }
+})
+
+const FACE = cps(0x1f600)
+const JOINER = cps(0x200d)
+
+test('a unit joins the unit after it when it draws no column and holds a joiner or follows a unit that joins: a joiner, a joiner with its U+FE0F and the zero-column units after them join up to the first unit that draws, and nothing else does', () => {
+  const joins = (text: string): [string, boolean][] => unitsOf(text).map((unit): [string, boolean] => [unit.text, unit.joins])
+  expect(joins(`${FACE}${JOINER}${FACE}`)).toEqual([[FACE, false], [JOINER, true], [FACE, false]])
+  expect(joins(cps(0x1f600, 0x200d, 0xfe0f, 0xfe0f, 0x301, 0x1f600, 0x301))).toEqual([
+    [FACE, false],
+    [cps(0x200d, 0xfe0f), true],
+    [cps(0xfe0f), true],
+    [cps(0x301), true],
+    [FACE, false],
+    [cps(0x301), false],
+  ])
+  // A unit that draws never joins, however many joiners it holds; a mark after a letter holds none and follows none.
+  expect(joins(FAMILY)).toEqual([[FAMILY, false]])
+  expect(joins(cps(0x61, 0x301, 0x62))).toEqual([['a', false], [cps(0x301), false], ['b', false]])
+})
+
+test('a cut falls neither after a joiner nor after the zero-column units that follow it, before the unit they join: a joiner followed by a U+FE0F, by two, by a U+FE0E, by a U+20E3 or by a combining mark, between two grinning faces and then ASCII', () => {
+  const shapes: [string, number[]][] = [
+    ['a U+FE0F', [0xfe0f]],
+    ['a U+FE0F twice', [0xfe0f, 0xfe0f]],
+    ['a U+FE0E', [0xfe0e]],
+    ['a U+20E3', [0x20e3]],
+    ['a combining mark', [0x301]],
+  ]
+  for (const [name, marks] of shapes) {
+    // The last three units: the last zero-column unit after the joiner, the second face and the ASCII.
+    const [last, face, ascii] = unitsOf(`${FACE}${JOINER}${cps(...marks)}${FACE}a`).slice(-3) as [Unit, Unit, Unit]
+    expect(last.columns, name).toBe(0)
+    expect(isCutPoint(last, face), `${name}: before the second face`).toBe(false)
+    expect(isCutPoint(face, ascii), `${name}: after the second face`).toBe(true)
+  }
+})
+
+test('a cut falls at the start of a text, after a unit that ends on a U+FE0F with no joiner before it and after a mark that follows a letter, but not after a bare joiner nor before a mark', () => {
+  const cutBefore = (text: string, at: number): boolean => {
+    const units = unitsOf(text)
+    return isCutPoint(units[at - 1], units[at] as Unit)
+  }
+  expect(cutBefore('a', 0), 'at the start').toBe(true)
+  expect(cutBefore(`a${cps(0x2764, 0xfe0f)}b`, 2), 'after a heart and its selector').toBe(true)
+  expect(cutBefore(`e${cps(0x301)}x`, 2), 'after a mark that follows a letter').toBe(true)
+  expect(cutBefore(`e${cps(0x301)}x`, 1), 'before that mark').toBe(false)
+  expect(cutBefore(`${FACE}${JOINER}${FACE}`, 2), 'after a bare joiner').toBe(false)
 })
 
 test('every measured sequence holds fewer code points than the packing of a unit\'s columns and length leaves room for, so a regenerated list cannot corrupt a width', () => {

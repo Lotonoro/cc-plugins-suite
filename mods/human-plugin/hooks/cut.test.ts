@@ -1,9 +1,13 @@
 import { expect, test } from 'claude-code/testing'
 import { unitsOf } from './columns'
 import { cutLine, cutText, oneLine, repairCut } from './cut'
+import { endsJoining } from './joining-oracle'
 
 const pair = String.fromCodePoint(0x1f600)
 const zwj = String.fromCodePoint(0x200d)
+const vs16 = String.fromCodePoint(0xfe0f)
+// The variation selectors a joiner may be followed by: the measure pairs U+FE0F with the joiner into one unit and leaves U+FE0E a unit of its own.
+const selectors: [string, string][] = [['U+FE0F', vs16], ['U+FE0E', String.fromCodePoint(0xfe0e)]]
 const man = '👨'
 const woman = '👩'
 const girl = '👧'
@@ -58,6 +62,17 @@ test('an unmeasured run joined by U+200D is kept whole or dropped, never shown a
   expect(cutText(`${a(21)}${chain}bc`, 30)).toBe(`${a(21)}${chain}…`)
 })
 
+test('a joiner followed by code points that draw nothing is dropped with the unit it joins, never shown as a fragment before the ellipsis', () => {
+  for (const [name, selector] of selectors) expect(cutText(`${a(25)}${pair}${zwj}${selector}${pair}${x(45)}`, 30), name).toBe(`${a(25)}…`)
+})
+
+test('a joiner followed by code points that draw nothing is kept with the unit it joins when the cut falls after that unit', () => {
+  for (const [name, selector] of selectors) {
+    const joined = `${pair}${zwj}${selector}${pair}`
+    expect(cutText(`${a(23)}${joined}bc`, 30), name).toBe(`${a(23)}${joined}…`)
+  }
+})
+
 test('a combining mark stays with its letter, and a text of zero-width units cuts to the ellipsis', () => {
   expect(cutText(`${x(28)}e${acute}y`, 30)).toBe(`${x(28)}…`)
   expect(cutText(`${x(28)}ก่y`, 30)).toBe(`${x(28)}…`)
@@ -73,7 +88,7 @@ test('a chain shorter than the cap is dropped whole, and kept when it fits with 
 })
 
 // The longest prefix that ends at a cut point and fits `max` with its ellipsis, found by trying every prefix: a prefix of `n` units ends on a unit boundary,
-// not on U+200D, with a next unit that draws a column (or is the empty prefix).
+// where no U+200D still joins what follows (endsJoining), with a next unit that draws a column (or is the empty prefix).
 const longestKept = (text: string, max: number): string => {
   const boundaries = new Set<number>([0])
   let at = 0
@@ -85,15 +100,25 @@ const longestKept = (text: string, max: number): string => {
   for (let n = 0; n <= max - 1; n++) {
     if (!boundaries.has(n)) continue
     const next = unitsOf(text.slice(n)).at(0)
-    if (n === 0 || (!text.slice(0, n).endsWith('\u200d') && next !== undefined && next.columns > 0)) best = n
+    if (n === 0 || (!endsJoining(text.slice(0, n)) && next !== undefined && next.columns > 0)) best = n
   }
   return text.slice(0, best)
 }
 
-// The texts the cut is tried on: a family, a skin-tone kiss, a flag, a keycap, a joined chain and combining marks, each straddling the cap.
-const cutTexts = [family.repeat(3), `${a(20)}${kiss}b`, `${a(14)}${kiss}bc`, `${x(27)}${flag}y`, `${x(28)}${keycap}y`, `${a(25)}${chain}b`, `${x(28)}e${acute}y`, acute.repeat(31)]
+// The texts the cut is tried on: a family, a skin-tone kiss, a flag, a keycap, a joined chain, combining marks, and a joiner followed by a selector between two faces, each straddling the cap.
+const cutTexts = [
+  family.repeat(3),
+  `${a(20)}${kiss}b`,
+  `${a(14)}${kiss}bc`,
+  `${x(27)}${flag}y`,
+  `${x(28)}${keycap}y`,
+  `${a(25)}${chain}b`,
+  `${x(28)}e${acute}y`,
+  acute.repeat(31),
+  ...selectors.map(([, selector]) => `${a(25)}${pair}${zwj}${selector}${pair}${x(45)}`),
+]
 
-test('for every cap from 0 to 40, the cut is within it, never ends on a joiner, and is the longest prefix at a cut point that fits', () => {
+test('for every cap from 0 to 40, the cut is within it, never ends on a joiner or on the code points after one that draw nothing, and is the longest prefix at a cut point that fits', () => {
   for (const text of cutTexts) {
     for (let max = 0; max <= 40; max++) {
       const out = cutText(text, max)
@@ -103,7 +128,7 @@ test('for every cap from 0 to 40, the cut is within it, never ends on a joiner, 
         expect(out).toBe('')
         continue
       }
-      expect(out.slice(0, -1).endsWith('\u200d')).toBe(false)
+      expect(endsJoining(out.slice(0, -1))).toBe(false)
       expect(out).toBe(`${longestKept(text, max)}…`)
     }
   }
@@ -117,9 +142,13 @@ test('repairCut ends a text that ends in the ellipsis at its last cut point: the
   expect(repairCut(`${pair}${zwj}…`)).toBe('…')
 })
 
+test('repairCut ends a text that ends in a joiner and the code points after it that draw nothing, then the ellipsis, at its last cut point', () => {
+  for (const [name, selector] of selectors) expect(repairCut(`${a(25)}${pair}${zwj}${selector}…`), name).toBe(`${a(25)}…`)
+  expect(repairCut(`${a(5)}${pair}${zwj}${vs16}${vs16}${acute}…`)).toBe(`${a(5)}…`)
+})
+
 test('repairCut keeps a text whose text before the ellipsis already ends at a cut point, the leftovers of a cut inside a sequence included', () => {
   const regional = String.fromCodePoint(0x1f1fa)
-  const vs16 = String.fromCodePoint(0xfe0f)
   for (const text of [
     '…',
     'after tests…',
@@ -131,6 +160,7 @@ test('repairCut keeps a text whose text before the ellipsis already ends at a cu
     `${x(10)}${regional}…`,
     `${x(10)}1${vs16}…`,
     `x${acute}…`,
+    `${a(10)}${pair}${zwj}${vs16}${pair}…`,
   ]) {
     expect(repairCut(text)).toBe(text)
   }

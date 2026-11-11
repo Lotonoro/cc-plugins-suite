@@ -26,6 +26,7 @@ const columnsAlone = (code: number): number => {
 
 const VARIATION_SELECTOR_16 = 0xfe0f
 const COMBINING_KEYCAP = 0x20e3
+const ZERO_WIDTH_JOINER = 0x200d
 
 // The measured sequences by their first code point, the longest first, each as its code points and its columns.
 const SEQUENCES_BY_FIRST = new Map<number, { codes: number[]; columns: number }[]>()
@@ -36,8 +37,10 @@ for (const [hex, columns] of SEQUENCES) {
 }
 for (const sequences of SEQUENCES_BY_FIRST.values()) sequences.sort((a, b) => b.codes.length - a.codes.length)
 
-// A stretch of a text that is cut and wrapped whole, and the columns it takes.
-export type Unit = { text: string; columns: number }
+// A stretch of a text that is cut and wrapped whole, and the columns it takes. `joins`: whether it joins the unit after it, a join a cut must not separate (isCutPoint). A unit
+// joins when it draws no column and either holds a U+200D or follows a unit that joins, so a joiner and the zero-column units after it (the U+FE0F the measure pairs with it, a
+// mark) join on to the first unit that draws. A flag depends on the units before it, so it holds only within the list unitsOf returned.
+export type Unit = { text: string; columns: number; joins: boolean }
 
 const codePointsOf = (text: string): number[] => {
   const codes: number[] = []
@@ -79,16 +82,19 @@ export const unitsOf = (text: string): Unit[] => {
   for (let at = 0; at < codes.length; ) {
     const packed = unitAt(codes, at)
     const length = packed % PACKED
-    units.push({ text: String.fromCodePoint(...codes.slice(at, at + length)), columns: (packed - length) / PACKED })
+    const columns = (packed - length) / PACKED
+    const parts = codes.slice(at, at + length)
+    const joins = columns === 0 && (parts.includes(ZERO_WIDTH_JOINER) || (units.at(-1)?.joins ?? false))
+    units.push({ text: String.fromCodePoint(...parts), columns, joins })
     at += length
   }
   return units
 }
 
 // Whether a cut may fall between `before` and `after`, two units in a row (`before` undefined at the start of a text, which is always a cut point): the unit
-// before does not end on U+200D, which would join what follows to it, and the unit after draws at least one column, so a mark stays with the letter it marks.
-export const isCutPoint = (before: Unit | undefined, after: Unit): boolean =>
-  before === undefined || (!before.text.endsWith('\u200d') && after.columns > 0)
+// before does not join the unit after it (`joins`: a U+200D joins what follows it, across the zero-column units after it too), and the unit after draws at least one
+// column, so a mark stays with the letter it marks.
+export const isCutPoint = (before: Unit | undefined, after: Unit): boolean => before === undefined || (!before.joins && after.columns > 0)
 
 // The columns a text takes on screen: the measure the label and term limits are checked in, and the one the band's layout (layout.ts) cuts and wraps by.
 export const displayColumns = (text: string): number => {
