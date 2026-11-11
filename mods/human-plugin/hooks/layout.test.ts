@@ -383,6 +383,15 @@ test('a joined sequence is one unit and a joiner is never the last thing kept: t
   expect(cutToColumns(`${face}${JOINER}${face}${JOINER}xx`, 5)).toBe('…')
 })
 
+test('a joiner and the U+FE0F after it are kept with the unit they join or dropped with it: a grinning face, a joiner, a selector and a grinning face is whole at 4 and `…` at 3, and with `xx` after it the whole and an ellipsis at 5 and `…` at 4', () => {
+  const joined = cps(0x1f600, 0x200d, 0xfe0f, 0x1f600)
+  expect(displayColumns(joined)).toBe(4)
+  expect(cutToColumns(joined, 4)).toBe(joined)
+  expect(cutToColumns(joined, 3)).toBe('…')
+  expect(cutToColumns(`${joined}xx`, 5)).toBe(`${joined}…`)
+  expect(cutToColumns(`${joined}xx`, 4)).toBe('…')
+})
+
 test('a run of unmeasured parts joined by a joiner is kept whole or dropped, never cut inside: three grinning faces joined, then `xx`, are the run and an ellipsis at 7 and `…` at 6, and with `ab` before them `ab…` at 8 and `ab`, the run and an ellipsis at 9', () => {
   const run = cps(0x1f600, 0x200d, 0x1f600, 0x200d, 0x1f600)
   expect(displayColumns(run)).toBe(6)
@@ -459,7 +468,14 @@ const SAMPLES = [
   `${cps(0x261d, 0x1f3fd)} up ${cps(0x1faf1, 0x1f3fb, 0x200d, 0x1faf2, 0x1f3fc)} shake`,
   `${FAMILY.repeat(3)} and ${cps(0x1f1fa, 0x1f1f8)}`,
   `${cps(0x1f600, 0x200d, 0x1f600)}ab${cps(0x1f600, 0x200d, 0x1f600, 0x200d, 0x1f600)}cd ${cps(0x1f600, 0x200d, 0x1f600)} ef`,
+  `${cps(0x1f600, 0x200d, 0xfe0f, 0x1f600)}ab${cps(0x1f600, 0x200d, 0xfe0f, 0x1f600)}cd`,
 ]
+
+// Whether a text ends where a joiner still joins what comes next: its last U+200D is followed only by code points that draw no column, or by none.
+const endsJoining = (text: string): boolean => {
+  const at = text.lastIndexOf(JOINER)
+  return at !== -1 && [...text.slice(at + 1)].every(point => displayColumns(point) === 0)
+}
 
 test('whatever the text and the room, the cut is the longest start of the text that ends at a cut point and leaves a column for the ellipsis, and it measures at most the room', () => {
   for (const text of SAMPLES) {
@@ -476,12 +492,13 @@ test('whatever the text and the room, the cut is the longest start of the text t
       }
       expect(got.endsWith('…'), where).toBe(true)
       expect(displayColumns(got), where).toBeLessThanOrEqual(room)
-      // The longest start that ends at a cut point and fits the room less the ellipsis, found by trying every start: the empty start, and one that ends between units, not
-      // on a joiner, before a unit that draws a column.
+      expect(endsJoining(got.slice(0, -1)), where).toBe(false)
+      // The longest start that ends at a cut point and fits the room less the ellipsis, found by trying every start: the empty start, and one that ends between units,
+      // where no joiner still joins what follows (endsJoining), before a unit that draws a column.
       let want = ''
       let start = ''
       for (const [k, { text: unit, columns }] of unitsOf(text).entries()) {
-        if (displayColumns(start) <= room - 1 && (k === 0 || (!start.endsWith(JOINER) && columns > 0))) want = start
+        if (displayColumns(start) <= room - 1 && (k === 0 || (!endsJoining(start) && columns > 0))) want = start
         start += unit
       }
       expect(got, where).toBe(`${want}…`)
@@ -495,7 +512,7 @@ const MEASURED = SEQUENCES.filter((_, k) => k % 37 === 0).map(([hex]) => cps(...
 const PIECES = [...MEASURED.flatMap(text => [text, 'a', 'b', ' ', '日']), cps(0x1f600, 0x200d, 0x200d, 0x1f600), ' ']
 const endsOf = (pieces: readonly string[]): Set<string> => new Set(pieces.map((_, k) => pieces.slice(0, k + 1).join('')))
 
-test('for any text built from measured sequences, ASCII and CJK, ending on a joiner, and any room from 1 to 40, no cut ends inside a measured sequence or on a joiner, and each measures at most its room', () => {
+test('for any text built from measured sequences, ASCII and CJK, ending on a joiner, and any room from 1 to 40, no cut ends inside a measured sequence or on a joiner, or on one and the code points after it that draw nothing, and each measures at most its room', () => {
   expect(MEASURED.length).toBeGreaterThan(60)
   expect(MEASURED.some(text => text.length > 8)).toBe(true)
   const text = [...PIECES, JOINER].join('')
@@ -505,7 +522,7 @@ test('for any text built from measured sequences, ASCII and CJK, ending on a joi
     const kept = got.slice(0, -1)
     expect(displayColumns(got), `${room}`).toBeLessThanOrEqual(room)
     expect(kept === '' || ends.has(kept), `${room}`).toBe(true)
-    expect(kept.endsWith(JOINER), `${room}`).toBe(false)
+    expect(endsJoining(kept), `${room}`).toBe(false)
   }
   // Several starts, so the cut meets different sequences: each start rotates the pieces.
   for (let start = 0; start < PIECES.length; start += 53) {

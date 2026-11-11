@@ -19,9 +19,10 @@ const keptWithin = (text: string, room: number): string => {
 }
 
 // The text cut to at most `max` UTF-16 units, the ellipsis counted within them. The cut keeps the longest prefix that ends at a cut point (columns.ts) and
-// fits with the ellipsis, so it never splits a sequence, separates a mark from its letter, or ends on a joiner. It keeps `max - 1` units, or fewer by at most
-// the length of the run that straddles that point, less one: at most 14 fewer for measured sequences, more for a chain of parts joined by U+200D, which is
-// kept or dropped whole. Line breaks stay as they are, so a multi-line text is cut to a multi-line text; cutLine is the one-line cut.
+// fits with the ellipsis, so it never splits a sequence, separates a mark from its letter, or ends on a joiner, alone or followed by code points that draw nothing.
+// It keeps `max - 1` units, or fewer by at most the length of the run that straddles that point, less one: at most 14 fewer for measured sequences, more for a chain
+// of parts joined by U+200D (a joiner may be followed by code points that draw nothing), which is kept or dropped whole. Line breaks stay as they are, so a multi-line
+// text is cut to a multi-line text; cutLine is the one-line cut.
 export const cutText = (text: string, max: number): string => {
   if (text.length <= max) return text
   if (max <= 0) return ''
@@ -32,6 +33,6 @@ export const cutText = (text: string, max: number): string => {
 export const cutLine = (text: string, max: number): string => cutText(oneLine(text), max)
 
 // A text that ends in the ellipsis, ended at its last cut point instead: what stands before the ellipsis is cut back to the longest prefix that ends at a cut point,
-// and the ellipsis stays. It repairs a text a cut left ending on U+200D, which joins the ellipsis to what is left of its sequence. A text with no ellipsis, or one
-// whose text before it already ends at a cut point, is returned as it is.
+// and the ellipsis stays. It repairs a text a cut left ending on U+200D, alone or followed by code points that draw nothing: the joiner joins the ellipsis to what is
+// left of its sequence. A text with no ellipsis, or one whose text before it already ends at a cut point, is returned as it is.
 export const repairCut = (text: string): string => (text.endsWith('…') ? `${keptWithin(text, text.length - 1)}…` : text)

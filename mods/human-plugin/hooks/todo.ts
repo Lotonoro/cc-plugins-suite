@@ -22,9 +22,9 @@ export const ETA_MAX = 30
 export const NO_ETA = 'no ETA'
 
 // The ETA to store for any value a call or a stored list gives: its text trimmed and on one line, cut to ETA_MAX, and, where it ends in the ellipsis, ended at a cut point
-// (repairCut), which mends an ETA an older cut stored ending on a dangling joiner before the ellipsis. A leftover that ends at a cut point, such as a family of three left of
-// a family of four, cannot be told from the same text written whole and stays. NO_ETA when it is no text or blank. The list is normalized through this on every read, so the
-// repair shows from the next read and is stored at the next write or rebuild.
+// (repairCut), which mends an ETA an older cut stored ending on a dangling joiner, alone or followed by code points that draw nothing, before the ellipsis. A leftover that
+// ends at a cut point, such as a family of three left of a family of four, cannot be told from the same text written whole and stays. NO_ETA when it is no text or blank.
+// The list is normalized through this on every read, so the repair shows from the next read and is stored at the next write or rebuild.
 export const etaOf = (raw: unknown): string => {
   const eta = typeof raw === 'string' ? repairCut(cutLine(raw.trim(), ETA_MAX)) : ''
   return eta === '' ? NO_ETA : eta
