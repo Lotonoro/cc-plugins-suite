@@ -3501,7 +3501,9 @@ test('a list the agent writes through the tool is drawn: the column follows the 
   expect(flat(await bandAt(hooks, env, 120))).not.toContain('Claude TODO')
   await runTodo(hooks, env, { entries: [entry('Build', 'in_flight'), entry('Test', 'queued')] })
   const wide = await bandAt(hooks, env, 120)
-  expect(flat(wide)).toContain('Claude TODO 1 active, 1 queued')
+  // The header is the heading as text, then the counts as a button.
+  expect(flat(wide)).toContain('Claude TODO ')
+  expect(flat(wide)).toContain('1 active, 1 queued')
   expect(flat(wide)).toContain('◐ Build')
   await runTodo(hooks, env, { entries: [] })
   expect(flat(await bandAt(hooks, env, 120))).not.toContain('Claude TODO')
@@ -3702,8 +3704,8 @@ const shapeOf = (row: Tree): unknown[] => (row.children ?? []).map(part => [part
 const ROW_SHAPE = [[1, 'truncate-end', undefined], [0, undefined, true]]
 const ITEM_ONE = '#1 non-blocking, open: Item 1'
 
-test('a press on the Claude header, on a Claude row and on +N queued each opens the pane on the Claude list within the press: one request, titled Claude TODO, with a row for the header and one for each item of the whole list, and the keyboard', async () => {
-  for (const key of ['claude-header', 'claude-row-0', 'claude-queued']) {
+test('a press on the Claude counts and on +N queued each opens the pane on the Claude list within the press: one request, titled Claude TODO, with a row for the header and one for each item of the whole list, and the keyboard', async () => {
+  for (const key of ['claude-header', 'claude-queued']) {
     reset()
     const { hooks } = wire()
     const { $, values, opens, open } = backlogEnv([made(1), made(2)], [], null, SIX)
@@ -3807,7 +3809,7 @@ test('a press on the Claude column while the pane shows the Claude list closes t
   const { hooks } = wire()
   const { $, opens, closes, open } = backlogEnv([made(1), made(2)], [], null, SIX)
   await endSession(hooks, $)
-  for (const key of ['claude-header', 'claude-header', 'claude-row-0', 'claude-queued']) {
+  for (const key of ['claude-header', 'claude-header', 'claude-header', 'claude-queued']) {
     pressKey(await bandAt(hooks, $, 120), key)
     await settle()
   }
@@ -3823,7 +3825,7 @@ test('two presses on the Claude column before the band draws again, from a close
   await endSession(hooks, $)
   const tree = await bandAt(hooks, $, 120)
   pressKey(tree, 'claude-header')
-  pressKey(tree, 'claude-row-0')
+  pressKey(tree, 'claude-header')
   await settle()
   expect(opens).toHaveLength(1)
   expect(closes).toEqual(['human-items'])
@@ -3924,14 +3926,14 @@ test('a second press on the Claude column before the first has looked at the sto
   const tree = await bandAt(hooks, $, 120)
   await runTodo(hooks, $, { entries: SIX })
   pressKey(tree, 'claude-header')
-  pressKey(tree, 'claude-row-0')
+  pressKey(tree, 'claude-header')
   await settle()
   expect(opens.map(o => o.rows)).toEqual([4])
   expect(closes).toEqual(['human-items'])
   expect(open).toEqual([])
 })
 
-test('with the pane on a human item a press on the Claude column shows the Claude list in the same pane; with it on the Claude list a press on a human title, on the Claude column\'s other rows and on the summary row each switch it again: the engine lists one pane after each', async () => {
+test('with the pane on a human item a press on the Claude column shows the Claude list in the same pane; with it on the Claude list a press on a human title and on the summary row each switch it again: the engine lists one pane after each', async () => {
   reset()
   const { hooks } = wire()
   const { $, values, opens, closes } = backlogEnv([1, 2, 3, 4, 5, 6].map(id => made(id)), [], null, SIX)
@@ -3944,7 +3946,7 @@ test('with the pane on a human item a press on the Claude column shows the Claud
   expect(await press('title-1')).toEqual(['Items for you', 1, ['human-items']])
   expect(await press('claude-header')).toEqual(['Claude TODO', 'claude-todo', ['human-items']])
   expect(await press('title-2')).toEqual(['Items for you', 2, ['human-items']])
-  expect(await press('claude-row-0')).toEqual(['Claude TODO', 'claude-todo', ['human-items']])
+  expect(await press('claude-header')).toEqual(['Claude TODO', 'claude-todo', ['human-items']])
   // The band given four rows folds the items from the third on, and its summary row opens the first of them.
   expect(await press('band-more', { maxRows: 4 })).toEqual(['Items for you', 3, ['human-items']])
   expect(closes).toEqual([])
@@ -4001,7 +4003,7 @@ test('with no selection stored the first human item counts as the shown one: wit
 })
 
 test('after a reload with the backlog open and no press made since, a press on the Claude column closes the pane, and a press on a human title shows that item in the same pane', async () => {
-  for (const [key, closed] of [['claude-header', true], ['claude-row-0', true], ['claude-queued', true], ['title-1', false], ['title-2', false]] as const) {
+  for (const [key, closed] of [['claude-header', true], ['claude-queued', true], ['title-1', false], ['title-2', false]] as const) {
     reset()
     const { hooks } = wire()
     const open = ['human-items']
@@ -4358,7 +4360,7 @@ test('with the pane docked at a band of 52, switching it from a human item to th
   await settle()
   expect(opens.slice(before).map(o => o.title)).toEqual(['Claude TODO', 'Items for you'])
   expect(await columnDrawn(hooks, $)).toBe(true)
-  pressKey(await bandAt(hooks, $, 56), 'claude-row-0')
+  pressKey(await bandAt(hooks, $, 56), 'claude-header')
   await settle()
   expect(opens.slice(before).map(o => o.title)).toEqual(['Claude TODO', 'Items for you', 'Claude TODO'])
   expect(await columnDrawn(hooks, $)).toBe(true)

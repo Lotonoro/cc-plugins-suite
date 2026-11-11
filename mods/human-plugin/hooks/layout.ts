@@ -172,6 +172,17 @@ export const cutTitle = (title: string, marker: string, room: number): string =>
   return marker !== '' && room > markerColumns ? `${cutToColumns(title, room - markerColumns)}${marker}` : cutToColumns(`${title}${marker}`, room)
 }
 
+// The Claude column's header cut at its layout width `width`, as the two parts ui.ts draws: `heading`, the heading and the space that separates it from the counts, and
+// `counts`, the part that is pressed. While the width leaves the counts a column the heading is whole and the counts are cut to the room it leaves, a bare ellipsis at the
+// narrowest; joined, the parts read as the line `heading counts` cut at `width`. Below that the heading part is the whole line cut, which ends in the ellipsis, and the counts
+// part is empty: nothing in the header is pressed.
+export type ColumnHeader = { heading: string; counts: string }
+export const columnHeader = (heading: string, counts: string, width: number): ColumnHeader => {
+  const lead = `${heading} `
+  const room = width - displayColumns(lead)
+  return room >= 1 ? { heading: lead, counts: cutToColumns(counts, room) } : { heading: cutToColumns(`${lead}${counts}`, width), counts: '' }
+}
+
 // One state of a row's control as three fixed parts around an answer's text, which is the only part that varies and can be cut: `[✓ `, a label and `]` for an open
 // labelled to-do; the mark, the answer and the undo button after a space for a pressed control. `answer` is empty for a control with none.
 export type Control = { before: string; answer: string; after: string }

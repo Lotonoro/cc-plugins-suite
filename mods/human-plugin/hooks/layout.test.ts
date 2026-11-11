@@ -1,5 +1,5 @@
 import { expect, test } from 'claude-code/testing'
-import { backlogTail, bandDraws, bandRows, bandWidths, claudeRows, columnHeight, cutTitle, cutToColumns, headerLines, humanFoldRows, isChipShort, isSqueezed, rowLayout, squeezedFold, wrapText, type BandWidths, type ClaudeRow, type Control, type RowTexts } from './layout'
+import { backlogTail, bandDraws, bandRows, bandWidths, claudeRows, columnHeader, columnHeight, cutTitle, cutToColumns, headerLines, humanFoldRows, isChipShort, isSqueezed, rowLayout, squeezedFold, wrapText, type BandWidths, type ClaudeRow, type Control, type RowTexts } from './layout'
 import { displayColumns, unitsOf } from './columns'
 import { endsJoining } from './joining-oracle'
 import { SEQUENCES } from './sequences'
@@ -577,6 +577,40 @@ test('a title label measures at most its room, is the whole title with its marke
       if (displayColumns(title + mark) <= room) expect(label, where).toBe(title + mark)
       else if (mark !== '' && room >= 5) expect(label.endsWith(`…${mark}`), where).toBe(true)
       else expect(label.endsWith('…'), where).toBe(true)
+    }
+  }
+})
+
+// The Claude column's header, the heading and the counts cut at the column's layout width as the two parts ui.ts draws; the counts are the part that is pressed.
+const HEADING = 'Claude TODO'
+const COUNTS = '1 active, 2 queued'
+
+test('the header is the heading with its space and the counts: whole from 30 columns, the counts cut to the 8 the heading leaves at 20 (`1 activ…`), and at 6 the line cut as one text (`Claud…`)', () => {
+  expect(displayColumns(`${HEADING} ${COUNTS}`)).toBe(30)
+  for (const width of [30, 31, 80]) expect(columnHeader(HEADING, COUNTS, width), `${width}`).toEqual({ heading: 'Claude TODO ', counts: COUNTS })
+  expect(columnHeader(HEADING, COUNTS, 29)).toEqual({ heading: 'Claude TODO ', counts: '1 active, 2 queu…' })
+  expect(columnHeader(HEADING, COUNTS, 20)).toEqual({ heading: 'Claude TODO ', counts: '1 activ…' })
+  expect(columnHeader(HEADING, COUNTS, 6)).toEqual({ heading: 'Claud…', counts: '' })
+})
+
+test('the counts part keeps a column while the heading and its space leave one: `1…` at 14 and a bare `…` at 13; at 12 and 11 the heading part is the line cut, `Claude TODO…` and `Claude TOD…`, and the counts part is empty', () => {
+  expect(columnHeader(HEADING, COUNTS, 14)).toEqual({ heading: 'Claude TODO ', counts: '1…' })
+  expect(columnHeader(HEADING, COUNTS, 13)).toEqual({ heading: 'Claude TODO ', counts: '…' })
+  expect(columnHeader(HEADING, COUNTS, 12)).toEqual({ heading: 'Claude TODO…', counts: '' })
+  expect(columnHeader(HEADING, COUNTS, 11)).toEqual({ heading: 'Claude TOD…', counts: '' })
+})
+
+test('whatever the counts and the width, the two parts joined are the line cut at the width and measure at most the width, and the counts part is empty exactly when the width is 12 or less', () => {
+  for (const counts of ['0 active, 0 queued', COUNTS, '12 active, 13 queued', '120 active, 13 queued']) {
+    for (let width = 0; width <= 45; width++) {
+      const where = `${counts} in ${width}`
+      const parts = columnHeader(HEADING, counts, width)
+      expect(`${parts.heading}${parts.counts}`, where).toBe(cutToColumns(`${HEADING} ${counts}`, width))
+      expect(displayColumns(`${parts.heading}${parts.counts}`), where).toBeLessThanOrEqual(width)
+      expect(parts.counts === '', where).toBe(width <= 12)
+      // The heading part is whole with its space while the counts draw, and below that it is the cut line, which ends in the ellipsis.
+      if (width >= 13) expect(parts.heading, where).toBe('Claude TODO ')
+      else if (width >= 1) expect(parts.heading.endsWith('…'), where).toBe(true)
     }
   }
 })

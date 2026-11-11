@@ -9,6 +9,7 @@ import {
   bandRows,
   bandWidths,
   claudeRows,
+  columnHeader,
   columnHeight,
   cutToColumns,
   headerLines,
@@ -50,7 +51,8 @@ export type Handlers = {
   reply: (id: number, text: string) => void
   // A brief's copy button: puts `text`, one fenced block's lines, on the clipboard of the surface pressed on.
   copy: (text: string, surface: UiCopyArgs['surface']) => void
-  // A press on the Claude column, its header, a row or its `+N queued` row alike: opens the pane on the Claude list, or closes the pane when it shows it.
+  // A press on the Claude column, on the counts in its header or on its `+N queued` row alike (nothing else in the column takes a press): opens the pane on the Claude list, or
+  // closes the pane when it shows it.
   backlog: () => void
 }
 
@@ -313,21 +315,25 @@ const chipText = (term: string | null): string => (term === null || term === '' 
 // The columns a list's box keeps empty inside its width: its box less its layout width (layout.ts).
 const marginOf = (width: ListWidth): number => width.box - width.layout
 
-// The Claude column: its header with the counts in the short form, then its rows (see claudeRows), each cut at the column's layout width, inside the box's padding.
-// `height`: the human list's lines, which the queued rows fill down to. Each line is a button of its own that opens the backlog (the engine gives a box no press), addressed by
-// its place in the column: a Claude item carries no id, and a button with no address takes its label, so two rows with one title would share it. A button wraps its text
-// rather than cutting it, so each is handed its text cut already; the queued summary is dim.
+// The Claude column: its header with the counts in the short form (columnHeader cuts its two parts), then its rows (see claudeRows), each cut at the column's layout width, inside
+// the box's padding. `height`: the human list's lines, which the queued rows fill down to. Two things in it open the backlog (the engine gives a box no press), each a plain button in a
+// row Box of its own: the counts, after the heading word, which is text, and the dim `+N queued` row. In a row a button is sized to its text, where the column's stretch would give
+// it the whole line, blank tail included; and under the pointer a plain button inverts, so those two reverse their colours and nothing else in the column does. The item rows are
+// plain text with no address, press or hover: no pane shows one Claude item alone, so a row offers nothing to press. Text and button alike wrap their text rather than cutting it,
+// so each is handed its text cut already.
 export const claudeColumn = (t: Table, h: Handlers, todo: readonly TodoItem[], width: ListWidth, height: number): RenderElement => {
-  const line = (key: string, text: string, isDim: boolean): RenderElement =>
-    t.Button({ key, plain: true, ...(isDim ? { dimColor: true } : {}), label: cutToColumns(text, width.layout), onPress: () => h.backlog() })
+  const header = columnHeader(HEADING, bandCountsText(todo), width.layout)
+  const button = (key: string, label: string, isDim: boolean): RenderElement => t.Button({ key, plain: true, ...(isDim ? { dimColor: true } : {}), label, onPress: () => h.backlog() })
   return t.Box({
     flexDirection: 'column',
     width: width.box,
     ...(marginOf(width) > 0 ? { paddingLeft: marginOf(width) } : {}),
     children: [
-      line('claude-header', `${HEADING} ${bandCountsText(todo)}`, false),
-      ...claudeRows(todo, height).map((row, k) =>
-        row.kind === 'item' ? line(`claude-row-${k}`, `${GLYPH[row.item.state]} ${row.item.title}`, false) : line('claude-queued', `+${row.count} queued`, true),
+      t.Box({ children: [t.Text({ children: [header.heading] }), ...(header.counts === '' ? [] : [button('claude-header', header.counts, false)])] }),
+      ...claudeRows(todo, height).map(row =>
+        row.kind === 'item'
+          ? t.Text({ children: [cutToColumns(`${GLYPH[row.item.state]} ${row.item.title}`, width.layout)] })
+          : t.Box({ children: [button('claude-queued', cutToColumns(`+${row.count} queued`, width.layout), true)] }),
       ),
     ],
   })
