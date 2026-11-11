@@ -122,7 +122,7 @@ export type Pie = { footer: null; state: null; colour: Run[] | null } | { footer
 export const pieOf = (reading: Reading | null, on: boolean, refresh: string | null, stopped: boolean): Pie => {
   const refreshing = refreshingOf(on, reading, refresh)
   const warns = !refreshing && (!on || reading !== null)
-  const colour = warns ? COLOUR_SENTENCE : null
+  const colour = warns ? COLOUR_SENTENCE.map((run) => ({ ...run })) : null
   const footer = footerOf(reading, on, refreshing, stopped)
   if (footer === null) return { footer, state: null, colour }
   return { footer, state: on ? STATE_OF_TONE[footer.tone] : 'off', colour }

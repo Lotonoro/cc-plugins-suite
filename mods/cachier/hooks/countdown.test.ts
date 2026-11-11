@@ -329,6 +329,14 @@ describe('pieOf: the pie\'s tone, its keepalive state and the colour sentence, f
   test('the sentence tones `amber` warning and `red` alarm, and every other piece quiet', () => {
     expect(COLOUR_SENTENCE.filter((run) => run.tone !== 'quiet')).toEqual([{ text: 'amber', tone: 'warning' }, { text: 'red', tone: 'alarm' }])
   })
+
+  test('each call hands out its own pieces, so a line changed in place leaves the sentence and the next call alone', () => {
+    const first = pieOf(null, false, null, false).colour!
+    first[0]!.text = 'changed'
+    first.pop()
+    expect(pieOf(null, false, null, false).colour).toEqual(COLOUR_SENTENCE)
+    expect(COLOUR_SENTENCE.map((run) => run.text).join('')).toBe('pie: amber ≤¼ TTL left, red ≤⅒')
+  })
 })
 
 describe('pieOf with a recorded stop standing: red beside reset or no count with keepalive on, and the state and colour sentence as it was', () => {
