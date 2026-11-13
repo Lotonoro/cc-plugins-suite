@@ -68,6 +68,8 @@ type Opts = {
   // The clock read with this number (1 for the first) rejects, and the rest answer.
   clockFailsAt?: number
   stateFails?: string
+  // Only the first read of the conversation is refused, and the rest answer.
+  firstConversationReadFails?: boolean
   // The conversation a state written before this build holds, until the plugin first writes one.
   stateSeed?: unknown
   // The first conversation read made while `when` holds for the conversation last written calls reached, then waits for `until` before it reads.
@@ -237,7 +239,9 @@ const engine = (on: any, opts: Opts = {}) => {
     return answer.deny === undefined ? { ref: 1, result: null, text: answer.text, isError: answer.isError || opts.failsCall?.(e) === true } : { deny: answer.deny }
   })
   let getHeld = false
+  let conversationReads = 0
   on('state.get', async (_$: any, e: any, next: any) => {
+    if (e.key === 'conversation' && opts.firstConversationReadFails === true && ++conversationReads === 1) return { deny: 'state unavailable' }
     if (e.key === 'conversation' && learnedOnThrow.pending !== undefined && seen.conversation !== undefined) {
       const answer = await next(e)
       const learns = learnedOnThrow.pending
@@ -8648,14 +8652,15 @@ describe('the stored reviewer\'s idle reap is re-armed at load', () => {
     }
   })
 
-  test('a state read that fails at load is logged once, rejects nothing, arms nothing, and still starts one sweep', ON, async ($, on) => {
-    const seen = loaded(on, idle(2 * MINUTE), { stateFails: 'conversation' })
+  test('a first conversation read that fails at load is logged once, rejects nothing, arms nothing, and still starts one sweep, whose own reads answer', ON, async ($, on) => {
+    const entry = (id: string) => ({ id, name: 'auditor-reviewer', type: 'auditor:reviewer', status: 'idle', spawnedBy: 'auditor' })
+    const seen = loaded(on, { ...idle(2 * MINUTE), reviewerIds: ['ag1', 'old1'] }, { firstConversationReadFails: true, agentsAfterStops: stops => (stops >= 1 ? [entry('ag1')] : [entry('ag1'), entry('old1')]) })
     await started($)
     await drained()
-    expect(debugLines(seen, 'idle reap at load failed').length).toBe(1)
+    expect(debugLines(seen, 'failed')).toEqual([expect.stringContaining('auditor: idle reap at load failed')])
     expect(reaps(seen)).toEqual([])
-    // The sweep reads the same state, so its own failure is the sign that it ran: once.
-    expect(debugLines(seen, 'idle reviewer sweep failed').length).toBe(1)
+    expect(stopped(seen)).toEqual(['old1'])
+    expect(debugLines(seen, 'sweeping idle reviewer')).toEqual(['auditor: sweeping idle reviewer old1, which the state does not store'])
   })
 
   test('a session start runs one sweep: the stored reviewer is kept and the reviewer the state does not store is stopped once', ON, async ($, on) => {
