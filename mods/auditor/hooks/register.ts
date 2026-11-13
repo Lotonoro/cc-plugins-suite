@@ -439,13 +439,18 @@ const leftIdle = async ($: Scope, c: Conversation, released?: string, fromTurnEn
   void sweepIdle($, released)
 }
 
-// What the auditor does at load (`session.start`, which fires at process start and at the auditor's own hot reload): `leftIdle` for the stored reviewer, timed from its latest turn end, so a reviewer a reload cut the timer of is reaped when its cache's life ends, or at once where that has passed, and one sweep. A hot reload cancels the pending timer and fires the reloaded module's `session.start`, the one hook guaranteed to run after it, so this is called from there and nowhere else: a second call site could not tell whether a timer is already pending. At process start the state is empty and nothing is armed. The conversation is read here, since `armReap` takes one already read. Not awaited by its caller, so it does not hold turn one; a failed read is logged and rejects nothing, and a reload that lands before the timer is set leaves the reviewer to the next load or review.
+// What the auditor does at load (`session.start`, which fires at process start and at the auditor's own hot reload): `leftIdle` for the stored reviewer, timed from its latest turn end, so a reviewer a reload cut the timer of is reaped when its cache's life ends, or at once where that has passed, and one sweep. A hot reload cancels the pending timer and fires the reloaded module's `session.start`, the one hook guaranteed to run after it, so this is called from there and nowhere else: a second call site could not tell whether a timer is already pending. At process start the state is empty and nothing is armed. The conversation is read here, since `armReap` takes one already read. Not awaited by its caller, so it does not hold turn one; a failed read is logged and rejects nothing, arms nothing and still starts the sweep, and a reload that lands before the timer is set leaves the reviewer to the next load or review.
 const leftIdleAtLoad = async ($: Scope): Promise<void> => {
+  let c: Conversation
   try {
-    await leftIdle($, await currentConversation($), undefined, true)
+    c = await currentConversation($)
   } catch (err) {
+    // Nothing is armed without the conversation, but the sweep reads its own and starts all the same.
     recordFailed($, 'idle reap at load', err)
+    void sweepIdle($)
+    return
   }
+  await leftIdle($, c, undefined, true)
 }
 
 // How long the cache has left: CACHE_LIFE_MS less the time since `endedAt` where a turn end is counted from, whole where the reviewer has had none or its clock cannot be read (it is then reaped later than it could be, never while warm).

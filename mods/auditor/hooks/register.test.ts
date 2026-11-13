@@ -8648,12 +8648,14 @@ describe('the stored reviewer\'s idle reap is re-armed at load', () => {
     }
   })
 
-  test('a state read that fails at load is logged once, rejects nothing, and arms nothing', ON, async ($, on) => {
+  test('a state read that fails at load is logged once, rejects nothing, arms nothing, and still starts one sweep', ON, async ($, on) => {
     const seen = loaded(on, idle(2 * MINUTE), { stateFails: 'conversation' })
     await started($)
     await drained()
     expect(debugLines(seen, 'idle reap at load failed').length).toBe(1)
     expect(reaps(seen)).toEqual([])
+    // The sweep reads the same state, so its own failure is the sign that it ran: once.
+    expect(debugLines(seen, 'idle reviewer sweep failed').length).toBe(1)
   })
 
   test('a session start runs one sweep: the stored reviewer is kept and the reviewer the state does not store is stopped once', ON, async ($, on) => {
