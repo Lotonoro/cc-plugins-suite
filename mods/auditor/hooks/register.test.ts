@@ -8220,6 +8220,13 @@ describe('an idle reviewer the state does not store is swept', () => {
     expect(debugLines(seen, 'skipped')).toEqual([])
   })
 
+  test('two sweeps that overlap issue one stop for the id between them, not one each', ON, async ($, on) => {
+    const seen = engine(on, { stateSeed: SEED, agentsAfterStops: withoutOld() })
+    await Promise.all([started($), started($)])
+    await drained()
+    expect(stopped(seen)).toEqual(['old1'])
+  })
+
   test('a sweep does not stop an id whose stop is still running, however the list shows it', ON, async ($, on) => {
     const stop = gate()
     const seen = engine(on, { stateSeed: SEED, agentsAfterStops: withoutOld(), toolHolds: { tool: 'TaskStop', untils: [stop.until] }, agents: [entry('old1')] })
@@ -8263,6 +8270,20 @@ describe('an idle reviewer the state does not store is swept', () => {
       await settled()
       expect(logs.length).toBe(1)
       expect(logs[0]).toContain('idle reviewer sweep failed')
+    })
+
+    test('a stop whose own failure log throws is logged once more by the chain, and its id is released', async () => {
+      const logs: string[] = []
+      let logged = 0
+      const calls: unknown[] = []
+      const $ = { tool: { call: (e: unknown) => (calls.push(e), Promise.reject(new Error('stop unavailable'))) }, ui: { log: (text: string) => { if (++logged === 1) throw new Error('log unavailable'); logs.push(text) } } } as any
+      await register.stopReviewer($, 'ag1', false)
+      await settled()
+      expect(logs.length).toBe(1)
+      expect(logs[0]).toContain('reviewer stop failed')
+      await register.stopReviewer($, 'ag1', false)
+      await settled()
+      expect(calls.length).toBe(2)
     })
 
     test('a state read that rejects is recorded once, and the sweep resolves', async () => {

@@ -313,14 +313,14 @@ export const stopReviewer = async ($: Pick<Scope, 'agent' | 'state' | 'tool' | '
     stopsRunning.add(id)
     void issueStop($, id)
       .then(outcome => (mayRespawn && outcome !== 'threw' && outcome !== 'gone' ? verifyStop($, id, outcome) : undefined))
+      .catch((err: unknown) => stopFailed($, err))
       .finally(() => stopsRunning.delete(id))
   } catch (err) {
     stopFailed($, err)
   }
 }
 
-// Stops every listed reviewer that is idle and that the state knows but does not store (`sweepable`), so a reviewer whose let-go or stop was lost, or whose reap a reload cancelled, does not stay listed for the rest of the session, whatever lost it. It runs at load (`session.start`, which also fires at the auditor's own hot reload) and wherever a settle or a give-back leaves the stored reviewer idle, which is where `armReap` runs; a settle cut off by a reset or by a throw leaves none idle and runs none. The agent list, not the state, says what is left. Just before each stop the list and the conversation are read again: an id that has ended, that is no longer idle, or that has become the stored reviewer, or a spawn that has started since the first read, is not stopped. Each stop goes through `stopReviewer` with a respawn possible, so it is checked against the list and retried once. The stored reviewer is exempt even past its cache's life; its idle reap is its timer's job. `stopping` is a reviewer the caller has stopped itself, which the list may still show idle until the engine has taken that stop, and an id with a stop running (`stopsRunning`) is skipped, so neither is stopped a second time. Not awaited by a caller: no failure rejects, the engine's no-session-bound error on the list read is logged as one plain line, and any other is recorded; a sweep that fails or that a reload cuts off stops nothing that time, and the next load or review runs it again.
-export const sweepIdle = async ($: Pick<Scope, 'agent' | 'state' | 'tool' | 'ui'>, stopping?: string): Promise<void> => {
+const sweepOnce = async ($: Pick<Scope, 'agent' | 'state' | 'tool' | 'ui'>, stopping: string | undefined): Promise<void> => {
   try {
     let listed: AgentInfo[]
     try {
@@ -341,6 +341,15 @@ export const sweepIdle = async ($: Pick<Scope, 'agent' | 'state' | 'tool' | 'ui'
   } catch (err) {
     recordFailed($, 'idle reviewer sweep', err)
   }
+}
+
+// The tail of the sweeps asked for so far; `sweepOnce` never rejects.
+let sweeping: Promise<void> = Promise.resolve()
+
+// Stops every listed reviewer that is idle and that the state knows but does not store (`sweepable`), so a reviewer whose let-go or stop was lost, or whose reap a reload cancelled, does not stay listed for the rest of the session, whatever lost it. It runs at load (`session.start`, which also fires at the auditor's own hot reload) and wherever a settle or a give-back leaves the stored reviewer idle, which is where `armReap` runs; a settle cut off by a reset or by a throw leaves none idle and runs none. The agent list, not the state, says what is left. Just before each stop the list and the conversation are read again: an id that has ended, that is no longer idle, or that has become the stored reviewer, or a spawn that has started since the first read, is not stopped. Each stop goes through `stopReviewer` with a respawn possible, so it is checked against the list and retried once. The stored reviewer is exempt even past its cache's life; its idle reap is its timer's job. `stopping` is a reviewer the caller has stopped itself, which the list may still show idle until the engine has taken that stop, and an id with a stop running (`stopsRunning`) is skipped, so neither is stopped a second time. Not awaited by a caller: no failure rejects, the engine's no-session-bound error on the list read is logged as one plain line, and any other is recorded; a sweep that fails or that a reload cuts off stops nothing that time, and the next load or review runs it again. Sweeps run one at a time (`sweeping`): a sweep asked for while another runs waits for it and then reads the list afresh, so two that overlap cannot both stop an id whose stop the first has just finished; an id whose stop is still running is skipped (`stopsRunning`). A sweep that never finishes holds the later ones back until a reload.
+export const sweepIdle = ($: Pick<Scope, 'agent' | 'state' | 'tool' | 'ui'>, stopping?: string): Promise<void> => {
+  sweeping = sweeping.then(() => sweepOnce($, stopping))
+  return sweeping
 }
 
 // The release step of a let-go whose stop follows its change at once: applies `decide`, a state change that makes its let-go through `letGo` and returns the decision, then stops the reviewer it released, unless `stops` is false. Resolves with the conversation after and the id released; a change that throws throws, with nothing stopped. A let-go whose stop must wait for other work applies `letGo` in its own change and stops afterwards: a rotation or a failed review is let go in the change that takes the review and stopped after the review's log (`takeReview`, `settle`, `failReview`), a lapse in the dispatch's change and stopped after its log (`dispatchIdle`), and a refused brief and a stale landing are let go in the delivery's changes and stopped as it goes on (`deliverBrief`); a rejected spawn (`releaseRejected`) and an idle reap (`reap`) go through the step itself.
