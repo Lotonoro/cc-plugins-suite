@@ -115,7 +115,9 @@ Then start a new session. The reviewer is on as soon as the plugin is loaded.
   it is bounded in size and age, reset on `/clear` and on switching on, and kept while the auditor is off. A reviewer is
   also stopped once it has sat idle for five minutes, the life of its prompt cache: after that a brief would only
   re-write its whole context, where a fresh reviewer writes just its prompt and the brief, so the next review starts
-  fresh with the memory. A dispatch within the five minutes keeps it. The retired
+  fresh with the memory. A dispatch within the five minutes keeps it. The five minutes are counted from the reviewer's
+  last turn end across a reload of the auditor too: the reloaded auditor starts the timer again, and one already past
+  its five minutes is stopped at once. The retired
   reviewer is stopped, so it does not stay idle for the rest of the session. So is a reviewer forgotten on a `/clear`,
   one whose brief was refused, one whose spawn failed after it was named, one whose review never finished (see above),
   one whose review failed (its turn ended with no answer or an error, or its brief could not be delivered; a turn you
@@ -181,8 +183,6 @@ other note.
 - The prices are written into the plugin for the reviewer's model. A change to Anthropic's list prices reaches the
   figure only when the plugin is updated, and a `modelPricing` setting that changes what `/cost` charges does not
   change it.
-- A plugin reload while a reviewer sits idle cancels the timer that would stop it. That reviewer stays until its next
-  review settles and starts a new timer, or a `/clear`, a switch or the session end lets it go.
 - A plugin reload between a stop and its check loses the check; the reviewer was still stopped once.
 - The footer redraws when the auditor's own count moves, which it does at every reviewer response, and the session's
   cost is read at each redraw. Between redraws the share can lag the session's cost, which `/auditor` always reads

@@ -8559,3 +8559,110 @@ describe('an idle reviewer the state does not store is swept', () => {
     expect(stopped(seen)).toEqual(['old1', 'old1'])
   })
 })
+
+describe('the stored reviewer\'s idle reap is re-armed at load', () => {
+  const CACHE_LIFE = 5 * 60 * 1000
+  const MINUTE = 60 * 1000
+  const NOW = 1_000_000
+  // The reap timers the plugin has set: those counting the cache's life (the ledger's own one-second bound and the 90-second bound on a stop or a sweep are other waits).
+  const reaps = (seen: any) => seen.timers.filter((t: any) => t.ms > 1000 && t.ms !== 90_000)
+  const stopped = (seen: any): string[] => seen.stops.map((s: any) => s.task_id)
+  const started = ($: any) => $.session.start({ cwd: '/', surface: null, isInteractive: true })
+  // The reviewer listed idle until a stop has been made.
+  const listed = (stops: number) => (stops >= 1 ? [] : [{ id: 'ag1', name: 'auditor-reviewer', type: 'auditor:reviewer', status: 'idle', spawnedBy: 'auditor' }])
+  // A stored idle reviewer whose latest turn end was `ago` ms before the load; none when `ago` is undefined.
+  const idle = (ago?: number) => ({ dispatches: 1, reviewer: { id: 'ag1', model: 'm', ...(ago === undefined ? {} : { endedAt: NOW - ago }) }, reviewerIds: ['ag1'] })
+  const loaded = (on: any, seed: unknown, opts: Opts = {}) => {
+    const seen = engine(on, { stateSeed: seed, agentsAfterStops: listed, ...opts })
+    seen.clock = NOW
+    return seen
+  }
+
+  test('the first session start resolves while the re-arm\'s state read is still pending, and the timer is set once it lands', ON, async ($, on) => {
+    const landed = gate()
+    const reached = gate()
+    const seen = loaded(on, idle(2 * MINUTE), { holdWrite: { when: () => true, until: landed.until, reached: reached.open } })
+    await started($)
+    await reached.until
+    expect(reaps(seen)).toEqual([])
+    landed.open()
+    await drained()
+    expect(reaps(seen).length).toBe(1)
+  })
+
+  test('a reviewer whose latest turn end was two minutes ago is let go and stopped three minutes later', ON, async ($, on) => {
+    const seen = loaded(on, idle(2 * MINUTE))
+    await started($)
+    await drained()
+    expect(reaps(seen).length).toBe(1)
+    expect(reaps(seen)[0].ms).toBeGreaterThan(3 * MINUTE - 100)
+    expect(reaps(seen)[0].ms).toBeLessThanOrEqual(3 * MINUTE)
+    expect(stopped(seen)).toEqual([])
+    reaps(seen)[0].fire()
+    await drained()
+    expect(stopped(seen)).toEqual(['ag1'])
+    expect(seen.conversation.reviewer).toBeUndefined()
+    expect(seen.conversation.lastLetGo).toBe('reaped idle')
+  })
+
+  test('a reviewer whose latest turn end was ten minutes ago is let go at once', ON, async ($, on) => {
+    const seen = loaded(on, idle(10 * MINUTE))
+    await started($)
+    await drained()
+    // A wait of nothing is below `reaps`' floor, so the timers are read whole.
+    const timers = seen.timers.filter((t: any) => t.ms !== 90_000)
+    expect(timers.map((t: any) => t.ms)).toEqual([0])
+    timers[0]?.fire()
+    await drained()
+    expect(stopped(seen)).toEqual(['ag1'])
+    expect(seen.conversation.reviewer).toBeUndefined()
+  })
+
+  test('a reviewer with no recorded turn end is let go after the whole cache life from the load', ON, async ($, on) => {
+    const seen = loaded(on, idle())
+    await started($)
+    await drained()
+    expect(reaps(seen).map((t: any) => t.ms)).toEqual([CACHE_LIFE])
+    reaps(seen)[0].fire()
+    await drained()
+    expect(stopped(seen)).toEqual(['ag1'])
+    expect(seen.conversation.reviewer).toBeUndefined()
+  })
+
+  describe('arms nothing', () => {
+    const OPEN = { number: 1, record: ['[1] USER: fix\n\n'], dispatchedAt: 1000, nothingWakes: false }
+    const cases: [string, unknown][] = [
+      ['an open review', { ...idle(2 * MINUTE), review: OPEN }],
+      ['a spawn in flight', { ...idle(2 * MINUTE), spawnsInFlight: [{ brief: 'a brief', epoch: 0, number: 1, startedAt: 1000, id: 'ag2', model: 'm' }] }],
+      ['no stored reviewer', { dispatches: 1, reviewerIds: ['ag1'] }],
+      ['the auditor off', { dispatches: 1, off: true, reviewerIds: ['ag1'] }],
+    ]
+    for (const [name, seed] of cases) {
+      test(`a session start with ${name}`, ON, async ($, on) => {
+        const seen = loaded(on, seed, { agentsAfterStops: () => [] })
+        await started($)
+        await drained()
+        expect(reaps(seen)).toEqual([])
+        expect(stopped(seen)).toEqual([])
+      })
+    }
+  })
+
+  test('a dispatch after the re-armed session start and before the fire is briefed to the stored reviewer, and the fire changes nothing', ON, async ($, on) => {
+    const seen = loaded(on, idle(MINUTE))
+    await started($)
+    await drained()
+    expect(reaps(seen).length).toBe(1)
+    await $.prompt.submit(COMPOSER('second'))
+    await $.classic.Stop(stop)
+    await drained()
+    expect(seen.sends.map((s: any) => s.to)).toEqual(['ag1'])
+    expect(seen.spawns.length).toBe(0)
+    expect(seen.conversation.review).toMatchObject({ number: 2, briefTo: 'stored' })
+    reaps(seen)[0].fire()
+    await drained()
+    expect(stopped(seen)).toEqual([])
+    expect(seen.conversation.reviewer).toMatchObject({ id: 'ag1' })
+    expect(seen.conversation.review).toMatchObject({ number: 2 })
+  })
+})

@@ -418,7 +418,7 @@ const release = async ($: Scope, decide: (c: Conversation) => Release, mayRespaw
   return { after, released: got.released }
 }
 
-// Starts the timer that lets a reviewer go once its prompt cache has expired, for the reviewer `c` stores when it is idle (`idleTimerOf`); `c` is the conversation a settle or a give-back has just written. It fires CACHE_LIFE_MS after the reviewer's latest turn end (`endedAt`), or after now where it has had none since it was stored; a settle's turn end is now. The timer is only its closure: nothing is stored and nothing is cancelled, and its fire judges again (`reapIdle`) in one change through the release step, so a dispatch, a reset or a rotation since the start makes it change nothing. A failed fire is logged. A hot reload cancels a pending timer, which leaves its reviewer idle until its next review settles.
+// Starts the timer that lets a reviewer go once its prompt cache has expired, for the reviewer `c` stores when it is idle (`idleTimerOf`); `c` is the conversation a settle or a give-back has just written. It fires CACHE_LIFE_MS after the reviewer's latest turn end (`endedAt`), or after now where it has had none since it was stored; a settle's turn end is now. The timer is only its closure: nothing is stored and nothing is cancelled, and its fire judges again (`reapIdle`) in one change through the release step, so a dispatch, a reset or a rotation since the start makes it change nothing. A failed fire is logged. A hot reload cancels a pending timer; the reloaded module's session start arms it again (`rearmReap`).
 const armReap = async ($: Scope, c: Conversation, fromTurnEnd = false): Promise<void> => {
   const timer = idleTimerOf(c)
   if (timer === undefined) return
@@ -430,6 +430,15 @@ const armReap = async ($: Scope, c: Conversation, fromTurnEnd = false): Promise<
   } catch (err) {
     // A timer that cannot be set leaves the reviewer idle until its next review; the settle or give-back that set it goes on.
     recordFailed($, 'idle reap timer', err)
+  }
+}
+
+// Arms the idle reap of the stored reviewer at load, from its latest turn end (`armReap`, which arms nothing unless the reviewer is idle: no review open, no spawn in flight). A hot reload cancels the pending timer and fires the reloaded module's `session.start`, the one hook guaranteed to run after it, so this is called from there and nowhere else: a second call site could not tell whether a timer is already pending. At process start the state is empty and nothing is armed. A reviewer already past its cache's life is reaped at once. Not awaited by its caller, so it does not hold turn one; a failure is logged, and a reload that lands before the timer is set leaves the reviewer to the next load or review.
+const rearmReap = async ($: Scope): Promise<void> => {
+  try {
+    await armReap($, await currentConversation($), true)
+  } catch (err) {
+    recordFailed($, 'idle reap re-arm', err)
   }
 }
 
@@ -1118,6 +1127,7 @@ export const register: Register = (on, options) => {
       effort: REVIEWER_EFFORT,
       autoCompactWindow: 100_000,
     })
+    void rearmReap($)
     void sweepIdle($)
     return next(e)
   })
