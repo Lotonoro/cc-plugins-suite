@@ -183,6 +183,9 @@ other note.
 - The prices are written into the plugin for the reviewer's model. A change to Anthropic's list prices reaches the
   figure only when the plugin is updated, and a `modelPricing` setting that changes what `/cost` charges does not
   change it.
+- A plugin reload that lands just as the reloaded auditor is starting the idle timer again leaves that reviewer idle
+  until its next review settles and starts a new timer, or a `/clear`, a switch, the next reload or the session end
+  lets it go.
 - A plugin reload between a stop and its check loses the check; the reviewer was still stopped once.
 - The footer redraws when the auditor's own count moves, which it does at every reviewer response, and the session's
   cost is read at each redraw. Between redraws the share can lag the session's cost, which `/auditor` always reads

@@ -8648,6 +8648,24 @@ describe('the stored reviewer\'s idle reap is re-armed at load', () => {
     }
   })
 
+  test('a state read that fails at load is logged once, rejects nothing, and arms nothing', ON, async ($, on) => {
+    const seen = loaded(on, idle(2 * MINUTE), { stateFails: 'conversation' })
+    await started($)
+    await drained()
+    expect(debugLines(seen, 'idle reap at load failed').length).toBe(1)
+    expect(reaps(seen)).toEqual([])
+  })
+
+  test('a session start runs one sweep: the stored reviewer is kept and the reviewer the state does not store is stopped once', ON, async ($, on) => {
+    const entry = (id: string) => ({ id, name: 'auditor-reviewer', type: 'auditor:reviewer', status: 'idle', spawnedBy: 'auditor' })
+    const seen = loaded(on, { ...idle(2 * MINUTE), reviewerIds: ['ag1', 'old1'] }, { agentsAfterStops: stops => (stops >= 1 ? [entry('ag1')] : [entry('ag1'), entry('old1')]) })
+    await started($)
+    await drained()
+    expect(stopped(seen)).toEqual(['old1'])
+    expect(debugLines(seen, 'sweeping idle reviewer')).toEqual(['auditor: sweeping idle reviewer old1, which the state does not store'])
+    expect(reaps(seen).length).toBe(1)
+  })
+
   test('a dispatch after the re-armed session start and before the fire is briefed to the stored reviewer, and the fire changes nothing', ON, async ($, on) => {
     const seen = loaded(on, idle(MINUTE))
     await started($)
