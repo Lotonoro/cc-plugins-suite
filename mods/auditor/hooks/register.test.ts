@@ -8453,9 +8453,9 @@ describe('an idle reviewer the state does not store is swept', () => {
       if (text.includes('failed')) throw new Error('log unavailable')
       h.logs.push(text)
     }
-    await register.stopReviewer(h.$, 'old1', false)
+    await register.stopReviewer(h.$, 'old1', true)
     await drained()
-    await register.stopReviewer(h.$, 'old1', false)
+    await register.stopReviewer(h.$, 'old1', true)
     await drained()
     expect(tries).toBe(2)
   })
@@ -8521,15 +8521,19 @@ describe('an idle reviewer the state does not store is swept', () => {
     })
 
     test('a stop whose own failure log throws is logged once more by the chain, and its id is released', async () => {
-      const logs: string[] = []
-      let logged = 0
+      const h = hand(() => Promise.resolve([]))
       const calls: unknown[] = []
-      const $ = { tool: { call: (e: unknown) => (calls.push(e), Promise.reject(new Error('stop unavailable'))) }, clock: { after: () => ({ cancel: () => undefined }) }, ui: { log: (text: string) => { if (++logged === 1) throw new Error('log unavailable'); logs.push(text) } } } as any
-      await register.stopReviewer($, 'ag1', false)
+      h.$.tool.call = (e: unknown) => (calls.push(e), Promise.reject(new Error('stop unavailable')))
+      let logged = 0
+      h.$.ui.log = (text: string) => {
+        if (++logged === 1) throw new Error('log unavailable')
+        h.logs.push(text)
+      }
+      await register.stopReviewer(h.$, 'old1', true)
       await settled()
-      expect(logs.length).toBe(1)
-      expect(logs[0]).toContain('reviewer stop failed')
-      await register.stopReviewer($, 'ag1', false)
+      expect(h.logs.length).toBe(1)
+      expect(h.logs[0]).toContain('reviewer stop failed')
+      await register.stopReviewer(h.$, 'old1', true)
       await settled()
       expect(calls.length).toBe(2)
     })
