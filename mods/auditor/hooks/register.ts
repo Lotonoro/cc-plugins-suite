@@ -60,6 +60,8 @@ const NONE_INTERRUPTED = '(none: the user interrupted the turn)'
 const EMPTY_RECORD: TurnRecord = { blocks: [] }
 // How long the session's cost ledger may take to answer before the figures read as unknown.
 const LEDGER_TIMEOUT_MS = 1000
+// How long a reviewer stop with its check, or an idle sweep, may run before it is given up (`withinTime`): both are started and left to run, and an engine call of theirs that never answered would otherwise hold their guard (`stopsRunning`, `sweeping`) until a reload.
+const BACKGROUND_TIMEOUT_MS = 90_000
 
 type Scope = Pick<CoreEngineInterface, 'state' | 'ui' | 'clock' | 'fs' | 'env' | 'session' | 'prompt' | 'agent' | 'process' | 'tool'>
 // A complete review's `note`: the body the gate let through for it, or null for a quiet review.
@@ -299,11 +301,43 @@ const verifyStop = async ($: Pick<Scope, 'agent' | 'state' | 'tool' | 'ui'>, id:
   }
 }
 
+// Waits for `work`, a stop with its check or a sweep, for at most BACKGROUND_TIMEOUT_MS and then gives it up with one plain line naming `what`; the work itself is left to finish or hang. Resolves whatever the work does: a failure of its own was logged where it happened, and a log that throws has nowhere to be recorded. Where no timer can be set the work is awaited as it is.
+const withinTime = async ($: Pick<Scope, 'clock' | 'ui'>, what: string, work: Promise<void>): Promise<void> => {
+  let late: () => void = () => undefined
+  const timeout = new Promise<'late'>(resolve => {
+    late = () => resolve('late')
+  })
+  let timer: { cancel: () => void } | undefined
+  try {
+    timer = $.clock.after(BACKGROUND_TIMEOUT_MS, late)
+  } catch {
+    timer = undefined
+  }
+  try {
+    const first = await Promise.race([work.then(() => 'done' as const, () => 'done' as const), ...(timer === undefined ? [] : [timeout])])
+    if (first === 'late') $.ui.log(`${PLUGIN}: ${what} gave up: no answer within ${BACKGROUND_TIMEOUT_MS} ms`, { to: 'debug' })
+  } catch {
+    // The give-up line could not be written.
+  } finally {
+    timer?.cancel()
+  }
+}
+
+// The stop of `id` and, where a respawn can follow, its check; a failure of either is logged as a stop failure.
+const stopAndCheck = async ($: Pick<Scope, 'agent' | 'state' | 'tool' | 'ui'>, id: string, mayRespawn: boolean): Promise<void> => {
+  try {
+    const outcome = await issueStop($, id)
+    if (mayRespawn && outcome !== 'threw' && outcome !== 'gone') await verifyStop($, id, outcome)
+  } catch (err) {
+    stopFailed($, err)
+  }
+}
+
 // The reviewer ids whose stop, with its check, is still running in this process. A hot reload starts the module over with none.
 const stopsRunning = new Set<string>()
 
-// Stops a reviewer the auditor lets go (`letGo`: one a take rotated out or a failed review ended, one a session end forgot, one a refused brief dropped, one whose spawn rejected after its id was learned, one whose review lapsed, one that sat idle past its cache's life, or one the toggle switched off or whose spawn landed after it), so it does not sit idle for the rest of the session; each caller says when it issues it. The engine call is not awaited, so no caller's settle or dispatch waits on it or on its check; the helper resolves once the stop is issued. Any failure, the state read included, is logged and leaves the reviewer idle, and the caller goes on; the engine's no-session-bound error is the expected failure where no session is bound, and is logged as one plain line. Where a respawn can follow (`mayRespawn`), an id the state holds as the current reviewer is not stopped: a fresh reviewer can come back under a forgotten id, and the stop would end it. Such a stop is checked against the agent list and retried once (`verifyStop`; a stopped reviewer was measured absent from the list, or `killed`). A session end spawns none and runs under a short wall-clock bound, so it passes false: its one stop is not checked. Its reset may also have failed, and then the state still names the reviewer it forgot. An id whose stop and check are still running (`stopsRunning`) is not stopped again, whoever asks: a sweep that overlaps a reap, a lapse, a rotation or another sweep issues no duplicate.
-export const stopReviewer = async ($: Pick<Scope, 'agent' | 'state' | 'tool' | 'ui'>, id: string | undefined, mayRespawn: boolean): Promise<void> => {
+// Stops a reviewer the auditor lets go (`letGo`: one a take rotated out or a failed review ended, one a session end forgot, one a refused brief dropped, one whose spawn rejected after its id was learned, one whose review lapsed, one that sat idle past its cache's life, or one the toggle switched off or whose spawn landed after it), so it does not sit idle for the rest of the session; each caller says when it issues it. The engine call is not awaited, so no caller's settle or dispatch waits on it or on its check; the helper resolves once the stop is issued. Any failure, the state read included, is logged and leaves the reviewer idle, and the caller goes on; the engine's no-session-bound error is the expected failure where no session is bound, and is logged as one plain line. Where a respawn can follow (`mayRespawn`), an id the state holds as the current reviewer is not stopped: a fresh reviewer can come back under a forgotten id, and the stop would end it. Such a stop is checked against the agent list and retried once (`verifyStop`; a stopped reviewer was measured absent from the list, or `killed`). A session end spawns none and runs under a short wall-clock bound, so it passes false: its one stop is not checked. Its reset may also have failed, and then the state still names the reviewer it forgot. An id whose stop and check are still running (`stopsRunning`, for at most BACKGROUND_TIMEOUT_MS) is not stopped again, whoever asks: a sweep that overlaps a reap, a lapse, a rotation or another sweep issues no duplicate.
+export const stopReviewer = async ($: Pick<Scope, 'agent' | 'clock' | 'state' | 'tool' | 'ui'>, id: string | undefined, mayRespawn: boolean): Promise<void> => {
   if (id === undefined || stopsRunning.has(id)) return
   try {
     // A plain get would miss a spawn this dispatch made under the id (currentConversation).
@@ -311,29 +345,31 @@ export const stopReviewer = async ($: Pick<Scope, 'agent' | 'state' | 'tool' | '
     // The read above yielded, so the guard is read again before it is set.
     if (stopsRunning.has(id)) return
     stopsRunning.add(id)
-    void issueStop($, id)
-      .then(outcome => (mayRespawn && outcome !== 'threw' && outcome !== 'gone' ? verifyStop($, id, outcome) : undefined))
-      .catch((err: unknown) => stopFailed($, err))
-      .finally(() => stopsRunning.delete(id))
+    void withinTime($, `reviewer ${id}'s stop`, stopAndCheck($, id, mayRespawn)).finally(() => stopsRunning.delete(id))
   } catch (err) {
     stopFailed($, err)
   }
 }
 
-const sweepOnce = async ($: Pick<Scope, 'agent' | 'state' | 'tool' | 'ui'>, stopping: string | undefined): Promise<void> => {
-  try {
-    let listed: AgentInfo[]
+const sweepOnce = async ($: Pick<Scope, 'agent' | 'clock' | 'state' | 'tool' | 'ui'>, stopping: string | undefined): Promise<void> => {
+  // The list as read now, or undefined where it could not be: the engine's no-session-bound error is one plain line, any other is a recorded failure, and either ends the sweep.
+  const read = async (): Promise<AgentInfo[] | undefined> => {
     try {
-      listed = await $.agent.list()
+      return await $.agent.list()
     } catch (err) {
       if (NO_SESSION_BOUND.test(reasonOf(err))) $.ui.log(`${PLUGIN}: idle reviewer sweep skipped: no session is bound in this mode`, { to: 'debug' })
       else recordFailed($, 'idle reviewer sweep', err)
-      return
+      return undefined
     }
+  }
+  try {
+    const listed = await read()
+    if (listed === undefined) return
     for (const id of sweepable(await currentConversation($), listed)) {
       if (id === stopping || stopsRunning.has(id)) continue
       // The list is read again with the conversation, since an earlier stop of this loop, or another caller's, may have ended the id since the first read.
-      const relisted = await $.agent.list()
+      const relisted = await read()
+      if (relisted === undefined) return
       if (!sweepable(await currentConversation($), relisted).includes(id)) continue
       $.ui.log(`${PLUGIN}: sweeping idle reviewer ${id}, which the state does not store`, { to: 'debug' })
       await stopReviewer($, id, true)
@@ -343,12 +379,12 @@ const sweepOnce = async ($: Pick<Scope, 'agent' | 'state' | 'tool' | 'ui'>, stop
   }
 }
 
-// The tail of the sweeps asked for so far; `sweepOnce` never rejects.
+// The tail of the sweeps asked for so far; `withinTime` never rejects.
 let sweeping: Promise<void> = Promise.resolve()
 
-// Stops every listed reviewer that is idle and that the state knows but does not store (`sweepable`), so a reviewer whose let-go or stop was lost, or whose reap a reload cancelled, does not stay listed for the rest of the session, whatever lost it. It runs at load (`session.start`, which also fires at the auditor's own hot reload) and wherever a settle or a give-back leaves the stored reviewer idle, which is where `armReap` runs; a settle cut off by a reset or by a throw leaves none idle and runs none. The agent list, not the state, says what is left. Just before each stop the list and the conversation are read again: an id that has ended, that is no longer idle, or that has become the stored reviewer, or a spawn that has started since the first read, is not stopped. Each stop goes through `stopReviewer` with a respawn possible, so it is checked against the list and retried once. The stored reviewer is exempt even past its cache's life; its idle reap is its timer's job. `stopping` is a reviewer the caller has stopped itself, which the list may still show idle until the engine has taken that stop, and an id with a stop running (`stopsRunning`) is skipped, so neither is stopped a second time. Not awaited by a caller: no failure rejects, the engine's no-session-bound error on the list read is logged as one plain line, and any other is recorded; a sweep that fails or that a reload cuts off stops nothing that time, and the next load or review runs it again. Sweeps run one at a time (`sweeping`): a sweep asked for while another runs waits for it and then reads the list afresh, so two that overlap cannot both stop an id whose stop the first has just finished; an id whose stop is still running is skipped (`stopsRunning`). A sweep that never finishes holds the later ones back until a reload.
-export const sweepIdle = ($: Pick<Scope, 'agent' | 'state' | 'tool' | 'ui'>, stopping?: string): Promise<void> => {
-  sweeping = sweeping.then(() => sweepOnce($, stopping))
+// Stops every listed reviewer that is idle and that the state knows but does not store (`sweepable`), so a reviewer whose let-go or stop was lost, or whose reap a reload cancelled, does not stay listed for the rest of the session, whatever lost it. It runs at load (`session.start`, which also fires at the auditor's own hot reload) and wherever a settle or a give-back leaves the stored reviewer idle, which is where `armReap` runs; a settle cut off by a reset or by a throw leaves none idle and runs none. The agent list, not the state, says what is left. Just before each stop the list and the conversation are read again: an id that has ended, that is no longer idle, or that has become the stored reviewer, or a spawn that has started since the first read, is not stopped. Each stop goes through `stopReviewer` with a respawn possible, so it is checked against the list and retried once. The stored reviewer is exempt even past its cache's life; its idle reap is its timer's job. `stopping` is a reviewer the caller has stopped itself, which the list may still show idle until the engine has taken that stop, and an id with a stop running (`stopsRunning`) is skipped, so neither is stopped a second time. Not awaited by a caller: no failure rejects, the engine's no-session-bound error on the list read is logged as one plain line, and any other is recorded; a sweep that fails or that a reload cuts off stops nothing that time, and the next load or review runs it again. Sweeps run one at a time (`sweeping`): a sweep asked for while another runs waits for it and then reads the list afresh, so two that overlap cannot both stop an id whose stop the first has just finished; an id whose stop is still running is skipped (`stopsRunning`). A sweep that has not finished within BACKGROUND_TIMEOUT_MS (`withinTime`) is given up with one plain line, and the next one runs; the late one is left to finish or hang.
+export const sweepIdle = ($: Pick<Scope, 'agent' | 'clock' | 'state' | 'tool' | 'ui'>, stopping?: string): Promise<void> => {
+  sweeping = sweeping.then(() => withinTime($, 'idle reviewer sweep', sweepOnce($, stopping)))
   return sweeping
 }
 

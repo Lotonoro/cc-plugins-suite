@@ -7764,8 +7764,8 @@ describe('an idle reviewer', () => {
   const CACHE_LIFE = 5 * 60 * 1000
   const STOPPED_TEAMMATE = 'Teammate "auditor-reviewer" was not messaged: the session was stopped and nobody has sent input since.'
   const NOTE_1 = 'a.ts:4 swallows it.'
-  // The reap timers the plugin has set: those counting the cache's life (the ledger's own one-second bound is another wait).
-  const reaps = (seen: any) => seen.timers.filter((t: any) => t.ms > 1000)
+  // The reap timers the plugin has set: those counting the cache's life (the ledger's own one-second bound and the 90-second bound on a stop or a sweep are other waits).
+  const reaps = (seen: any) => seen.timers.filter((t: any) => t.ms > 1000 && t.ms !== 90_000)
   const stopped = (seen: any): string[] => seen.stops.map((s: any) => s.task_id)
   // The reviewer's request, answered with `usage`.
   const requestWith = async ($: any, usage: unknown, agentId = 'ag1'): Promise<void> => {
@@ -7862,7 +7862,7 @@ describe('an idle reviewer', () => {
     await $.classic.Stop(stop)
     await drained()
     expect(reaps(seen).length).toBe(1)
-    expect(seen.timers.at(-1)?.ms).toBe(0)
+    expect(seen.timers.filter((t: any) => t.ms !== 90_000).at(-1)?.ms).toBe(0)
   })
 
   test('a given-back review whose reviewer has had no turn end is timed from the give-back: the whole cache life', ON, async ($, on) => {
@@ -8210,6 +8210,106 @@ describe('an idle reviewer the state does not store is swept', () => {
     await drained()
     expect(failures(seen).length).toBe(1)
     expect(stopped(seen)).toEqual([])
+  })
+
+  // A hand-made `$` with a conversation that knows old1, a clock whose timers fire when a test fires them, and an agent list answered by `list(call)`: the test engine skips a hook that throws the no-session-bound error and cannot make a call hang, so those are staged here.
+  const hand = (list: (call: number) => Promise<unknown>) => {
+    const logs: string[] = []
+    const stops: unknown[] = []
+    const timers: { ms: number; fn: () => void }[] = []
+    let stored: unknown = { reviewerIds: ['old1'] }
+    let version = 0
+    let calls = 0
+    const $ = {
+      agent: { list: () => list(++calls) },
+      state: {
+        get: async () => ({ value: stored, version }),
+        set: async (_ref: unknown, value: unknown, options?: { ifVersion?: number }) => {
+          if (options?.ifVersion !== undefined && options.ifVersion !== version) return { isSet: false, version }
+          stored = value
+          return { isSet: true, version: ++version }
+        },
+      },
+      tool: { call: async (e: unknown) => (stops.push(e), { text: 'stopped' }) },
+      clock: { after: (ms: number, fn: () => void) => { const t = { ms, fn }; timers.push(t); return { cancel: () => void timers.splice(timers.indexOf(t), 1) } } },
+      ui: { log: (text: string) => void logs.push(text) },
+    } as any
+    return { $, logs, stops, fire: () => [...timers].forEach(t => t.fn()), timers }
+  }
+  const never = (): Promise<never> => new Promise(() => undefined)
+  const idleOld = [entry('old1')]
+  const GAVE_UP = 'auditor: idle reviewer sweep gave up: no answer within 90000 ms'
+
+  test('with no session bound at the sweep\'s second read of the list, it stops quietly with one plain line and no failure', async () => {
+    const h = hand(call => (call === 1 ? Promise.resolve(idleOld) : Promise.reject(Object.assign(new Error(NO_SESSION_LIST), { name: 'HooksError' }))))
+    await register.sweepIdle(h.$)
+    expect(h.logs).toEqual(['auditor: idle reviewer sweep skipped: no session is bound in this mode'])
+    expect(h.stops).toEqual([])
+  })
+
+  test('a sweep whose list read never answers is given up with one plain line, and the next sweep runs', async () => {
+    let stopped = false
+    const h = hand(call => (call === 1 ? never() : Promise.resolve(stopped ? [] : idleOld)))
+    const call = h.$.tool.call
+    h.$.tool.call = async (e: unknown) => ((stopped = true), call(e))
+    const first = register.sweepIdle(h.$)
+    const second = register.sweepIdle(h.$)
+    await drained()
+    expect(h.stops).toEqual([])
+    h.fire()
+    await first
+    await second
+    await drained()
+    expect(h.logs.filter(l => l === GAVE_UP).length).toBe(1)
+    expect(h.stops).toEqual([{ tool: 'TaskStop', task_id: 'old1' }])
+  })
+
+  test('a stop whose check never answers is given up, and the id can be stopped again', async () => {
+    const h = hand(() => never())
+    await register.stopReviewer(h.$, 'old1', true)
+    await drained()
+    expect(h.stops.length).toBe(1)
+    await register.stopReviewer(h.$, 'old1', true)
+    await drained()
+    expect(h.stops.length).toBe(1)
+    h.fire()
+    await drained()
+    expect(h.logs).toEqual([`auditor: reviewer old1's stop gave up: no answer within 90000 ms`])
+    await register.stopReviewer(h.$, 'old1', true)
+    await drained()
+    expect(h.stops.length).toBe(2)
+    // The id is released at the end, so a later test can stop it.
+    h.fire()
+    await drained()
+  })
+
+  test('a failure log that throws does not stop the later sweeps', async () => {
+    const h = hand(call => (call === 1 ? Promise.reject(new Error('list unavailable')) : Promise.resolve([])))
+    h.$.ui.log = (text: string) => {
+      if (text.includes('failed')) throw new Error('log unavailable')
+      h.logs.push(text)
+    }
+    await expect(register.sweepIdle(h.$)).resolves.toBeUndefined()
+    await expect(register.sweepIdle(h.$)).resolves.toBeUndefined()
+    expect(h.logs).toEqual([])
+  })
+
+  test('a stop whose failure log throws is still released and can be asked again', async () => {
+    const h = hand(() => Promise.resolve([]))
+    let tries = 0
+    h.$.tool.call = async () => {
+      if (++tries === 1) throw new Error('stop unavailable')
+      return { text: 'stopped' }
+    }
+    h.$.ui.log = (text: string) => {
+      if (text.includes('failed')) throw new Error('log unavailable')
+      h.logs.push(text)
+    }
+    await register.stopReviewer(h.$, 'old1', false)
+    await drained()
+    await register.stopReviewer(h.$, 'old1', false)
+    await drained()
+    expect(tries).toBe(2)
   })
 
   test('any other thrown stop is recorded as a failure', ON, async ($, on) => {
