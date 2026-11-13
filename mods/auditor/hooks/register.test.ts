@@ -4534,7 +4534,7 @@ describe('a reviewer stop with no session bound', () => {
   const dollar = (reject: unknown) => {
     const logs: string[] = []
     const calls: unknown[] = []
-    const $ = { tool: { call: (e: unknown) => (calls.push(e), Promise.reject(reject)) }, ui: { log: (text: string) => logs.push(text) } } as any
+    const $ = { tool: { call: (e: unknown) => (calls.push(e), Promise.reject(reject)) }, clock: { after: () => ({ cancel: () => undefined }) }, ui: { log: (text: string) => logs.push(text) } } as any
     return { $, logs, calls }
   }
   // The stop is not awaited, so its rejection is handled a few microtasks after the helper resolves.
@@ -8187,7 +8187,7 @@ describe('an idle reviewer the state does not store is swept', () => {
   test('with no session bound, a list read that fails writes one plain skip line, with no stack and no failure', () => {
     // The test engine cannot stage this: a hook that throws the no-session-bound error is skipped (see 'a reviewer stop with no session bound'), so the list is a hand-made `$`.
     const logs: string[] = []
-    const $ = { agent: { list: () => Promise.reject(Object.assign(new Error(NO_SESSION_LIST), { name: 'HooksError' })) }, ui: { log: (text: string) => logs.push(text) } } as any
+    const $ = { agent: { list: () => Promise.reject(Object.assign(new Error(NO_SESSION_LIST), { name: 'HooksError' })) }, clock: { after: () => ({ cancel: () => undefined }) }, ui: { log: (text: string) => logs.push(text) } } as any
     return register.sweepIdle($).then(() => {
       expect(logs).toEqual(['auditor: idle reviewer sweep skipped: no session is bound in this mode'])
     })
@@ -8217,7 +8217,7 @@ describe('an idle reviewer the state does not store is swept', () => {
     const logs: string[] = []
     const stops: unknown[] = []
     const timers: { ms: number; fn: () => void }[] = []
-    let stored: unknown = { reviewerIds: ['old1'] }
+    let stored: unknown = { reviewerIds: ['old1', 'old2'] }
     let version = 0
     let calls = 0
     const $ = {
@@ -8281,6 +8281,98 @@ describe('an idle reviewer the state does not store is swept', () => {
     // The id is released at the end, so a later test can stop it.
     h.fire()
     await drained()
+  })
+
+  test('with no timer to set, a stop whose check never answers is not waited for, and its id can be stopped again', async () => {
+    const h = hand(() => never())
+    h.$.clock.after = () => {
+      throw new Error('clock unavailable')
+    }
+    await register.stopReviewer(h.$, 'old1', true)
+    await drained()
+    await register.stopReviewer(h.$, 'old1', true)
+    await drained()
+    expect(h.stops.length).toBe(2)
+    expect(h.logs.filter(l => l === "auditor: reviewer old1's stop not waited: no timer could be set").length).toBe(2)
+  })
+
+  test('with no timer to set, a sweep whose list read never answers is not waited for, and the next sweep runs', async () => {
+    let stopped = false
+    const h = hand(call => (call === 1 ? never() : Promise.resolve(stopped ? [] : idleOld)))
+    h.$.clock.after = () => {
+      throw new Error('clock unavailable')
+    }
+    const call = h.$.tool.call
+    h.$.tool.call = async (e: unknown) => ((stopped = true), call(e))
+    await register.sweepIdle(h.$)
+    await register.sweepIdle(h.$)
+    await drained()
+    expect(h.logs.filter(l => l === 'auditor: idle reviewer sweep not waited: no timer could be set').length).toBe(2)
+    expect(h.stops).toEqual([{ tool: 'TaskStop', task_id: 'old1' }])
+  })
+
+  // A promise a test settles itself, to resume work a give-up has left hanging.
+  const deferred = <T,>() => {
+    let resolve: (value: T) => void = () => undefined
+    const promise = new Promise<T>(r => { resolve = r })
+    return { promise, resolve }
+  }
+
+  test('a sweep given up mid-loop issues no further stop, and the next sweep runs alone', async () => {
+    const held = deferred<unknown[]>()
+    const both = [entry('old1'), entry('old2')]
+    const h = hand(call => (call === 1 ? Promise.resolve(both) : call === 2 ? held.promise : Promise.resolve([])))
+    const first = register.sweepIdle(h.$)
+    const second = register.sweepIdle(h.$)
+    await drained()
+    h.fire()
+    await first
+    await second
+    expect(h.logs.filter(l => l === GAVE_UP).length).toBe(1)
+    held.resolve(both)
+    await drained()
+    expect(h.stops).toEqual([])
+  })
+
+  test('a stop given up while its check waits issues no retry', async () => {
+    const held = deferred<unknown[]>()
+    const h = hand(() => held.promise)
+    await register.stopReviewer(h.$, 'old1', true)
+    await drained()
+    expect(h.stops.length).toBe(1)
+    h.fire()
+    await drained()
+    held.resolve(idleOld)
+    await drained()
+    expect(h.stops.length).toBe(1)
+    expect(h.logs).toEqual([`auditor: reviewer old1's stop gave up: no answer within 90000 ms`])
+  })
+
+  test('a stop given up while its retry\'s check waits issues no third stop and names nothing as left running', async () => {
+    const held = deferred<unknown[]>()
+    const h = hand(call => (call === 1 ? Promise.resolve(idleOld) : held.promise))
+    await register.stopReviewer(h.$, 'old1', true)
+    await drained()
+    expect(h.stops.length).toBe(2)
+    h.fire()
+    await drained()
+    held.resolve(idleOld)
+    await drained()
+    expect(h.stops.length).toBe(2)
+    expect(h.logs.filter(l => l.includes('left running'))).toEqual([])
+  })
+
+  test('a timer that cannot be cancelled does not make a sweep or a stop reject, and the later ones run', async () => {
+    const h = hand(call => Promise.resolve(call <= 2 ? idleOld : []))
+    h.$.clock.after = () => ({ cancel: () => { throw new Error('cancel unavailable') } })
+    await expect(register.sweepIdle(h.$)).resolves.toBeUndefined()
+    await drained()
+    expect(h.stops.length).toBeGreaterThan(0)
+    const before = h.stops.length
+    await expect(register.sweepIdle(h.$)).resolves.toBeUndefined()
+    await register.stopReviewer(h.$, 'old2', false)
+    await drained()
+    expect(h.stops.length).toBe(before + 1)
   })
 
   test('a failure log that throws does not stop the later sweeps', async () => {
@@ -8360,7 +8452,7 @@ describe('an idle reviewer the state does not store is swept', () => {
     }
     const handMade = (over: Record<string, unknown>) => {
       const logs: string[] = []
-      const $ = { agent: { list: () => Promise.resolve([idleEntry]) }, ui: { log: (text: string) => logs.push(text) }, ...over } as any
+      const $ = { agent: { list: () => Promise.resolve([idleEntry]) }, clock: { after: () => ({ cancel: () => undefined }) }, ui: { log: (text: string) => logs.push(text) }, ...over } as any
       return { $, logs }
     }
 
@@ -8376,7 +8468,7 @@ describe('an idle reviewer the state does not store is swept', () => {
       const logs: string[] = []
       let logged = 0
       const calls: unknown[] = []
-      const $ = { tool: { call: (e: unknown) => (calls.push(e), Promise.reject(new Error('stop unavailable'))) }, ui: { log: (text: string) => { if (++logged === 1) throw new Error('log unavailable'); logs.push(text) } } } as any
+      const $ = { tool: { call: (e: unknown) => (calls.push(e), Promise.reject(new Error('stop unavailable'))) }, clock: { after: () => ({ cancel: () => undefined }) }, ui: { log: (text: string) => { if (++logged === 1) throw new Error('log unavailable'); logs.push(text) } } } as any
       await register.stopReviewer($, 'ag1', false)
       await settled()
       expect(logs.length).toBe(1)
