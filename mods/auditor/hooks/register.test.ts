@@ -8673,6 +8673,41 @@ describe('the stored reviewer\'s idle reap is re-armed at load', () => {
     expect(reaps(seen).length).toBe(1)
   })
 
+  test('two session starts for the same stored idle reviewer, with no dispatch between, let it go once and issue one stop of it', ON, async ($, on) => {
+    const seen = loaded(on, idle(2 * MINUTE))
+    await started($)
+    await drained()
+    await started($)
+    await drained()
+    expect(reaps(seen).length).toBe(2)
+    reaps(seen)[0].fire()
+    await drained()
+    expect(stopped(seen)).toEqual(['ag1'])
+    expect(seen.conversation.reviewer).toBeUndefined()
+    expect(seen.conversation.lastLetGo).toBe('reaped idle')
+    reaps(seen)[1].fire()
+    await drained()
+    expect(stopped(seen)).toEqual(['ag1'])
+    expect(debugLines(seen, 'left running')).toEqual([])
+  })
+
+  describe('starts exactly one sweep', () => {
+    const listing = { id: 'ag1', name: 'auditor-reviewer', type: 'auditor:reviewer', status: 'idle', spawnedBy: 'auditor' }
+    const cases: [string, unknown, Opts['agents']][] = [
+      ['a stored idle reviewer, which the sweep exempts', idle(2 * MINUTE), [listing]],
+      ['no stored reviewer and nothing listed', { dispatches: 1 }, []],
+    ]
+    for (const [name, seed, agents] of cases) {
+      test(`a session start with ${name} reads the agent list once and stops nothing`, ON, async ($, on) => {
+        const seen = loaded(on, seed, { agentsAfterStops: () => agents ?? [] })
+        await started($)
+        await drained()
+        expect(seen.listCalls).toBe(1)
+        expect(stopped(seen)).toEqual([])
+      })
+    }
+  })
+
   test('a dispatch after the re-armed session start and before the fire is briefed to the stored reviewer, and the fire changes nothing', ON, async ($, on) => {
     const seen = loaded(on, idle(MINUTE))
     await started($)
