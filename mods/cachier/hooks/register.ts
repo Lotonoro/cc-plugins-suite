@@ -58,6 +58,7 @@ import { followDraw, isPaneOpen, lastRows, paneAlarm, PANE, pressSize, readPane,
 import { appended, HISTORY_BOUND, keyOf, KEY_PREFIX, merged, recordOf, recordsOf, staleKeys, type PauseRecord } from './history'
 import { adviceOf, ratesOfView, ttlLineOf, type Inputs } from './advice'
 import { learnedLine, learnedOf, ttlSwitchOf, type Learned } from './learn'
+import { restReadingOf, type RestReading } from './night'
 import { breakEvenLine, countLineOf, judge, KEPT_COUNT, ratioOf, rebuildSpendOf, runCountOf, sessionBalanceLine, NO_JUDGED, pauseOf, type Pause } from './verdict'
 import { answerOf, paneLayoutOf, spanOf, type Line, type PaneRow, type PaneSize, type Setting, type Snapshot } from './sections'
 import { secsTerse } from './setup'
@@ -112,6 +113,14 @@ let defaultUnit: Unit = 'dollars'
 let defaultMode: Mode = 'off'
 // Every session's pauses, oldest first: the store's as the last load read them, and each pause a prompt ended since.
 let history: PauseRecord[] = []
+// The daily rest those pauses give, read each time the history is replaced and held beside it: the Keepalive row states it, and whatever acts on its window reads it
+// here, so no draw or tick reads the history again for it and no two readers see different windows.
+let restReading: RestReading = restReadingOf(history)
+// Replaces the history, and the rest read from it with it. The only two writers are a pause's write and the history's load.
+const replaceHistory = (next: PauseRecord[]) => {
+  history = next
+  restReading = restReadingOf(next)
+}
 // Every pause this load's prompts ended, each with the key it is written under, oldest first, the newest HISTORY_BOUND. Kept for the whole load,
 // so a pause the store does not hold (a read or write refused, or trimmed) still counts; a merge with the store's records dedupes it by identity. Replaced on
 // every change, never changed in place.
@@ -933,6 +942,8 @@ const snapshotNow = async ($: Dollar): Promise<Snapshot> => {
         ...verdict.lines,
         ...countLines(held, view, money, nowMs, kept),
         ...(defaultRun === undefined ? [] : [breakEvenLine(held, view, money, defaultsNow(defaultRun, view, money, nowMs))]),
+        // The held reading's row, handed out as a copy as the pie's sentence is, so the line a surface lays out is never the held one.
+        restReading.row.map((run) => ({ ...run })),
         balance,
         ...rundown.keepalive,
       ].filter((line) => line !== ''),
@@ -1099,7 +1110,7 @@ const historyWrite = async ($: Dollar, started: PauseStart, endMs: number) => {
   const own = [...recordsOf(held), ...(stored?.key === key ? stored.records : []), ...appendedUnder(key)]
   const newest = own.reduce<PauseRecord | undefined>((a, r) => (a === undefined || r.startMs > a.startMs ? r : a), undefined)
   const record = recordOf(started.startMs, endMs, started.ratio, started.ttlMs, started.contextTokens, newest === undefined ? [] : [newest])
-  history = [...history, record].slice(-HISTORY_BOUND)
+  replaceHistory([...history, record].slice(-HISTORY_BOUND))
   // Before any learn, the learn decides by the key: a pause kept under another transcript than the one learned since is that session's, not
   // this one's.
   appendedPauses = [...appendedPauses, { key, record }].slice(-HISTORY_BOUND)
@@ -1174,9 +1185,11 @@ const loadHistory = async ($: Dollar) => {
   const read = Object.entries(held)
     .filter(([key]) => !stale.includes(key))
     .flatMap(([, value]) => recordsOf(value))
-  history = merged(read, appendedPauses.map((u) => u.record))
-    .sort((a, b) => a.startMs - b.startMs)
-    .slice(-HISTORY_BOUND)
+  replaceHistory(
+    merged(read, appendedPauses.map((u) => u.record))
+      .sort((a, b) => a.startMs - b.startMs)
+      .slice(-HISTORY_BOUND),
+  )
   // A pane drawn before the read priced no history, and a still footer state draws nothing again, as in sessionLoad.
   $.ui.invalidate('ui.render')
   await deleteKeys($, stale)

@@ -3791,9 +3791,9 @@ describe('the details pane draws the sections /keepalive answers with, built by 
     expect(rest).toHaveLength(tree.children.length)
     expect(JSON.stringify(rest)).not.toMatch(NO_TONE)
     expect(mislabelled(tree)).toEqual([])
-    // The labels taken out of `rest` are drawn dim: the pie line's, the figures' of an offer, the session fallback's, the tokens note's and each setting's name.
+    // The labels taken out of `rest` are drawn dim: the pie line's, the figures' of an offer, the learned rest's, the session fallback's, the tokens note's and each setting's name.
     const labels = drawnLabels(tree)
-    expect(labels.map(([label]) => label)).toEqual(['pie:', 'refresh', 'if cold:', 'session:', 'in tokens:', 'TTL:', 'lead:', 'refreshes/pause:', 'start mode:', 'unit:'])
+    expect(labels.map(([label]) => label)).toEqual(['pie:', 'refresh', 'if cold:', 'rest:', 'session:', 'in tokens:', 'TTL:', 'lead:', 'refreshes/pause:', 'start mode:', 'unit:'])
     for (const [, props] of labels) expect(props).toEqual({ dimColor: true })
     await pane.unmount()
   })
@@ -3881,8 +3881,13 @@ describe('the details pane draws the sections /keepalive answers with, built by 
       const labels = drawnLabels(tree)
       expect(labels.length).toBeGreaterThan(0)
       for (const [, props] of labels) expect(props).toEqual({ dimColor: true })
-      // The bare answer names the state in the same words, as plain text.
-      expect((await commandText($, '')).split('\n')).toContain(`Keepalive  ${s.word}`)
+      // The learned rest's row stands in every state, with the label dim: with no pause stored it says none is seen.
+      expect(labels.map(([label]) => label)).toContain('rest:')
+      expect(tree.children.map(textOf)).toContain('rest: 0 of 7 seen')
+      // The bare answer names the state in the same words, as plain text, and states the row once in its Keepalive section.
+      const answer = await commandText($, '')
+      expect(answer.split('\n')).toContain(`Keepalive  ${s.word}`)
+      expect(sectionLines(answer, 'Keepalive')?.filter((line) => line === 'rest: 0 of 7 seen')).toHaveLength(1)
       await pane.unmount()
     })
   }
@@ -5705,6 +5710,84 @@ describe('the learned count: an unpinned run sends what the stored pauses say, a
   })
 })
 
+const SEVEN_HOURS = 7 * 60 * MIN
+const DAY_MS = 24 * 60 * MIN
+// A minute of activity at `startMs`, a pause one prompt ended: a moment on the timeline, whose gaps to the moments beside it are the rests.
+const activeAt = (startMs: number) => ({ startMs, pausedMs: MIN, hour: new Date(startMs).getHours(), weekday: new Date(startMs).getDay(), ratio: 24, ttlMs: 300000 })
+// The two minutes of activity either side of a rest of 7 hours that starts at `startMs`: one ends as the rest starts, the other starts as it ends.
+const restAt = (startMs: number) => [activeAt(startMs - MIN), activeAt(startMs + SEVEN_HOURS)]
+// The starts of `count` rests a day apart, the last at `lastMs`. The 17 hours from one rest's end to the next one's start are no rest.
+const startsOf = (count: number, lastMs: number): number[] => Array.from({ length: count }, (_, i) => lastMs - (count - 1 - i) * DAY_MS)
+
+describe('the learned rest: the Keepalive section states the daily rest the pauses of every session give', () => {
+  const seven = startsOf(7, T0 - DAY_MS)
+  const SEVEN = `rest: from ≤${hhmm(T0)} · back ≥${hhmm(T0 + SEVEN_HOURS)} · 7 rests`
+
+  test('6 rests of one habit are 6 of the 7 a window needs: the row counts them, in the answer and in the pane', async ($, on) => {
+    await startedWorld($, on, { ...opusCached(), store: { 'pauses/old': startsOf(6, T0 - DAY_MS).flatMap(restAt) } })
+    expect(sectionLines(await commandText($, ''), 'Keepalive')).toContain('rest: 6 of 7 seen')
+    expect(await drawnPane($)).toContain('rest: 6 of 7 seen')
+  })
+
+  test('7 rests of one habit give the window the figures name, from the pauses of two sessions read as one timeline', async ($, on) => {
+    // Each night's last pause is one session's and the morning's first another's: neither key holds a gap of 5 hours alone.
+    await startedWorld($, on, { ...opusCached(), store: { 'pauses/evenings': seven.map((s) => activeAt(s - MIN)), 'pauses/mornings': seven.map((s) => activeAt(s + SEVEN_HOURS)) } })
+    expect(sectionLines(await commandText($, ''), 'Keepalive')).toContain(SEVEN)
+    expect(await drawnPane($)).toContain(SEVEN)
+  })
+
+  test('the row stands after the break-even row and before the balance row, in the answer and in the pane', async ($, on) => {
+    await withMiss($, on)
+    const answer = sectionLines(await commandText($, ''), 'Keepalive') ?? []
+    const pane = (await paneRows($)).map((row) => row.trim())
+    for (const rows of [answer, pane]) {
+      const at = (start: string) => rows.findIndex((row) => row.startsWith(start))
+      expect(at('pays off if back in ')).toBeGreaterThanOrEqual(0)
+      expect(at('rest: ')).toBe(at('pays off if back in ') + 1)
+      expect(at('balance vs other setting: ')).toBe(at('rest: ') + 1)
+    }
+  })
+
+  test('a prompt that ends a pause adds it to the timeline at once: the 6th rest becomes the 7th, and the pane and the answer agree through every draw between', async ($, on) => {
+    // Six nights are stored, and the evening of the seventh: its rest ends at T0, where this session's pause begins (the touch of its last response).
+    const evening = T0 - SEVEN_HOURS
+    const clock = await startedWorld($, on, { ...opusCached(), store: { 'pauses/old': [...startsOf(6, evening - DAY_MS).flatMap(restAt), activeAt(evening - MIN)] } })
+    const pane = await mountPane($)
+    const seen = 'rest: 6 of 7 seen'
+    for (let i = 0; i < 3; i++) {
+      expect(flatOf(await rowsOf(pane))).toContain(seen)
+      expect(await toggle($, '')).toContain(seen)
+      await clock.advance(1000)
+    }
+    await mainStep($)
+    await turnEnd($)
+    await clock.advance(MIN)
+    await userPrompt($)
+    await clock.advance(1000)
+    const row = `rest: from ≤${hhmm(evening)} · back ≥${hhmm(T0)} · 7 rests`
+    for (let i = 0; i < 3; i++) {
+      expect(flatOf(await rowsOf(pane))).toContain(row)
+      expect(await toggle($, '')).toContain(row)
+      await clock.advance(1000)
+    }
+    expect(flatOf(await rowsOf(pane))).not.toContain(seen)
+    await pane.unmount()
+  })
+
+  test('a reload reads the store again: pauses it no longer holds are no longer rests', async ($, on) => {
+    const rec = kaWorld(on, { ...opusCached(), store: { 'pauses/old': seven.flatMap(restAt) } })
+    const clock = mock.clock(on, { now: T0 })
+    await $.classic.SessionStart({ source: 'startup', transcript_path: PATH })
+    await clock.advance(1000)
+    expect(await toggle($, '')).toContain(SEVEN)
+    rec.store.delete('pauses/old')
+    await $.classic.SessionStart({ source: 'resume', transcript_path: PATH })
+    await clock.advance(1000)
+    expect(await toggle($, '')).toContain('rest: 0 of 7 seen')
+    expect(await drawnPane($)).toContain('rest: 0 of 7 seen')
+  })
+})
+
 describe('the bare command says how many refreshes a pause sends, and why', () => {
   test('with nothing pinned or learned, the pane gives the break-even count and what it is', async ($, on) => {
     kaWorld(on, opusCached())
@@ -6232,6 +6315,7 @@ describe('the bare command answers whole: the text its sections lay out, for fix
         '  next in 4:44 · 24 left',
         '  max 24 refreshes/pause (break-even)',
         '  pays off if back in 5:00–1:54:00',
+        '  rest: 0 of 7 seen',
         '',
         'This session',
         '  session: no refreshes yet',
@@ -6269,6 +6353,7 @@ describe('the bare command answers whole: the text its sections lay out, for fix
         '  if cold: rebuild ~$0.09 (~19k written)',
         '  max 24 refreshes/pause (break-even)',
         '  pays off if back in 5:00–1:54:00',
+        '  rest: 0 of 7 seen',
         '',
         'This session',
         '  session: no refreshes yet',
@@ -6306,6 +6391,7 @@ describe('the bare command answers whole: the text its sections lay out, for fix
         '  next in 3:59 · 2 left',
         '  max 2 refreshes/pause (pinned)',
         '  pays off if back in 5:00–13:00',
+        '  rest: 0 of 7 seen',
         '',
         'This session',
         '  session: no refreshes yet',
@@ -6342,6 +6428,7 @@ describe('the bare command answers whole: the text its sections lay out, for fix
         '  every 4:45',
         '  max 24 refreshes/pause (break-even)',
         '  pays off if back in 5:00–1:54:00',
+        '  rest: 0 of 7 seen',
         '',
         'This session',
         '  session: no refreshes yet',
@@ -6379,6 +6466,7 @@ describe('the bare command answers whole: the text its sections lay out, for fix
         '  every 4:45',
         '  max 24 refreshes/pause (break-even)',
         '  pays off if back in 5:00–1:54:00',
+        '  rest: 0 of 7 seen',
         '',
         'This session',
         '  session: no refreshes yet',
@@ -6440,6 +6528,7 @@ describe('the bare command answers whole: the text its sections lay out, for fix
           '  refresh ~19k cached · every 4 min',
           '  if cold: rebuild ~19k written',
           '  max 2 refreshes/pause (pinned)',
+          '  rest: 0 of 7 seen',
           '',
           'This session',
           '  session: no refreshes yet',
@@ -6507,6 +6596,7 @@ describe('the bare command answers whole: the text its sections lay out, for fix
         '  max 3 refreshes/pause (keepalive_count cap;',
         '    break-even 24)',
         '  pays off if back in 5:00–19:15',
+        '  rest: 0 of 7 seen',
         '  long pauses: 1 · p90 6:00 · mean 6:00 · max',
         '    6:00',
         '',
@@ -6544,6 +6634,7 @@ describe('the bare command answers whole: the text its sections lay out, for fix
       [
         'Keepalive  off',
         '  pie: amber ≤¼ TTL left, red ≤⅒',
+        '  rest: 0 of 7 seen',
         '',
         'This session',
         '  session: no refreshes yet',
@@ -6584,6 +6675,7 @@ describe('the bare command answers whole: the text its sections lay out, for fix
         '',
         'Keepalive  off',
         '  pie: amber ≤¼ TTL left, red ≤⅒',
+        '  rest: 0 of 7 seen',
         '',
         'This session',
         '  session: no refreshes yet',
@@ -6615,6 +6707,7 @@ describe('the bare command answers whole: the text its sections lay out, for fix
         '',
         'Keepalive  off',
         '  pie: amber ≤¼ TTL left, red ≤⅒',
+        '  rest: 0 of 7 seen',
         '',
         'This session',
         '  session: no refreshes yet',
@@ -8956,7 +9049,12 @@ describe('the details pane draws each row label dim in the states that show it, 
     ],
   }
   const STATES: LabelState[] = [
-    { name: 'keepalive off, a fresh warm cache: the pie line, the refresh figure, the session fallback and the Settings rows', labels: ['pie:', 'refresh', 'session:', ...SETTINGS_LABELS], reach: ($, on) => startedWorld($, on) },
+    { name: 'keepalive off, a fresh warm cache: the pie line, the refresh figure, the rest count, the session fallback and the Settings rows', labels: ['pie:', 'refresh', 'rest:', 'session:', ...SETTINGS_LABELS], reach: ($, on) => startedWorld($, on) },
+    {
+      name: 'a rest learned from seven nights of pauses',
+      labels: ['rest:'],
+      reach: ($, on) => startedWorld($, on, { ...opusCached(), store: { 'pauses/old': startsOf(7, T0 - DAY_MS).flatMap(restAt) } }),
+    },
     {
       name: 'an advised best setup over recent pauses',
       labels: ['setup:', 'best:', 'do:'],

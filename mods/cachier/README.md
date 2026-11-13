@@ -65,7 +65,8 @@ and a close another plugin refuses leaves the pane open to be closed by the next
   whether it resumes or restarts on the next prompt (`count used · resumes on next prompt`), what the pie's colours warn of while it is amber or red (`pie: amber ≤¼ TTL left, red ≤⅒`, with `amber` and `red` drawn in those colours), what a refresh costs
   and when the next is due (`refresh $0.004 (~19k cached) · every 4:45`, then `next in 4:44 · 24 left`; while the cache is warm, with a row of its own for what your
   next prompt pays to rebuild it, `if cold: rebuild ~$0.09 (~19k written)`; a run whose lead is not below the TTL states that row alone on a warm cache), how many
-  refreshes a pause sends (`max 24 refreshes/pause (break-even)`), when keepalive pays off (`pays off if back in 5:00–1:54:00`), and this
+  refreshes a pause sends (`max 24 refreshes/pause (break-even)`), when keepalive pays off (`pays off if back in 5:00–1:54:00`), the daily rest your pauses
+  show (`rest: from ≤02:18 · back ≥07:28 · 12 rests`, or `rest: 3 of 7 seen` until there are enough; see [Learning from your pauses](#learning-from-your-pauses)), and this
   pause's and this session's refreshes and their cost (`pause: 6 refreshes · $0.022`);
 - **This session**: the session's refreshes and their cost (`session: no refreshes yet` before the first), keepalive's
   balance against the other setting once a pause is judged, and the cache misses once one is counted. The refreshes and the
@@ -100,6 +101,8 @@ a short terminal the lower sections are scrolled to with the wheel.
 - **lead**: how long before expiry a refresh is sent (`15s`); `lead raised to 16s (slow refresh)` says a slow refresh raised it, and the Settings row then reads `lead: 16s (raised: slow refresh)`.
 - **refreshes/pause**: the most refreshes one pause sends. **break-even**: the most that cost no more than the rewrite they avoid. **pinned**: a count you gave `/keepalive on <lead_s> <count>`. **cap**: `keepalive_count`, which bounds the break-even and learned counts. **learned**: the count your own pauses say is cheapest; **covers** `33:30` is how long that many refreshes keep the cache warm, and `10/13 pauses within` how many of your pauses ended inside it.
 - **pays off if back in a–b**: keepalive on costs less than off if you return between those times (`–` is a range); `never pays off on this context` says no return time does.
+- **`rest:`**: your daily rest, read from the gaps between your recorded pauses (see [Learning from your pauses](#learning-from-your-pauses)): `rest: 3 of 7 seen` while your habit holds fewer than the 7 rests it needs, and `rest: from ≤02:18 · back ≥07:28 · 12 rests` once it does, with `no window` in place of the count where an hour's margin kept inside each end leaves nothing between them.
+- **`from ≤`** / **`back ≥`**: the time of day by which nine in ten of the habit's rests had begun / the time nine in ten of them lasted until, or past. Both are local clocks.
 - **resumes / restarts on next prompt**: a pause by design (`count used`, `cache expired`) resumes; a failure stop restarts.
 - **balance vs other setting**: this session's net saving of keepalive as you ran it against the opposite setting (`saved $0.15 net`, `$0.09 net more`, `even`); `$ only` says the figure is stated only in dollars.
 - **earlier**: pauses before this one, by outcome: **saved** (a refresh kept the cache; the write it avoided is counted), **wasted, ran out** (the count ran out and the cache lapsed anyway), **wasted, not needed** (you came back before the TTL).
@@ -208,7 +211,7 @@ Each message has its time at its top right, so you can see how long each phase t
 
 `on <lead_s> [count]`, `off`, `default on|off`, `unit dollars|tokens`, or no argument for the state and the full
 rundown, in five sections: Cache (the warmth, with the figure to rebuild an expired or reset cache), Keepalive (the
-refresh cost, how many refreshes a pause gets and why, when it pays off, this session and your pauses), This session (the
+refresh cost, how many refreshes a pause gets and why, when it pays off, your daily rest, this session and your pauses), This session (the
 session's refreshes, balance and misses), Advice (the best
 setup's rows, the other TTL's rows, the misses by cause, why figures are in tokens) and Settings (the TTL, lead,
 refresh count, start mode and unit: each value, where it came from when that is known, and what changes it; the TTL and
@@ -222,7 +225,7 @@ once it has expired the refresh's price stands alone. A run whose lead is not be
 (`count used` or `cache expired`, shown as those words, `· resumes on next prompt`) names what a refresh costs (`refresh $0.004 (~19k cached)`) and, where the cache is known and the lead is below the TTL, how often one would
 be sent. A run that learned no refreshes reads `0 refreshes this pause (learned: pauses rarely outlast TTL) · resumes on next prompt`. With keepalive on and no stop held, the heading reads `paused` while a cache reset is being recorded, and the first row
 beneath it says so (`recording cache reset`); the reason the section would give with no reset pending, when it has one, follows as a second reason row, after
-the colour row when that shows. A run with no cache to count from reads `no live cache · nothing scheduled`, with `· cache from next reply` before the first reply. A refresh slower than half the lead raises it, and the section says so (`lead raised to 16s (slow refresh)`). The Keepalive section is always shown, as its heading alone when it has nothing else to say, and so is This session, which says `session: no refreshes yet` before the first refresh. Cache, Advice and Settings
+the colour row when that shows. A run with no cache to count from reads `no live cache · nothing scheduled`, with `· cache from next reply` before the first reply. A refresh slower than half the lead raises it, and the section says so (`lead raised to 16s (slow refresh)`). The Keepalive section is always shown, with its `rest:` row at the least (`rest: 0 of 7 seen` before a rest is seen), and so is This session, which says `session: no refreshes yet` before the first refresh. Cache, Advice and Settings
 are left out when they have nothing to say. The `/keepalive` answer wraps at 48 columns. A count pins the refreshes per pause for the session;
 without one, each pause sends the learned count, else the break-even count.
 
@@ -270,6 +273,18 @@ rule beats break-even, so nothing changes until your history earns it. No thresh
 
 A count you pin with `/keepalive on <lead> <count>` is sent as pinned, and `keepalive_count` caps the learned count as
 it caps break-even.
+
+The same pauses show when you rest. Each pause's start and its end are moments cachier recorded, across all your sessions;
+a gap of 5 to 16 hours between two moments with none recorded between them is a rest, at any time of day, so a night
+sleeper's 01:00 to 08:00 and a night worker's 08:30 to 16:00 are learned alike. A shorter gap is a long lunch or a meeting,
+and a longer one a day or a weekend away, which would read as a rest that ends a day late, so neither counts. Of your newest
+14 rests, the habit is the 4 hours of the clock that hold the starts of the most of them: a routine begins its rests near one
+time, while a nap or an afternoon away begins elsewhere and is left out, never averaged in. A routine that moves takes over
+once 7 of the newest 14 are at the new time. Until the habit holds 7 rests the row counts them (`rest: 3 of 7 seen`); from 7
+it says when nine in ten of them had begun and until when nine in ten lasted, and how many rests that is read from
+(`rest: from ≤02:18 · back ≥07:28 · 12 rests`). The window keeps an hour inside each of those times, so it opens an hour
+after `from` and closes an hour before `back`; where that leaves nothing between them the row says `no window` in place of
+the count (`rest: from ≤03:10 · back ≥05:00 · no window`).
 
 ### 5 m or 1 h
 

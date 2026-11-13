@@ -5,6 +5,7 @@ import type { CacheView, Cause, PendingPause, Spend, StatCount, StatsState, Tall
 import { labelled } from './countdown'
 import { raiseNote, tallyOf } from './keepalive'
 import { addSpend, dollars, figureOf, NO_SPEND, rewriteOf, spendOf, TTL_MS, writeReadRatio, writtenOf, type Money, type PriceList } from './prices'
+import { percentileOf } from './rank'
 import type { Line } from './sections'
 import type { History, Response } from './transcript'
 
@@ -30,13 +31,8 @@ export const INITIAL_STATS: StatsState = {
 // The gaps a p90 and a mean are taken over: the last this many long pauses.
 const LONG_GAPS_KEPT = 100
 
-// The 90th percentile, nearest-rank: the ceil(0.9·n)-th smallest of the kept gaps, computed as floor((9n + 9) / 10) so no float
-// rounds the rank. Below ten gaps that rank is the largest, and the rundown names it max.
-export const p90Of = (xs: number[]): number => {
-  const sorted = [...xs].sort((a, b) => a - b)
-  const rank = Math.floor((9 * sorted.length + 9) / 10)
-  return sorted[rank - 1] ?? 0
-}
+// The 90th percentile of the kept gaps, nearest-rank (rank.ts). Below ten gaps that rank is the largest, and the rundown names it max.
+export const p90Of = (xs: number[]): number => percentileOf(xs, 90)
 
 // A duration as m:ss, rounded down as a stopwatch shows elapsed time (the countdown rounds up, elsewhere), so a pause of 301 s reads 5:01.
 const clock = (ms: number): string => {
