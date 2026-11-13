@@ -8334,6 +8334,27 @@ describe('an idle reviewer the state does not store is swept', () => {
     expect(h.stops).toEqual([])
   })
 
+  test('a sweep given up while parked in the stop helper\'s state read issues no stop and no retry', async () => {
+    const held = deferred<void>()
+    const h = hand(() => Promise.resolve(idleOld))
+    // The state reads of one sweep, in order: the candidates, the check before the stop, and the helper's own read before it issues the stop.
+    const get = h.$.state.get
+    let reads = 0
+    h.$.state.get = async () => {
+      if (++reads === 3) await held.promise
+      return get()
+    }
+    const sweeping = register.sweepIdle(h.$)
+    await drained()
+    expect(reads).toBe(3)
+    h.fire()
+    await sweeping
+    expect(h.logs.filter(l => l === GAVE_UP).length).toBe(1)
+    held.resolve()
+    await drained()
+    expect(h.stops).toEqual([])
+  })
+
   test('a stop given up while its check waits issues no retry', async () => {
     const held = deferred<unknown[]>()
     const h = hand(() => held.promise)
@@ -8373,6 +8394,24 @@ describe('an idle reviewer the state does not store is swept', () => {
     await register.stopReviewer(h.$, 'old2', false)
     await drained()
     expect(h.stops.length).toBe(before + 1)
+  })
+
+  test('a session end\'s stop is issued although a stop of the same id is still running', async () => {
+    const h = hand(() => never())
+    const call = h.$.tool.call
+    let first = true
+    h.$.tool.call = (e: unknown) => (first ? ((first = false), call(e).then(() => never())) : call(e))
+    await register.stopReviewer(h.$, 'old1', true)
+    await drained()
+    expect(h.stops.length).toBe(1)
+    await register.stopReviewer(h.$, 'old1', true)
+    await drained()
+    expect(h.stops.length).toBe(1)
+    await register.stopReviewer(h.$, 'old1', false)
+    await drained()
+    expect(h.stops.length).toBe(2)
+    h.fire()
+    await drained()
   })
 
   test('a failure log that throws does not stop the later sweeps', async () => {

@@ -352,14 +352,14 @@ const stopAndCheck = async ($: Pick<Scope, 'agent' | 'state' | 'tool' | 'ui'>, i
 // The reviewer ids whose stop, with its check, is still running in this process. A hot reload starts the module over with none.
 const stopsRunning = new Set<string>()
 
-// Stops a reviewer the auditor lets go (`letGo`: one a take rotated out or a failed review ended, one a session end forgot, one a refused brief dropped, one whose spawn rejected after its id was learned, one whose review lapsed, one that sat idle past its cache's life, or one the toggle switched off or whose spawn landed after it), so it does not sit idle for the rest of the session; each caller says when it issues it. The engine call is not awaited, so no caller's settle or dispatch waits on it or on its check; the helper resolves once the stop is issued. Any failure, the state read included, is logged and leaves the reviewer idle, and the caller goes on; the engine's no-session-bound error is the expected failure where no session is bound, and is logged as one plain line. Where a respawn can follow (`mayRespawn`), an id the state holds as the current reviewer is not stopped: a fresh reviewer can come back under a forgotten id, and the stop would end it. Such a stop is checked against the agent list and retried once (`verifyStop`; a stopped reviewer was measured absent from the list, or `killed`). A session end spawns none and runs under a short wall-clock bound, so it passes false: its one stop is not checked. Its reset may also have failed, and then the state still names the reviewer it forgot. An id whose stop and check are still running (`stopsRunning`, for at most BACKGROUND_TIMEOUT_MS) is not stopped again, whoever asks, except where no timer can be set (`withinTime`), when the guard is released at once and a duplicate stop is possible: a sweep that overlaps a reap, a lapse, a rotation or another sweep issues no duplicate.
-export const stopReviewer = async ($: Pick<Scope, 'agent' | 'clock' | 'state' | 'tool' | 'ui'>, id: string | undefined, mayRespawn: boolean): Promise<void> => {
-  if (id === undefined || stopsRunning.has(id)) return
+// Stops a reviewer the auditor lets go (`letGo`: one a take rotated out or a failed review ended, one a session end forgot, one a refused brief dropped, one whose spawn rejected after its id was learned, one whose review lapsed, one that sat idle past its cache's life, or one the toggle switched off or whose spawn landed after it), so it does not sit idle for the rest of the session; each caller says when it issues it. The engine call is not awaited, so no caller's settle or dispatch waits on it or on its check; the helper resolves once the stop is issued. Any failure, the state read included, is logged and leaves the reviewer idle, and the caller goes on; the engine's no-session-bound error is the expected failure where no session is bound, and is logged as one plain line. Where a respawn can follow (`mayRespawn`), an id the state holds as the current reviewer is not stopped: a fresh reviewer can come back under a forgotten id, and the stop would end it. Such a stop is checked against the agent list and retried once (`verifyStop`; a stopped reviewer was measured absent from the list, or `killed`). A session end spawns none and runs under a short wall-clock bound, so it passes false: its one stop is not checked. Its reset may also have failed, and then the state still names the reviewer it forgot. Where a respawn can follow, an id whose stop and check are still running (`stopsRunning`, for at most BACKGROUND_TIMEOUT_MS) is not stopped again, whoever asks, a session end's one stop excepted, which always issues since the in-flight one may be parked or hung, except where no timer can be set (`withinTime`), when the guard is released at once and a duplicate stop is possible: a sweep that overlaps a reap, a lapse, a rotation or another sweep issues no duplicate. A caller that has been given up (`caller`) and is still parked in the helper's state read issues no stop either.
+export const stopReviewer = async ($: Pick<Scope, 'agent' | 'clock' | 'state' | 'tool' | 'ui'>, id: string | undefined, mayRespawn: boolean, caller?: GivenUp): Promise<void> => {
+  if (id === undefined || (mayRespawn && stopsRunning.has(id))) return
   try {
     // A plain get would miss a spawn this dispatch made under the id (currentConversation).
     if (mayRespawn && standingOf(await currentConversation($), id) === 'current') return
-    // The read above yielded, so the guard is read again before it is set.
-    if (stopsRunning.has(id)) return
+    // The read above yielded, so the guard is read again before it is set, and so is the caller's flag: a caller given up while parked here (`caller`, a sweep's) issues nothing.
+    if ((mayRespawn && stopsRunning.has(id)) || caller?.up === true) return
     stopsRunning.add(id)
     void withinTime($, `reviewer ${id}'s stop`, given => stopAndCheck($, id, mayRespawn, given)).finally(() => stopsRunning.delete(id))
   } catch (err) {
@@ -390,7 +390,7 @@ const sweepOnce = async ($: Pick<Scope, 'agent' | 'clock' | 'state' | 'tool' | '
       if (!sweepable(await currentConversation($), relisted).includes(id)) continue
       if (given.up) return
       $.ui.log(`${PLUGIN}: sweeping idle reviewer ${id}, which the state does not store`, { to: 'debug' })
-      await stopReviewer($, id, true)
+      await stopReviewer($, id, true, given)
     }
   } catch (err) {
     recordFailed($, 'idle reviewer sweep', err)
@@ -431,6 +431,12 @@ const armReap = async ($: Scope, c: Conversation, fromTurnEnd = false): Promise<
     // A timer that cannot be set leaves the reviewer idle until its next review; the settle or give-back that set it goes on.
     recordFailed($, 'idle reap timer', err)
   }
+}
+
+// What a settle or a give-back does once it leaves the stored reviewer idle: arms its idle reap (`armReap`) and starts a sweep (`sweepIdle`, which does not stop `released`, the reviewer the caller has just let go and stopped itself). Every site that arms the reap goes through here, so none can leave the sweep out. The sweep is not awaited.
+const leftIdle = async ($: Scope, c: Conversation, released?: string, fromTurnEnd = false): Promise<void> => {
+  await armReap($, c, fromTurnEnd)
+  void sweepIdle($, released)
 }
 
 // How long the cache has left: CACHE_LIFE_MS less the time since `endedAt` where a turn end is counted from, whole where the reviewer has had none or its clock cannot be read (it is then reaped later than it could be, never while warm).
@@ -614,8 +620,7 @@ const settle = async ($: Scope, log: boolean, agentId: string, done: Finished, u
       const failed = await markFailed($, reason, epoch, 'no answer', c => withTurnEnd(c, agentId, turnEnd.at))
       // A reviewer kept (its turn was aborted) idles from here.
       if (failed.epoch === epoch) {
-        await armReap($, failed)
-        void sweepIdle($, released)
+        await leftIdle($, failed, released)
       }
       await logReview($, sessionId, log, closed, { status: 'incomplete', reason })
       // Its restored entries wait for the worker's next turn end.
@@ -627,8 +632,7 @@ const settle = async ($: Scope, log: boolean, agentId: string, done: Finished, u
     // The failure clears under the take's epoch (`epoch`), and a moved epoch dispatches nothing.
     const after = await change($, inEpoch(epoch, c => ({ ...withTurnEnd(withReviewDone(c, turnEnd.at, outcome.note !== null), agentId, turnEnd.at), failing: undefined })))
     if (after.epoch !== epoch) return
-    await armReap($, after)
-    void sweepIdle($, released)
+    await leftIdle($, after, released)
     // An idle worker gets the next brief at once; a busy one's turn end dispatches. midTurn is read through a change (currentConversation), since a plain get answers the dispatch's starting moment and misses a prompt that entered while this settle ran, a note's own among them.
     if (!(await currentConversation($)).midTurn) await dispatchIdle($, log)
   } finally {
@@ -950,8 +954,7 @@ const giveBack = async ($: Scope, sessionId: string, log: boolean, plan: Plan): 
   })
   if (got.review === undefined) return
   // The reviewer stays, idle since its latest turn end (or since now, had it none), so it is timed from there.
-  await armReap($, after, true)
-  void sweepIdle($)
+  await leftIdle($, after, undefined, true)
   await logIncomplete($, sessionId, log, withoutRoute(got.review), got.model, GIVEN_BACK)
   $.ui.log(`${PLUGIN}: review ${plan.number}'s brief was refused while the session was stopped, so the review is given back until the user's next prompt`, { to: 'debug' })
 }
