@@ -8204,12 +8204,74 @@ describe('an idle reviewer the state does not store is swept', () => {
     expect(logOf(seen, LOG_1)).toMatchObject({ status: 'complete' })
   })
 
+  test('a rejected list read at session start is recorded once, and the session start still resolves', ON, async ($, on) => {
+    const seen = engine(on, { stateSeed: SEED, listFails: true })
+    await started($)
+    await drained()
+    expect(failures(seen).length).toBe(1)
+    expect(stopped(seen)).toEqual([])
+  })
+
   test('any other thrown stop is recorded as a failure', ON, async ($, on) => {
     const seen = engine(on, { stateSeed: SEED, agents: [entry('old1')], toolThrows: 'TaskStop' })
     await started($)
     await drained()
     expect(debugLines(seen, 'reviewer stop failed').length).toBe(1)
     expect(debugLines(seen, 'skipped')).toEqual([])
+  })
+
+  test('a sweep does not stop an id whose stop is still running, however the list shows it', ON, async ($, on) => {
+    const stop = gate()
+    const seen = engine(on, { stateSeed: SEED, agentsAfterStops: withoutOld(), toolHolds: { tool: 'TaskStop', untils: [stop.until] }, agents: [entry('old1')] })
+    await started($)
+    await drained()
+    await started($)
+    await drained()
+    expect(stopped(seen)).toEqual([])
+    expect(sweeps(seen)).toEqual(['auditor: sweeping idle reviewer old1, which the state does not store'])
+    stop.open()
+    await drained()
+    expect(stopped(seen)).toEqual(['old1'])
+  })
+
+  test('after a /clear, a listed reviewer the state still knows is swept, and a listed reviewer it never learned is not', ON, async ($, on) => {
+    const seen = engine(on, { agents: [entry('ag1'), entry('other1')] })
+    await workerTurn($)
+    await $.session.end({ reason: 'clear', sessionId: 's' } as any)
+    await drained()
+    await started($)
+    await drained()
+    expect(sweeps(seen)).toEqual(['auditor: sweeping idle reviewer ag1, which the state does not store'])
+    expect(stopped(seen).filter(id => id !== 'ag1')).toEqual([])
+  })
+
+  // The sandbox the tests run in has no unhandled-rejection hook, so these stage the failures on a hand-made `$` and check that the sweep resolves and logs the failure once. A stop that throws is staged by the engine's own test above.
+  describe('a failed list read or state read never rejects out of the sweep', () => {
+    const idleEntry = { id: 'old1', name: 'auditor-reviewer', type: 'auditor:reviewer', status: 'idle', spawnedBy: 'auditor' }
+    const settled = async (): Promise<void> => {
+      for (let i = 0; i < 20; i++) await Promise.resolve()
+    }
+    const handMade = (over: Record<string, unknown>) => {
+      const logs: string[] = []
+      const $ = { agent: { list: () => Promise.resolve([idleEntry]) }, ui: { log: (text: string) => logs.push(text) }, ...over } as any
+      return { $, logs }
+    }
+
+    test('a list read that rejects is recorded once', async () => {
+      const { $, logs } = handMade({ agent: { list: () => Promise.reject(new Error('list unavailable')) } })
+      await expect(register.sweepIdle($)).resolves.toBeUndefined()
+      await settled()
+      expect(logs.length).toBe(1)
+      expect(logs[0]).toContain('idle reviewer sweep failed')
+    })
+
+    test('a state read that rejects is recorded once, and the sweep resolves', async () => {
+      const { $, logs } = handMade({ state: { get: () => Promise.reject(new Error('state unavailable')), set: () => Promise.reject(new Error('state unavailable')) } })
+      await expect(register.sweepIdle($)).resolves.toBeUndefined()
+      await settled()
+      expect(logs.length).toBe(1)
+      expect(logs[0]).toContain('idle reviewer sweep failed')
+    })
   })
 
   test('the first session start resolves while the agent list read is still pending', ON, async ($, on) => {

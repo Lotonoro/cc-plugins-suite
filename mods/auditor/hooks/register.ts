@@ -299,19 +299,27 @@ const verifyStop = async ($: Pick<Scope, 'agent' | 'state' | 'tool' | 'ui'>, id:
   }
 }
 
-// Stops a reviewer the auditor lets go (`letGo`: one a take rotated out or a failed review ended, one a session end forgot, one a refused brief dropped, one whose spawn rejected after its id was learned, one whose review lapsed, one that sat idle past its cache's life, or one the toggle switched off or whose spawn landed after it), so it does not sit idle for the rest of the session; each caller says when it issues it. The engine call is not awaited, so no caller's settle or dispatch waits on it or on its check; the helper resolves once the stop is issued. Any failure, the state read included, is logged and leaves the reviewer idle, and the caller goes on; the engine's no-session-bound error is the expected failure where no session is bound, and is logged as one plain line. Where a respawn can follow (`mayRespawn`), an id the state holds as the current reviewer is not stopped: a fresh reviewer can come back under a forgotten id, and the stop would end it. Such a stop is checked against the agent list and retried once (`verifyStop`; a stopped reviewer was measured absent from the list, or `killed`). A session end spawns none and runs under a short wall-clock bound, so it passes false: its one stop is not checked. Its reset may also have failed, and then the state still names the reviewer it forgot.
+// The reviewer ids whose stop, with its check, is still running in this process. A hot reload starts the module over with none.
+const stopsRunning = new Set<string>()
+
+// Stops a reviewer the auditor lets go (`letGo`: one a take rotated out or a failed review ended, one a session end forgot, one a refused brief dropped, one whose spawn rejected after its id was learned, one whose review lapsed, one that sat idle past its cache's life, or one the toggle switched off or whose spawn landed after it), so it does not sit idle for the rest of the session; each caller says when it issues it. The engine call is not awaited, so no caller's settle or dispatch waits on it or on its check; the helper resolves once the stop is issued. Any failure, the state read included, is logged and leaves the reviewer idle, and the caller goes on; the engine's no-session-bound error is the expected failure where no session is bound, and is logged as one plain line. Where a respawn can follow (`mayRespawn`), an id the state holds as the current reviewer is not stopped: a fresh reviewer can come back under a forgotten id, and the stop would end it. Such a stop is checked against the agent list and retried once (`verifyStop`; a stopped reviewer was measured absent from the list, or `killed`). A session end spawns none and runs under a short wall-clock bound, so it passes false: its one stop is not checked. Its reset may also have failed, and then the state still names the reviewer it forgot. An id whose stop and check are still running (`stopsRunning`) is not stopped again, whoever asks: a sweep that overlaps a reap, a lapse, a rotation or another sweep issues no duplicate.
 export const stopReviewer = async ($: Pick<Scope, 'agent' | 'state' | 'tool' | 'ui'>, id: string | undefined, mayRespawn: boolean): Promise<void> => {
-  if (id === undefined) return
+  if (id === undefined || stopsRunning.has(id)) return
   try {
     // A plain get would miss a spawn this dispatch made under the id (currentConversation).
     if (mayRespawn && standingOf(await currentConversation($), id) === 'current') return
-    void issueStop($, id).then(outcome => (mayRespawn && outcome !== 'threw' && outcome !== 'gone' ? verifyStop($, id, outcome) : undefined))
+    // The read above yielded, so the guard is read again before it is set.
+    if (stopsRunning.has(id)) return
+    stopsRunning.add(id)
+    void issueStop($, id)
+      .then(outcome => (mayRespawn && outcome !== 'threw' && outcome !== 'gone' ? verifyStop($, id, outcome) : undefined))
+      .finally(() => stopsRunning.delete(id))
   } catch (err) {
     stopFailed($, err)
   }
 }
 
-// Stops every listed reviewer that is idle and that the state knows but does not store (`sweepable`), so a reviewer whose let-go or stop was lost, or whose reap a reload cancelled, does not stay listed for the rest of the session, whatever lost it. It runs where a review leaves the stored reviewer idle and at load (`session.start`, which also fires at the auditor's own hot reload), and the agent list, not the state, says what is left. Just before each stop the conversation is read again: an id that has become the stored reviewer, or a spawn that has started since the list was read, is not stopped. Each stop goes through `stopReviewer` with a respawn possible, so it is checked against the list and retried once. The stored reviewer is exempt even past its cache's life; its idle reap is its timer's job. `stopping` is a reviewer the caller is stopping itself, which the list still shows idle until the engine has taken that stop, so a sweep that read the list meanwhile does not stop it a second time. Not awaited by a caller: no failure rejects, the engine's no-session-bound error on the list read is logged as one plain line, and any other is recorded; a sweep that fails or that a reload cuts off stops nothing that time, and the next load or review runs it again.
+// Stops every listed reviewer that is idle and that the state knows but does not store (`sweepable`), so a reviewer whose let-go or stop was lost, or whose reap a reload cancelled, does not stay listed for the rest of the session, whatever lost it. It runs at load (`session.start`, which also fires at the auditor's own hot reload) and wherever a settle or a give-back leaves the stored reviewer idle, which is where `armReap` runs; a settle cut off by a reset or by a throw leaves none idle and runs none. The agent list, not the state, says what is left. Just before each stop the list and the conversation are read again: an id that has ended, that is no longer idle, or that has become the stored reviewer, or a spawn that has started since the first read, is not stopped. Each stop goes through `stopReviewer` with a respawn possible, so it is checked against the list and retried once. The stored reviewer is exempt even past its cache's life; its idle reap is its timer's job. `stopping` is a reviewer the caller has stopped itself, which the list may still show idle until the engine has taken that stop, and an id with a stop running (`stopsRunning`) is skipped, so neither is stopped a second time. Not awaited by a caller: no failure rejects, the engine's no-session-bound error on the list read is logged as one plain line, and any other is recorded; a sweep that fails or that a reload cuts off stops nothing that time, and the next load or review runs it again.
 export const sweepIdle = async ($: Pick<Scope, 'agent' | 'state' | 'tool' | 'ui'>, stopping?: string): Promise<void> => {
   try {
     let listed: AgentInfo[]
@@ -322,11 +330,13 @@ export const sweepIdle = async ($: Pick<Scope, 'agent' | 'state' | 'tool' | 'ui'
       else recordFailed($, 'idle reviewer sweep', err)
       return
     }
-    for (const id of sweepable(await currentConversation($), listed).filter(listedId => listedId !== stopping)) {
-      if (sweepable(await currentConversation($), listed).includes(id)) {
-        $.ui.log(`${PLUGIN}: sweeping idle reviewer ${id}, which the state does not store`, { to: 'debug' })
-        await stopReviewer($, id, true)
-      }
+    for (const id of sweepable(await currentConversation($), listed)) {
+      if (id === stopping || stopsRunning.has(id)) continue
+      // The list is read again with the conversation, since an earlier stop of this loop, or another caller's, may have ended the id since the first read.
+      const relisted = await $.agent.list()
+      if (!sweepable(await currentConversation($), relisted).includes(id)) continue
+      $.ui.log(`${PLUGIN}: sweeping idle reviewer ${id}, which the state does not store`, { to: 'debug' })
+      await stopReviewer($, id, true)
     }
   } catch (err) {
     recordFailed($, 'idle reviewer sweep', err)
