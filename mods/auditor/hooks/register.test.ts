@@ -8414,6 +8414,23 @@ describe('an idle reviewer the state does not store is swept', () => {
     await drained()
   })
 
+  test('a session end\'s stop that finishes first does not release the guard of a respawn-capable stop still running', async () => {
+    const h = hand(call => Promise.resolve(call <= 2 ? idleOld : []))
+    const call = h.$.tool.call
+    let first = true
+    h.$.tool.call = (e: unknown) => (first ? ((first = false), call(e).then(() => never())) : call(e))
+    await register.stopReviewer(h.$, 'old1', true)
+    await drained()
+    await register.stopReviewer(h.$, 'old1', false)
+    await drained()
+    expect(h.stops.length).toBe(2)
+    await register.sweepIdle(h.$)
+    await drained()
+    expect(h.stops.length).toBe(2)
+    h.fire()
+    await drained()
+  })
+
   test('a failure log that throws does not stop the later sweeps', async () => {
     const h = hand(call => (call === 1 ? Promise.reject(new Error('list unavailable')) : Promise.resolve([])))
     h.$.ui.log = (text: string) => {
