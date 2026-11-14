@@ -60,7 +60,7 @@ import { appended, HISTORY_BOUND, keyOf, KEY_PREFIX, merged, recordOf, recordsOf
 import { adviceOf, ratesOfView, ttlLineOf, type Inputs } from './advice'
 import { learnedLine, learnedOf, ttlSwitchOf, type Learned } from './learn'
 import { overnightOf, overnightRowOf, restFactOf, restReadingOf, scanWanted, stepNoticeOf, windowNoticeOf, windowTextOf, type RestInputs, type RestReading } from './night'
-import { nightAction, nightClean, nightLearn, nightNotice, nightRead, nightScan, nightState, nightStepped } from './nightstep'
+import { nightAction, nightClean, nightLearn, nightNotice, nightRead, nightScan, nightState, nightStepped, noticeOpen } from './nightstep'
 import { breakEvenLine, breakEvenOf, countLineOf, judge, KEPT_COUNT, ratioOf, rebuildSpendOf, runCountOf, sessionBalanceLine, NO_JUDGED, pauseOf, type Pause } from './verdict'
 import { answerOf, paneLayoutOf, spanOf, type Line, type PaneRow, type PaneSize, type Setting, type Snapshot } from './sections'
 import { secsTerse } from './setup'
@@ -798,32 +798,47 @@ const stepLine = ($: Dollar, atMs: number, i: RestInputs) =>
     newest_prompt: i.scan.kind === 'done' && i.scan.newestMs !== null ? new Date(i.scan.newestMs).toISOString() : null,
   })
 
+// What a tick decides from, looked at together: keepalive's state as held, the clock, the cache, this session's live touch, the prices and the rest fact. Null where the tick has nothing
+// to decide: a failed write left the gap broken, or keepalive is off.
+const tickLook = async ($: Dollar) => {
+  if (gapBroken) return null
+  const held = await $.state.get(KEEPALIVE)
+  const k = held.value ?? INITIAL
+  if (k.config === null) return null
+  const decidedMs = await $.clock.now()
+  const view = await effectiveView($)
+  const live = (await $.state.get(TOUCH)).value ?? null
+  const money = await moneyOf($, view)
+  return { held, k, decidedMs, view, live, money, rest: await restNow($, k, view, money, decidedMs) }
+}
+
 // One tick. A ping starts only when the state, read here, says it may, and the commit of its count checks that the state
 // has not moved since: the fork is sent straight after that commit, with no await between.
 const keepaliveTick = async ($: Dollar) => {
   if (pinging) return
   pinging = true
   try {
-    if (gapBroken) return
-    const held = await $.state.get(KEEPALIVE)
-    const k = held.value ?? INITIAL
-    if (k.config === null) return
-    const decidedMs = await $.clock.now()
-    const view = await effectiveView($)
-    const live = (await $.state.get(TOUCH)).value ?? null
-    const money = await moneyOf($, view)
-    const rest = await restNow($, k, view, money, decidedMs)
-    // The first notice, once per install: the step can act for this user, whatever the moment and whatever stop is held. The record is written before the line.
-    if (rest.fact.canAct && rest.inputs.window !== null && (await nightNotice($, night, 'window'))) $.ui.log(windowNoticeOf(rest.inputs.window))
+    let seen = await tickLook($)
+    if (seen === null) return
+    // The first notice, once per install: the step can act for this user, whatever the moment and whatever stop is held. The record is written before the line. The ask waits on the store,
+    // and what the user does in that wait is not in the look: turning keepalive on notes its time in memory before its edit lands, and a commit made between the two passes the version check.
+    // A tick that asked looks again.
+    const learned = seen.rest.inputs.window
+    if (seen.rest.fact.canAct && learned !== null && noticeOpen(night, 'window')) {
+      if (await nightNotice($, night, 'window')) $.ui.log(windowNoticeOf(learned))
+      seen = await tickLook($)
+      if (seen === null) return
+    }
+    const { held, k, decidedMs, view, live, money, rest } = seen
     const verdict = step(k, view, live, gapOpen(k), decidedMs, money, null, rest.fact)
     if (verdict.kind === 'stop') {
       const committed = await $.state.set(KEEPALIVE, { ...k, stop: verdict.reason }, { ifVersion: held.version })
       // The stop a due fact gave is the day's step: it is recorded once the commit has landed, so a commit that lost its version check uses nothing up and the next tick decides again.
       if (committed.isSet && verdict.reason === OVERNIGHT_STOP && rest.fact.kind === 'due') {
-        await nightStepped($, night, decidedMs)
+        const marked = await nightStepped($, night, decidedMs)
         stepLine($, decidedMs, rest.inputs)
-        // The second notice, once per install: the first step, told after its mark, which a refused write of the mark does not undo.
-        if (await nightNotice($, night, 'step')) $.ui.log(stepNoticeOf(decidedMs))
+        // The second notice, once per install: the first step, told once its mark has landed in the store. A refused write of the mark tells nothing in this load, and a later step does.
+        if (marked && (await nightNotice($, night, 'step'))) $.ui.log(stepNoticeOf(decidedMs))
       }
       return
     }

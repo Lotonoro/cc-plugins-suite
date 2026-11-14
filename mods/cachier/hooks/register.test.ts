@@ -6585,6 +6585,23 @@ const watched = async ($: any, on: any, doc: any = nightDoc(ONE_HOUR), startMs =
   return { rec, clk, doc, events }
 }
 
+// A load that has read the record and not yet ticked: nearNight up to its first tick, so that a test can change the store as another session would after this load read it. The
+// session's turn is then run by `turn` as nearNight runs it. `around` is a test's own answer to a write of the state, as nearNight takes it.
+const beforeFirstTick = async ($: any, on: any, doc: any, startMs = NIGHT - 5000, around?: Around) => {
+  const rec = kaWorld(on, doc)
+  const journal = journalOf(on, doc, around)
+  const clock = mock.clock(on, { now: startMs })
+  const clk = timed(clock, startMs)
+  await $.classic.SessionStart({ source: 'startup', transcript_path: PATH })
+  await clock.settle()
+  const turn = async () => {
+    await clk.by(1000)
+    await mainStep($)
+    await turnEnd($)
+  }
+  return { rec, clk, journal, turn }
+}
+
 describe('the overnight notices: the user is told once per install, when the stop can first act and when it first acts', () => {
   test("with the option on, keepalive on and a window learned, one tick writes the first line once, after the record's write has landed, and nothing is written while that write waits", { options: OVERNIGHT_ON }, async ($, on) => {
     const { hold, release } = gateOf()
@@ -6721,16 +6738,29 @@ describe('the overnight notices: the user is told once per install, when the sto
     expect(noticesOf(rec)).toEqual([WINDOW_NOTICE, stepNoticeOf(rec.store.get('overnight/s1') as number)])
   })
 
-  test('a step mark that cannot be written still gets the second line, once: the stop was taken and holds', { options: OVERNIGHT_ON }, async ($, on) => {
+  test('a step mark that cannot be written writes no second line in this load and leaves the record unspent for it; the step of another session, its mark landing, writes it', { options: OVERNIGHT_ON }, async ($, on) => {
     const doc = nightDoc(ONE_HOUR)
     doc.setDenied = new Set(['overnight/s1'])
-    const { rec, clk } = await nearNight($, on, doc)
+    const { rec, clk, journal } = await nearNight($, on, doc)
     await clk.to(NIGHT + 2000)
+    expect(journal).toEqual(['stop'])
     expect(rec.store.has('overnight/s1')).toBe(false)
-    const [step] = debugOf(rec, 'cachier overnight')
-    expect(noticesOf(rec)).toEqual([WINDOW_NOTICE, stepNoticeOf(Date.parse(step.time))])
+    expect(debugOf(rec, 'cachier overnight')).toHaveLength(1)
+    expect(await toggle($, '')).toContain(STOPPED)
+    expect(noticesOf(rec)).toEqual([WINDOW_NOTICE])
+    expect(rec.store.get('notices')).toEqual({ window: true, step: false })
     await clk.by(10 * MIN)
-    expect(noticesOf(rec)).toHaveLength(2)
+    expect(noticesOf(rec)).toEqual([WINDOW_NOTICE])
+    // A second session of the load steps later with its own mark landing: the line is written then, once.
+    await $.classic.SessionStart({ source: 'resume', transcript_path: PATH_2 })
+    await clk.by(1000)
+    await mainStep($)
+    await turnEnd($)
+    await clk.by(70 * 1000)
+    const second = rec.store.get('overnight/s2') as number
+    expect(second).toBeGreaterThan(NIGHT)
+    expect(noticesOf(rec)).toEqual([WINDOW_NOTICE, stepNoticeOf(second)])
+    expect(rec.store.get('notices')).toEqual({ window: true, step: true })
   })
 
   test("a later step, a day after the one that was told, steps and writes no line", { options: OVERNIGHT_ON }, async ($, on) => {
@@ -6809,6 +6839,183 @@ describe('the overnight notices: the user is told once per install, when the sto
     expect(journal).toEqual(['stop', 'mark'])
     expect(noticesOf(rec)).toEqual([])
     expect(rec.store.has('notices')).toBe(false)
+  })
+
+  test("both lines another session told since this load read the record are not told again, and its flags are not erased by this session's asks", { options: OVERNIGHT_ON }, async ($, on) => {
+    const { rec, clk, journal, turn } = await beforeFirstTick($, on, nightDoc(ONE_HOUR, {}, EARLY))
+    // The record was read untold at the learn; another session of the install has told the user both lines since.
+    rec.store.set('notices', { window: true, step: true })
+    await turn()
+    await clk.by(10 * 1000)
+    expect(noticesOf(rec)).toEqual([])
+    expect(rec.store.get('notices')).toEqual({ window: true, step: true })
+    // The step at 03:20, this session's own, is not told either.
+    await clk.to(NIGHT + 21 * MIN)
+    expect(journal).toEqual(['stop', 'mark'])
+    expect(noticesOf(rec)).toEqual([])
+    expect(rec.store.get('notices')).toEqual({ window: true, step: true })
+  })
+
+  test('the first line told after another session spent the step line keeps that flag in the record, and the step is not told again', { options: OVERNIGHT_ON }, async ($, on) => {
+    const { rec, clk, journal, turn } = await beforeFirstTick($, on, nightDoc(ONE_HOUR, {}, EARLY))
+    rec.store.set('notices', { window: false, step: true })
+    await turn()
+    await clk.by(10 * 1000)
+    expect(noticesOf(rec)).toEqual([WINDOW_NOTICE])
+    expect(rec.store.get('notices')).toEqual({ window: true, step: true })
+    await clk.to(NIGHT + 21 * MIN)
+    expect(journal).toEqual(['stop', 'mark'])
+    expect(noticesOf(rec)).toEqual([WINDOW_NOTICE])
+  })
+
+  test('a refused fresh read of the record writes no line and is reported once while it keeps failing; the tick whose read lands writes the first line', { options: OVERNIGHT_ON }, async ($, on) => {
+    const doc = nightDoc(ONE_HOUR, {}, EARLY)
+    // The first read of the record is the learn's; the next two, the ticks' fresh reads, are refused.
+    doc.getGate = (key: string, nth: number) => (key === 'notices' && (nth === 2 || nth === 3) ? Promise.resolve('read refused') : undefined)
+    const { rec, clk, turn } = await beforeFirstTick($, on, doc)
+    const refused = () => rec.logs.filter((l) => l.includes('read refused')).length
+    await turn()
+    await clk.by(1500)
+    expect(refused()).toBe(1)
+    expect(noticesOf(rec)).toEqual([])
+    expect(rec.store.has('notices')).toBe(false)
+    await clk.by(2000)
+    expect(refused()).toBe(1)
+    expect(noticesOf(rec)).toEqual([WINDOW_NOTICE])
+    expect(rec.store.get('notices')).toEqual({ window: true, step: false })
+  })
+
+  // A load that could not read the record at its learn is asked for it again by each tick. Refused until 03:00, it is read by the tick at 03:00:00.5, whose step is due and whose price list
+  // came in long before: that tick asks for the first line and waits on the write of the record, or on the fresh read before it, which a test changes as another session would. The body
+  // is what the user does in that wait, and the tick then goes on. `holdEdits` makes the next edit that leaves keepalive with no stop, which /keepalive on makes after it has noted
+  // its time, wait for `edit`. Both waits are let go however the body ends, so that a failed assertion leaves nothing parked for the tests after it.
+  type Due = Awaited<ReturnType<typeof beforeFirstTick>> & { notice: ReturnType<typeof gateOf>; edit: ReturnType<typeof gateOf>; holdEdits: () => void }
+  const atDue = async ($: any, on: any, wait: 'write' | 'read', body: (due: Due) => Promise<void>) => {
+    const notice = gateOf()
+    const edit = gateOf()
+    let holding = false
+    const doc = nightDoc(ONE_HOUR)
+    doc.getDenied = new Set(['notices'])
+    let freshRead = 0
+    if (wait === 'write') doc.setHold = { key: 'notices', hold: notice.hold }
+    else doc.getGate = (key: string, nth: number) => (key === 'notices' && nth === freshRead ? notice.hold.then(() => undefined) : undefined)
+    const world = await beforeFirstTick($, on, doc, NIGHT - 3500, async (e, next) => {
+      if (holding && e.key === 'keepalive' && e.value?.stop === null) await edit.hold
+      return next(e)
+    })
+    try {
+      await world.clk.by(3000)
+      expect(world.rec.logs.filter((l) => l.includes('read refused'))).toHaveLength(1)
+      doc.getDenied.clear()
+      // The next read of the record is the retry's, the one after it the ask's fresh read.
+      freshRead = world.rec.gets.filter((key) => key === 'notices').length + 2
+      await world.clk.by(1000)
+      expect(world.rec.store.has('notices')).toBe(false)
+      await world.clk.by(10)
+      await body({ ...world, notice, edit, holdEdits: () => void (holding = true) })
+    } finally {
+      notice.release()
+      edit.release()
+    }
+  }
+
+  test("a /keepalive on made while the first line's record is written is seen by the step: no stop, mark or second line follows it, and the day's step is still to come", { options: OVERNIGHT_ON }, async ($, on) => {
+    await atDue($, on, 'write', async ({ rec, clk, journal, notice, edit, holdEdits }) => {
+      holdEdits()
+      const toggled = toggle($, 'on 60 24')
+      await clk.by(0)
+      expect(journal).toEqual(['action'])
+      notice.release()
+      await clk.by(0)
+      expect(noticesOf(rec)).toEqual([WINDOW_NOTICE])
+      expect(journal).toEqual(['action'])
+      expect(rec.store.has('overnight/s1')).toBe(false)
+      expect(debugOf(rec, 'cachier overnight')).toEqual([])
+      edit.release()
+      await toggled
+      expect(await toggle($, '')).toContain(RUNNING)
+      expect(journal).toEqual(['action'])
+      // The user acted at 03:00:00.51 and the session is idle again from there: the step is taken half an hour on.
+      await clk.to(NIGHT + 31 * MIN)
+      const step = rec.store.get('overnight/s1') as number
+      expect(step).toBeGreaterThan(NIGHT + 30 * MIN)
+      expect(journal).toEqual(['action', 'stop', 'mark'])
+      expect(noticesOf(rec)).toEqual([WINDOW_NOTICE, stepNoticeOf(step)])
+    })
+  })
+
+  test("a /keepalive on made while the record is read fresh is seen by the step too, when the read finds both lines told since by another session: nothing follows the user's action", { options: OVERNIGHT_ON }, async ($, on) => {
+    await atDue($, on, 'read', async ({ rec, clk, journal, notice, edit, holdEdits }) => {
+      holdEdits()
+      const toggled = toggle($, 'on 60 24')
+      await clk.by(0)
+      expect(journal).toEqual(['action'])
+      rec.store.set('notices', { window: true, step: true })
+      notice.release()
+      await clk.by(0)
+      expect(noticesOf(rec)).toEqual([])
+      expect(journal).toEqual(['action'])
+      expect(rec.store.has('overnight/s1')).toBe(false)
+      expect(debugOf(rec, 'cachier overnight')).toEqual([])
+      edit.release()
+      await toggled
+      expect(await toggle($, '')).toContain(RUNNING)
+      expect(rec.store.get('notices')).toEqual({ window: true, step: true })
+    })
+  })
+
+  // A prompt closes the gap and bumps the state's version before it records its action time, so a tick whose look came before it loses its commit to the version check, and one whose
+  // look came after it finds the gap shut: a prompt is safe without the tick looking again, and this pins that it stays so.
+  test("a prompt that lands while the first line's record is written leaves the tick that asked no stop and no mark to take", { options: OVERNIGHT_ON }, async ($, on) => {
+    await atDue($, on, 'write', async ({ rec, clk, journal, notice }) => {
+      await userPrompt($)
+      notice.release()
+      await clk.by(0)
+      expect(noticesOf(rec)).toEqual([WINDOW_NOTICE])
+      expect(journal).toEqual(['action'])
+      expect(rec.store.has('overnight/s1')).toBe(false)
+      expect(debugOf(rec, 'cachier overnight')).toEqual([])
+      expect(await toggle($, '')).toContain(RUNNING)
+    })
+  })
+
+  test("keepalive turned off while the first line's record is written: the tick that asked decides nothing, and the line is told", { options: OVERNIGHT_ON }, async ($, on) => {
+    await atDue($, on, 'write', async ({ rec, clk, journal, notice }) => {
+      expect(await toggle($, 'off')).toBe('keepalive off')
+      notice.release()
+      await clk.by(0)
+      expect(noticesOf(rec)).toEqual([WINDOW_NOTICE])
+      expect(journal).toEqual([])
+      expect(rec.store.has('overnight/s1')).toBe(false)
+      expect(debugOf(rec, 'cachier overnight')).toEqual([])
+      expect(rec.logs.filter((l) => l.includes('TypeError'))).toEqual([])
+      expect(await toggle($, '')).toContain('Keepalive  off')
+    })
+  })
+
+  test("only the tick that asked for the first line looks twice: the tick after it reads keepalive's state once less, and so does a tick before it that could not ask", { options: OVERNIGHT_ON }, async ($, on) => {
+    let reads = 0
+    on('state.get', (_$: any, e: any, next: any) => {
+      if (e.key === 'keepalive') reads++
+      return next(e)
+    })
+    // The record is refused until the fifth tick is over, so that the ticks before the ask are as steady as the ticks after it.
+    const doc = nightDoc(ONE_HOUR, {}, EARLY)
+    doc.getDenied = new Set(['notices'])
+    const { rec, clk } = await beforeFirstTick($, on, doc, NIGHT - 12000)
+    const used: number[] = []
+    let asked = -1
+    for (let i = 0; i < 10; i++) {
+      if (i === 5) doc.getDenied.clear()
+      const before = reads
+      await clk.by(1000)
+      used.push(reads - before)
+      if (asked < 0 && rec.store.has('notices')) asked = i
+    }
+    expect(asked).toBeGreaterThanOrEqual(5)
+    expect(used[asked]).toBe(used[asked + 1]! + 1)
+    expect(used[asked + 1]).toBe(used[asked + 2])
+    expect(used[asked - 1]).toBe(used[asked + 1])
   })
 })
 

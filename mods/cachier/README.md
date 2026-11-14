@@ -468,7 +468,11 @@ cachier makes itself is the pricing page, with nothing sent but the request. Eac
 - The pause a night stop ends is counted as a pause whose refreshes ran out (`wasted, ran out`), as any pause with refreshes whose cache
   lapsed is, though the stop and not the count ended them.
 - Whether the two overnight lines reach a phone under Remote Control is not measured.
-- The record of the two overnight lines is read once per load of the mod, when its first transcript is learned, so a session already running when another writes a line may write it again.
+- Two sessions that write an overnight line in the same moment, between each one's read of the record and its write, may both write the same line, or the later write may leave
+  the other's line unrecorded, so that a later session writes it again. The engine's store has no version check, so a write cannot be made to fail because another session's landed
+  after the read.
+- The first overnight line can come after the stop it explains, while that stop stands and whatever the cache has become since, where it was not written before the stop was taken:
+  the stop was taken before the record existed (an update over a held stop), the record could not be read then, or an earlier write of the first line was refused.
 
 ## Loading
 

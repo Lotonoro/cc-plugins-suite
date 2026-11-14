@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'claude-code/testing'
-import { ACTION_PREFIX, nightAction, nightClean, nightLearn, nightNotice, nightRead, nightScan, nightState, nightStepped, NOTICES_KEY, STEP_PREFIX } from './nightstep'
+import { ACTION_PREFIX, nightAction, nightClean, nightLearn, nightNotice, nightRead, nightScan, nightState, nightStepped, NOTICES_KEY, noticeOpen, STEP_PREFIX } from './nightstep'
 
 const MIN = 60000
 const H = 60 * MIN
@@ -282,24 +282,32 @@ describe('the action time: set in memory at once, written to the session\'s key 
 })
 
 describe('the step mark: set in memory as the step lands, then written under the session\'s key', () => {
-  test('the time is in memory at once, and the key holds it once the write lands', async () => {
+  test('the time is in memory at once, and the key holds it once the write lands, which the answer says', async () => {
     const w = makeWorld()
     const state = await learned(w)
     const written = nightStepped(w.dollar, state, NOW - 40 * MIN)
     expect(state.stepMs).toBe(NOW - 40 * MIN)
-    await written
+    expect(await written).toBe(true)
     expect(w.values.get('overnight/s1')).toBe(NOW - 40 * MIN)
   })
 
-  test('a write that throws is reported once, and the mark stays in memory', async () => {
+  test('a write that throws is reported once, the mark stays in memory, and the answer says it did not land', async () => {
     const w = makeWorld()
     const state = await learned(w)
     w.refused.set.add('overnight/s1')
-    await nightStepped(w.dollar, state, NOW - 40 * MIN)
+    expect(await nightStepped(w.dollar, state, NOW - 40 * MIN)).toBe(false)
     expect(state.stepMs).toBe(NOW - 40 * MIN)
     expect(w.logs).toHaveLength(1)
     expect(w.logs[0]).toContain('write of overnight/s1 refused')
     expect(w.values.has('overnight/s1')).toBe(false)
+  })
+
+  test('before the session\'s path is known no mark is written, and the answer says so', async () => {
+    const w = makeWorld()
+    const state = nightState()
+    expect(await nightStepped(w.dollar, state, NOW - 40 * MIN)).toBe(false)
+    expect(state.stepMs).toBe(NOW - 40 * MIN)
+    expect(w.calls).toEqual([])
   })
 
   test('the mark is not read before it is written', async () => {
@@ -434,6 +442,158 @@ describe('the notice record: one key for the install, read when the path is lear
     const later = await learned(w)
     expect(await nightNotice(w.dollar, later, 'window')).toBe(true)
     expect(w.values.get('notices')).toEqual({ window: true, step: false })
+  })
+
+  test('the record is read fresh just before each write, and a notice spent in memory asks the store nothing', async () => {
+    const w = makeWorld()
+    const state = await learned(w)
+    w.calls.length = 0
+    expect(await nightNotice(w.dollar, state, 'window')).toBe(true)
+    expect(w.calls).toEqual(['get notices', 'set notices'])
+    expect(await nightNotice(w.dollar, state, 'step')).toBe(true)
+    expect(w.calls).toEqual(['get notices', 'set notices', 'get notices', 'set notices'])
+    w.calls.length = 0
+    expect(await nightNotice(w.dollar, state, 'window')).toBe(false)
+    expect(await nightNotice(w.dollar, state, 'step')).toBe(false)
+    expect(w.calls).toEqual([])
+  })
+
+  test('a notice another session spent since this load read the record is not written again, and the record is left as it is', async () => {
+    const w = makeWorld()
+    const state = await learned(w)
+    w.values.set('notices', { window: true, step: true })
+    w.calls.length = 0
+    expect(await nightNotice(w.dollar, state, 'window')).toBe(false)
+    expect(await nightNotice(w.dollar, state, 'step')).toBe(false)
+    expect(w.calls).toEqual(['get notices', 'get notices'])
+    expect(w.values.get('notices')).toEqual({ window: true, step: true })
+    // Spent in the store, the notice is spent in this load: it is not read for again.
+    w.calls.length = 0
+    expect(await nightNotice(w.dollar, state, 'window')).toBe(false)
+    expect(await nightNotice(w.dollar, state, 'step')).toBe(false)
+    expect(w.calls).toEqual([])
+  })
+
+  test('a notice written after another session spent the other one keeps that flag: the record written is the record as it stands with the one notice added', async () => {
+    const w = makeWorld()
+    const state = await learned(w)
+    w.values.set('notices', { window: false, step: true })
+    expect(await nightNotice(w.dollar, state, 'window')).toBe(true)
+    expect(w.values.get('notices')).toEqual({ window: true, step: true })
+    const w2 = makeWorld()
+    const state2 = await learned(w2)
+    w2.values.set('notices', { window: true, step: false })
+    expect(await nightNotice(w2.dollar, state2, 'step')).toBe(true)
+    expect(w2.values.get('notices')).toEqual({ window: true, step: true })
+  })
+
+  test('the record written is the one just read with the one notice added, not this load\'s own flags: a notice whose write was refused stays unwritten for a later load', async () => {
+    const w = makeWorld()
+    const state = await learned(w)
+    w.refused.set.add('notices')
+    expect(await nightNotice(w.dollar, state, 'window')).toBe(false)
+    w.refused.set.clear()
+    expect(await nightNotice(w.dollar, state, 'step')).toBe(true)
+    expect(w.values.get('notices')).toEqual({ window: false, step: true })
+    const later = await learned(w)
+    expect(await nightNotice(w.dollar, later, 'window')).toBe(true)
+    expect(w.values.get('notices')).toEqual({ window: true, step: true })
+  })
+
+  test('a second ask while the fresh read is running says no, and the store is read and written once', async () => {
+    const w = makeWorld()
+    const state = await learned(w)
+    const hold = deferred()
+    w.holds.set('notices', hold.promise)
+    w.calls.length = 0
+    const first = nightNotice(w.dollar, state, 'window')
+    expect(state.notices).toEqual({ window: true, step: false })
+    expect(await nightNotice(w.dollar, state, 'window')).toBe(false)
+    expect(w.calls).toEqual(['get notices'])
+    hold.release()
+    expect(await first).toBe(true)
+    expect(w.calls).toEqual(['get notices', 'set notices'])
+    expect(w.values.get('notices')).toEqual({ window: true, step: false })
+  })
+
+  test('a notice is open exactly while asking it reaches the store: the record read and the notice not spent in this load, by this load, by another session or by a refused write', async () => {
+    const w = makeWorld()
+    const state = nightState()
+    const reachesStore = async (which: 'window' | 'step') => {
+      const open = noticeOpen(state, which)
+      w.calls.length = 0
+      await nightNotice(w.dollar, state, which)
+      expect([which, w.calls.length > 0]).toEqual([which, open])
+      return open
+    }
+    // An unread record opens nothing.
+    expect([noticeOpen(state, 'window'), noticeOpen(state, 'step')]).toEqual([false, false])
+    expect(await reachesStore('window')).toBe(false)
+    await nightLearn(w.dollar, state, PATH)
+    expect([noticeOpen(state, 'window'), noticeOpen(state, 'step')]).toEqual([true, true])
+    // A refused fresh read gives the notice back: it is open again.
+    w.refused.get.add('notices')
+    expect(await reachesStore('window')).toBe(true)
+    expect(noticeOpen(state, 'window')).toBe(true)
+    w.refused.get.clear()
+    // Written, it is spent, and the other stays open.
+    expect(await reachesStore('window')).toBe(true)
+    expect([noticeOpen(state, 'window'), noticeOpen(state, 'step')]).toEqual([false, true])
+    expect(await reachesStore('window')).toBe(false)
+    // Found spent by another session, it is spent in this load too.
+    w.values.set('notices', { window: true, step: true })
+    expect(await reachesStore('step')).toBe(true)
+    expect([noticeOpen(state, 'window'), noticeOpen(state, 'step')]).toEqual([false, false])
+    // A refused write spends it in this load.
+    const w2 = makeWorld()
+    const refusing = await learned(w2)
+    w2.refused.set.add('notices')
+    await nightNotice(w2.dollar, refusing, 'window')
+    expect([noticeOpen(refusing, 'window'), noticeOpen(refusing, 'step')]).toEqual([false, true])
+  })
+})
+
+describe('a refused fresh read of the notice record, before a write: nothing is written, the error is reported once while reads keep failing, and the notice is asked again', () => {
+  test('each ask reads again and says no, the notice is given back, and the first read that lands writes it', async () => {
+    const w = makeWorld()
+    const state = await learned(w)
+    w.refused.get.add('notices')
+    w.calls.length = 0
+    for (let i = 0; i < 3; i++) expect(await nightNotice(w.dollar, state, 'window')).toBe(false)
+    expect(w.calls).toEqual(['get notices', 'get notices', 'get notices'])
+    expect(w.logs).toHaveLength(1)
+    expect(w.logs[0]).toContain('read of notices refused')
+    expect(w.values.has('notices')).toBe(false)
+    expect(state.notices).toEqual({ window: false, step: false })
+    w.refused.get.clear()
+    expect(await nightNotice(w.dollar, state, 'window')).toBe(true)
+    expect(w.values.get('notices')).toEqual({ window: true, step: false })
+    expect(w.logs).toHaveLength(1)
+  })
+
+  test('a refusal after a read that landed is reported again', async () => {
+    const w = makeWorld()
+    const state = await learned(w)
+    w.refused.get.add('notices')
+    expect(await nightNotice(w.dollar, state, 'window')).toBe(false)
+    w.refused.get.clear()
+    expect(await nightNotice(w.dollar, state, 'window')).toBe(true)
+    w.refused.get.add('notices')
+    expect(await nightNotice(w.dollar, state, 'step')).toBe(false)
+    expect(await nightNotice(w.dollar, state, 'step')).toBe(false)
+    expect(w.logs).toHaveLength(2)
+  })
+
+  test('a notice given back leaves the other as it was, and the one spent by another session meanwhile is read as spent', async () => {
+    const w = makeWorld({ notices: { window: true, step: false } })
+    const state = await learned(w)
+    w.refused.get.add('notices')
+    expect(await nightNotice(w.dollar, state, 'step')).toBe(false)
+    expect(state.notices).toEqual({ window: true, step: false })
+    w.refused.get.clear()
+    w.values.set('notices', { window: true, step: true })
+    expect(await nightNotice(w.dollar, state, 'step')).toBe(false)
+    expect(w.values.get('notices')).toEqual({ window: true, step: true })
   })
 })
 
