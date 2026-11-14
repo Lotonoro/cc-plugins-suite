@@ -123,7 +123,7 @@ export type KeepaliveState = {
 // What the user's daily rest says to keepalive's step, decided by the night rule from the option, the learned window, the clock, the idle times, this
 // session's step mark and the cache the stop would let lapse: `due` when the rest has begun, a stop repays and the session has not stepped today, `held` from the
 // session's step until the user's next action, `none` otherwise. `canAct` is whether the step can act at all (the option on, keepalive on, a window learned, and
-// a cache whose stop repays somewhere in that window: at the 1 h TTL, one holding at least the break-even count of TTL periods), whatever the moment.
+// a cache whose stop repays somewhere in that window: at the 1 h TTL, one holding at least the break-even count of TTL periods; with no known cache, false), whatever the moment, and true for a `held` fact whatever the cache.
 export type RestFact = { kind: 'due' | 'held' | 'none'; canAct: boolean }
 
 declare module 'claude-code' {

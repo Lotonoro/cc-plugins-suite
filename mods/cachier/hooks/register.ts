@@ -59,8 +59,8 @@ import { followDraw, isPaneOpen, lastRows, paneAlarm, PANE, pressSize, readPane,
 import { appended, HISTORY_BOUND, keyOf, KEY_PREFIX, merged, recordOf, recordsOf, staleKeys, type PauseRecord } from './history'
 import { adviceOf, ratesOfView, ttlLineOf, type Inputs } from './advice'
 import { learnedLine, learnedOf, ttlSwitchOf, type Learned } from './learn'
-import { overnightOf, overnightRowOf, restFactOf, restReadingOf, scanWanted, windowTextOf, type RestInputs, type RestReading } from './night'
-import { nightAction, nightClean, nightLearn, nightRead, nightScan, nightState, nightStepped } from './nightstep'
+import { overnightOf, overnightRowOf, restFactOf, restReadingOf, scanWanted, stepNoticeOf, windowNoticeOf, windowTextOf, type RestInputs, type RestReading } from './night'
+import { nightAction, nightClean, nightLearn, nightNotice, nightRead, nightScan, nightState, nightStepped } from './nightstep'
 import { breakEvenLine, breakEvenOf, countLineOf, judge, KEPT_COUNT, ratioOf, rebuildSpendOf, runCountOf, sessionBalanceLine, NO_JUDGED, pauseOf, type Pause } from './verdict'
 import { answerOf, paneLayoutOf, spanOf, type Line, type PaneRow, type PaneSize, type Setting, type Snapshot } from './sections'
 import { secsTerse } from './setup'
@@ -224,7 +224,7 @@ const hostOf = ($: Dollar): Host => ({
 
 // This load's shared price record and page read. Re-created in register(), so a reload starts with none of it.
 let sync = priceSync()
-// This load's night step: the session's step mark and action time, and the scan of the other sessions' action times. Re-created in register(), so a reload reads its own times again.
+// This load's night step: the session's step mark and action time, the scan of the other sessions' action times, and the install's record of the notices written. Re-created in register(), so a reload reads them again.
 let night = nightState()
 // The `overnight` option, from the plugin's options: only `off` turns the rest's step off.
 let overnightOption: 'on' | 'off' = 'on'
@@ -813,6 +813,8 @@ const keepaliveTick = async ($: Dollar) => {
     const live = (await $.state.get(TOUCH)).value ?? null
     const money = await moneyOf($, view)
     const rest = await restNow($, k, view, money, decidedMs)
+    // The first notice, once per install: the step can act for this user, whatever the moment and whatever stop is held. The record is written before the line.
+    if (rest.fact.canAct && rest.inputs.window !== null && (await nightNotice($, night, 'window'))) $.ui.log(windowNoticeOf(rest.inputs.window))
     const verdict = step(k, view, live, gapOpen(k), decidedMs, money, null, rest.fact)
     if (verdict.kind === 'stop') {
       const committed = await $.state.set(KEEPALIVE, { ...k, stop: verdict.reason }, { ifVersion: held.version })
@@ -820,6 +822,8 @@ const keepaliveTick = async ($: Dollar) => {
       if (committed.isSet && verdict.reason === OVERNIGHT_STOP && rest.fact.kind === 'due') {
         await nightStepped($, night, decidedMs)
         stepLine($, decidedMs, rest.inputs)
+        // The second notice, once per install: the first step, told after its mark, which a refused write of the mark does not undo.
+        if (await nightNotice($, night, 'step')) $.ui.log(stepNoticeOf(decidedMs))
       }
       return
     }

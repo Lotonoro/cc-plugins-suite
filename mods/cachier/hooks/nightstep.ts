@@ -1,7 +1,8 @@
-// The night step's store: two keys per session, each a plain time in ms, and the running state the tick, the pane and the prompt hook share. The step mark,
+// The night step's store: two keys per session, each a plain time in ms, one key for the install, and the running state the tick, the pane and the prompt hook share. The step mark,
 // `overnight/<session id>`, is written by the tick alone, once per step; the action time, `prompted/<session id>`, is written by the prompt hook and the turn-on core alone, and
 // is the time of the user's last prompt or of the user turning keepalive on. A write never reads first, so no update is lost between two writers; the scan reads every
-// session's action key for the idle check, and the clean-up deletes the keys two days old. The rules that decide from these times are night.ts's; this module reads and
+// session's action key for the idle check, and the clean-up deletes the keys two days old. The install's key, `notices`, records which of the two notices the user has been told
+// (night.ts words them) and is written by nightNotice alone, outside the two families the clean-up scans. The rules that decide from these times are night.ts's; this module reads and
 // writes them and holds the state, as pricesync.ts keeps its own: one object per load of the plugin, so a reload starts with none of it, taken by function declarations
 // because the engine follows `$` past an import only into those.
 
@@ -14,8 +15,13 @@ type Dollar = EngineInterface
 
 export const STEP_PREFIX = 'overnight/'
 export const ACTION_PREFIX = 'prompted/'
+export const NOTICES_KEY = 'notices'
 // A key older than this, in either family, is deleted.
 const OLD_MS = 2 * 24 * 60 * 60 * 1000
+
+// The two notices the user is told once, each when it is first meant: the window, the first time the step can act for them, and the step, the first time it acts.
+export type Notice = 'window' | 'step'
+export type Notices = Record<Notice, boolean>
 
 export type NightState = {
   // The session's id once its path is learned, null before.
@@ -38,6 +44,11 @@ export type NightState = {
   unwritten: boolean
   // The clean-up asked before any path was known, as it was asked, for the learn to run.
   cleaning: { keys: readonly string[]; nowMs: number } | null
+  // The install's record of the notices written, as read and as spent in memory since: null until read, and an unread record writes nothing.
+  notices: Notices | null
+  // Whether a read of the record is running, and whether the last one failed and was reported: the tick reads again while it fails.
+  noticesReading: boolean
+  noticesFailed: boolean
 }
 
 export const nightState = (): NightState => ({
@@ -52,6 +63,9 @@ export const nightState = (): NightState => ({
   scanReported: false,
   unwritten: false,
   cleaning: null,
+  notices: null,
+  noticesReading: false,
+  noticesFailed: false,
 })
 
 // A stored value as a time: a number at or before `nowMs`. Any other shape, and a time later than now (a clock that moved back), is no time.
@@ -92,8 +106,31 @@ async function readOwn($: Dollar, state: NightState): Promise<void> {
   }
 }
 
-// Teaches the state the session's transcript. The first path, or one that names another session, starts the own times over and reads them; the same path again does nothing. An
-// action set before any path was known is written now, whether or not the read lands; a clean-up asked before any path was known runs once the own keys are read.
+// A stored record as the notices told: a field is told only when it is exactly true, and a value of another shape tells nothing.
+const noticesOf = (value: unknown): Notices => {
+  const held = typeof value === 'object' && value !== null ? (value as Record<string, unknown>) : {}
+  return { window: held.window === true, step: held.step === true }
+}
+
+// Reads the install's record while it is unread and no read is running. A refusal is reported once while it keeps failing and leaves the record unread, for the next call to read
+// again. It never throws.
+async function readNotices($: Dollar, state: NightState): Promise<void> {
+  if (state.notices !== null || state.noticesReading) return
+  state.noticesReading = true
+  try {
+    state.notices = noticesOf(await $.store.get(NOTICES_KEY))
+    state.noticesFailed = false
+  } catch (err) {
+    if (!state.noticesFailed) report($, err)
+    state.noticesFailed = true
+  } finally {
+    state.noticesReading = false
+  }
+}
+
+// Teaches the state the session's transcript. The first path, or one that names another session, starts the own times over and reads them; the same path again does nothing. The
+// install's record is read once, with the first path. An action set before any path was known is written now, whether or not the read lands; a clean-up asked before any path was
+// known runs once the own keys and the record are read.
 export async function nightLearn($: Dollar, state: NightState, path: string): Promise<void> {
   const id = idOf(path)
   if (state.id === id) return
@@ -110,13 +147,16 @@ export async function nightLearn($: Dollar, state: NightState, path: string): Pr
     state.actionMs = null
   }
   await readOwn($, state)
+  await readNotices($, state)
   if (cleaning !== null) await nightClean($, state, cleaning.keys, cleaning.nowMs)
 }
 
-// Reads the own keys again while the read has not landed and none is running, as the session's pause read is: a failed read does not leave the step undecided for the rest of the session.
+// Reads the own keys again while the read has not landed and none is running, as the session's pause read is: a failed read does not leave the step undecided for the rest of the
+// session. The install's record is read again the same way, once a read of it has failed.
 export async function nightRead($: Dollar, state: NightState): Promise<void> {
-  if (state.id === null || state.read || state.reading === state.generation) return
-  await readOwn($, state)
+  if (state.id === null) return
+  if (!state.read && state.reading !== state.generation) await readOwn($, state)
+  if (state.noticesFailed) await readNotices($, state)
 }
 
 // Records the user's action at `atMs`: in memory at once, before anything else is awaited, so no tick can decide on the time before it; then in the session's key, with no read
@@ -134,6 +174,21 @@ export async function nightAction($: Dollar, state: NightState, atMs: number): P
 export async function nightStepped($: Dollar, state: NightState, atMs: number): Promise<void> {
   state.stepMs = atMs
   if (state.id !== null) await writeTime($, STEP_PREFIX + state.id, atMs)
+}
+
+// Spends a notice for the install and says whether its line may be written now. The record is marked in memory first, then written whole, and the answer is yes only once that
+// write has landed: a refusal is reported and says no, and the notice stays spent for this load, so the line comes late (a later load reads the record unspent) and never twice.
+// An unread record and a notice already spent say no. There is no read before the write and no version check: two sessions meeting the same notice at once may both write it.
+export async function nightNotice($: Dollar, state: NightState, which: Notice): Promise<boolean> {
+  if (state.notices === null || state.notices[which]) return false
+  state.notices = { ...state.notices, [which]: true }
+  try {
+    await $.store.set(NOTICES_KEY, state.notices)
+  } catch (err) {
+    report($, err)
+    return false
+  }
+  return true
 }
 
 // Scans every session's action key for the newest action, one key after another, and records the outcome and the time it was made. A refused list or read is a failed

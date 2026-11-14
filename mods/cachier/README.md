@@ -166,6 +166,14 @@ your rest, once per session per local day: it sends no more refreshes until your
   stepped, then `overnight: done 03:19`, the step's time, also after a reload; with the option off, or no window learned, there is no
   row, and none while no cache is known or, at the 1 h TTL, where even the whole window is too short for a stop to repay. The
   `/keepalive on` answer words the stop `Paused: your daily rest began; it resumes after your next prompt.`
+- **What you are told**: cachier writes two lines into the transcript, once each per install of the mod, whichever session meets one first, drawn dim like a system notice
+  and not sent to the model. The first comes the first time the step can act for you: the `overnight` option is not `off`, keepalive is on in a session, a window is learned,
+  a cache is known and, at the 1 h TTL, a stop in the window would repay its rewrite. It states the window and what the step does in it:
+  `cachier: learned your daily rest, 03:18–06:28. After 30 min with no prompt in any session inside it, keepalive stops until your next prompt. Turn it off with the overnight option in /config.`
+  The second comes the first time the step acts, with the local time of the stop:
+  `cachier: keepalive stopped for your daily rest at 03:19; it resumes on your next prompt. Turn it off with the overnight option in /config.`
+  A session where the step cannot act (the option `off`, or keepalive off, which is the default) tells you nothing and uses up neither line; turning keepalive on there later writes the
+  first one. No line is written at later stops: the `overnight:` row says each day's step.
 - **How it ends**: your next prompt in the session ends the stop, or turning keepalive on in it: `/keepalive on`, or the pie, whose
   first click turns keepalive off, as for any held stop, and whose second turns it on. A message from another session or a plugin does
   not end it. Where keepalive is turned on again without the stop (a reload or a start that resets it to on, or a lost write of its
@@ -432,7 +440,8 @@ shared price record under the key `prices`: the rates each read gave every model
 changed, whether the newest read dropped it, when the newest successful read landed and when a read last changed any
 rates, and the last read attempt with its outcome and failure count. For the night step it keeps two small keys per session,
 `overnight/<session id>`, the time of the step the session took, and `prompted/<session id>`, the time of your last prompt in it or of
-your last turning keepalive on in it; a key two days old is deleted. Nothing else is written to disk. Cachier also reads
+your last turning keepalive on in it; a key two days old is deleted. One more key for the install, `notices`, records which of the two overnight lines (see
+[Overnight](#overnight)) it has written, so that each is written once; it is never deleted. Nothing else is written to disk. Cachier also reads
 the overrides file `cachier/prices.json` under your config directory, and never writes it. The only request
 cachier makes itself is the pricing page, with nothing sent but the request. Each keepalive refresh is a model request.
 
@@ -458,6 +467,8 @@ cachier makes itself is the pricing page, with nothing sent but the request. Eac
   another install is not seen.
 - The pause a night stop ends is counted as a pause whose refreshes ran out (`wasted, ran out`), as any pause with refreshes whose cache
   lapsed is, though the stop and not the count ended them.
+- Whether the two overnight lines reach a phone under Remote Control is not measured.
+- The record of the two overnight lines is read once per load of the mod, when its first transcript is learned, so a session already running when another writes a line may write it again.
 
 ## Loading
 

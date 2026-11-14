@@ -6,7 +6,8 @@
 // after the arc's anchor, so nothing wraps around midnight or noon.
 //
 // The rest then gives keepalive its fact (restFactOf): whether the rest has begun for this session, from the option, the window, the clock, the idle times, the session's step
-// mark, which nightstep.ts reads and writes, and the cache the stop would let lapse: at the 1 h TTL the stop acts only where it repays the rewrite it adds.
+// mark, which nightstep.ts reads and writes, and the cache the stop would let lapse: at the 1 h TTL the stop acts only where it repays the rewrite it adds. The words of the two
+// notices the user is told once, when the stop can first act and when it first acts, are written here too, beside the row that states the same window.
 
 import type { RestFact, TtlLabel } from '../types'
 import { labelled, type Run } from './countdown'
@@ -198,3 +199,14 @@ export const overnightRowOf = (i: RestInputs): Line => {
   if (!stopRepaysOf(i.cache, spanOf(i.window))) return ''
   return labelled('overnight:', ` ${windowTextOf(i.window)} · after ${IDLE_MS / MIN_MS}m idle${i.keepaliveOn ? '' : ' · only with keepalive on'}`)
 }
+
+// The sentence both notices end on.
+const SWITCH_TEXT = 'Turn it off with the overnight option in /config.'
+
+// The first notice, for the first time the step can act for the user: the window learned and what the step does inside it, worded with the figures the `overnight:` row states.
+export const windowNoticeOf = (window: { opensMin: number; closesMin: number }): string =>
+  `cachier: learned your daily rest, ${windowTextOf(window)}. After ${IDLE_MS / MIN_MS} min with no prompt in any session inside it, keepalive stops until your next prompt. ${SWITCH_TEXT}`
+
+// The second notice, for the first time the step acts: the local time of the stop, as the row says it after the step.
+export const stepNoticeOf = (stepMs: number): string =>
+  `cachier: keepalive stopped for your daily rest at ${timeOf(minuteOf(stepMs))}; it resumes on your next prompt. ${SWITCH_TEXT}`

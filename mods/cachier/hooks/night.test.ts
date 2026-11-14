@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'claude-code/testing'
 import { pieces } from './fixture'
 import type { PauseRecord } from './history'
-import { IDLE_MS, overnightOf, overnightRowOf, restFactOf, restReadingOf, restsOf, scanWanted, SCAN_STANDS_MS, type RestInputs, type RestReading, type Scan, type StopCache } from './night'
+import { IDLE_MS, overnightOf, overnightRowOf, restFactOf, restReadingOf, restsOf, scanWanted, SCAN_STANDS_MS, stepNoticeOf, windowNoticeOf, type RestInputs, type RestReading, type Scan, type StopCache } from './night'
 import { plainOf } from './sections'
 
 const MIN = 60000
@@ -608,5 +608,37 @@ describe('the overnight row: its label dim, then the window and the idle figure,
 
   test('once this session stepped today it says when, whatever the cache', () => {
     for (const cache of [oneHour(40), oneHour(null), null]) expect(rowOf({ stepMs: at(1, 3, 19), cache })).toEqual(pieces('overnight:', ' done 03:19'))
+  })
+})
+
+describe('the two notices: the lines the user is told once, with the window and the step time filled in', () => {
+  test('the first states the learned window, the idle figure and the option that turns the step off', () => {
+    expect(windowNoticeOf(WINDOW)).toBe(
+      'cachier: learned your daily rest, 03:18–06:28. After 30 min with no prompt in any session inside it, keepalive stops until your next prompt. Turn it off with the overnight option in /config.',
+    )
+    expect(windowNoticeOf(NIGHT_WINDOW)).toBe(
+      'cachier: learned your daily rest, 22:30–06:30. After 30 min with no prompt in any session inside it, keepalive stops until your next prompt. Turn it off with the overnight option in /config.',
+    )
+  })
+
+  test('the second states the local time of the step and the option that turns the step off', () => {
+    expect(stepNoticeOf(at(1, 3, 19))).toBe('cachier: keepalive stopped for your daily rest at 03:19; it resumes on your next prompt. Turn it off with the overnight option in /config.')
+    expect(stepNoticeOf(at(1, 0, 5))).toBe('cachier: keepalive stopped for your daily rest at 00:05; it resumes on your next prompt. Turn it off with the overnight option in /config.')
+    expect(stepNoticeOf(at(1, 23, 59))).toBe('cachier: keepalive stopped for your daily rest at 23:59; it resumes on your next prompt. Turn it off with the overnight option in /config.')
+  })
+
+  test('the window and the idle figure read as the overnight row states them', () => {
+    for (const window of [WINDOW, NIGHT_WINDOW]) {
+      const [, text, idle] = plainOf(overnightRowOf(inputs({ window }))).match(/^overnight: (\S+) · after (\d+)m idle$/)!
+      expect(windowNoticeOf(window)).toContain(`daily rest, ${text}. `)
+      expect(windowNoticeOf(window)).toContain(`After ${idle} min with no prompt`)
+    }
+  })
+
+  test('the step time reads as the overnight row states it once the session has stepped', () => {
+    for (const stepMs of [at(1, 3, 19), at(1, 0, 5)]) {
+      const [, time] = plainOf(overnightRowOf(inputs({ stepMs }))).match(/^overnight: done (\S+)$/)!
+      expect(stepNoticeOf(stepMs)).toContain(`daily rest at ${time}; `)
+    }
   })
 })
