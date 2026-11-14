@@ -117,7 +117,7 @@ export const UNPRICED_COUNT = 3
 
 // The break-even count: the most pings whose sum stays within the rewrite they avoid, rounded down and never under one. Null
 // with no warm cache or no price.
-const breakEvenOf = (view: CacheView, money: Money): number | null => {
+export const breakEvenOf = (view: CacheView, money: Money): number | null => {
   const rates = ratesOf(view, money)
   return rates === null ? null : Math.max(1, Math.floor((rates.lapseUsd + EPSILON_USD) / rates.pingUsd))
 }

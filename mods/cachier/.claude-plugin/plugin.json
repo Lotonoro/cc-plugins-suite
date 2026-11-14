@@ -34,6 +34,13 @@
         "tokens"
       ],
       "default": "dollars"
+    },
+    "overnight": {
+      "type": "string",
+      "title": "Stop keepalive during your daily rest",
+      "description": "Your daily rest is learned from your own idle times, at any hour of the day. Inside the window it leaves, a session's keepalive stops once per local day, after 30 min with no prompt in any session, and resumes at your next prompt. On a 1 h cache it stops only where the refreshes it saves cost at least as much as the rewrite that follows. off turns this off.",
+      "options": ["on", "off"],
+      "default": "on"
     }
   }
 }

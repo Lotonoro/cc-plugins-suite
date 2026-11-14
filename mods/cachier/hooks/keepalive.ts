@@ -2,7 +2,7 @@
 // and the reader's TTL and touch, the status line's and the footer line's words, how a ping's outcome is
 // judged, and the debug line of a ping. register.ts holds the state, writes it, and makes the fork; nothing here reads the engine.
 import type { ModelApiError, ModelForkResult, ModelUsage, PluginOptions } from 'claude-code'
-import type { CacheView, HintCost, KeepaliveState, Spend, Tally, TallyState, Unit } from '../types'
+import type { CacheView, HintCost, KeepaliveState, RestFact, Spend, Tally, TallyState, Unit } from '../types'
 import { expiredAt, expiryOf, labelled, type Tone } from './countdown'
 import { addSpend, cachedOf, dollars, figureOf, NO_KINDS, NO_SPEND, readOf, spendOf, uponOf, writtenOf, type Money } from './prices'
 import type { Line } from './sections'
@@ -283,19 +283,26 @@ const figuresOf = (view: CacheView, leadMs: number, money: Money, pair: Pair): L
   return stated === null ? [nextRefreshRow(view, money, tail)] : [refreshRow(view, money, tail), ...rebuildRows(stated.rebuilt)]
 }
 
-// Paused by design: keepalive is on and waits for the next user prompt, because its count or the cache's expiry ended it.
+// The stop the user's daily rest gives: keepalive stops its refreshes for the rest, and resumes at the user's next prompt.
+export const OVERNIGHT_STOP = 'overnight'
+
+// Paused by design: keepalive is on and waits for the next user prompt, because its count, the cache's expiry or the user's rest ended it.
 export const armedOf = (k: KeepaliveState): boolean => k.config !== null && k.stop !== null && ENDED_BY_DESIGN.includes(k.stop)
 
 // Why a stop reads as a clause in the `/keepalive on` answer: the design stops in words, any other stop as it was given.
-const WHY: Record<string, string> = { 'count used': 'its refreshes for this pause are used up', 'cache expired': 'the cache expired' }
+const WHY: Record<string, string> = {
+  'count used': 'its refreshes for this pause are used up',
+  'cache expired': 'the cache expired',
+  [OVERNIGHT_STOP]: 'your daily rest began',
+}
 const whyOf = (stop: string): string => WHY[stop] ?? stop
 
 // The answer's two stop sentences, each written once here: every wording of a stop in the answer reads one of them.
 const byDesignSentence = (stop: string): string => `${whyOf(stop)}; it resumes after your next prompt`
 const failureSentence = (stop: string): string => `${stop}; your next prompt restarts it`
 
-// The section's two stop tails, the terse pair beside the sentences: the by-design half names its reason as it is stored, `count used` or
-// `cache expired` included, so those keys are words the user reads.
+// The section's two stop tails, the terse pair beside the sentences: the by-design half names its reason as it is stored, `count used`,
+// `cache expired` or `overnight` included, so those keys are words the user reads.
 const byDesignTerse = (reason: string): string => `${reason} · resumes on next prompt`
 const failureTerse = (stop: string): string => `${stop} · restarts on next prompt`
 
@@ -335,14 +342,17 @@ const pausedBy = (view: CacheView, leadMs: number, money: Money, reason: string,
 }
 
 // The settled verdict: the one a state with no cold mark pending gives, `gap` being whether the main thread is idle (no turn running).
-// It reads no pending flag, so `step` lays the pending-write overlay over it.
-const settledOf = (k: KeepaliveState, leadMs: number, view: CacheView, liveMs: number | null, gap: boolean, nowMs: number, money: Money, rebuild: Spend | null): Settled => {
+// `rest` is what the user's daily rest says: a held one stops keepalive whatever the cache, and a due one stops a run that would
+// otherwise go on. It reads no pending flag, so `step` lays the pending-write overlay over it.
+const settledOf = (k: KeepaliveState, leadMs: number, view: CacheView, liveMs: number | null, gap: boolean, nowMs: number, money: Money, rebuild: Spend | null, rest: RestFact): Settled => {
   // Whether the cache is warm is asked of the expiry owner once, whatever the lead, for every line that states a price.
   const pair = { warm: !expiredAt(view, liveMs, nowMs), rebuild }
   const figures = figuresOf(view, leadMs, money, pair)
   const running = figures ?? []
   if (armedOf(k)) return { kind: 'wait', ...pausedBy(view, leadMs, money, k.stop ?? '', pair) }
   if (k.stop !== null) return { kind: 'wait', heading: 'stopped', why: failureTerse(k.stop), figure: running }
+  // The step already taken stands until the user acts: a state that lost the stop (a start that reset it, a reload) is stopped again, whatever the cache.
+  if (rest.kind === 'held') return { kind: 'stop', reason: OVERNIGHT_STOP, ...pausedBy(view, leadMs, money, OVERNIGHT_STOP, pair) }
   const r = readiness(view, leadMs, liveMs, nowMs)
   if (r.kind === 'not-ready' || figures === null) {
     if (view.kind === 'known' && refreshIntervalMs(leadMs, view.ttlMs) === null) {
@@ -358,6 +368,8 @@ const settledOf = (k: KeepaliveState, leadMs: number, view: CacheView, liveMs: n
     return { kind: 'wait', heading: 'paused', why: byDesignTerse('0 refreshes this pause (learned: pauses rarely outlast TTL)'), figure: figures }
   }
   if (k.remaining <= 0) return { kind: 'stop', reason: 'count used', ...pausedBy(view, leadMs, money, 'count used', pair) }
+  // Here the cache is warm, a count is left and a refresh is wanted: a rest that has begun ends the run, ahead of a refresh due at the same moment.
+  if (rest.kind === 'due' && gap) return { kind: 'stop', reason: OVERNIGHT_STOP, ...pausedBy(view, leadMs, money, OVERNIGHT_STOP, pair) }
   const refreshing = { heading: 'on, refreshing' as const, why: null }
   if (nowMs < r.dueMs) {
     return { kind: 'wait', ...refreshing, figure: figures, schedule: labelled('next in', ` ${clock(r.dueMs - nowMs)} · ${k.remaining} left`) }
@@ -369,9 +381,9 @@ const settledOf = (k: KeepaliveState, leadMs: number, view: CacheView, liveMs: n
 // While a cold mark's write is pending and no stop is held, the verdict is paused until the write is recorded: the settled reason and
 // figure stay, and the schedule line goes, since a refresh is held while the write is pending. `rebuild` is what the next prompt pays to
 // rebuild the cache if it goes cold; handed null, the lines state no rebuild price, as at the tick, which reads only the kind and the stop.
-export const step = (k: KeepaliveState, view: CacheView, liveMs: number | null, gap: boolean, nowMs: number, money: Money, rebuild: Spend | null): Step => {
+export const step = (k: KeepaliveState, view: CacheView, liveMs: number | null, gap: boolean, nowMs: number, money: Money, rebuild: Spend | null, rest: RestFact): Step => {
   if (k.config === null) return { kind: 'wait', heading: 'off', why: null, lines: [] }
-  const settled = settledOf(k, k.config.leadMs, view, liveMs, gap, nowMs, money, rebuild)
+  const settled = settledOf(k, k.config.leadMs, view, liveMs, gap, nowMs, money, rebuild, rest)
   const last = lastOf(k)
   if (k.stop === null && k.coldPending) {
     return { kind: 'wait', heading: 'paused', why: 'recording cache reset', lines: [...(settled.why === null ? [] : [settled.why]), ...settled.figure, ...last] }
@@ -465,7 +477,7 @@ export const pressOfferOf = (view: CacheView, money: Money, leadMs: number, runC
 
 // Stops that end keepalive by design. Any other stop, and a pause from a lead at or above the TTL, is a failure the status
 // line names in one clause; the footer names neither.
-const ENDED_BY_DESIGN: readonly string[] = ['count used', 'cache expired']
+const ENDED_BY_DESIGN: readonly string[] = ['count used', 'cache expired', OVERNIGHT_STOP]
 
 // What the status line says keepalive has failed at, as one clause with no refresh figures; null when it has not failed.
 export const failureOf = (k: KeepaliveState, view: CacheView): string | null => {

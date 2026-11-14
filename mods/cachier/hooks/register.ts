@@ -1,6 +1,6 @@
 import type { EngineInterface, Register, RenderElement } from 'claude-code'
 import type { ModelForkResult, ModelUsage } from 'claude-code'
-import type { CacheView, ColdMark, HintCost, HintState, Judged, KeepaliveState, PriceCue, Spend, StatsState, TallyState, Unit } from '../types'
+import type { CacheView, ColdMark, HintCost, HintState, Judged, KeepaliveState, PriceCue, RestFact, Spend, StatsState, TallyState, Unit } from '../types'
 import { cacheLineOf, expiredAt, expiryOf, labelled, pieOf, readingOf, rebuildDrawnOf, settleCold, touchedAt } from './countdown'
 import {
   coldBegun,
@@ -46,6 +46,7 @@ import {
   usageOf,
   recount,
   offerOf,
+  OVERNIGHT_STOP,
   pressOfferOf,
   type Figure,
   type Mode,
@@ -58,8 +59,9 @@ import { followDraw, isPaneOpen, lastRows, paneAlarm, PANE, pressSize, readPane,
 import { appended, HISTORY_BOUND, keyOf, KEY_PREFIX, merged, recordOf, recordsOf, staleKeys, type PauseRecord } from './history'
 import { adviceOf, ratesOfView, ttlLineOf, type Inputs } from './advice'
 import { learnedLine, learnedOf, ttlSwitchOf, type Learned } from './learn'
-import { restReadingOf, type RestReading } from './night'
-import { breakEvenLine, countLineOf, judge, KEPT_COUNT, ratioOf, rebuildSpendOf, runCountOf, sessionBalanceLine, NO_JUDGED, pauseOf, type Pause } from './verdict'
+import { overnightOf, overnightRowOf, restFactOf, restReadingOf, scanWanted, windowTextOf, type RestInputs, type RestReading } from './night'
+import { nightAction, nightClean, nightLearn, nightRead, nightScan, nightState, nightStepped } from './nightstep'
+import { breakEvenLine, breakEvenOf, countLineOf, judge, KEPT_COUNT, ratioOf, rebuildSpendOf, runCountOf, sessionBalanceLine, NO_JUDGED, pauseOf, type Pause } from './verdict'
 import { answerOf, paneLayoutOf, spanOf, type Line, type PaneRow, type PaneSize, type Setting, type Snapshot } from './sections'
 import { secsTerse } from './setup'
 import { stampLabel, withStamp } from './stamp'
@@ -222,6 +224,10 @@ const hostOf = ($: Dollar): Host => ({
 
 // This load's shared price record and page read. Re-created in register(), so a reload starts with none of it.
 let sync = priceSync()
+// This load's night step: the session's step mark and action time, and the scan of the other sessions' action times. Re-created in register(), so a reload reads its own times again.
+let night = nightState()
+// The `overnight` option, from the plugin's options: only `off` turns the rest's step off.
+let overnightOption: 'on' | 'off' = 'on'
 
 // Work a hook starts and does not wait for: a failure is reported, and the hook's own result is not held up by it.
 const inBackground = ($: Dollar, work: Promise<unknown>) => {
@@ -392,6 +398,8 @@ export const learnTranscript = async ($: Dollar, path: string): Promise<boolean>
   sessionFailed = undefined
   // Not part of the learn: a hook waiting on the learn need not wait on this store read too.
   inBackground($, sessionLoad($, path))
+  // The same for the night step's own two keys, which are read under the path's id; an action set before this learn is written to them now.
+  inBackground($, nightLearn($, night, path))
   for (const [id, drawn] of wanted) {
     if (drawn !== path) {
       wanted.delete(id)
@@ -754,6 +762,42 @@ const settlePing = async ($: Dollar, p: Ping) => {
   }
 }
 
+// What the rest fact is decided from: the option, the held rest reading's window, the clock, the cache a stop would let lapse with the break-even count the keepalive run on it
+// uses, this session's last request (the view's touch, never the live touch, which every answered refresh moves) and the night step's state, so the pane's snapshot and the
+// tick, asking from the same held state, decide alike whatever the store does.
+const restInputsOf = (keepaliveOn: boolean, view: CacheView, money: Money, nowMs: number): RestInputs => ({
+  option: overnightOption,
+  keepaliveOn,
+  window: restReading.window,
+  nowMs,
+  cache: view.kind === 'known' ? { ttlLabel: view.ttlLabel, ttlMs: view.ttlMs, breakEven: breakEvenOf(view, money) } : null,
+  touchMs: view.kind === 'known' ? view.touchMs : null,
+  read: night.read,
+  stepMs: night.stepMs,
+  actionMs: night.actionMs,
+  scan: night.scan,
+})
+
+// The tick's rest fact. Only the tick scans the other sessions' action times, and only when every other condition gives a due fact and the scan on hand does not stand,
+// so the store is read no oftener than that, and not at all with keepalive off or a stop held.
+const restNow = async ($: Dollar, k: KeepaliveState, view: CacheView, money: Money, nowMs: number): Promise<{ fact: RestFact; inputs: RestInputs }> => {
+  let inputs = restInputsOf(k.config !== null, view, money, nowMs)
+  if (k.stop === null && scanWanted(inputs)) {
+    await nightScan($, night, nowMs)
+    inputs = restInputsOf(k.config !== null, view, money, nowMs)
+  }
+  return { fact: restFactOf(inputs), inputs }
+}
+
+// The debug line of a step: when it was taken, the window it fell in, this session's idle time and the newest action found across sessions.
+const stepLine = ($: Dollar, atMs: number, i: RestInputs) =>
+  debugLine($, 'cachier overnight', {
+    time: new Date(atMs).toISOString(),
+    window: i.window === null ? null : windowTextOf(i.window),
+    idle_ms: i.touchMs === null ? null : atMs - i.touchMs,
+    newest_prompt: i.scan.kind === 'done' && i.scan.newestMs !== null ? new Date(i.scan.newestMs).toISOString() : null,
+  })
+
 // One tick. A ping starts only when the state, read here, says it may, and the commit of its count checks that the state
 // has not moved since: the fork is sent straight after that commit, with no await between.
 const keepaliveTick = async ($: Dollar) => {
@@ -767,9 +811,16 @@ const keepaliveTick = async ($: Dollar) => {
     const decidedMs = await $.clock.now()
     const view = await effectiveView($)
     const live = (await $.state.get(TOUCH)).value ?? null
-    const verdict = step(k, view, live, gapOpen(k), decidedMs, await moneyOf($, view), null)
+    const money = await moneyOf($, view)
+    const rest = await restNow($, k, view, money, decidedMs)
+    const verdict = step(k, view, live, gapOpen(k), decidedMs, money, null, rest.fact)
     if (verdict.kind === 'stop') {
-      await $.state.set(KEEPALIVE, { ...k, stop: verdict.reason }, { ifVersion: held.version })
+      const committed = await $.state.set(KEEPALIVE, { ...k, stop: verdict.reason }, { ifVersion: held.version })
+      // The stop a due fact gave is the day's step: it is recorded once the commit has landed, so a commit that lost its version check uses nothing up and the next tick decides again.
+      if (committed.isSet && verdict.reason === OVERNIGHT_STOP && rest.fact.kind === 'due') {
+        await nightStepped($, night, decidedMs)
+        stepLine($, decidedMs, rest.inputs)
+      }
       return
     }
     if (verdict.kind !== 'ping' || view.kind !== 'known' || k.config === null) return
@@ -793,6 +844,8 @@ const turnOff = async ($: Dollar): Promise<string> => {
 // the run starts with, for the command's answer.
 const turnOn = async ($: Dollar, leadMs: number, count: number | null) => {
   const nowMs = await $.clock.now()
+  // The user's action ends the rest's held step: noted before the edit below, which clears any stop.
+  await userActed($, nowMs)
   const view = await effectiveView($)
   const live = (await $.state.get(TOUCH)).value ?? null
   const money = await moneyOf($, view)
@@ -890,6 +943,7 @@ const settingsOf = (raw: CacheView, run: { leadMs: number; count: number | null 
     },
     { name: 'start mode', value: defaultMode, source: 'keepalive_default', change: `${spanOf('/keepalive default on|off')} (new sessions)` },
     { name: 'unit', value: money.unit, source: unitPressed ? 'switched this session' : 'cost_unit', change: spanOf('/keepalive unit tokens|dollars') },
+    { name: 'night stop', value: overnightOption, source: 'overnight', change: 'overnight' },
   ]
 }
 
@@ -923,7 +977,9 @@ const snapshotNow = async ($: Dollar): Promise<Snapshot> => {
   const balance = sessionBalanceLine(judged, money.unit)
   const refreshes = sessionLineOf(tally, money)
   const kept = keptOf(held, view, money, nowMs)
-  const verdict = step(held, view, live, gapOpen(held), nowMs, money, rebuildPriced)
+  // The rest fact the tick would act on, from the same held state, so the heading and the rows agree with it.
+  const rest = restInputsOf(held.config !== null, view, money, nowMs)
+  const verdict = step(held, view, live, gapOpen(held), nowMs, money, rebuildPriced, restFactOf(rest))
   // The pie's own judgement, from the held state and the view under the cold mark, judged once: the Cache line's glyph and the Keepalive section's
   // colour sentence both read it, so the sentence agrees with the heading above it and with the glyph.
   const pie = pieOf(reading, held.config !== null, costOf(held, view, money, pair)?.label ?? null, held.stop !== null)
@@ -944,6 +1000,7 @@ const snapshotNow = async ($: Dollar): Promise<Snapshot> => {
         ...(defaultRun === undefined ? [] : [breakEvenLine(held, view, money, defaultsNow(defaultRun, view, money, nowMs))]),
         // The held reading's row, handed out as a copy as the pie's sentence is, so the line a surface lays out is never the held one.
         restReading.row.map((run) => ({ ...run })),
+        overnightRowOf(rest),
         balance,
         ...rundown.keepalive,
       ].filter((line) => line !== ''),
@@ -1057,6 +1114,17 @@ const pauseStartNow = async ($: Dollar): Promise<PauseStart | null> => {
   const path = heldPath ?? (typeof named === 'string' ? named : null)
   if (path === null) return null
   return { startMs: view.touchMs, ttlMs: view.ttlMs, ratio: ratioOf(view, await moneyOf($, view)), contextTokens: view.promptTokens, path }
+}
+
+// The user's action at `atMs`, for the night step. Its time is in memory before anything is awaited, so a caller's edit that clears the stop, made once this returns, is never seen
+// by a tick that finds the step still standing; the store takes it a moment after. It is written under the transcript the action was made in: the learned one, else the one the
+// state names, as the pause recording takes it, which this teaches the step when no hook has taught this load one. A state that names none leaves the time held until the path is
+// learned.
+const userActed = async ($: Dollar, atMs: number) => {
+  inBackground($, nightAction($, night, atMs))
+  if (night.id !== null) return
+  const named = (await $.state.get(TRANSCRIPT)).value
+  if (typeof named === 'string' && night.id === null) inBackground($, nightLearn($, night, named))
 }
 
 // Reads the pauses under a transcript's own key into this session, once the path is learned. The key comes from the path the hook
@@ -1179,7 +1247,8 @@ const deleteKeys = async ($: Dollar, keys: readonly string[]): Promise<void> => 
 // older than the newest it keeps. At each start and reload: other sessions' later pauses are read at the next one. The history is what
 // the store holds, as read, and the appended pauses; a record the store has dropped is not brought back from the last history.
 const loadHistory = async ($: Dollar) => {
-  const keys = (await $.store.keys()).filter((key) => key.startsWith(KEY_PREFIX))
+  const all = await $.store.keys()
+  const keys = all.filter((key) => key.startsWith(KEY_PREFIX))
   const held = await readKeys($, keys)
   const stale = staleKeys(held)
   const read = Object.entries(held)
@@ -1193,6 +1262,8 @@ const loadHistory = async ($: Dollar) => {
   // A pane drawn before the read priced no history, and a still footer state draws nothing again, as in sessionLoad.
   $.ui.invalidate('ui.render')
   await deleteKeys($, stale)
+  // The night step's old keys go with the stale pause keys: the list read above holds them, whatever the pause filter kept.
+  await nightClean($, night, all, await $.clock.now())
 }
 
 // The history read in flight. A process's start runs both classic.SessionStart and session.start, and the second shares the first's read
@@ -1332,6 +1403,7 @@ const offerNow = (k: KeepaliveState, view: CacheView, money: Money, nowMs: numbe
 // Drawn on every tick, outside the lookup's single flight, so a held lookup cannot freeze it.
 const drawStatus = async ($: Dollar) => {
   sessionRetry($)
+  inBackground($, nightRead($, night))
   const transcript = (await $.state.get(TRANSCRIPT)).value ?? null
   const view = (await $.state.get(VIEW)).value ?? NO_CACHE
   const cold = (await $.state.get(COLD)).value ?? null
@@ -1469,6 +1541,8 @@ const stamped = (requestId: string, tree: RenderElement): RenderElement => {
 
 export const register: Register = (on, options) => {
   sync = priceSync()
+  night = nightState()
+  overnightOption = overnightOf(options.overnight)
   paneTickFailed = false
   paneDrawFailed = false
   const defaults = defaultsOf(options)
@@ -1620,9 +1694,11 @@ export const register: Register = (on, options) => {
       entered = !('drop' in result)
       if (entered && isUserPrompt(e.origin)) {
         // The run's count is resolved for the cache this prompt leaves: its model and TTL set the break-even count.
+        const armMs = await $.clock.now()
+        // The user's action ends the rest's held step: noted before the edit below, which clears the stop, and before any other read or write in this branch, any of which may throw.
+        await userActed($, armMs)
         const armView = await effectiveView($)
         const armMoney = await moneyOf($, armView)
-        const armMs = await $.clock.now()
         if (await hookWrite($, (k) => rearm(k, k.config === null ? 0 : countNow(k.config.count, armView, armMoney, k.config.leadMs, armMs)))) {
           // The pause this prompt ends is judged by the first response after it, so its record waits in the stats.
           const pause = ((await $.state.get(TALLY)).value ?? INITIAL_TALLY).pause

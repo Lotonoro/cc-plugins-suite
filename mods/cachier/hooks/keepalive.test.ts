@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'claude-code/testing'
-import type { CacheView, KeepaliveState } from '../types'
+import type { CacheView, KeepaliveState, RestFact, Spend } from '../types'
 import {
+  armedOf,
   costOf as costRaw,
   costText as costTextWith,
   forkSpend,
@@ -59,7 +60,10 @@ const T = 1_000_000
 // A step's and a figure's lines as the tests below read them: each line's text, a labelled line being its pieces joined. The pieces have their own tests at the end.
 const readStep = (s: Step) => ({ ...s, lines: s.lines.map(plainOf) })
 const readFigure = (f: Figure | null) => (f === null ? null : { ...f, lines: f.lines.map(plainOf) })
-const stepWith = (...args: Parameters<typeof stepRaw>) => readStep(stepRaw(...args))
+// The rest fact is the step's last input: a test that names none runs with none.
+const NO_REST: RestFact = { kind: 'none', canAct: false }
+const stepWith = (k: KeepaliveState, view: CacheView, live: number | null, gap: boolean, now: number, money: Money, rebuild: Spend | null, rest: RestFact = NO_REST) =>
+  readStep(stepRaw(k, view, live, gap, now, money, rebuild, rest))
 const costWith = (...args: Parameters<typeof costRaw>) => readFigure(costRaw(...args))
 const offerWith = (...args: Parameters<typeof offerRaw>) => readFigure(offerRaw(...args))
 const pressOfferWith = (...args: Parameters<typeof pressOfferRaw>) => readFigure(pressOfferRaw(...args))
@@ -79,7 +83,7 @@ const ANSWER_REBUILD = `if it goes cold, your next prompt rebuilds it: ${WRITTEN
 const known = { kind: 'known' as const, touchMs: T, ttlMs: 300000, ttlLabel: '5m' as const, promptTokens: 32884, outputTokens: 0, model: 'claude-opus-5-5', speed: 'standard' }
 // The tests below word their figures in tokens, as a session with no price list does; the dollar wording has its own tests.
 const rebuildOf = (v: CacheView, money: Money) => (v.kind === 'known' ? rebuildSpendOf(v, money) : null)
-const step = (k: KeepaliveState, v: CacheView, live: number | null, gap: boolean, now: number) => stepWith(k, v, live, gap, now, TOKENS, rebuildOf(v, TOKENS))
+const step = (k: KeepaliveState, v: CacheView, live: number | null, gap: boolean, now: number, rest: RestFact = NO_REST) => stepWith(k, v, live, gap, now, TOKENS, rebuildOf(v, TOKENS), rest)
 const pairOf = (v: CacheView, money: Money, warm = true) => ({ warm, rebuild: rebuildOf(v, money) })
 const costOf = (k: KeepaliveState, v: CacheView, warm = true) => costWith(k, v, TOKENS, pairOf(v, TOKENS, warm))
 const costText = (v: typeof known, lead: number, count: number) => costTextWith(v, lead, refreshIntervalMs(lead, v.ttlMs)!, count, TOKENS, pairOf(v, TOKENS))
@@ -511,6 +515,151 @@ describe('a stop by design names how often a refresh would be sent, wherever the
   test('the interval row is the interval the figures line gives at the same lead', () => {
     expect(costOf(on(15000, 3), known)?.lines[1]).toBe('every 4:45')
     expect(step(on(15000, 3, { stop: 'count used' }), known, null, true, T).lines).toEqual([REREAD, 'every 4:45', REBUILD])
+  })
+})
+
+// The rest fact is the step's last input. With keepalive on and no stop held, a due fact on a warm cache (a known view, not expired) with the main thread idle
+// gives the `overnight` stop, and a held fact gives it whatever the cache. Every other state reads as it does with no fact.
+describe('the overnight stop: the step\'s answer to a due or a held rest fact', () => {
+  const DUE: RestFact = { kind: 'due', canAct: true }
+  const HELD: RestFact = { kind: 'held', canAct: true }
+  const NONE: RestFact = { kind: 'none', canAct: true }
+  const OVERNIGHT = `overnight${RESUMES}`
+  const WARM = T + 100000
+  const stopped = { kind: 'stop', reason: 'overnight', heading: 'paused', why: OVERNIGHT } as const
+  // A state, and what it is read on: the view, the live touch, whether the main thread is idle, and the time.
+  type Case = [name: string, k: KeepaliveState, view: CacheView, live: number | null, gap: boolean, now: number]
+
+  test('a due fact on a warm cache, with keepalive on, no stop held and the main thread idle, gives the stop, with the figures of any stop by design', () => {
+    expect(step(on(60000, 2), known, null, true, WARM, DUE)).toEqual({ ...stopped, lines: [REREAD, INTERVAL, REBUILD] })
+    // The figures are the count used's: only the reason and its line differ.
+    const used = step(on(60000, 2, { remaining: 0 }), known, null, true, WARM)
+    expect(used).toMatchObject({ kind: 'stop', reason: 'count used', lines: [REREAD, INTERVAL, REBUILD] })
+  })
+
+  test('the stop is given at the last instant the cache is warm, and the cache\'s own expiry is given at the next', () => {
+    expect(step(on(60000, 2), known, null, true, T + 299999, DUE)).toMatchObject(stopped)
+    expect(step(on(60000, 2), known, null, true, T + 300000, DUE)).toMatchObject({ kind: 'stop', reason: 'cache expired' })
+  })
+
+  test('a due fact gives the stop in place of a refresh that is due at the same moment, and no refresh is sent while the stop holds', () => {
+    expect(step(on(60000, 2), known, null, true, T + 240000).kind).toBe('ping')
+    expect(step(on(60000, 2), known, null, true, T + 240000, DUE)).toMatchObject(stopped)
+    expect(step(on(60000, 2, { stop: 'overnight' }), known, null, true, T + 240000, DUE).kind).toBe('wait')
+  })
+
+  // Each is a state in which something other than the fact decides: with a due fact the step reads as it does with none.
+  const decided: Case[] = [
+    ['keepalive off', INITIAL, known, null, true, WARM],
+    ['the cache expired', on(60000, 2), known, null, true, T + 300000],
+    ['the refreshes used, not yet recorded', on(60000, 2, { remaining: 0 }), known, null, true, WARM],
+    ['the refreshes used, recorded', on(60000, 2, { stop: 'count used' }), known, null, true, WARM],
+    ['the cache expired, recorded', on(60000, 2, { stop: 'cache expired' }), known, null, true, WARM],
+    ['a failure recorded', on(60000, 2, { stop: 'API error 529 (overloaded)' }), known, null, true, WARM],
+    ['the overnight stop recorded', on(60000, 2, { stop: 'overnight' }), known, null, true, WARM],
+    ['a learned count of none', on(60000, 2, { runCount: 0, remaining: 0 }), known, null, true, WARM],
+    ['a lead at the TTL', on(300000, 2), known, null, true, WARM],
+    ['a lead above the TTL', on(400000, 2), known, null, true, WARM],
+    ['a view with no cache', on(60000, 2), { kind: 'no-cache' }, null, true, WARM],
+    ['a view with no known TTL', on(60000, 2), { kind: 'ttl-unknown' }, null, true, WARM],
+    ['a view not read', on(60000, 2), { kind: 'unread' }, null, true, WARM],
+    ['a turn running', on(60000, 2), known, null, false, WARM],
+  ]
+
+  // The states a held fact leaves as they are: keepalive off, and a stop already held.
+  const HELD_OVER = ['keepalive off', 'the refreshes used, recorded', 'the cache expired, recorded', 'a failure recorded', 'the overnight stop recorded']
+
+  test('with a due fact each state that something else decides reads as it does with none', () => {
+    for (const [name, k, view, live, gap, now] of decided) {
+      expect([name, step(k, view, live, gap, now, DUE)]).toEqual([name, step(k, view, live, gap, now, NO_REST)])
+    }
+  })
+
+  test('with a fact that is none, the step is the one there was: no state gives the overnight stop', () => {
+    const more: Case[] = [
+      ['a refresh scheduled', on(60000, 2), known, null, true, WARM],
+      ['a cold mark being written', on(60000, 2, { coldPending: true }), known, null, true, WARM],
+    ]
+    for (const [name, k, view, live, gap, now] of [...decided, ...more]) {
+      for (const rest of [NO_REST, NONE]) {
+        const verdict = step(k, view, live, gap, now, rest)
+        expect([name, verdict.kind === 'stop' && verdict.reason === 'overnight']).toEqual([name, false])
+      }
+    }
+  })
+
+  test('the stop is only the overnight one when it is recorded: a due fact over a recorded stop adds no stop of its own', () => {
+    for (const stop of ['count used', 'cache expired', 'overnight', 'API error 529 (overloaded)']) {
+      expect(step(on(60000, 2, { stop }), known, null, true, WARM, DUE).kind).toBe('wait')
+    }
+  })
+
+  test('a held fact gives the stop whatever the cache: expired, unread, with no cache, or with the refreshes used or never sent', () => {
+    const everything = decided.filter(([name]) => !HELD_OVER.includes(name))
+    expect(everything).toHaveLength(9)
+    for (const [name, k, view, live, gap, now] of everything) {
+      expect([name, step(k, view, live, gap, now, HELD)]).toMatchObject([name, stopped])
+    }
+    expect(step(on(60000, 2), known, null, true, WARM, HELD)).toEqual({ ...stopped, lines: [REREAD, INTERVAL, REBUILD] })
+  })
+
+  test('a held fact gives the stop with a turn running, on an expired cache, and with no cache, with the figures that state has', () => {
+    expect(step(on(60000, 2), known, null, false, WARM, HELD)).toEqual({ ...stopped, lines: [REREAD, INTERVAL, REBUILD] })
+    expect(step(on(60000, 2), known, null, true, T + 300000, HELD)).toEqual({ ...stopped, lines: [EXPIRED_REREAD, INTERVAL] })
+    expect(step(on(60000, 2), { kind: 'no-cache' }, null, true, WARM, HELD)).toEqual({ ...stopped, lines: [] })
+    expect(step(on(300000, 2), known, null, true, WARM, HELD)).toEqual({ ...stopped, lines: [REREAD, REBUILD] })
+  })
+
+  test('a held fact leaves keepalive off and a stop already held as they read with none', () => {
+    for (const name of HELD_OVER) {
+      const [, k, view, live, gap, now] = decided.find(([n]) => n === name)!
+      expect([name, step(k, view, live, gap, now, HELD)]).toEqual([name, step(k, view, live, gap, now, NO_REST)])
+    }
+  })
+
+  test('a pending cold-mark write holds a due or a held stop back: the verdict is a wait that names the stop beneath the pending reason', () => {
+    const pending = on(60000, 2, { coldPending: true })
+    for (const rest of [DUE, HELD]) {
+      expect(step(pending, known, null, true, WARM, rest)).toEqual({
+        kind: 'wait',
+        heading: 'paused',
+        why: 'recording cache reset',
+        lines: [OVERNIGHT, REREAD, INTERVAL, REBUILD],
+      })
+    }
+  })
+
+  test('the recorded overnight stop reads paused by design, with the same figures as any other, whatever the fact', () => {
+    const recorded = on(60000, 2, { stop: 'overnight' })
+    for (const rest of [NO_REST, NONE, DUE, HELD]) {
+      expect(step(recorded, known, null, true, WARM, rest)).toEqual({ kind: 'wait', heading: 'paused', why: OVERNIGHT, lines: [REREAD, INTERVAL, REBUILD] })
+    }
+    expect(step(recorded, known, null, true, T + 300000)).toMatchObject({ kind: 'wait', heading: 'paused', why: OVERNIGHT, lines: [REREAD, INTERVAL] })
+    expect(armedOf(recorded)).toBe(true)
+    expect(armedOf(on(60000, 2))).toBe(false)
+  })
+
+  test('the status line names no failure for it, and the pie\'s figure of the refresh is gone, as under any stop', () => {
+    expect(failureOf(on(60000, 3, { stop: 'overnight' }), known)).toBeNull()
+    expect(costOf(on(60000, 2, { stop: 'overnight' }), known)).toBeNull()
+    expect(costOf(on(60000, 2), known)).not.toBeNull()
+  })
+
+  test('the toggle\'s text words the stop, should a run be enabled at it', () => {
+    expect(enableText(known, 60000, 3, 'overnight')).toContain('Paused: your daily rest began; it resumes after your next prompt.')
+  })
+
+  test('the lines of the stop begin with no state word', () => {
+    for (const verdict of [step(on(60000, 2), known, null, true, WARM, DUE), step(on(60000, 2, { stop: 'overnight' }), known, null, true, WARM)]) {
+      for (const line of [...(verdict.why === null ? [] : [verdict.why]), ...verdict.lines]) expect(line).not.toMatch(/^(keepalive |)(off|on|refreshing|paused|stopped|no count)\b/)
+    }
+  })
+
+  test('the raw lines of the stop are labelled as the same lines of any stop by design are', () => {
+    const raw = stepRaw(on(60000, 2), known, null, true, WARM, TOKENS, rebuildOf(known, TOKENS), DUE)
+    const used = stepRaw(on(60000, 2, { remaining: 0 }), known, null, true, WARM, TOKENS, rebuildOf(known, TOKENS), NO_REST)
+    expect(raw.lines).toEqual(used.lines)
+    expect(raw.lines).toEqual([pieces('refresh', ' ~33k cached'), 'every 4 min', pieces('if cold:', ' rebuild ~33k written')])
   })
 })
 
@@ -1126,7 +1275,8 @@ describe('modeOf and recount: the mode a session starts in, and an unpinned coun
 // The pieces of the Keepalive figures' labelled lines: each label is its line's first piece, drawn dim, and the rest is one untoned piece; the lines that
 // state a fact or a figure without a label are plain text. The text of each line is pinned above, through its text; these pin the pieces, read raw.
 describe('the labels of the Keepalive figures: each is the first, dim piece of its line', () => {
-  const rawStep = (k: KeepaliveState, view: CacheView, gap: boolean, now: number, live: number | null = null) => stepRaw(k, view, live, gap, now, TOKENS, rebuildOf(view, TOKENS))
+  const rawStep = (k: KeepaliveState, view: CacheView, gap: boolean, now: number, live: number | null = null, rest: RestFact = NO_REST) =>
+    stepRaw(k, view, live, gap, now, TOKENS, rebuildOf(view, TOKENS), rest)
   const LAST = { read: 14361, write: 18523 }
 
   test('refresh, if cold: and next in, on a running keepalive with its schedule', () => {

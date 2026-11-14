@@ -94,7 +94,7 @@ export const hostOver = (text: string) => {
 }
 
 // The labels the details pane draws dim, each the first piece of its row and with its colon where it has one, in the order of their modules: the pie
-// sentence, the Keepalive figures, the tallies and history, the learned rest, the balance, the learned count, the Advice rows, the unit note, and the Settings names. The
+// sentence, the Keepalive figures, the tallies and history, the learned rest, the night step, the balance, the learned count, the Advice rows, the unit note, and the Settings names. The
 // one list the pane's tests read: a row is labelled because its label is listed here, never by a colon in its text, since a row may hold one
 // elsewhere (`every 4:45`, `0 refreshes this pause (learned: …)`).
 export const LABELS: readonly string[] = [
@@ -110,6 +110,7 @@ export const LABELS: readonly string[] = [
   'long pauses:',
   'misses:',
   'rest:',
+  'overnight:',
   'balance vs other setting:',
   'learned:',
   'learned (this hour):',
@@ -125,6 +126,7 @@ export const LABELS: readonly string[] = [
   'refreshes/pause:',
   'start mode:',
   'unit:',
+  'night stop:',
 ]
 
 // The rows that carry no label though they read like labelled ones: each is drawn as one plain string. `refresh due · waits for turn end` opens with the word of the

@@ -26,12 +26,14 @@ export const HISTORY_BOUND = 2000
 
 export const KEY_PREFIX = 'pauses/'
 
-// The store key a transcript's session writes: the transcript's file name without its extension, the session's id. A
-// resumed session writes on under its own key.
-export const keyOf = (transcriptPath: string): string => {
+// The session's id: the transcript's file name without its extension. The one rule every per-session store key is named by.
+export const idOf = (transcriptPath: string): string => {
   const name = transcriptPath.slice(transcriptPath.lastIndexOf('/') + 1)
-  return KEY_PREFIX + (name.endsWith('.jsonl') ? name.slice(0, -'.jsonl'.length) : name)
+  return name.endsWith('.jsonl') ? name.slice(0, -'.jsonl'.length) : name
 }
+
+// The store key a transcript's session writes its pauses under. A resumed session writes on under its own key.
+export const keyOf = (transcriptPath: string): string => KEY_PREFIX + idOf(transcriptPath)
 
 export const recordOf = (
   startMs: number,

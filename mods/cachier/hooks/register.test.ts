@@ -24,7 +24,7 @@ const PRICING_PAGE = [
 
 // The engine's answers beneath the plugin: the transcript (its text read from `doc`, so a test can grow it), the status
 // line, the debug log, and each host read the reader makes. `runs` counts the reads.
-const world = (on: any, doc: { text: string; broken?: boolean; exists?: boolean; hold?: Promise<void>; deny?: string; pricing?: string; pricingStatus?: number; pricingHold?: Promise<void>; fork?: unknown; forkSends?: { reply: unknown; delayMs: number }[]; clock?: { sleep: (ms: number) => Promise<void> }; forkHold?: Promise<void>; switchHold?: Promise<void>; compactHold?: Promise<void>; forkThrows?: boolean; dropPrompt?: boolean; promptThrows?: boolean; store?: Record<string, unknown>; auditor?: boolean; markdown?: boolean; engineNode?: boolean; openThrows?: boolean; openUnplaced?: boolean; closeKeeps?: boolean; closeThrows?: boolean; panesThrow?: boolean; listUnplaced?: boolean; keysThrows?: boolean; keysHold?: Promise<void>; getHold?: { key: string; hold: Promise<void>; nth?: number }; getHeldDenied?: { key: string; hold: Promise<void>; deny: string }; setHold?: { key: string; hold: Promise<void> }; getDenied?: Set<string>; setDenied?: Set<string>; deleteDenied?: Set<string>; getGate?: (key: string, nth: number) => Promise<string | undefined> | undefined }) => {
+const world = (on: any, doc: { text: string; broken?: boolean; exists?: boolean; hold?: Promise<void>; deny?: string; pricing?: string; pricingStatus?: number; pricingHold?: Promise<void>; fork?: unknown; forkSends?: { reply: unknown; delayMs: number }[]; clock?: { sleep: (ms: number) => Promise<void> }; forkHold?: Promise<void>; switchHold?: Promise<void>; compactHold?: Promise<void>; forkThrows?: boolean; dropPrompt?: boolean; promptThrows?: boolean; store?: Record<string, unknown>; auditor?: boolean; markdown?: boolean; engineNode?: boolean; openThrows?: boolean; openUnplaced?: boolean; closeKeeps?: boolean; closeThrows?: boolean; panesThrow?: boolean; listUnplaced?: boolean; keysThrows?: boolean; keysHold?: Promise<void>; getHold?: { key: string; hold: Promise<void>; nth?: number }; getHeldDenied?: { key: string; hold: Promise<void>; deny: string }; setHold?: { key: string; hold: Promise<void> }; getDenied?: Set<string>; setDenied?: Set<string>; deleteDenied?: Set<string>; getGate?: (key: string, nth: number) => Promise<string | undefined> | undefined; onSet?: (key: string) => void }) => {
   const rec = {
     status: [] as (string | undefined)[],
     logs: [] as string[],
@@ -77,6 +77,8 @@ const world = (on: any, doc: { text: string; broken?: boolean; exists?: boolean;
     // `setDenied` refuses every write to the keys it holds.
     if (doc.setDenied?.has(e.key) === true) return { deny: 'write refused' }
     rec.store.set(e.key, JSON.parse(JSON.stringify(e.value)))
+    // `onSet` is told of each write that lands, in order: the store's answer is registered once, so a test cannot hook it a second time.
+    doc.onSet?.(e.key)
     return { value: undefined }
   })
   on('store.delete', (_$: any, e: any) => {
@@ -3793,7 +3795,7 @@ describe('the details pane draws the sections /keepalive answers with, built by 
     expect(mislabelled(tree)).toEqual([])
     // The labels taken out of `rest` are drawn dim: the pie line's, the figures' of an offer, the learned rest's, the session fallback's, the tokens note's and each setting's name.
     const labels = drawnLabels(tree)
-    expect(labels.map(([label]) => label)).toEqual(['pie:', 'refresh', 'if cold:', 'rest:', 'session:', 'in tokens:', 'TTL:', 'lead:', 'refreshes/pause:', 'start mode:', 'unit:'])
+    expect(labels.map(([label]) => label)).toEqual(['pie:', 'refresh', 'if cold:', 'rest:', 'session:', 'in tokens:', 'TTL:', 'lead:', 'refreshes/pause:', 'start mode:', 'unit:', 'night stop:'])
     for (const [, props] of labels) expect(props).toEqual({ dimColor: true })
     await pane.unmount()
   })
@@ -5788,6 +5790,765 @@ describe('the learned rest: the Keepalive section states the daily rest the paus
   })
 })
 
+// The rest stop. 14 January 2026 has no change of the clock in any zone, so a time of day reads as it is written wherever the tests run.
+const NIGHT = new Date(2026, 0, 14, 3, 0).getTime()
+// The session's last request, 30 minutes before 03:00: the idle time the step asks for, reached at 03:00.
+const REQ = NIGHT - 30 * MIN
+// The idle figure: 30 minutes.
+const IDLE = 30 * MIN
+// Seven rests of seven hours from 01:00, the last on the 13th: the window from 02:00 to 07:00.
+const NIGHTS = { 'pauses/old': startsOf(7, NIGHT - 120 * MIN - DAY_MS).flatMap(restAt) }
+// A session that starts with keepalive on, so no prompt or press of the user's is in its past.
+const OVERNIGHT_ON = { keepalive_default: 'on', keepalive_lead_s: 60 }
+const WINDOW = '02:00–07:00'
+const REST_ROW = 'rest: from ≤01:00 · back ≥08:00 · 7 rests'
+const OVERNIGHT_ROW = `overnight: ${WINDOW} · after 30m idle`
+const RUNNING = 'Keepalive  on, refreshing'
+const STOPPED = 'Keepalive  paused overnight · resumes on next prompt'
+
+// The pricing page with a cache hit at $2 per million: a 1 h rewrite ($8) then costs 3 refreshes more than a refresh, so a stop repays it with 3 whole hours of the window left.
+// Opus 5.5's own page (PRICING_PAGE) has 39, which no window holds.
+const REPAYING_PAGE = PRICING_PAGE.replace('$0.20 / MTok', '$2 / MTok')
+// The same with the cache hit at the base input price, $4: a 1 h rewrite then costs 1 refresh more than a refresh, so a stop repays it with a single whole hour of the window left.
+const ONE_HOUR_REPAYS_PAGE = PRICING_PAGE.replace('$0.20 / MTok', '$4 / MTok')
+
+// A main thread whose last request was sent at `requestMs` on the given TTL, with the seven nights of rests stored and what else a test stores. The 1 h TTL is priced by REPAYING_PAGE
+// unless a test gives another page, so that a stop repays in the tests of the stop.
+const nightDoc = (tags: { five: number; one: number }, store: Record<string, unknown> = {}, requestMs = REQ, pricing = tags.one > 0 ? REPAYING_PAGE : PRICING_PAGE): any => ({
+  text: lines([
+    user({ uuid: 'u1', parent: null, ts: iso(requestMs) }),
+    assistant({ uuid: 'a1', parent: 'u1', ts: iso(requestMs), write: 18551, tags, model: 'claude-opus-5-5', speed: 'standard' }),
+  ]),
+  store: { ...NIGHTS, ...store },
+  pricing,
+})
+
+// The mock clock with a record of the time it was run to, so a test can run it on to an instant a minute at a time.
+const timed = (clock: any, startMs: number) => {
+  let at = startMs
+  const by = async (ms: number) => {
+    await clock.advance(ms)
+    at += ms
+  }
+  return {
+    now: () => at,
+    by,
+    to: async (ms: number) => {
+      while (at < ms) await by(Math.min(MIN, ms - at))
+      await clock.settle()
+    },
+  }
+}
+
+// What the plugin did to the stop and to the session's two keys, in order: `stop` when a write of keepalive's state that landed took it from no overnight stop to the
+// overnight stop (a write that carries the stop along, as a turn's or a prompt's edit does, is none), `mark` and `action` for a write of the step mark and of the action
+// time that landed (the world tells the doc's `onSet` of each). The engine takes one hook of `state.set` from a test, so this is it: a test that needs a write of its own
+// refused, or a draw at one, gives `around`, which answers the write in place of `next`.
+type Around = (e: any, next: (e: any) => any) => any
+const journalOf = (on: any, doc: any, around?: Around) => {
+  const journal: string[] = []
+  let standing = false
+  on('state.set', async (_$: any, e: any, next: any) => {
+    const out = await (around === undefined ? next(e) : around(e, next))
+    if (e.key === 'keepalive' && out.value?.isSet === true) {
+      const now = e.value?.stop === 'overnight'
+      if (now && !standing) journal.push('stop')
+      standing = now
+    }
+    return out
+  })
+  doc.onSet = (key: string) => {
+    if (key === 'overnight/s1') journal.push('mark')
+    if (key === 'prompted/s1') journal.push('action')
+  }
+  return journal
+}
+
+// A session started five seconds short of 03:00 on the 1 h TTL, its turn ended a second in (a live request keeps the cache warm for the hour, and the transcript's last
+// request is 30 minutes old at 03:00). `around` is a test's own answer to a write of the state, which the engine takes only before the first call of `$` (journalOf).
+const nearNight = async ($: any, on: any, doc: any = nightDoc(ONE_HOUR), startMs = NIGHT - 5000, around?: Around) => {
+  const rec = kaWorld(on, doc)
+  const journal = journalOf(on, doc, around)
+  const clk = timed(mock.clock(on, { now: startMs }), startMs)
+  await $.classic.SessionStart({ source: 'startup', transcript_path: PATH })
+  await clk.by(1000)
+  await mainStep($)
+  await turnEnd($)
+  return { rec, clk, doc, journal }
+}
+
+// The 5 m TTL world a second after the last request, run on to a second short of 03:00: refreshes answered through the half hour, the stop not yet taken.
+const longNight = async ($: any, on: any, doc: any = nightDoc(FIVE)) => {
+  const rec = kaWorld(on, doc)
+  const journal = journalOf(on, doc)
+  const start = REQ + 1000
+  const clk = timed(mock.clock(on, { now: start }), start)
+  await $.classic.SessionStart({ source: 'startup', transcript_path: PATH })
+  await clk.by(1000)
+  await mainStep($)
+  await turnEnd($)
+  await clk.to(NIGHT - 1000)
+  return { rec, clk, doc, journal }
+}
+
+// The Keepalive section's lines as the answer states them, and the pane's rows trimmed.
+const keepaliveRows = async ($: any): Promise<string[]> => sectionLines(await commandText($, ''), 'Keepalive') ?? []
+const paneLines = async ($: any): Promise<string[]> => (await paneRows($)).map((row) => row.trim())
+// The rest row and the overnight row as the answer and the pane state them.
+const expectRows = async ($: any, rest: string, overnight: string) => {
+  for (const rows of [await keepaliveRows($), await paneLines($)]) {
+    expect(rows).toContain(rest)
+    expect(rows).toContain(overnight)
+  }
+}
+
+describe("the rest stop: inside the learned window, once a local day, keepalive stops for the user's rest", () => {
+  test("inside the window, with refreshes answered since the last request 30 minutes ago and every session idle, one tick commits the overnight stop and then writes the step's time, and no refresh is sent while it holds", { options: OVERNIGHT_ON }, async ($, on) => {
+    const { rec, clk, journal } = await longNight($, on)
+    // Refreshes were answered since the request, and nothing has stopped them yet.
+    const sent = rec.forks.length
+    expect(sent).toBeGreaterThanOrEqual(6)
+    expect(await toggle($, '')).toContain(RUNNING)
+    expect(journal).toEqual([])
+    expect(debugOf(rec, 'cachier overnight')).toEqual([])
+    await clk.to(NIGHT + 2000)
+    const step = rec.store.get('overnight/s1') as number
+    expect(step).toBeGreaterThanOrEqual(NIGHT)
+    expect(step).toBeLessThan(NIGHT + 3000)
+    expect(journal).toEqual(['stop', 'mark'])
+    expect(debugOf(rec, 'cachier overnight')).toEqual([{ time: iso(step), window: WINDOW, idle_ms: step - REQ, newest_prompt: null }])
+    expect(await toggle($, '')).toContain(STOPPED)
+    expect(await drawnPane($)).toContain('paused overnight · resumes on next prompt')
+    expect(lastStatus(rec)).toBeUndefined()
+    // The next refresh was due at 03:02, and the cache would have lapsed at 03:03: none is sent.
+    await clk.by(10 * MIN)
+    expect(rec.forks.length).toBe(sent)
+  })
+
+  test("the user's return after the rest ends the stop and keepalive resumes; the rest's pause is counted as one whose refreshes ran out", { options: OVERNIGHT_ON }, async ($, on) => {
+    const { rec, clk, doc } = await longNight($, on)
+    await clk.to(NIGHT + 2000)
+    expect(await toggle($, '')).toContain(STOPPED)
+    const sent = rec.forks.length
+    await clk.to(NIGHT + 15 * MIN)
+    expect(rec.forks.length).toBe(sent)
+    await userPrompt($)
+    doc.text += lines([assistant({ uuid: 'a2', parent: 'a1', ts: iso(clk.now()), write: 20000, tags: FIVE, msg: 'm2', model: 'claude-opus-5-5', speed: 'standard' })])
+    await mainStep($)
+    await turnEnd($)
+    await clk.by(1000)
+    const text = await toggle($, '')
+    expect(text).toContain(RUNNING)
+    expect(text).not.toContain('overnight · resumes')
+    expect(text).toContain('1 wasted, ran out')
+    // The next refresh is due four minutes after the reply's request: keepalive resumed.
+    await clk.by(5 * MIN)
+    expect(rec.forks.length).toBe(sent + 1)
+  })
+
+  test('a tick whose stop commit loses its version check writes no mark, and the next tick steps', { options: OVERNIGHT_ON }, async ($, on) => {
+    let lost = 0
+    const { rec, clk, journal } = await nearNight($, on, nightDoc(ONE_HOUR), NIGHT - 5000, (e, next) => {
+      if (e.key === 'keepalive' && e.value?.stop === 'overnight' && lost === 0) {
+        lost++
+        return { value: { isSet: false } }
+      }
+      return next(e)
+    })
+    await clk.to(NIGHT)
+    expect(lost).toBe(1)
+    expect(journal).toEqual([])
+    expect(rec.store.has('overnight/s1')).toBe(false)
+    expect(debugOf(rec, 'cachier overnight')).toEqual([])
+    // The pane states the decision the tick is to take again, and the row has no step to report.
+    expect(await toggle($, '')).toContain(STOPPED)
+    expect(await keepaliveRows($)).toContain(OVERNIGHT_ROW)
+    await clk.by(1000)
+    expect(journal).toEqual(['stop', 'mark'])
+    expect(debugOf(rec, 'cachier overnight')).toHaveLength(1)
+    expect(await toggle($, '')).toContain(STOPPED)
+    expect(await keepaliveRows($)).toContain(`overnight: done ${hhmm(rec.store.get('overnight/s1') as number)}`)
+  })
+
+  test('a step mark that cannot be written is reported once, the stop holds, and no second step is taken in that load', { options: OVERNIGHT_ON }, async ($, on) => {
+    const doc = nightDoc(ONE_HOUR)
+    doc.setDenied = new Set(['overnight/s1'])
+    const { rec, clk, journal } = await nearNight($, on, doc)
+    await clk.to(NIGHT + 2000)
+    const refused = () => rec.logs.filter((l) => l.includes('write refused')).length
+    expect(refused()).toBe(1)
+    expect(rec.store.has('overnight/s1')).toBe(false)
+    expect(journal).toContain('stop')
+    expect(debugOf(rec, 'cachier overnight')).toHaveLength(1)
+    expect(await toggle($, '')).toContain(STOPPED)
+    // A start resets keepalive to on with no stop: the mark the load holds in memory ends the day's step, so the held fact stops it again and nothing is stepped or written anew.
+    const stops = journal.filter((entry) => entry === 'stop').length
+    await $.classic.SessionStart({ source: 'resume', transcript_path: PATH })
+    await clk.by(3000)
+    expect(journal.filter((entry) => entry === 'stop')).toHaveLength(stops + 1)
+    expect(debugOf(rec, 'cachier overnight')).toHaveLength(1)
+    expect(refused()).toBe(1)
+    expect(await toggle($, '')).toContain(STOPPED)
+  })
+
+  test('after the step, a keepalive state reset to on with no stop is stopped again by the next tick, with no second step, until a user prompt', { options: OVERNIGHT_ON }, async ($, on) => {
+    const { rec, clk, journal } = await nearNight($, on)
+    await clk.to(NIGHT + 2000)
+    const step = rec.store.get('overnight/s1')
+    expect(journal).toEqual(['stop', 'mark'])
+    // A start resets keepalive and starts it on again, with no stop; the tick commits the stop anew.
+    await $.classic.SessionStart({ source: 'resume', transcript_path: PATH })
+    await clk.by(3000)
+    expect(journal).toEqual(['stop', 'mark', 'stop'])
+    expect(rec.store.get('overnight/s1')).toBe(step)
+    expect(debugOf(rec, 'cachier overnight')).toHaveLength(1)
+    expect(await toggle($, '')).toContain(STOPPED)
+    await clk.by(30 * 1000)
+    expect(journal).toEqual(['stop', 'mark', 'stop'])
+    await userPrompt($)
+    await clk.by(10 * 1000)
+    expect(await toggle($, '')).toContain(RUNNING)
+    expect(journal).toEqual(['stop', 'mark', 'stop', 'action'])
+  })
+
+  const ORIGINS: [name: string, origin: any, ends: boolean][] = [
+    ["the user's own prompt", { kind: 'composer' }, true],
+    ['a prompt from the phone', { kind: 'bridge' }, true],
+    ["a peer's prompt", { kind: 'peer' }, false],
+    ["another plugin's prompt", { kind: 'plugin', name: 'other' }, false],
+    ['a background task notification', { kind: 'task-notification' }, false],
+    ['a scheduled trigger', { kind: 'scheduled-trigger' }, false],
+  ]
+  for (const [name, origin, ends] of ORIGINS) {
+    test(`${name} ${ends ? "clears the stop, so keepalive resumes, and its time is written as the session's action" : 'leaves the stop standing and writes no action time'}`, { options: OVERNIGHT_ON }, async ($, on) => {
+      const { rec, clk, journal } = await nearNight($, on)
+      await clk.to(NIGHT + 2000)
+      const at = clk.now()
+      await $.prompt.submit({ text: 'next', origin } as any)
+      await clk.by(5000)
+      const text = await toggle($, '')
+      if (ends) {
+        expect(text).toContain(RUNNING)
+        expect(text).not.toContain('overnight · resumes')
+        expect(rec.store.get('prompted/s1')).toBe(at)
+        expect(journal).toEqual(['stop', 'mark', 'action'])
+      } else {
+        expect(text).toContain(STOPPED)
+        expect(rec.store.has('prompted/s1')).toBe(false)
+        expect(journal).toEqual(['stop', 'mark'])
+      }
+    })
+  }
+
+  test("another session's prompt inside the figure holds the step, and the store is not scanned again until that prompt's time plus the figure", { options: OVERNIGHT_ON }, async ($, on) => {
+    const OTHER = NIGHT - 10 * MIN
+    const { rec, clk, journal } = await nearNight($, on, nightDoc(ONE_HOUR, { 'prompted/other': OTHER }))
+    const reads = () => rec.gets.filter((key) => key === 'prompted/other').length
+    const loaded = reads()
+    // Until every other condition holds, the store is not scanned.
+    await clk.to(NIGHT - 1000)
+    expect(reads()).toBe(loaded)
+    await clk.to(NIGHT + 5000)
+    expect(reads()).toBe(loaded + 1)
+    expect(journal).toEqual([])
+    // The prompt was 15 minutes ago; the fact is held off until it is 30 minutes old, with no scan between.
+    await clk.to(OTHER + IDLE - 1000)
+    expect(reads()).toBe(loaded + 1)
+    expect(journal).toEqual([])
+    expect(await toggle($, '')).toContain(RUNNING)
+    expect(await keepaliveRows($)).toContain(OVERNIGHT_ROW)
+    await clk.to(OTHER + IDLE + 2000)
+    expect(reads()).toBe(loaded + 2)
+    expect(journal).toEqual(['stop', 'mark'])
+    const step = rec.store.get('overnight/s1') as number
+    expect(debugOf(rec, 'cachier overnight')).toEqual([{ time: iso(step), window: WINDOW, idle_ms: step - REQ, newest_prompt: iso(OTHER) }])
+  })
+
+  test("the user's /keepalive on after the step leaves keepalive on through the next ten ticks and writes the session's action time", { options: OVERNIGHT_ON }, async ($, on) => {
+    const { rec, clk, journal } = await nearNight($, on)
+    await clk.to(NIGHT + 2000)
+    const at = clk.now()
+    await toggle($, 'on 60 24')
+    await clk.by(1000)
+    expect(rec.store.get('prompted/s1')).toBe(at)
+    for (let i = 0; i < 10; i++) {
+      await clk.by(1000)
+      expect(await toggle($, '')).toContain(RUNNING)
+    }
+    expect(journal).toEqual(['stop', 'mark', 'action'])
+  })
+
+  test('a first click on the pie turns keepalive off and writes no action time; a second turns it on, writes the action time, and keepalive stays on through the next ten ticks', { options: OVERNIGHT_ON }, async ($, on) => {
+    const { rec, clk, journal } = await nearNight($, on)
+    await clk.to(NIGHT + 2000)
+    await pressPie($)
+    await clk.by(1000)
+    expect(await toggle($, '')).toContain('Keepalive  off')
+    expect(rec.store.has('prompted/s1')).toBe(false)
+    const at = clk.now()
+    await pressPie($)
+    await clk.by(1000)
+    expect(rec.store.get('prompted/s1')).toBe(at)
+    for (let i = 0; i < 10; i++) {
+      await clk.by(1000)
+      expect(await toggle($, '')).toContain(RUNNING)
+    }
+    expect(journal).toEqual(['stop', 'mark', 'action'])
+  })
+
+  test("a tick run between the prompt's keepalive edit and its store write does not stop again", { options: OVERNIGHT_ON }, async ($, on) => {
+    let release: () => void = () => {}
+    const hold = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    const doc = nightDoc(ONE_HOUR)
+    doc.setHold = { key: 'prompted/s1', hold }
+    const { rec, clk, journal } = await nearNight($, on, doc)
+    await clk.to(NIGHT + 2000)
+    const at = clk.now()
+    await userPrompt($)
+    for (let i = 0; i < 10; i++) {
+      await clk.by(1000)
+      expect(await toggle($, '')).toContain(RUNNING)
+    }
+    expect(rec.store.has('prompted/s1')).toBe(false)
+    expect(journal).toEqual(['stop', 'mark'])
+    release()
+    await clk.by(1000)
+    expect(rec.store.get('prompted/s1')).toBe(at)
+    expect(journal).toEqual(['stop', 'mark', 'action'])
+  })
+
+  // Each write in the prompt's branch, made to throw once the prompt is made: an answer to the state's write that reads `failing`, or a denied key.
+  type Failing = { on: boolean }
+  const BRANCH: [what: string, answer: (failing: Failing) => Around | undefined, arm: (doc: any) => void][] = [
+    ['stats', (failing) => (e, next) => (failing.on && e.key === 'stats' ? { value: { isSet: false } } : next(e)), () => {}],
+    ['tally', (failing) => (e, next) => (failing.on && e.key === 'tally' ? { deny: 'write refused' } : next(e)), () => {}],
+    ['judged', (failing) => (e, next) => (failing.on && e.key === 'judged' ? { deny: 'write refused' } : next(e)), () => {}],
+    ['pause history', () => undefined, (doc) => doc.setDenied.add('pauses/s1')],
+  ]
+  for (const [what, answer, arm] of BRANCH) {
+    test(`a ${what} write that throws in the prompt's branch leaves the action time set: the stop is not given again, and the time is written`, { options: OVERNIGHT_ON }, async ($, on) => {
+      const doc = nightDoc(ONE_HOUR)
+      doc.setDenied = new Set<string>()
+      const failing: Failing = { on: false }
+      const { rec, clk, journal } = await nearNight($, on, doc, NIGHT - 5000, answer(failing))
+      await clk.to(NIGHT + 2000)
+      const at = clk.now()
+      failing.on = true
+      arm(doc)
+      await userPrompt($)
+      for (let i = 0; i < 10; i++) {
+        await clk.by(1000)
+        expect(await toggle($, '')).toContain(RUNNING)
+      }
+      expect(rec.store.get('prompted/s1')).toBe(at)
+      expect(journal).toEqual(['stop', 'mark', 'action'])
+    })
+  }
+
+  // A draw of the answer made as the first write that leaves keepalive with no stop lands, once armed: the moment between the edit and everything that follows it.
+  const drawnAtEdit = ($: any) => {
+    const seen: { armed: boolean; drawn: string | undefined } = { armed: false, drawn: undefined }
+    const around: Around = async (e, next) => {
+      const out = await next(e)
+      if (seen.armed && e.key === 'keepalive' && e.value?.stop === null && seen.drawn === undefined) {
+        seen.drawn = ''
+        seen.drawn = await toggle($, '')
+      }
+      return out
+    }
+    return { seen, around }
+  }
+
+  test("the action time is in memory before the prompt's keepalive edit: a draw made as the edit lands reads the stop gone and the step over", { options: OVERNIGHT_ON }, async ($, on) => {
+    const { seen, around } = drawnAtEdit($)
+    const { clk } = await nearNight($, on, nightDoc(ONE_HOUR), NIGHT - 5000, around)
+    await clk.to(NIGHT + 2000)
+    seen.armed = true
+    await userPrompt($)
+    expect(seen.drawn).toContain(RUNNING)
+    expect(seen.drawn).not.toContain('overnight · resumes')
+  })
+
+  test("the action time is in memory before /keepalive on's edit: a draw made as the edit lands reads the stop gone and the step over", { options: OVERNIGHT_ON }, async ($, on) => {
+    const { seen, around } = drawnAtEdit($)
+    const { clk } = await nearNight($, on, nightDoc(ONE_HOUR), NIGHT - 5000, around)
+    await clk.to(NIGHT + 2000)
+    seen.armed = true
+    await toggle($, 'on 60 24')
+    expect(seen.drawn).toContain(RUNNING)
+    expect(seen.drawn).not.toContain('overnight · resumes')
+  })
+})
+
+describe('the rest stop across a reload, and the times it keeps in the store', () => {
+  const AFTER = NIGHT + 40 * MIN - 5000
+  // The reload's own last request, half an hour before it: the 1 h cache is warm, so only the rest decides.
+  const reloaded = (store: Record<string, unknown>) => nightDoc(ONE_HOUR, store, AFTER - 30 * MIN)
+  // The reload's state: it still names the transcript an earlier load learned, while this load has learned no path yet.
+  const namesTranscript = (on: any) =>
+    on('state.get', async (_$: any, e: any, next: any) => {
+      const got = await next(e)
+      return e.plugin === 'cachier' && e.key === 'transcript' && got.value?.value === undefined ? { value: { ...got.value, value: PATH } } : got
+    })
+
+  test("a reload after the step and before any prompt finds the held fact standing: the next tick stops again, with no second step, and the row reads done", { options: OVERNIGHT_ON }, async ($, on) => {
+    const { rec, clk, journal } = await nearNight($, on, reloaded({ 'overnight/s1': NIGHT }), AFTER)
+    await clk.by(3000)
+    expect(journal).toEqual(['stop'])
+    expect(rec.store.get('overnight/s1')).toBe(NIGHT)
+    expect(debugOf(rec, 'cachier overnight')).toEqual([])
+    expect(rec.forks).toEqual([])
+    expect(await toggle($, '')).toContain(STOPPED)
+    expect(await keepaliveRows($)).toContain(`overnight: done ${hhmm(NIGHT)}`)
+    expect(await paneLines($)).toContain(`overnight: done ${hhmm(NIGHT)}`)
+  })
+
+  test("a reload after a post-stop prompt reads the session's own action time and does not stop again: the step is over for the day, and the row reads done", { options: OVERNIGHT_ON }, async ($, on) => {
+    const { rec, clk, journal } = await nearNight($, on, reloaded({ 'overnight/s1': NIGHT, 'prompted/s1': NIGHT + 2 * MIN }), AFTER)
+    await clk.by(10 * 1000)
+    expect(journal).toEqual([])
+    expect(rec.store.get('overnight/s1')).toBe(NIGHT)
+    expect(await toggle($, '')).toContain(RUNNING)
+    expect(await keepaliveRows($)).toContain(`overnight: done ${hhmm(NIGHT)}`)
+    expect(await paneLines($)).toContain(`overnight: done ${hhmm(NIGHT)}`)
+    // Idle in the window all the while, with the day's step taken: later ticks take no second step.
+    await clk.by(10 * MIN)
+    expect(journal).toEqual([])
+    expect(debugOf(rec, 'cachier overnight')).toEqual([])
+  })
+
+  test("a step dated yesterday, with the user's prompt after it, does not hold today's step", { options: OVERNIGHT_ON }, async ($, on) => {
+    const YESTERDAY = NIGHT - DAY_MS
+    const { rec, clk, journal } = await nearNight($, on, nightDoc(ONE_HOUR, { 'overnight/s1': YESTERDAY, 'prompted/s1': YESTERDAY + 10 * MIN }))
+    expect(await keepaliveRows($)).toContain(OVERNIGHT_ROW)
+    await clk.to(NIGHT + 2000)
+    expect(journal).toEqual(['stop', 'mark'])
+    expect(rec.store.get('overnight/s1')).toBeGreaterThanOrEqual(NIGHT)
+    expect(await keepaliveRows($)).toContain(`overnight: done ${hhmm(NIGHT)}`)
+  })
+
+  test('a time later than now in another session\'s key, in the own keys, or in the step mark holds nothing: the step is taken', { options: OVERNIGHT_ON }, async ($, on) => {
+    const LATER = NIGHT + 60 * MIN
+    const { rec, clk, journal } = await nearNight($, on, nightDoc(ONE_HOUR, { 'prompted/other': LATER, 'prompted/s1': LATER, 'overnight/s1': LATER }))
+    await clk.to(NIGHT + 2000)
+    expect(journal).toEqual(['stop', 'mark'])
+    expect(rec.store.get('overnight/s1')).toBeLessThan(LATER)
+    expect(debugOf(rec, 'cachier overnight')).toHaveLength(1)
+    expect(debugOf(rec, 'cachier overnight')[0].newest_prompt).toBeNull()
+  })
+
+  test("a prompt entered before the session's path is learned holds the held fact off at once, and is written once the path is learned", { options: OVERNIGHT_ON }, async ($, on) => {
+    const NOW = NIGHT + 20 * MIN
+    const doc = nightDoc(ONE_HOUR, { 'overnight/s1': NIGHT })
+    const rec = kaWorld(on, doc)
+    const journal = journalOf(on, doc)
+    const clk = timed(mock.clock(on, { now: NOW }), NOW)
+    await userPrompt($)
+    await clk.by(1000)
+    expect(rec.store.has('prompted/s1')).toBe(false)
+    await $.classic.SessionStart({ source: 'resume', transcript_path: PATH })
+    await clk.by(3000)
+    expect(rec.store.get('prompted/s1')).toBe(NOW)
+    expect(journal).toEqual(['action'])
+    expect(await toggle($, '')).toContain(RUNNING)
+    expect(await keepaliveRows($)).toContain(`overnight: done ${hhmm(NIGHT)}`)
+  })
+
+  test("a prompt entered after a reload, before any learn but with the state naming the session's transcript, is written at once", { options: OVERNIGHT_ON }, async ($, on) => {
+    const rec = kaWorld(on, nightDoc(ONE_HOUR))
+    namesTranscript(on)
+    const clk = timed(mock.clock(on, { now: NIGHT }), NIGHT)
+    await userPrompt($)
+    await clk.by(1000)
+    expect(rec.store.get('prompted/s1')).toBe(NIGHT)
+  })
+
+  // The pie's click turns keepalive on through the same core as the command, which this test calls.
+  test("keepalive turned on after a reload, before any learn but with the state naming the session's transcript, writes the action time at once", { options: OVERNIGHT_ON }, async ($, on) => {
+    const rec = kaWorld(on, nightDoc(ONE_HOUR))
+    namesTranscript(on)
+    const clk = timed(mock.clock(on, { now: NIGHT }), NIGHT)
+    await toggle($, 'on 60 24')
+    await clk.by(1000)
+    expect(rec.store.get('prompted/s1')).toBe(NIGHT)
+  })
+
+  test("a history load that ends before the session's path is learned deletes no night key, and the learn then cleans: the session's own old keys stay, the others' go", { options: OVERNIGHT_ON }, async ($, on) => {
+    const OLD = NIGHT - 9 * DAY_MS
+    const rec = kaWorld(on, nightDoc(ONE_HOUR, { 'overnight/old': OLD, 'prompted/old': OLD, 'overnight/odd': 'x', 'prompted/young': NIGHT - DAY_MS, 'overnight/s1': OLD, 'prompted/s1': OLD }))
+    const clk = timed(mock.clock(on, { now: NIGHT - 5000 }), NIGHT - 5000)
+    const nightKeys = () => [...rec.store.keys()].filter((key) => key.startsWith('overnight/') || key.startsWith('prompted/')).sort()
+    // A start whose session.start reads the history first, with no path to learn: the state names none.
+    await $.session.start({ cwd: '/home/test', surface: 'terminal', isInteractive: true } as any)
+    await clk.by(1000)
+    expect(nightKeys()).toEqual(['overnight/odd', 'overnight/old', 'overnight/s1', 'prompted/old', 'prompted/s1', 'prompted/young'])
+    await $.classic.SessionStart({ source: 'resume', transcript_path: PATH })
+    await clk.by(1000)
+    expect(nightKeys()).toEqual(['overnight/s1', 'prompted/s1', 'prompted/young'])
+  })
+
+  test('every entered prompt of the user writes its time into the session\'s action key, the one that ends no recorded pause too, and a dropped prompt writes none', { options: OVERNIGHT_ON }, async ($, on) => {
+    const doc = nightDoc(ONE_HOUR)
+    const { rec, clk } = await nearNight($, on, doc)
+    const first = clk.now()
+    await userPrompt($)
+    await clk.by(1000)
+    expect(rec.store.get('prompted/s1')).toBe(first)
+    expect(rec.store.get('pauses/s1')).toHaveLength(1)
+    // A compaction leaves no cache to count a pause from: the next prompt ends none.
+    await clk.by(MIN)
+    await $.classic.PostCompact({ trigger: 'manual', compact_summary: 's' } as any)
+    await clk.by(1000)
+    const second = clk.now()
+    await userPrompt($)
+    await clk.by(1000)
+    expect(rec.store.get('prompted/s1')).toBe(second)
+    expect(rec.store.get('pauses/s1')).toHaveLength(1)
+    // A prompt another hook drops is not entered.
+    doc.dropPrompt = true
+    await clk.by(MIN)
+    await userPrompt($)
+    await clk.by(1000)
+    expect(rec.store.get('prompted/s1')).toBe(second)
+  })
+
+  test('the history load deletes the night keys of other sessions that are over two days old or of another shape, and keeps the session\'s own, the younger ones and every other key', { options: OVERNIGHT_ON }, async ($, on) => {
+    const { rec } = await nearNight(
+      $,
+      on,
+      nightDoc(ONE_HOUR, {
+        'overnight/old': NIGHT - 3 * DAY_MS,
+        'prompted/old': NIGHT - 3 * DAY_MS,
+        'overnight/odd': 'x',
+        'prompted/young': NIGHT - DAY_MS,
+        'overnight/s1': NIGHT - 9 * DAY_MS,
+        'prompted/s1': NIGHT - 9 * DAY_MS,
+        'notice/old': NIGHT - 9 * DAY_MS,
+      }),
+    )
+    expect([...rec.store.keys()].filter((key) => key !== 'prices').sort()).toEqual(['notice/old', 'overnight/s1', 'pauses/old', 'prompted/s1', 'prompted/young'])
+  })
+
+  test("with a store whose reads all fail, the pane and the tick agree on every tick: no stop, no step; each failure is reported once, and the first tick after the reads land steps", { options: OVERNIGHT_ON }, async ($, on) => {
+    const doc = nightDoc(ONE_HOUR, { 'prompted/other': NIGHT - 3 * 60 * MIN })
+    // The session's own keys fail from its start; the history load has read the store by the time the other session's key fails too.
+    doc.getDenied = new Set(['overnight/s1', 'prompted/s1'])
+    const { rec, clk, journal } = await nearNight($, on, doc)
+    doc.getDenied.add('prompted/other')
+    const refused = () => rec.logs.filter((l) => l.includes('read refused')).length
+    const agree = async () => {
+      expect(await toggle($, '')).toContain(RUNNING)
+      expect(await keepaliveRows($)).toContain(OVERNIGHT_ROW)
+      expect(await drawnPane($)).toContain(OVERNIGHT_ROW)
+      expect(journal).toEqual([])
+    }
+    // The session's own keys cannot be read: the step mark is unread, and there is no fact whatever the clock says.
+    for (let i = 0; i < 20; i++) {
+      await clk.by(1000)
+      await agree()
+    }
+    expect(refused()).toBe(1)
+    // They can be read now, and the scan of every session's keys cannot.
+    doc.getDenied.delete('overnight/s1')
+    doc.getDenied.delete('prompted/s1')
+    expect(doc.getDenied).toEqual(new Set(['prompted/other']))
+    for (let i = 0; i < 20; i++) {
+      await clk.by(1000)
+      await agree()
+    }
+    expect(refused()).toBe(2)
+    doc.getDenied.clear()
+    await clk.by(2000)
+    expect(journal).toEqual(['stop', 'mark'])
+    expect(await toggle($, '')).toContain(STOPPED)
+  })
+})
+
+// At the 1 h TTL the stop saves the whole hours left in the window when it fires, and adds a rewrite that costs the break-even count of refreshes more than a refresh: it acts only
+// where the hours are at least the count. REPAYING_PAGE gives 3 and Opus 5.5's own page 39; the window is from 02:00 to 07:00, so the last moment 3 hours are left is 04:00.
+describe('the rest stop at the 1 h TTL acts only where the refreshes it saves repay the rewrite it adds', () => {
+  const noOvernightRow = async ($: any) => {
+    for (const rows of [await keepaliveRows($), await paneLines($)]) expect(rows.some((row) => row.startsWith('overnight:'))).toBe(false)
+  }
+
+  test("on Opus 5.5's own page a 1 h rewrite costs 39 refreshes more, which no window holds: no stop, no step and no scan, the refreshes go on, and the rows have no overnight row", { options: OVERNIGHT_ON }, async ($, on) => {
+    const { rec, clk, journal } = await nearNight($, on, nightDoc(ONE_HOUR, { 'prompted/other': NIGHT - 3 * 60 * MIN }, REQ, PRICING_PAGE))
+    const nightReads = () => rec.gets.filter((key) => key.startsWith('prompted/') || key.startsWith('overnight/')).length
+    const reads = nightReads()
+    await clk.to(NIGHT + 5 * MIN)
+    expect(journal).toEqual([])
+    expect(debugOf(rec, 'cachier overnight')).toEqual([])
+    expect(rec.store.has('overnight/s1')).toBe(false)
+    expect(nightReads()).toBe(reads)
+    expect(await toggle($, '')).toContain(RUNNING)
+    expect(await keepaliveRows($)).toContain(REST_ROW)
+    expect(await paneLines($)).toContain(REST_ROW)
+    await noOvernightRow($)
+  })
+
+  test('a 1 h cache of a model with no price repays nothing: no stop, no step, and no overnight row', { options: OVERNIGHT_ON }, async ($, on) => {
+    const doc = nightDoc(ONE_HOUR)
+    doc.text = doc.text.replace('claude-opus-5-5', 'claude-nonesuch-1')
+    const { rec, clk, journal } = await nearNight($, on, doc)
+    await clk.to(NIGHT + 5 * MIN)
+    expect(journal).toEqual([])
+    expect(rec.store.has('overnight/s1')).toBe(false)
+    expect(await toggle($, '')).toContain(RUNNING)
+    await noOvernightRow($)
+  })
+
+  for (const [dueAt, steps] of [[new Date(2026, 0, 14, 3, 55).getTime(), true], [new Date(2026, 0, 14, 4, 5).getTime(), false]] as const) {
+    test(`where 3 refreshes repay it, a session idle from ${hhmm(dueAt)} ${steps ? 'steps, with 3 hours 5 minutes of the window left' : 'takes no step, with 2 hours 55 minutes left'}, and the window row stands either way`, { options: OVERNIGHT_ON }, async ($, on) => {
+      const { rec, clk, journal } = await nearNight($, on, nightDoc(ONE_HOUR, {}, dueAt - IDLE), dueAt - 5000)
+      await clk.to(dueAt + 10000)
+      expect(journal).toEqual(steps ? ['stop', 'mark'] : [])
+      expect(debugOf(rec, 'cachier overnight')).toHaveLength(steps ? 1 : 0)
+      expect(await toggle($, '')).toContain(steps ? STOPPED : RUNNING)
+      await expectRows($, REST_ROW, steps ? `overnight: done ${hhmm(dueAt)}` : OVERNIGHT_ROW)
+    })
+  }
+})
+
+describe('the rest stop reads the window the pane shows, and acts only where it is on and able', () => {
+  test("after a history load the window the tick acts on is the one the pane's rest row shows: a store rewritten between two loads moves both", { options: OVERNIGHT_ON }, async ($, on) => {
+    const HALF_ONE = new Date(2026, 0, 14, 1, 30).getTime()
+    // The last request at 01:00, so the idle time is reached at 01:30, before the window from 02:00 opens.
+    const { rec, clk, journal } = await nearNight($, on, nightDoc(ONE_HOUR, {}, HALF_ONE - 30 * MIN), HALF_ONE - 5000)
+    await clk.to(HALF_ONE + 5000)
+    expect(journal).toEqual([])
+    await expectRows($, REST_ROW, OVERNIGHT_ROW)
+    // Seven rests from 23:00 give the window from 00:00 to 05:00, in which 01:30 falls.
+    rec.store.set('pauses/old', startsOf(7, new Date(2026, 0, 12, 23, 0).getTime()).flatMap(restAt))
+    await $.classic.SessionStart({ source: 'resume', transcript_path: PATH })
+    await clk.by(3000)
+    expect(await keepaliveRows($)).toContain('rest: from ≤23:00 · back ≥06:00 · 7 rests')
+    expect(journal).toEqual(['stop', 'mark'])
+    expect(debugOf(rec, 'cachier overnight')).toMatchObject([{ window: '00:00–05:00' }])
+  })
+
+  test("after a pause's write the window the tick acts on is the one the pane's rest row shows: the pause that ends an 8th rest narrows the window, and no step is taken outside it", { options: OVERNIGHT_ON }, async ($, on) => {
+    const EVENING = new Date(2026, 0, 13, 22, 0).getTime()
+    const FOUR = new Date(2026, 0, 14, 4, 0).getTime()
+    // Another session's prompt five minutes before 04:00 keeps the step from the first ticks, which fall in the window from 02:00 to 07:00 the stored rests give. The page prices
+    // a 1 h rewrite at one refresh, so that the window of an hour the pause gives still holds a stop that repays.
+    const doc = nightDoc(ONE_HOUR, { 'prompted/other': FOUR - 5 * MIN }, EVENING, ONE_HOUR_REPAYS_PAGE)
+    const { rec, clk, journal } = await nearNight($, on, doc, FOUR + 1000)
+    await expectRows($, REST_ROW, OVERNIGHT_ROW)
+    // The user returns at 04:00 after six hours: the pause is a rest, and with it the habit's window is from 02:00 to 03:00.
+    await userPrompt($)
+    await clk.by(1000)
+    await expectRows($, 'rest: from ≤01:00 · back ≥04:00 · 8 rests', 'overnight: 02:00–03:00 · after 30m idle')
+    doc.text += lines([
+      user({ uuid: 'u2', parent: 'a1', ts: iso(clk.now()) }),
+      assistant({ uuid: 'a2', parent: 'u2', ts: iso(clk.now()), write: 20000, tags: ONE_HOUR, msg: 'm2', model: 'claude-opus-5-5', speed: 'standard' }),
+    ])
+    await mainStep($)
+    await turnEnd($)
+    // Half an hour on, every session is idle, and 04:30 is inside the window the history held at the start and outside the one the pause gave.
+    await clk.to(clk.now() + IDLE + 10000)
+    expect(journal).toEqual(['action'])
+    expect(debugOf(rec, 'cachier overnight')).toEqual([])
+    expect(await toggle($, '')).toContain(RUNNING)
+  })
+
+  test('with the option off, no tick in the window stops keepalive, writes a step or reads the store for one, and no row or Settings value says it is on', { options: { ...OVERNIGHT_ON, overnight: 'off' } }, async ($, on) => {
+    const { rec, clk, journal } = await nearNight($, on, nightDoc(ONE_HOUR, { 'prompted/other': NIGHT - 3 * 60 * MIN }))
+    const nightReads = () => rec.gets.filter((key) => key.startsWith('prompted/') || key.startsWith('overnight/')).length
+    const reads = nightReads()
+    await clk.to(NIGHT + 5 * MIN)
+    expect(journal).toEqual([])
+    expect(debugOf(rec, 'cachier overnight')).toEqual([])
+    expect(rec.store.has('overnight/s1')).toBe(false)
+    expect(nightReads()).toBe(reads)
+    const text = await toggle($, '')
+    expect(text).toContain(RUNNING)
+    expect(text).toContain('night stop: off (overnight) · overnight')
+    expect((await keepaliveRows($)).some((row) => row.startsWith('overnight:'))).toBe(false)
+    expect((await paneLines($)).some((row) => row.startsWith('overnight:'))).toBe(false)
+  })
+
+  test('with a stop held, no tick reads the store for a scan, though every other condition of a step holds', { options: { ...OVERNIGHT_ON, keepalive_count: 1 } }, async ($, on) => {
+    const { rec, clk, journal } = await longNight($, on, nightDoc(FIVE, { 'prompted/other': NIGHT - 3 * 60 * MIN }))
+    expect(await toggle($, '')).toContain('Keepalive  paused count used')
+    const reads = () => rec.gets.filter((key) => key === 'prompted/other').length
+    const loaded = reads()
+    // 03:00 is inside the window and the last request is 30 minutes old: with no stop held, a tick would scan now.
+    await clk.to(NIGHT + 5 * MIN)
+    expect(reads()).toBe(loaded)
+    expect(journal).toEqual([])
+    expect(rec.store.has('overnight/s1')).toBe(false)
+    expect(await toggle($, '')).toContain('Keepalive  paused count used')
+  })
+
+  test('with keepalive off, no tick in the window stops anything or writes a step, and the row says the window acts only with keepalive on', { options: { keepalive_lead_s: 60 } }, async ($, on) => {
+    const { rec, clk, journal } = await nearNight($, on, nightDoc(ONE_HOUR, { 'prompted/other': NIGHT - 3 * 60 * MIN }))
+    const nightReads = () => rec.gets.filter((key) => key.startsWith('prompted/') || key.startsWith('overnight/')).length
+    const reads = nightReads()
+    await clk.to(NIGHT + 5 * MIN)
+    expect(journal).toEqual([])
+    expect(debugOf(rec, 'cachier overnight')).toEqual([])
+    expect(nightReads()).toBe(reads)
+    expect(await toggle($, '')).toContain('Keepalive  off')
+    expect(await keepaliveRows($)).toContain(`${OVERNIGHT_ROW} · only with keepalive on`)
+    expect(await paneLines($)).toContain(`${OVERNIGHT_ROW} · only with keepalive on`)
+  })
+
+  test('with no window learned there is no overnight row, and no step is taken', { options: OVERNIGHT_ON }, async ($, on) => {
+    const { clk, journal } = await nearNight($, on, nightDoc(ONE_HOUR, { 'pauses/old': startsOf(6, NIGHT - 120 * MIN - DAY_MS).flatMap(restAt) }))
+    await clk.to(NIGHT + 5000)
+    expect(journal).toEqual([])
+    expect(await keepaliveRows($)).toContain('rest: 6 of 7 seen')
+    expect((await keepaliveRows($)).some((row) => row.startsWith('overnight:'))).toBe(false)
+    expect((await paneLines($)).some((row) => row.startsWith('overnight:'))).toBe(false)
+  })
+
+  test('the overnight row stands directly after the rest row, in the answer and the pane: the window and the idle figure, then done with the step\'s time', { options: OVERNIGHT_ON }, async ($, on) => {
+    const { clk } = await nearNight($, on)
+    for (const rows of [await keepaliveRows($), await paneLines($)]) {
+      const at = rows.findIndex((row) => row.startsWith('rest: '))
+      expect(rows[at]).toBe(REST_ROW)
+      expect(rows[at + 1]).toBe(OVERNIGHT_ROW)
+    }
+    await clk.to(NIGHT + 2000)
+    for (const rows of [await keepaliveRows($), await paneLines($)]) {
+      const at = rows.findIndex((row) => row.startsWith('rest: '))
+      expect(rows[at + 1]).toBe(`overnight: done ${hhmm(NIGHT)}`)
+      expect(rows).not.toContain(OVERNIGHT_ROW)
+    }
+  })
+
+  test("during the stop the footer pie is drawn in the tone of the time left while the cache is warm, and red once it has lapsed; the heading and the overnight row say the step throughout, and the heading stops saying it at the prompt", { options: OVERNIGHT_ON }, async ($, on) => {
+    const { clk } = await nearNight($, on)
+    await clk.to(NIGHT + 2000)
+    const tones = async () => {
+      const { pie } = await pieDrawn($)
+      return ['success', 'warning', 'error'].filter((tone) => pie.includes(`"color":"${tone}"`))
+    }
+    const says = async () => {
+      expect(await toggle($, '')).toContain(STOPPED)
+      expect(await keepaliveRows($)).toContain(`overnight: done ${hhmm(NIGHT)}`)
+    }
+    // Calm, with almost the whole hour left: no colour.
+    expect(await tones()).toEqual([])
+    await says()
+    await clk.to(NIGHT + 48 * MIN)
+    expect(await tones()).toEqual(['warning'])
+    await says()
+    await clk.to(NIGHT + 56 * MIN)
+    expect(await tones()).toEqual(['error'])
+    await says()
+    await clk.to(NIGHT + 62 * MIN)
+    expect(await tones()).toEqual(['error'])
+    expect(await toggle($, '')).toContain('Cache ○ expired')
+    await says()
+    await userPrompt($)
+    await clk.by(3000)
+    expect(await toggle($, '')).not.toContain('overnight · resumes')
+  })
+})
+
 describe('the bare command says how many refreshes a pause sends, and why', () => {
   test('with nothing pinned or learned, the pane gives the break-even count and what it is', async ($, on) => {
     kaWorld(on, opusCached())
@@ -6035,7 +6796,7 @@ describe('the bare command answers five sections, in order: Cache, Keepalive, Th
     expect(await commandText($, '')).not.toMatch(/(^|\n)Advice\n/)
   })
 
-  test('the Settings section has the five settings, each with its value and how to change it, and the TTL and start mode say new sessions', async ($, on) => {
+  test('the Settings section has the six settings, each with its value and how to change it, and the TTL and start mode say new sessions', async ($, on) => {
     kaWorld(on, cached())
     const clock = mock.clock(on, { now: T0 })
     await $.classic.SessionStart({ source: 'startup', transcript_path: PATH })
@@ -6046,6 +6807,7 @@ describe('the bare command answers five sections, in order: Cache, Keepalive, Th
     expect(text).toContain('refreshes/pause: break-even · /keepalive on <lead_s> <count> or keepalive_count')
     expect(text).toContain('start mode: off (keepalive_default) · /keepalive default on|off (new sessions)')
     expect(text).toContain('unit: dollars (cost_unit) · /keepalive unit tokens|dollars')
+    expect(text).toContain('night stop: on (overnight) · overnight')
   })
 
   test('a run whose cost the answer states has the refresh cost in the Keepalive section, before Settings', async ($, on) => {
@@ -6332,6 +7094,7 @@ describe('the bare command answers whole: the text its sections lay out, for fix
         '    /keepalive default on|off (new sessions)',
         '  unit: dollars (cost_unit) ·',
         '    /keepalive unit tokens|dollars',
+        '  night stop: on (overnight) · overnight',
       ].join('\n'),
     )
   })
@@ -6370,6 +7133,7 @@ describe('the bare command answers whole: the text its sections lay out, for fix
         '    /keepalive default on|off (new sessions)',
         '  unit: dollars (cost_unit) ·',
         '    /keepalive unit tokens|dollars',
+        '  night stop: on (overnight) · overnight',
       ].join('\n'),
     )
   })
@@ -6408,6 +7172,7 @@ describe('the bare command answers whole: the text its sections lay out, for fix
         '    /keepalive default on|off (new sessions)',
         '  unit: dollars (cost_unit) ·',
         '    /keepalive unit tokens|dollars',
+        '  night stop: on (overnight) · overnight',
       ].join('\n'),
     )
   })
@@ -6445,6 +7210,7 @@ describe('the bare command answers whole: the text its sections lay out, for fix
         '    /keepalive default on|off (new sessions)',
         '  unit: dollars (cost_unit) ·',
         '    /keepalive unit tokens|dollars',
+        '  night stop: on (overnight) · overnight',
       ].join('\n'),
     )
   })
@@ -6486,6 +7252,7 @@ describe('the bare command answers whole: the text its sections lay out, for fix
         '    /keepalive default on|off (new sessions)',
         '  unit: tokens (switched this session) ·',
         '    /keepalive unit tokens|dollars',
+        '  night stop: on (overnight) · overnight',
       ].join('\n'),
     )
   })
@@ -6542,6 +7309,7 @@ describe('the bare command answers whole: the text its sections lay out, for fix
           '  refreshes/pause: 2, pinned · /keepalive on <lead_s> <count> or keepalive_count',
           '  start mode: off (keepalive_default) · /keepalive default on|off (new sessions)',
           '  unit: dollars (cost_unit) · /keepalive unit tokens|dollars',
+          '  night stop: on (overnight) · overnight',
         ].join('\n'),
       )
       // The accepted window: the heading reads paused while the reset is being recorded, and the pie is still green with keepalive on.
@@ -6619,6 +7387,7 @@ describe('the bare command answers whole: the text its sections lay out, for fix
         '    /keepalive default on|off (new sessions)',
         '  unit: dollars (cost_unit) ·',
         '    /keepalive unit tokens|dollars',
+        '  night stop: on (overnight) · overnight',
       ].join('\n'),
     )
   })
@@ -6651,6 +7420,7 @@ describe('the bare command answers whole: the text its sections lay out, for fix
         '    /keepalive default on|off (new sessions)',
         '  unit: dollars (cost_unit) ·',
         '    /keepalive unit tokens|dollars',
+        '  night stop: on (overnight) · overnight',
       ].join('\n'),
     )
   })
@@ -6692,6 +7462,7 @@ describe('the bare command answers whole: the text its sections lay out, for fix
         '    /keepalive default on|off (new sessions)',
         '  unit: dollars (cost_unit) ·',
         '    /keepalive unit tokens|dollars',
+        '  night stop: on (overnight) · overnight',
       ].join('\n'),
     )
   })
@@ -6724,6 +7495,7 @@ describe('the bare command answers whole: the text its sections lay out, for fix
         '    /keepalive default on|off (new sessions)',
         '  unit: tokens (switched this session) ·',
         '    /keepalive unit tokens|dollars',
+        '  night stop: on (overnight) · overnight',
       ].join('\n'),
     )
   })
@@ -6751,9 +7523,10 @@ describe('the Settings rows: each is `name: value (source) · change`, the same 
     `refreshes/pause: break-even · ${COUNT}`,
     'start mode: off (keepalive_default) · /keepalive default on|off (new sessions)',
     'unit: dollars (cost_unit) · /keepalive unit tokens|dollars',
+    'night stop: on (overnight) · overnight',
   ]
 
-  test('five settings in a fixed order, each one row of its name, its value, its source where it has one and its change', async ($, on) => {
+  test('six settings in a fixed order, each one row of its name, its value, its source where it has one and its change', async ($, on) => {
     await startedWorld($, on)
     const { answer, pane } = await settingsLines($)
     expect(answer).toEqual(DEFAULT_ROWS)
@@ -6762,7 +7535,7 @@ describe('the Settings rows: each is `name: value (source) · change`, the same 
     expectTerseRows(pane)
   })
 
-  // Each state changes some of the rows; every row it names stands in the pane and in the answer beside the other four, with no row wider than
+  // Each state changes some of the rows; every row it names stands in the pane and in the answer beside the other five, with no row wider than
   // the 48 columns the answer wraps to.
   type State = { name: string; options?: Record<string, number | string>; rows: string[]; run: ($: any, on: any) => Promise<unknown> }
   const STATES: State[] = [
@@ -6797,13 +7570,17 @@ describe('the Settings rows: each is `name: value (source) · change`, the same 
       },
     },
     { name: 'a unit the cost_unit option sets', options: { cost_unit: 'tokens' }, rows: ['unit: tokens (cost_unit) · /keepalive unit tokens|dollars'], run: ($, on) => startedWorld($, on) },
+    { name: 'the overnight option off', options: { overnight: 'off' }, rows: ['night stop: off (overnight) · overnight'], run: ($, on) => startedWorld($, on) },
+    // Only `off` turns it off: a value the engine hands unset or another word leaves it on.
+    { name: 'the overnight option unset', options: { overnight: '' }, rows: ['night stop: on (overnight) · overnight'], run: ($, on) => startedWorld($, on) },
+    { name: 'the overnight option another word', options: { overnight: 'Off' }, rows: ['night stop: on (overnight) · overnight'], run: ($, on) => startedWorld($, on) },
   ]
   for (const s of STATES) {
     test(s.name, { options: s.options }, async ($, on) => {
       await s.run($, on)
       const { answer, pane } = await settingsLines($)
-      expect(answer).toHaveLength(5)
-      expect(pane).toHaveLength(5)
+      expect(answer).toHaveLength(6)
+      expect(pane).toHaveLength(6)
       for (const row of s.rows) {
         expect(answer).toContain(row)
         expect(pane).toContain(row)
@@ -9035,7 +9812,7 @@ describe('the details pane draws each row label dim in the states that show it, 
     options?: Record<string, number>
     reach: ($: any, on: any) => Promise<unknown>
   }
-  const SETTINGS_LABELS = ['TTL:', 'lead:', 'refreshes/pause:', 'start mode:', 'unit:']
+  const SETTINGS_LABELS = ['TTL:', 'lead:', 'refreshes/pause:', 'start mode:', 'unit:', 'night stop:']
   const pausesOf = (pausedMs: number, grownTokens: number) => ({
     'pauses/old': Array.from({ length: 10 }, (_, i) => ({ startMs: 1000 + i, pausedMs, hour: 10, weekday: 2, ratio: 24, ttlMs: 300000, contextTokens: 100000, grownTokens })),
   })
@@ -9053,6 +9830,11 @@ describe('the details pane draws each row label dim in the states that show it, 
     {
       name: 'a rest learned from seven nights of pauses',
       labels: ['rest:'],
+      reach: ($, on) => startedWorld($, on, { ...opusCached(), store: { 'pauses/old': startsOf(7, T0 - DAY_MS).flatMap(restAt) } }),
+    },
+    {
+      name: 'a rest learned from seven nights of pauses, the night step on: the overnight row beside the rest row',
+      labels: ['rest:', 'overnight:'],
       reach: ($, on) => startedWorld($, on, { ...opusCached(), store: { 'pauses/old': startsOf(7, T0 - DAY_MS).flatMap(restAt) } }),
     },
     {

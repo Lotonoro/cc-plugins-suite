@@ -120,6 +120,12 @@ export type KeepaliveState = {
   runCount: number
 }
 
+// What the user's daily rest says to keepalive's step, decided by the night rule from the option, the learned window, the clock, the idle times, this
+// session's step mark and the cache the stop would let lapse: `due` when the rest has begun, a stop repays and the session has not stepped today, `held` from the
+// session's step until the user's next action, `none` otherwise. `canAct` is whether the step can act at all (the option on, keepalive on, a window learned, and
+// a cache whose stop repays somewhere in that window: at the 1 h TTL, one holding at least the break-even count of TTL periods), whatever the moment.
+export type RestFact = { kind: 'due' | 'held' | 'none'; canAct: boolean }
+
 declare module 'claude-code' {
   // Every value here is held across a plugin reload, and the code that reads it may be a later version's. A change to any
   // value's shape bumps STATE_SHAPE in register.ts: a reload under a new shape resets every value but the transcript, a

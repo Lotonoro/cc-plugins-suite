@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'claude-code/testing'
 import { pieces } from './fixture'
 import type { PauseRecord } from './history'
-import { restReadingOf, restsOf, type RestReading } from './night'
+import { IDLE_MS, overnightOf, overnightRowOf, restFactOf, restReadingOf, restsOf, scanWanted, SCAN_STANDS_MS, type RestInputs, type RestReading, type Scan, type StopCache } from './night'
 import { plainOf } from './sections'
 
 const MIN = 60000
@@ -281,5 +281,332 @@ describe('the row: `rest:` as its dim label, then the figures as one untoned pie
   test('each form is the label and its rest, built through the label constructor', () => {
     expect(readingOf(same(3, 1, 0, 420)).row).toEqual(pieces('rest:', ' 3 of 7 seen'))
     expect(readingOf(same(8, 1, 0, 420)).row).toEqual(pieces('rest:', ' from ≤01:00 · back ≥08:00 · 8 rests'))
+  })
+})
+
+describe('the option: only `off` turns the night step off', () => {
+  test('an unset, empty or unknown value reads as on, and `off` as off', () => {
+    for (const value of [undefined, null, '', 'on', 'ON', 'Off', ' off', 'off ', 'no', 'false', 0, 1, true, false]) expect(overnightOf(value)).toBe('on')
+    expect(overnightOf('off')).toBe('off')
+  })
+})
+
+// The rest fact: due, held or none, from the option, the window, the clock, the idle times and the step mark alone.
+const WINDOW = { opensMin: 3 * 60 + 18, closesMin: 6 * 60 + 28 }
+// A window across midnight, from 22:30 to 06:30.
+const NIGHT_WINDOW = { opensMin: 22 * 60 + 30, closesMin: 6 * 60 + 30 }
+const NOW = at(1, 4, 0)
+// The cache a stop would let lapse. At the 5 m TTL a stop is asked to repay nothing; at the 1 h TTL it must, and `oneHour(n)` is a 1 h cache whose break-even count is n, or none.
+const FIVE_MIN: StopCache = { ttlLabel: '5m', ttlMs: 5 * MIN, breakEven: 24 }
+const oneHour = (breakEven: number | null): StopCache => ({ ttlLabel: '1h', ttlMs: H, breakEven })
+// A scan made at `atMs` that found the newest action at `newestMs` (none by default), and one that found none.
+const foundAt = (newestMs: number | null, atMs = NOW): Scan => ({ kind: 'done', atMs, newestMs })
+const clearAt = (atMs: number): Scan => foundAt(null, atMs)
+// Inputs for which every condition holds at `nowMs` (04:00 on day 1 unless given): a 5 m cache, the last request 40 minutes old, no action and no step, the step mark read, and a
+// scan just made that found no action. Each test changes what it names.
+const inputs = (over: Partial<RestInputs> = {}): RestInputs => {
+  const nowMs = over.nowMs ?? NOW
+  return { option: 'on', keepaliveOn: true, window: WINDOW, nowMs, cache: FIVE_MIN, touchMs: nowMs - 40 * MIN, read: true, stepMs: null, actionMs: null, scan: clearAt(nowMs), ...over }
+}
+const factOf = (over: Partial<RestInputs> = {}) => restFactOf(inputs(over))
+const DUE = { kind: 'due', canAct: true }
+const NONE = { kind: 'none', canAct: true }
+const HELD = { kind: 'held', canAct: true }
+
+describe('the idle figure and the scan: 30 minutes, and a clear scan stands for a minute', () => {
+  test('the figures', () => {
+    expect(IDLE_MS).toBe(30 * MIN)
+    expect(SCAN_STANDS_MS).toBe(MIN)
+  })
+})
+
+describe('the rest fact: due when every condition holds, none when any one fails', () => {
+  test('every condition holding gives a due fact that can act', () => {
+    expect(factOf()).toEqual(DUE)
+  })
+
+  test('the option off, no window, or keepalive off gives none, and the step cannot act', () => {
+    expect(factOf({ option: 'off' })).toEqual({ kind: 'none', canAct: false })
+    expect(factOf({ window: null })).toEqual({ kind: 'none', canAct: false })
+    expect(factOf({ keepaliveOn: false })).toEqual({ kind: 'none', canAct: false })
+  })
+
+  test('the local time one minute before the window opens is none, and the minute it opens is due', () => {
+    expect(factOf({ nowMs: at(1, 3, 17) })).toEqual(NONE)
+    expect(factOf({ nowMs: at(1, 3, 17) + 59999 })).toEqual(NONE)
+    expect(factOf({ nowMs: at(1, 3, 18) })).toEqual(DUE)
+  })
+
+  test('the minute the window closes is none, and the moment before it is due', () => {
+    expect(factOf({ nowMs: at(1, 6, 28) - 1 })).toEqual(DUE)
+    expect(factOf({ nowMs: at(1, 6, 28) })).toEqual(NONE)
+  })
+
+  test('a window from 22:30 to 06:30 is due at 00:10 and not at 12:00', () => {
+    expect(factOf({ window: NIGHT_WINDOW, nowMs: at(1, 0, 10) })).toEqual(DUE)
+    expect(factOf({ window: NIGHT_WINDOW, nowMs: at(1, 12, 0) })).toEqual(NONE)
+    for (const [h, m, kind] of [[22, 29, 'none'], [22, 30, 'due'], [23, 59, 'due'], [0, 0, 'due'], [6, 29, 'due'], [6, 30, 'none']] as const) {
+      expect([h, m, factOf({ window: NIGHT_WINDOW, nowMs: at(1, h, m) }).kind]).toEqual([h, m, kind])
+    }
+  })
+
+  test('this session idle one minute short of the figure is none, and at the figure due', () => {
+    expect(factOf({ touchMs: NOW - IDLE_MS + MIN })).toEqual(NONE)
+    expect(factOf({ touchMs: NOW - IDLE_MS })).toEqual(DUE)
+    // No known cache has no last request to count from, and one stamped after now is no idle time.
+    expect(factOf({ touchMs: null })).toEqual(NONE)
+    expect(factOf({ touchMs: NOW + MIN })).toEqual(NONE)
+  })
+
+  test('another session\'s action one minute inside the figure is none, and at the figure due', () => {
+    expect(factOf({ scan: foundAt(NOW - IDLE_MS + MIN) })).toEqual(NONE)
+    expect(factOf({ scan: foundAt(NOW - IDLE_MS) })).toEqual(DUE)
+    expect(factOf({ scan: foundAt(NOW - 3 * H) })).toEqual(DUE)
+  })
+
+  test('this session\'s own action one minute inside the figure is none, and at the figure due', () => {
+    expect(factOf({ actionMs: NOW - IDLE_MS + MIN })).toEqual(NONE)
+    expect(factOf({ actionMs: NOW - IDLE_MS })).toEqual(DUE)
+  })
+
+  test('a scan not made, a scan that failed, and a clear scan a minute old are none; one a moment short of a minute is due', () => {
+    expect(factOf({ scan: { kind: 'none' } })).toEqual(NONE)
+    expect(factOf({ scan: { kind: 'failed' } })).toEqual(NONE)
+    expect(factOf({ scan: clearAt(NOW - SCAN_STANDS_MS) })).toEqual(NONE)
+    expect(factOf({ scan: clearAt(NOW - SCAN_STANDS_MS + 1) })).toEqual(DUE)
+    // A scan stamped after now is a clock that moved back, which no scan stands for.
+    expect(factOf({ scan: clearAt(NOW + 1) })).toEqual(NONE)
+  })
+
+  test('a step on today\'s local date holds the step off, and one dated yesterday does not, whatever the hours between', () => {
+    // The user acted 20 minutes after the step and has been idle since, so only the step's date can hold today's step off. It is 02:00 on day 1.
+    const after = (stepMs: number) => ({ nowMs: at(1, 2, 0), window: NIGHT_WINDOW, stepMs, actionMs: stepMs + 20 * MIN })
+    expect(factOf(after(at(0, 22, 40)))).toEqual(DUE)
+    expect(factOf(after(at(0, 23, 59)))).toEqual(DUE)
+    expect(factOf(after(at(1, 0, 0)))).toEqual(NONE)
+    expect(factOf(after(at(1, 0, 1)))).toEqual(NONE)
+    expect(factOf({ ...after(at(1, 1, 0)), actionMs: at(1, 1, 20) })).toEqual(NONE)
+  })
+
+  test('a step mark not yet read gives none, held or not', () => {
+    expect(factOf({ read: false })).toEqual(NONE)
+    expect(factOf({ read: false, stepMs: NOW - 10 * MIN })).toEqual(NONE)
+  })
+
+  test('a step or an action stamped after now reads as absent: it holds nothing', () => {
+    expect(factOf({ stepMs: NOW + H })).toEqual(DUE)
+    expect(factOf({ actionMs: NOW + H })).toEqual(DUE)
+  })
+
+  test('can-act is true exactly when the option is on, keepalive is on and a window is learned, at the 5 m TTL, whatever else holds', () => {
+    for (const option of ['on', 'off'] as const) {
+      for (const keepaliveOn of [true, false]) {
+        for (const window of [WINDOW, null]) {
+          const want = option === 'on' && keepaliveOn && window !== null
+          expect([option, keepaliveOn, window !== null, factOf({ option, keepaliveOn, window }).canAct]).toEqual([option, keepaliveOn, window !== null, want])
+          // Outside the window, busy, and unread: can-act is about the setup, not the moment.
+          expect(factOf({ option, keepaliveOn, window, nowMs: at(1, 12, 0), touchMs: null, read: false, scan: { kind: 'failed' } }).canAct).toBe(want)
+        }
+      }
+    }
+  })
+})
+
+describe('the rest fact: held from a step until the user\'s next action', () => {
+  test('a step later than every action of this session holds, whether or not the session has acted before it', () => {
+    expect(factOf({ stepMs: NOW - 10 * MIN })).toEqual(HELD)
+    expect(factOf({ stepMs: NOW - 10 * MIN, actionMs: NOW - 20 * MIN })).toEqual(HELD)
+  })
+
+  test('an action later than the step ends it, and one in the same millisecond does too', () => {
+    expect(factOf({ stepMs: NOW - 10 * MIN, actionMs: NOW - 10 * MIN + 1 })).toEqual(NONE)
+    expect(factOf({ stepMs: NOW - 10 * MIN, actionMs: NOW - 10 * MIN })).toEqual(NONE)
+  })
+
+  test('it holds whatever the clock, the window, the idle times and the scan say', () => {
+    const step = at(1, 11, 0)
+    expect(factOf({ nowMs: at(1, 12, 0), stepMs: step, touchMs: at(1, 11, 59), scan: { kind: 'none' } })).toEqual(HELD)
+    expect(factOf({ nowMs: at(1, 12, 0), stepMs: step, touchMs: null, scan: foundAt(at(1, 11, 59)) })).toEqual(HELD)
+  })
+
+  test('it holds on a step dated yesterday too, until an action', () => {
+    expect(factOf({ nowMs: at(1, 4, 0), stepMs: at(0, 23, 0) })).toEqual(HELD)
+    expect(factOf({ nowMs: at(1, 4, 0), stepMs: at(0, 23, 0), actionMs: at(0, 23, 10) })).toEqual(DUE)
+  })
+
+  test('it needs the step able to act: the option on, keepalive on and a window learned', () => {
+    const held = { stepMs: NOW - 10 * MIN }
+    expect(factOf({ ...held, option: 'off' })).toEqual({ kind: 'none', canAct: false })
+    expect(factOf({ ...held, keepaliveOn: false })).toEqual({ kind: 'none', canAct: false })
+    expect(factOf({ ...held, window: null })).toEqual({ kind: 'none', canAct: false })
+  })
+
+  test('after the action the day\'s step is used: the fact is none, not due', () => {
+    expect(factOf({ stepMs: NOW - 90 * MIN, actionMs: NOW - 60 * MIN })).toEqual(NONE)
+  })
+})
+
+// The window is 3 h 10 min, from 03:18 to 06:28: three whole hours at most, from its opening.
+describe('the stop repays the rewrite it adds: at the 5 m TTL as it is built, at the 1 h TTL only with the break-even count of whole hours left in the window', () => {
+  test('at the 5 m TTL the fact is due in a window of far fewer periods than the break-even count, and with the model unpriced', () => {
+    // One hour is 12 periods of 5 minutes, against the 24 a refresh run sends.
+    expect(factOf({ window: { opensMin: 4 * 60, closesMin: 5 * 60 }, nowMs: at(1, 4, 30) })).toEqual(DUE)
+    expect(factOf({ cache: { ...FIVE_MIN, breakEven: null } })).toEqual(DUE)
+  })
+
+  test('at the 1 h TTL the fact is due while the whole hours left in the window are at least the break-even count, and not a millisecond after', () => {
+    // Three hours are left at 03:28, the window closing at 06:28; at its opening, 3 h 10 min.
+    expect(factOf({ nowMs: at(1, 3, 28), cache: oneHour(3) })).toEqual(DUE)
+    expect(factOf({ nowMs: at(1, 3, 28) + 1, cache: oneHour(3) })).toEqual(NONE)
+    expect(factOf({ nowMs: at(1, 3, 18), cache: oneHour(3) })).toEqual(DUE)
+    // Two hours at 04:28 and one at 05:28; none to count in the last minute.
+    expect(factOf({ nowMs: at(1, 4, 28), cache: oneHour(2) })).toEqual(DUE)
+    expect(factOf({ nowMs: at(1, 4, 28) + 1, cache: oneHour(2) })).toEqual(NONE)
+    expect(factOf({ nowMs: at(1, 5, 28), cache: oneHour(1) })).toEqual(DUE)
+    expect(factOf({ nowMs: at(1, 5, 28) + 1, cache: oneHour(1) })).toEqual(NONE)
+    expect(factOf({ nowMs: at(1, 6, 27), cache: oneHour(1) })).toEqual(NONE)
+  })
+
+  test('a window one hour short of the break-even count cannot act at any moment: none, and the step cannot act', () => {
+    for (const nowMs of [at(1, 3, 18), at(1, 3, 28), at(1, 4, 0), at(1, 6, 27)]) expect(factOf({ nowMs, cache: oneHour(4) })).toEqual({ kind: 'none', canAct: false })
+  })
+
+  test('the window across midnight counts its hours across it: 22:30 to 06:30 is eight, seven are left at 23:30 and six at 00:30', () => {
+    expect(factOf({ window: NIGHT_WINDOW, nowMs: at(1, 23, 30), cache: oneHour(7) })).toEqual(DUE)
+    expect(factOf({ window: NIGHT_WINDOW, nowMs: at(1, 23, 30) + 1, cache: oneHour(7) })).toEqual(NONE)
+    expect(factOf({ window: NIGHT_WINDOW, nowMs: at(1, 0, 30), cache: oneHour(6) })).toEqual(DUE)
+    expect(factOf({ window: NIGHT_WINDOW, nowMs: at(1, 0, 30), cache: oneHour(7) })).toEqual(NONE)
+    expect(factOf({ window: NIGHT_WINDOW, nowMs: at(1, 22, 30), cache: oneHour(8) })).toEqual(DUE)
+    expect(factOf({ window: NIGHT_WINDOW, cache: oneHour(9) })).toEqual({ kind: 'none', canAct: false })
+  })
+
+  test('a 1 h cache with no price, and no known cache, repay nothing: none, and the step cannot act', () => {
+    expect(factOf({ cache: oneHour(null) })).toEqual({ kind: 'none', canAct: false })
+    expect(factOf({ cache: null })).toEqual({ kind: 'none', canAct: false })
+  })
+
+  test('can-act is the setup with a cache a stop repays, however late the clock or busy the session', () => {
+    for (const [cache, want] of [[FIVE_MIN, true], [{ ...FIVE_MIN, breakEven: null }, true], [oneHour(3), true], [oneHour(4), false], [oneHour(null), false], [null, false]] as const) {
+      expect([cache, factOf({ cache }).canAct]).toEqual([cache, want])
+      expect([cache, factOf({ cache, nowMs: at(1, 12, 0), touchMs: null, read: false, scan: { kind: 'failed' } }).canAct]).toEqual([cache, want])
+    }
+  })
+
+  test('a held fact holds whatever the cache says: the step was taken, and the user has not acted since', () => {
+    const held = { stepMs: NOW - 10 * MIN }
+    expect(factOf({ ...held, cache: oneHour(40) })).toEqual(HELD)
+    expect(factOf({ ...held, cache: oneHour(null) })).toEqual(HELD)
+    expect(factOf({ ...held, cache: null })).toEqual(HELD)
+  })
+})
+
+describe('the scan: wanted only when everything else gives a due fact and the scan on hand does not stand', () => {
+  test('no scan, a failed scan, a clear scan a minute old and a hold that has ended are each wanted', () => {
+    expect(scanWanted(inputs({ scan: { kind: 'none' } }))).toBe(true)
+    expect(scanWanted(inputs({ scan: { kind: 'failed' } }))).toBe(true)
+    expect(scanWanted(inputs({ scan: clearAt(NOW - SCAN_STANDS_MS) }))).toBe(true)
+    // A scan 25 minutes ago found an action 35 minutes ago: its hold ended five minutes ago, and a clear scan stands only for a minute.
+    expect(scanWanted(inputs({ scan: foundAt(NOW - 35 * MIN, NOW - 25 * MIN) }))).toBe(true)
+  })
+
+  test('a clear scan that stands is not wanted again, and neither is a hold that has not ended', () => {
+    expect(scanWanted(inputs({ scan: clearAt(NOW) }))).toBe(false)
+    expect(scanWanted(inputs({ scan: clearAt(NOW - SCAN_STANDS_MS + 1) }))).toBe(false)
+    // An action found 10 minutes ago, by a scan 5 minutes ago: the fact is held off for 20 minutes more with no scan between.
+    const holding = inputs({ scan: foundAt(NOW - 10 * MIN, NOW - 5 * MIN) })
+    expect(restFactOf(holding)).toEqual(NONE)
+    expect(scanWanted(holding)).toBe(false)
+    // Until the hold ends, and then at once.
+    expect(scanWanted({ ...holding, nowMs: NOW + 20 * MIN - 1 })).toBe(false)
+    expect(scanWanted({ ...holding, nowMs: NOW + 20 * MIN })).toBe(true)
+  })
+
+  test('an action found stamped after now stands for nothing', () => {
+    expect(scanWanted(inputs({ scan: foundAt(NOW + H, NOW - 5 * MIN) }))).toBe(true)
+  })
+
+  test('nothing is wanted while any other condition fails', () => {
+    const none: Scan = { kind: 'none' }
+    for (const over of [
+      { option: 'off' as const },
+      { keepaliveOn: false },
+      { window: null },
+      { nowMs: at(1, 3, 17) },
+      { nowMs: at(1, 6, 28) },
+      { touchMs: NOW - IDLE_MS + MIN },
+      { touchMs: null },
+      { actionMs: NOW - IDLE_MS + MIN },
+      { stepMs: at(1, 1, 0), actionMs: at(1, 2, 0) },
+      { stepMs: NOW - 10 * MIN },
+      { read: false },
+      { cache: oneHour(4) },
+      { cache: oneHour(null) },
+      { cache: null },
+    ]) {
+      expect([over, scanWanted(inputs({ ...over, scan: none }))]).toEqual([over, false])
+    }
+  })
+
+  test('at the 1 h TTL it is wanted while a stop would repay, and not a millisecond after', () => {
+    const none: Scan = { kind: 'none' }
+    expect(scanWanted(inputs({ scan: none, nowMs: at(1, 3, 28), cache: oneHour(3) }))).toBe(true)
+    expect(scanWanted(inputs({ scan: none, nowMs: at(1, 3, 28) + 1, cache: oneHour(3) }))).toBe(false)
+    expect(scanWanted(inputs({ scan: none, cache: FIVE_MIN }))).toBe(true)
+  })
+})
+
+describe('the overnight row: its label dim, then the window and the idle figure, or the step\'s time', () => {
+  const rowOf = (over: Partial<RestInputs> = {}) => overnightRowOf(inputs(over))
+
+  test('with the option on and a window learned it states the window and the idle figure', () => {
+    expect(rowOf()).toEqual(pieces('overnight:', ' 03:18–06:28 · after 30m idle'))
+    expect(plainOf(rowOf({ window: NIGHT_WINDOW }))).toBe('overnight: 22:30–06:30 · after 30m idle')
+  })
+
+  test('with keepalive off it says the window acts only with keepalive on', () => {
+    expect(rowOf({ keepaliveOn: false })).toEqual(pieces('overnight:', ' 03:18–06:28 · after 30m idle · only with keepalive on'))
+  })
+
+  test('once this session stepped today it says when', () => {
+    expect(rowOf({ stepMs: at(1, 3, 19) })).toEqual(pieces('overnight:', ' done 03:19'))
+    expect(rowOf({ stepMs: at(1, 0, 5), window: NIGHT_WINDOW })).toEqual(pieces('overnight:', ' done 00:05'))
+    // Whether or not keepalive is on: the day's step was taken.
+    expect(rowOf({ stepMs: at(1, 3, 19), keepaliveOn: false })).toEqual(pieces('overnight:', ' done 03:19'))
+    // A step is the day's, held or not.
+    expect(rowOf({ stepMs: at(1, 3, 19), actionMs: at(1, 3, 25) })).toEqual(pieces('overnight:', ' done 03:19'))
+  })
+
+  test('a step dated yesterday leaves the row at its window', () => {
+    expect(rowOf({ stepMs: at(0, 23, 50) })).toEqual(pieces('overnight:', ' 03:18–06:28 · after 30m idle'))
+  })
+
+  test('with the option off, or no window learned, there is no row', () => {
+    expect(rowOf({ option: 'off' })).toBe('')
+    expect(rowOf({ window: null })).toBe('')
+    expect(rowOf({ option: 'off', stepMs: at(1, 3, 19) })).toBe('')
+    expect(rowOf({ window: null, stepMs: at(1, 3, 19) })).toBe('')
+  })
+
+  test('at the 1 h TTL it is there only where a stop in the window would repay: this window holds three hours, enough for three and not for four', () => {
+    expect(rowOf({ cache: oneHour(3) })).toEqual(pieces('overnight:', ' 03:18–06:28 · after 30m idle'))
+    expect(rowOf({ cache: oneHour(4) })).toBe('')
+    expect(rowOf({ cache: oneHour(4), keepaliveOn: false })).toBe('')
+    expect(rowOf({ cache: oneHour(3), keepaliveOn: false })).toEqual(pieces('overnight:', ' 03:18–06:28 · after 30m idle · only with keepalive on'))
+    // The row is the window's, not the moment's: it stays after the moment when a stop would repay has passed.
+    expect(rowOf({ cache: oneHour(3), nowMs: at(1, 5, 30) })).toEqual(pieces('overnight:', ' 03:18–06:28 · after 30m idle'))
+  })
+
+  test('at the 5 m TTL it is there as before, with the model unpriced too', () => {
+    expect(rowOf({ cache: FIVE_MIN, window: { opensMin: 4 * 60, closesMin: 5 * 60 } })).toEqual(pieces('overnight:', ' 04:00–05:00 · after 30m idle'))
+    expect(rowOf({ cache: { ...FIVE_MIN, breakEven: null } })).toEqual(pieces('overnight:', ' 03:18–06:28 · after 30m idle'))
+  })
+
+  test('a 1 h cache with no price, or no known cache, leaves no row', () => {
+    expect(rowOf({ cache: oneHour(null) })).toBe('')
+    expect(rowOf({ cache: null })).toBe('')
+  })
+
+  test('once this session stepped today it says when, whatever the cache', () => {
+    for (const cache of [oneHour(40), oneHour(null), null]) expect(rowOf({ stepMs: at(1, 3, 19), cache })).toEqual(pieces('overnight:', ' done 03:19'))
   })
 })

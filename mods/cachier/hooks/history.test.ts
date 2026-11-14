@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'claude-code/testing'
-import { appended, HISTORY_BOUND, keyOf, merged, recordOf, recordsOf, staleKeys, type PauseRecord } from './history'
+import { appended, HISTORY_BOUND, idOf, keyOf, KEY_PREFIX, merged, recordOf, recordsOf, staleKeys, type PauseRecord } from './history'
 
 const MIN = 60000
 // A Tuesday, 9:30 local time.
@@ -34,6 +34,29 @@ describe('the pause record: timing and price metadata, keyed by session', () => 
   test("a session's key is its transcript's id", () => {
     expect(keyOf('/home/u/.claude/projects/p/5566de46-eb71.jsonl')).toBe('pauses/5566de46-eb71')
     expect(keyOf('plain')).toBe('pauses/plain')
+  })
+
+  test('a transcript\'s pause key is the key it was before the id was exported, for every shape of path', () => {
+    const keys: [path: string, key: string][] = [
+      ['/home/u/.claude/projects/p/5566de46-eb71.jsonl', 'pauses/5566de46-eb71'],
+      ['5566de46-eb71.jsonl', 'pauses/5566de46-eb71'],
+      ['plain', 'pauses/plain'],
+      ['/a/b/plain', 'pauses/plain'],
+      ['/a/b/notes.json', 'pauses/notes.json'],
+      ['/a/b/x.jsonl.jsonl', 'pauses/x.jsonl'],
+      ['/a/b/x.jsonlx', 'pauses/x.jsonlx'],
+      ['/a/b.jsonl/c', 'pauses/c'],
+      ['/a/b/.jsonl', 'pauses/'],
+      ['', 'pauses/'],
+    ]
+    for (const [path, key] of keys) expect([path, keyOf(path)]).toEqual([path, key])
+  })
+
+  test('the id is the transcript\'s file name without its extension, the one rule the three key families share', () => {
+    expect(idOf('/home/u/.claude/projects/p/5566de46-eb71.jsonl')).toBe('5566de46-eb71')
+    expect(idOf('plain')).toBe('plain')
+    expect(idOf('/a/b/x.jsonl.jsonl')).toBe('x.jsonl')
+    for (const path of ['/a/b/c.jsonl', 'c', '/a/b/notes.json', '']) expect([path, keyOf(path)]).toEqual([path, `${KEY_PREFIX}${idOf(path)}`])
   })
 
   test('a stored value of another shape reads as no records, and a malformed record is skipped', () => {
