@@ -59,8 +59,8 @@ import { followDraw, isPaneOpen, lastRows, paneAlarm, PANE, pressSize, readPane,
 import { appended, HISTORY_BOUND, keyOf, KEY_PREFIX, merged, recordOf, recordsOf, staleKeys, type PauseRecord } from './history'
 import { adviceOf, ratesOfView, ttlLineOf, type Inputs } from './advice'
 import { learnedLine, learnedOf, ttlSwitchOf, type Learned } from './learn'
-import { overnightOf, overnightRowOf, restFactOf, restReadingOf, scanWanted, stepNoticeOf, windowNoticeOf, windowTextOf, type RestInputs, type RestReading } from './night'
-import { nightAction, nightClean, nightLearn, nightNotice, nightRead, nightScan, nightState, nightStepped, noticeOpen } from './nightstep'
+import { compactionDueOf, overnightOf, overnightRowOf, restFactOf, restReadingOf, scanWanted, stepNoticeOf, windowNoticeOf, windowTextOf, type RestInputs, type RestReading } from './night'
+import { nightAction, nightClean, nightCompact, nightLearn, nightNotice, nightRead, nightScan, nightState, nightStepped, noticeOpen, type Compaction } from './nightstep'
 import { breakEvenLine, breakEvenOf, countLineOf, judge, KEPT_COUNT, ratioOf, rebuildSpendOf, runCountOf, sessionBalanceLine, NO_JUDGED, pauseOf, type Pause } from './verdict'
 import { answerOf, paneLayoutOf, spanOf, type Line, type PaneRow, type PaneSize, type Setting, type Snapshot } from './sections'
 import { secsTerse } from './setup'
@@ -789,14 +789,25 @@ const restNow = async ($: Dollar, k: KeepaliveState, view: CacheView, money: Mon
   return { fact: restFactOf(inputs), inputs }
 }
 
-// The debug line of a step: when it was taken, the window it fell in, this session's idle time and the newest action found across sessions.
-const stepLine = ($: Dollar, atMs: number, i: RestInputs) =>
+// The debug line of a step: when it was taken, the window it fell in, this session's idle time and the newest action found across sessions, and the outcome of the compaction the step also asked
+// for, which is left out where it asked for none.
+const stepLine = ($: Dollar, atMs: number, i: RestInputs, compaction?: Compaction) =>
   debugLine($, 'cachier overnight', {
     time: new Date(atMs).toISOString(),
     window: i.window === null ? null : windowTextOf(i.window),
     idle_ms: i.touchMs === null ? null : atMs - i.touchMs,
     newest_prompt: i.scan.kind === 'done' && i.scan.newestMs !== null ? new Date(i.scan.newestMs).toISOString() : null,
+    compaction,
   })
+
+// The end of a step whose stop has committed: the compaction, where the step asks for one, then the step's debug line, which states its outcome, and the second notice, once per install, which says
+// whether a compaction stood. It is asked for only by a step whose mark has landed in the store: a refused write of the mark tells nothing in this load, and a later step does. The stop stands
+// whatever the compaction comes to, and the compaction is the day's one try.
+const settleStep = async ($: Dollar, atMs: number, i: RestInputs, marked: boolean, compacting: boolean) => {
+  const compaction = compacting ? await nightCompact($) : undefined
+  stepLine($, atMs, i, compaction)
+  if (marked && (await nightNotice($, night, 'step'))) $.ui.log(stepNoticeOf(atMs, compaction?.kind === 'stood'))
+}
 
 // What a tick decides from, looked at together: keepalive's state as held, the clock, the cache, this session's live touch, the prices and the rest fact. Null where the tick has nothing
 // to decide: a failed write left the gap broken, or keepalive is off.
@@ -836,9 +847,13 @@ const keepaliveTick = async ($: Dollar) => {
       // The stop a due fact gave is the day's step: it is recorded once the commit has landed, so a commit that lost its version check uses nothing up and the next tick decides again.
       if (committed.isSet && verdict.reason === OVERNIGHT_STOP && rest.fact.kind === 'due') {
         const marked = await nightStepped($, night, decidedMs)
-        stepLine($, decidedMs, rest.inputs)
-        // The second notice, once per install: the first step, told once its mark has landed in the store. A refused write of the mark tells nothing in this load, and a later step does.
-        if (marked && (await nightNotice($, night, 'step'))) $.ui.log(stepNoticeOf(decidedMs))
+        // A conversation at the floor is compacted, but only once the mark has landed: a step whose mark was refused leaves a later load free to step the same day, and it would compact again. The context is
+        // the one the next request would write, the last request's prompt and its reply.
+        const compacting = marked && view.kind === 'known' && compactionDueOf(view.promptTokens + view.outputTokens)
+        const settled = settleStep($, decidedMs, rest.inputs, marked, compacting)
+        // The compaction runs apart from the tick, which it would hold single-flight for as long as the engine takes, with the stop re-taken and the notices asked for in the meantime.
+        if (compacting) inBackground($, settled)
+        else await settled
       }
       return
     }

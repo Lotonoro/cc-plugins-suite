@@ -6,8 +6,9 @@
 // after the arc's anchor, so nothing wraps around midnight or noon.
 //
 // The rest then gives keepalive its fact (restFactOf): whether the rest has begun for this session, from the option, the window, the clock, the idle times, the session's step
-// mark, which nightstep.ts reads and writes, and the cache the stop would let lapse: at the 1 h TTL the stop acts only where it repays the rewrite it adds. The words of the two
-// notices the user is told once, when the stop can first act and when it first acts, are written here too, beside the row that states the same window.
+// mark, which nightstep.ts reads and writes, and the cache the stop would let lapse: at the 1 h TTL the stop acts only where it repays the rewrite it adds. The smallest cached context
+// the step also compacts (compactionDueOf) is here too, and so are the words of the two notices the user is told once, when the stop can first act and when it first acts, beside the
+// row that states the same window.
 
 import type { RestFact, TtlLabel } from '../types'
 import { labelled, type Run } from './countdown'
@@ -190,6 +191,15 @@ export const restFactOf = (i: RestInputs): RestFact => {
 // Whether the tick must scan the other sessions' action times to decide: every other condition gives a due fact, and the scan on hand does not stand.
 export const scanWanted = (i: RestInputs): boolean => readyOf(i) && standingOf(i.scan, i.nowMs) === 'none'
 
+// The smallest cached context, in tokens, that the step also compacts. A compaction costs one request that reads the whole conversation at the input price, and saves the first prompt
+// after the rest the difference between writing the whole conversation to the cache and writing the compacted one. Two compactions measured on Opus 5.5 at the 5 m TTL broke even near
+// 43,000 and 56,000 tokens; each is rounded up to the next 10,000 and the larger is the floor, so that it errs toward leaving a conversation alone. A larger prefix of instructions and tools
+// moves the break-even up, and the 1 h TTL, whose write costs more, down: neither was measured. The floor reads no price at run time, so every model and TTL share it.
+export const COMPACT_FLOOR_TOKENS = 60000
+
+// Whether the step compacts a conversation whose cached context is `contextTokens` long: at the floor and above, never below it.
+export const compactionDueOf = (contextTokens: number): boolean => contextTokens >= COMPACT_FLOOR_TOKENS
+
 // The Keepalive section's `overnight:` row, after the `rest:` row: the window and the idle figure the step waits for, or `done` and its time once this session stepped today.
 // No row while the option is off or no window is learned, and none where even the whole window leaves a stop too few periods to repay, which the row would promise.
 export const overnightRowOf = (i: RestInputs): Line => {
@@ -203,10 +213,12 @@ export const overnightRowOf = (i: RestInputs): Line => {
 // The sentence both notices end on.
 const SWITCH_TEXT = 'Turn it off with the overnight option in /config.'
 
-// The first notice, for the first time the step can act for the user: the window learned and what the step does inside it, worded with the figures the `overnight:` row states.
+// The first notice, for the first time the step can act for the user: the window learned and what the step does inside it, worded with the figures the `overnight:` row states. It says
+// the compaction before it happens, with the floor as a figure and the comparison the step makes, so the user can tell whether their conversation is compacted.
 export const windowNoticeOf = (window: { opensMin: number; closesMin: number }): string =>
-  `cachier: learned your daily rest, ${windowTextOf(window)}. After ${IDLE_MS / MIN_MS} min with no prompt in any session inside it, keepalive stops until your next prompt. ${SWITCH_TEXT}`
+  `cachier: learned your daily rest, ${windowTextOf(window)}. After ${IDLE_MS / MIN_MS} min with no prompt in any session inside it, keepalive stops until your next prompt, and a conversation of ${COMPACT_FLOOR_TOKENS.toLocaleString('en-US')} tokens or more is compacted, which is not undone. ${SWITCH_TEXT}`
 
-// The second notice, for the first time the step acts: the local time of the stop, as the row says it after the step.
-export const stepNoticeOf = (stepMs: number): string =>
-  `cachier: keepalive stopped for your daily rest at ${timeOf(minuteOf(stepMs))}; it resumes on your next prompt. ${SWITCH_TEXT}`
+// The second notice, for the first time the step acts: the local time of the stop, as the row says it after the step, and the compaction where one stood. It is written once the compaction's
+// outcome is known, so it says what happened.
+export const stepNoticeOf = (stepMs: number, compacted: boolean): string =>
+  `cachier: keepalive stopped for your daily rest at ${timeOf(minuteOf(stepMs))}${compacted ? ' and the conversation was compacted' : ''}; keepalive resumes on your next prompt. ${SWITCH_TEXT}`

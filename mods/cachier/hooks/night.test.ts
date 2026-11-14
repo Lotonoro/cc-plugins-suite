@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'claude-code/testing'
 import { pieces } from './fixture'
 import type { PauseRecord } from './history'
-import { IDLE_MS, overnightOf, overnightRowOf, restFactOf, restReadingOf, restsOf, scanWanted, SCAN_STANDS_MS, stepNoticeOf, windowNoticeOf, type RestInputs, type RestReading, type Scan, type StopCache } from './night'
+import { COMPACT_FLOOR_TOKENS, compactionDueOf, IDLE_MS, overnightOf, overnightRowOf, restFactOf, restReadingOf, restsOf, scanWanted, SCAN_STANDS_MS, stepNoticeOf, windowNoticeOf, type RestInputs, type RestReading, type Scan, type StopCache } from './night'
 import { plainOf } from './sections'
 
 const MIN = 60000
@@ -611,20 +611,56 @@ describe('the overnight row: its label dim, then the window and the idle figure,
   })
 })
 
+describe('the compaction floor: the smallest cached context the night step compacts', () => {
+  test('the floor is 60,000 tokens', () => {
+    expect(COMPACT_FLOOR_TOKENS).toBe(60000)
+  })
+
+  test('a context is compacted at the floor and not one token below it', () => {
+    expect(compactionDueOf(COMPACT_FLOOR_TOKENS)).toBe(true)
+    expect(compactionDueOf(COMPACT_FLOOR_TOKENS - 1)).toBe(false)
+  })
+
+  test('a larger context is compacted, and a smaller or an empty one is not', () => {
+    for (const tokens of [COMPACT_FLOOR_TOKENS + 1, 200000, 1000000]) expect(compactionDueOf(tokens)).toBe(true)
+    for (const tokens of [0, 1, 18579, 50000]) expect(compactionDueOf(tokens)).toBe(false)
+  })
+})
+
 describe('the two notices: the lines the user is told once, with the window and the step time filled in', () => {
-  test('the first states the learned window, the idle figure and the option that turns the step off', () => {
+  test('the first states the learned window, the idle figure, that a conversation of 60,000 tokens or more is compacted, and the option that turns the step off', () => {
     expect(windowNoticeOf(WINDOW)).toBe(
-      'cachier: learned your daily rest, 03:18–06:28. After 30 min with no prompt in any session inside it, keepalive stops until your next prompt. Turn it off with the overnight option in /config.',
+      'cachier: learned your daily rest, 03:18–06:28. After 30 min with no prompt in any session inside it, keepalive stops until your next prompt, and a conversation of 60,000 tokens or more is compacted, which is not undone. Turn it off with the overnight option in /config.',
     )
     expect(windowNoticeOf(NIGHT_WINDOW)).toBe(
-      'cachier: learned your daily rest, 22:30–06:30. After 30 min with no prompt in any session inside it, keepalive stops until your next prompt. Turn it off with the overnight option in /config.',
+      'cachier: learned your daily rest, 22:30–06:30. After 30 min with no prompt in any session inside it, keepalive stops until your next prompt, and a conversation of 60,000 tokens or more is compacted, which is not undone. Turn it off with the overnight option in /config.',
     )
   })
 
-  test('the second states the local time of the step and the option that turns the step off', () => {
-    expect(stepNoticeOf(at(1, 3, 19))).toBe('cachier: keepalive stopped for your daily rest at 03:19; it resumes on your next prompt. Turn it off with the overnight option in /config.')
-    expect(stepNoticeOf(at(1, 0, 5))).toBe('cachier: keepalive stopped for your daily rest at 00:05; it resumes on your next prompt. Turn it off with the overnight option in /config.')
-    expect(stepNoticeOf(at(1, 23, 59))).toBe('cachier: keepalive stopped for your daily rest at 23:59; it resumes on your next prompt. Turn it off with the overnight option in /config.')
+  test('the figure the first states is the floor the step compacts from: a conversation of that many tokens is compacted and one a token shorter is not', () => {
+    const [, figure] = windowNoticeOf(WINDOW).match(/a conversation of ([\d,]+) tokens or more is compacted/)!
+    const stated = Number(figure!.replace(/,/g, ''))
+    expect(stated).toBe(COMPACT_FLOOR_TOKENS)
+    expect(compactionDueOf(stated)).toBe(true)
+    expect(compactionDueOf(stated - 1)).toBe(false)
+  })
+
+  test('the second states the local time of the step, that the conversation was compacted, and the option that turns the step off', () => {
+    expect(stepNoticeOf(at(1, 3, 19), true)).toBe(
+      'cachier: keepalive stopped for your daily rest at 03:19 and the conversation was compacted; keepalive resumes on your next prompt. Turn it off with the overnight option in /config.',
+    )
+    expect(stepNoticeOf(at(1, 0, 5), true)).toBe(
+      'cachier: keepalive stopped for your daily rest at 00:05 and the conversation was compacted; keepalive resumes on your next prompt. Turn it off with the overnight option in /config.',
+    )
+    expect(stepNoticeOf(at(1, 23, 59), true)).toBe(
+      'cachier: keepalive stopped for your daily rest at 23:59 and the conversation was compacted; keepalive resumes on your next prompt. Turn it off with the overnight option in /config.',
+    )
+  })
+
+  test('the second says nothing of a compaction where none stood', () => {
+    expect(stepNoticeOf(at(1, 3, 19), false)).toBe('cachier: keepalive stopped for your daily rest at 03:19; keepalive resumes on your next prompt. Turn it off with the overnight option in /config.')
+    expect(stepNoticeOf(at(1, 0, 5), false)).toBe('cachier: keepalive stopped for your daily rest at 00:05; keepalive resumes on your next prompt. Turn it off with the overnight option in /config.')
+    expect(stepNoticeOf(at(1, 23, 59), false)).toBe('cachier: keepalive stopped for your daily rest at 23:59; keepalive resumes on your next prompt. Turn it off with the overnight option in /config.')
   })
 
   test('the window and the idle figure read as the overnight row states them', () => {
@@ -638,7 +674,8 @@ describe('the two notices: the lines the user is told once, with the window and 
   test('the step time reads as the overnight row states it once the session has stepped', () => {
     for (const stepMs of [at(1, 3, 19), at(1, 0, 5)]) {
       const [, time] = plainOf(overnightRowOf(inputs({ stepMs }))).match(/^overnight: done (\S+)$/)!
-      expect(stepNoticeOf(stepMs)).toContain(`daily rest at ${time}; `)
+      expect(stepNoticeOf(stepMs, true)).toContain(`daily rest at ${time} and `)
+      expect(stepNoticeOf(stepMs, false)).toContain(`daily rest at ${time}; `)
     }
   })
 })

@@ -1,10 +1,11 @@
 // The night step's store: two keys per session, each a plain time in ms, one key for the install, and the running state the tick, the pane and the prompt hook share. The step mark,
 // `overnight/<session id>`, is written by the tick alone, once per step; the action time, `prompted/<session id>`, is written by the prompt hook and the turn-on core alone, and
 // is the time of the user's last prompt or of the user turning keepalive on. A write of a time never reads first, so no update is lost between two writers; the scan reads every
-// session's action key for the idle check, and the clean-up deletes the keys two days old. The install's key, `notices`, records which of the two notices the user has been told
-// (night.ts words them) and is written by nightNotice alone, from a fresh read of the record, outside the two families the clean-up scans. The rules that decide from these times
-// are night.ts's; this module reads and writes them and holds the state, as pricesync.ts keeps its own: one object per load of the plugin, so a reload starts with none of it, taken
-// by function declarations because the engine follows `$` past an import only into those.
+// session's action key for the idle check, and the clean-up deletes the keys two days old. The install's key, `notices-v2`, records which of the two notices the user has been told
+// (night.ts words them) and is written by nightNotice alone, from a fresh read of the record, outside the two families the clean-up scans. The compaction the step also asks of the engine,
+// and its outcome as the step's debug line states it, are here too (nightCompact). The rules that decide from these times are night.ts's; this module reads and writes them and holds the
+// state, as pricesync.ts keeps its own: one object per load of the plugin, so a reload starts with none of it, taken by function declarations because the engine follows `$` past an
+// import only into those.
 
 import type { EngineInterface } from 'claude-code'
 import { idOf } from './history'
@@ -15,7 +16,9 @@ type Dollar = EngineInterface
 
 export const STEP_PREFIX = 'overnight/'
 export const ACTION_PREFIX = 'prompted/'
-export const NOTICES_KEY = 'notices'
+// The first build of the two notices wrote its record under `notices`. The notices are reworded, so an install that read them is to read the new ones once: the record is a new key, and the old
+// one is neither read nor deleted.
+export const NOTICES_KEY = 'notices-v2'
 // A key older than this, in either family, is deleted.
 const OLD_MS = 2 * 24 * 60 * 60 * 1000
 
@@ -187,6 +190,55 @@ export async function nightAction($: Dollar, state: NightState, atMs: number): P
 export async function nightStepped($: Dollar, state: NightState, atMs: number): Promise<boolean> {
   state.stepMs = atMs
   return state.id !== null && (await writeTime($, STEP_PREFIX + state.id, atMs))
+}
+
+// What a compaction came to, as the step's debug line states it. Nothing of the conversation is here, which the engine's result holds: only the counts it states and its own words. The keys
+// avoid the word token, whose numbers the engine's debug sink redacts.
+export type Compaction =
+  | { kind: 'stood'; size_before: number | null; size_after: number | null; summarizer: { in: number; out: number; cache_read: number; cache_write: number } | null }
+  | { kind: 'skipped'; reason: string }
+  | { kind: 'refused'; error: string }
+  | { kind: 'thrown'; error: string }
+
+// A count the engine states: a finite number that is not negative. Any other shape is none.
+const countOf = (value: unknown): number | null => (typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : null)
+
+// The usage of the summarizer's request, whole or not at all: a part of it would state a request the engine did not make.
+const usageOf = (value: unknown): Extract<Compaction, { kind: 'stood' }>['summarizer'] => {
+  const held = typeof value === 'object' && value !== null ? (value as Record<string, unknown>) : {}
+  const input = countOf(held.input_tokens)
+  const output = countOf(held.output_tokens)
+  const cacheRead = countOf(held.cache_read_input_tokens)
+  const cacheWrite = countOf(held.cache_creation_input_tokens)
+  return input === null || output === null || cacheRead === null || cacheWrite === null ? null : { in: input, out: output, cache_read: cacheRead, cache_write: cacheWrite }
+}
+
+// The engine's answer to a compaction as the debug line states it. The answer is read for the shapes the engine declares (a skip with its reason, or the compacted conversation) and for nothing
+// else, so that no word of the conversation can pass: the result is built from the counts named here and never spreads the answer. Any other answer is thrown.
+const outcomeOf = (answer: unknown): Compaction => {
+  const held = typeof answer === 'object' && answer !== null ? (answer as Record<string, unknown>) : {}
+  if (typeof held.skip === 'string') return { kind: 'skipped', reason: held.skip }
+  if (!Array.isArray(held.messages)) return { kind: 'thrown', error: 'the engine answered a compaction with neither a conversation nor a skip' }
+  return { kind: 'stood', size_before: countOf(held.tokensBefore), size_after: countOf(held.tokensAfter), summarizer: usageOf(held.usage) }
+}
+
+const textOf = (err: unknown): string => (err instanceof Error ? err.message : String(err))
+
+// Compacts the conversation through the engine, once, with no instructions of the mod's own, and says what came of it. The engine rejects the call while a turn runs, which is refused, and
+// answers a skip when another plugin vetoed it; a call that throws instead of returning (an engine without the call, for one) is thrown, and so is an answer of neither shape. The call has
+// no timeout of the mod's own: the engine owns the request. It never throws.
+export async function nightCompact($: Dollar): Promise<Compaction> {
+  let pending: Promise<unknown>
+  try {
+    pending = $.session.compact()
+  } catch (err) {
+    return { kind: 'thrown', error: textOf(err) }
+  }
+  try {
+    return outcomeOf(await pending)
+  } catch (err) {
+    return { kind: 'refused', error: textOf(err) }
+  }
 }
 
 const unspent = (notices: Notices | null, which: Notice): notices is Notices => notices !== null && !notices[which]

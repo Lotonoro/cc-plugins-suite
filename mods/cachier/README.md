@@ -151,7 +151,8 @@ a short terminal the lower sections are scrolled to with the wheel.
 "Overnight" is cachier's word for your daily rest, whenever in the day it falls: a night sleeper's night, or a night worker's day.
 Cachier learns the rest from your own pauses, at any hour (see [Learning from your pauses](#learning-from-your-pauses)), and the
 window it leaves, an hour inside each end of the habit, is where the night step may act. The step stops a session's keepalive for
-your rest, once per session per local day: it sends no more refreshes until your next prompt in that session.
+your rest, once per session per local day: it sends no more refreshes until your next prompt in that session. It also compacts the
+session's conversation when the cached context is at least 60,000 tokens (see **The compaction**).
 
 - **When it acts**: keepalive is on in the session and the `overnight` option is not `off`; the run has refreshes left to send and its
   cache is warm, with no turn running; the local time is inside the window (a window may cross midnight) and, at the 1 h TTL, a stop
@@ -169,11 +170,13 @@ your rest, once per session per local day: it sends no more refreshes until your
 - **What you are told**: cachier writes two lines into the transcript, once each per install of the mod, whichever session meets one first, drawn dim like a system notice
   and not sent to the model. The first comes the first time the step can act for you: the `overnight` option is not `off`, keepalive is on in a session, a window is learned,
   a cache is known and, at the 1 h TTL, a stop in the window would repay its rewrite. It states the window and what the step does in it:
-  `cachier: learned your daily rest, 03:18–06:28. After 30 min with no prompt in any session inside it, keepalive stops until your next prompt. Turn it off with the overnight option in /config.`
-  The second comes the first time the step acts, with the local time of the stop:
-  `cachier: keepalive stopped for your daily rest at 03:19; it resumes on your next prompt. Turn it off with the overnight option in /config.`
+  `cachier: learned your daily rest, 03:18–06:28. After 30 min with no prompt in any session inside it, keepalive stops until your next prompt, and a conversation of 60,000 tokens or more is compacted, which is not undone. Turn it off with the overnight option in /config.`
+  The second comes the first time the step acts, with the local time of the stop, once the compaction, if the step made one, has ended:
+  `cachier: keepalive stopped for your daily rest at 03:19 and the conversation was compacted; keepalive resumes on your next prompt. Turn it off with the overnight option in /config.`
+  It leaves out ` and the conversation was compacted` where no compaction stood (the conversation was under 60,000 tokens, or the compaction was skipped, refused or failed).
   A session where the step cannot act (the option `off`, or keepalive off, which is the default) tells you nothing and uses up neither line; turning keepalive on there later writes the
-  first one. No line is written at later stops: the `overnight:` row says each day's step.
+  first one. No line is written at later stops: the `overnight:` row says each day's step. These are the lines as reworded for the compaction: an install that was told the earlier
+  wording is told each of these once more.
 - **How it ends**: your next prompt in the session ends the stop, or turning keepalive on in it: `/keepalive on`, or the pie, whose
   first click turns keepalive off, as for any held stop, and whose second turns it on. A message from another session or a plugin does
   not end it. Where keepalive is turned on again without the stop (a reload or a start that resets it to on, or a lost write of its
@@ -188,6 +191,17 @@ your rest, once per session per local day: it sends no more refreshes until your
   TTL the stop acts only where that pays: the whole hours left in the window, from the moment it would act to the window's close, must
   be at least the 1 h break-even count, which is 39 on Opus 5.5. Where the step acts at the 1 h TTL, setting the option to `off` keeps
   the cache warm through the rest.
+- **The compaction**: once the stop has been taken and its mark written, a session whose cached context (the last request's prompt and its reply) is at least 60,000 tokens is also compacted,
+  through Claude Code's own compaction, as `/compact` does, with no instructions of cachier's own; one token under, nothing is. It runs apart from the stop, which stands whatever it comes to.
+  It is the day's one try: a compaction that another plugin vetoes (skipped), one the engine refuses (a turn is running) and one that fails are not made again that day, and neither is a second
+  after one that stood, a reload included, since the step is once per session per local day. A prompt you type while it runs is queued by the terminal and runs after it, on the compacted
+  conversation. A compaction that stands marks the cache cold as any compaction does, so the Cache line reads `reset` and, while the stop holds, the pie beside it is red; your first reply
+  after the rest warms the cache again. It is not undone at your next prompt (see Known limits), and the `overnight` option turns it off with the stop.
+  The compaction is one request that reads the whole conversation at the model's input price, not the cache-read price, and writes a summary of about 900 tokens; it saves the first prompt after
+  the rest the difference between writing the whole conversation to the cache and writing the compacted one. The two compactions measured, on Opus 5.5 at the 5 m TTL, took conversations of
+  59,140 and 48,726 tokens to 1,364 and 3,223; the request cost $0.23 and $0.19 and the smaller rewrite saved $0.25 and $0.18. They broke even near 43,000 and 56,000 tokens, and 60,000, the
+  larger of the two rounded up, is the floor, so it errs toward leaving a conversation alone; each further 10,000 tokens adds about a cent to the net. The floor reads no price, so every model and
+  TTL share it. A real session's larger prefix of instructions and tools moves the break-even up, and the 1 h TTL, whose write costs more, down; neither was measured.
 - **How often it acts**: rarely. At the 5 m TTL a run's refreshes end after about two hours and keepalive then holds its own pause,
   and the step replaces no held stop, so it reaches only the rests you begin within about two hours before the window opens; on the
   others the refreshes have ended by then. At the 1 h TTL it acts only where the stop repays its rewrite, as above: a window holds at
@@ -198,7 +212,8 @@ your rest, once per session per local day: it sends no more refreshes until your
   prompt in any of them holds it off until 30 minutes after that prompt. A half hour away inside your window is taken as the rest: the
   stop comes, and your next prompt resumes keepalive.
 - **Turning it off**: set the `overnight` option to `off`. Only `off` turns it off: an empty or other value leaves it on, as the
-  default says. The Settings section shows it as `night stop: on (overnight) · overnight`. With keepalive off the step never acts.
+  default says. The Settings section shows it as `night stop: on (overnight) · overnight`. With keepalive off the step never acts. The option turns the compaction off with the stop: there is no
+  setting for either alone.
 
 ## Cost unit
 
@@ -430,7 +445,10 @@ session picks up the change, so cachier counts a switch as taking effect in sess
 With `--debug` or `--debug-file`, each refresh, lead raise, miss and long pause writes a `cachier` line to
 the debug log, and each model switch writes a `cachier switch` line holding the engine's `prompt_cache_warm` flag beside
 cachier's own reading of the cache. Each night step writes a `cachier overnight` line holding its `time`, the `window`, this
-session's idle time (`idle_ms`) and the newest prompt time found across sessions (`newest_prompt`, `null` where none was found).
+session's idle time (`idle_ms`) and the newest prompt time found across sessions (`newest_prompt`, `null` where none was found). Where the step
+also compacted, the line is written when the compaction ends and holds its `compaction`: `kind` `stood` with `size_before` and `size_after`, the conversation's size in tokens (`null` where the engine gave
+none), and `summarizer`, the summary request's `in`, `out`, `cache_read` and `cache_write` tokens (`null` where it gave no usage); `skipped` with its `reason`; or `refused` (the engine rejected the call) or `thrown` (the call threw, or its answer was neither a compaction nor a skip)
+with its `error`. It holds counts and the engine's own words, never the conversation. A step that made no compaction has no `compaction` in its line.
 
 Cachier keeps one record per pause your prompt ends, in its plugin store under your config directory: when the pause
 started, how long it ran, the local hour and weekday, the cache TTL, what a rewrite costs over a refresh, and the size of
@@ -440,8 +458,8 @@ shared price record under the key `prices`: the rates each read gave every model
 changed, whether the newest read dropped it, when the newest successful read landed and when a read last changed any
 rates, and the last read attempt with its outcome and failure count. For the night step it keeps two small keys per session,
 `overnight/<session id>`, the time of the step the session took, and `prompted/<session id>`, the time of your last prompt in it or of
-your last turning keepalive on in it; a key two days old is deleted. One more key for the install, `notices`, records which of the two overnight lines (see
-[Overnight](#overnight)) it has written, so that each is written once; it is never deleted. Nothing else is written to disk. Cachier also reads
+your last turning keepalive on in it; a key two days old is deleted. One more key for the install, `notices-v2`, records which of the two overnight lines (see
+[Overnight](#overnight)) it has written, so that each is written once; it is never deleted. The earlier wording of the lines kept its record in `notices`, which is no longer read or written and stays where it is. Nothing else is written to disk. Cachier also reads
 the overrides file `cachier/prices.json` under your config directory, and never writes it. The only request
 cachier makes itself is the pricing page, with nothing sent but the request. Each keepalive refresh is a model request.
 
@@ -468,6 +486,8 @@ cachier makes itself is the pricing page, with nothing sent but the request. Eac
 - The pause a night stop ends is counted as a pause whose refreshes ran out (`wasted, ran out`), as any pause with refreshes whose cache
   lapsed is, though the stop and not the count ended them.
 - Whether the two overnight lines reach a phone under Remote Control is not measured.
+- A compaction is not undone at your next prompt: the conversation stays compacted, the summary standing in for what it replaced. The `overnight` option off keeps the step from compacting.
+- A reload while the compaction runs leaves its outcome out of the `cachier overnight` line, and the second overnight line unwritten until a later step writes it.
 - Two sessions that write an overnight line in the same moment, between each one's read of the record and its write, may both write the same line, or the later write may leave
   the other's line unrecorded, so that a later session writes it again. The engine's store has no version check, so a write cannot be made to fail because another session's landed
   after the read.

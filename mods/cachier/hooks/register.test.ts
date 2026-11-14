@@ -2,7 +2,8 @@ import { describe, expect, mock, test } from 'claude-code/testing'
 import { assistant, drawnLabels, fakeFiles, LABELS, lines, mislabelled, UNLABELLED, user, withoutLabel } from './fixture'
 import { HISTORY_BOUND, keyOf } from './history'
 import { INITIAL as INITIAL_KEEPALIVE } from './keepalive'
-import { stepNoticeOf, windowNoticeOf } from './night'
+import { COMPACT_FLOOR_TOKENS, stepNoticeOf, windowNoticeOf } from './night'
+import { NOTICES_KEY } from './nightstep'
 import { alarmOf, learnTranscript, pressCountdown, pressOnce, restoreState, STATE_SHAPE, unitFrom } from './register'
 import { INITIAL_STATS } from './stats'
 
@@ -25,7 +26,7 @@ const PRICING_PAGE = [
 
 // The engine's answers beneath the plugin: the transcript (its text read from `doc`, so a test can grow it), the status
 // line, the debug log, and each host read the reader makes. `runs` counts the reads.
-const world = (on: any, doc: { text: string; broken?: boolean; exists?: boolean; hold?: Promise<void>; deny?: string; pricing?: string; pricingStatus?: number; pricingHold?: Promise<void>; fork?: unknown; forkSends?: { reply: unknown; delayMs: number }[]; clock?: { sleep: (ms: number) => Promise<void> }; forkHold?: Promise<void>; switchHold?: Promise<void>; compactHold?: Promise<void>; forkThrows?: boolean; dropPrompt?: boolean; promptThrows?: boolean; store?: Record<string, unknown>; auditor?: boolean; markdown?: boolean; engineNode?: boolean; openThrows?: boolean; openUnplaced?: boolean; closeKeeps?: boolean; closeThrows?: boolean; panesThrow?: boolean; listUnplaced?: boolean; keysThrows?: boolean; keysHold?: Promise<void>; getHold?: { key: string; hold: Promise<void>; nth?: number }; getHeldDenied?: { key: string; hold: Promise<void>; deny: string }; setHold?: { key: string; hold: Promise<void> }; getDenied?: Set<string>; setDenied?: Set<string>; deleteDenied?: Set<string>; getGate?: (key: string, nth: number) => Promise<string | undefined> | undefined; onSet?: (key: string) => void }) => {
+const world = (on: any, doc: { text: string; broken?: boolean; exists?: boolean; hold?: Promise<void>; deny?: string; pricing?: string; pricingStatus?: number; pricingHold?: Promise<void>; fork?: unknown; forkSends?: { reply: unknown; delayMs: number }[]; clock?: { sleep: (ms: number) => Promise<void> }; forkHold?: Promise<void>; switchHold?: Promise<void>; compactHold?: Promise<void>; forkThrows?: boolean; dropPrompt?: boolean; promptThrows?: boolean; store?: Record<string, unknown>; auditor?: boolean; markdown?: boolean; engineNode?: boolean; openThrows?: boolean; openUnplaced?: boolean; closeKeeps?: boolean; closeThrows?: boolean; panesThrow?: boolean; listUnplaced?: boolean; keysThrows?: boolean; keysHold?: Promise<void>; getHold?: { key: string; hold: Promise<void>; nth?: number }; getHeldDenied?: { key: string; hold: Promise<void>; deny: string }; setHold?: { key: string; hold: Promise<void> }; getDenied?: Set<string>; setDenied?: Set<string>; deleteDenied?: Set<string>; getGate?: (key: string, nth: number) => Promise<string | undefined> | undefined; onSet?: (key: string) => void; compact?: (e: any, rec: any) => unknown }) => {
   const rec = {
     status: [] as (string | undefined)[],
     logs: [] as string[],
@@ -46,6 +47,8 @@ const world = (on: any, doc: { text: string; broken?: boolean; exists?: boolean;
     closes: [] as any[],
     // The commands the plugin registered, as it registered them.
     commands: [] as any[],
+    // The compactions the plugin asked the engine for, as the engine received them.
+    compacts: [] as any[],
   }
   // `getHold` holds the `nth` read of its key, the first by default: the value is read at once and answered when the hold settles, so a
   // write that lands meanwhile is not in the answer.
@@ -114,6 +117,12 @@ const world = (on: any, doc: { text: string; broken?: boolean; exists?: boolean;
     return {}
   })
   on('turn.complete', (_$: any, e: any) => ({ text: e.answer }))
+  // A compaction the plugin asks for: what the test gives as `compact` answers it (a throw refuses it), else it is skipped. The engine's side of a compaction that stands, the classic hooks
+  // and the session start, is raised by the test itself where it matters.
+  on('session.compact', async (_$: any, e: any) => {
+    rec.compacts.push(e)
+    return doc.compact === undefined ? { skip: 'this world does not compact' } : doc.compact(e, rec)
+  })
   // What the footer draws beneath the plugins: the mode labels, with `auditor` another plugin's label after them, and with `markdown` only
   // another plugin's Markdown, its words in a prop. It is
   // registered ahead of the bare text below, which would otherwise answer for the footer.
@@ -5815,10 +5824,10 @@ const ONE_HOUR_REPAYS_PAGE = PRICING_PAGE.replace('$0.20 / MTok', '$4 / MTok')
 
 // A main thread whose last request was sent at `requestMs` on the given TTL, with the seven nights of rests stored and what else a test stores. The 1 h TTL is priced by REPAYING_PAGE
 // unless a test gives another page, so that a stop repays in the tests of the stop.
-const nightDoc = (tags: { five: number; one: number }, store: Record<string, unknown> = {}, requestMs = REQ, pricing = tags.one > 0 ? REPAYING_PAGE : PRICING_PAGE): any => ({
+const nightDoc = (tags: { five: number; one: number }, store: Record<string, unknown> = {}, requestMs = REQ, pricing = tags.one > 0 ? REPAYING_PAGE : PRICING_PAGE, write = 18551): any => ({
   text: lines([
     user({ uuid: 'u1', parent: null, ts: iso(requestMs) }),
-    assistant({ uuid: 'a1', parent: 'u1', ts: iso(requestMs), write: 18551, tags, model: 'claude-opus-5-5', speed: 'standard' }),
+    assistant({ uuid: 'a1', parent: 'u1', ts: iso(requestMs), write, tags, model: 'claude-opus-5-5', speed: 'standard' }),
   ]),
   store: { ...NIGHTS, ...store },
   pricing,
@@ -6575,7 +6584,7 @@ const watched = async ($: any, on: any, doc: any = nightDoc(ONE_HOUR), startMs =
   const rec = kaWorld(on, doc)
   const events: string[] = []
   doc.onSet = (key: string) => {
-    if (key === 'notices' || key === 'overnight/s1') events.push(`${key} ${JSON.stringify(rec.store.get(key))} after ${noticesOf(rec).length} lines`)
+    if (key === NOTICES_KEY || key === 'overnight/s1') events.push(`${key} ${JSON.stringify(rec.store.get(key))} after ${noticesOf(rec).length} lines`)
   }
   const clk = timed(mock.clock(on, { now: startMs }), startMs)
   await $.classic.SessionStart({ source: 'startup', transcript_path: PATH })
@@ -6606,15 +6615,15 @@ describe('the overnight notices: the user is told once per install, when the sto
   test("with the option on, keepalive on and a window learned, one tick writes the first line once, after the record's write has landed, and nothing is written while that write waits", { options: OVERNIGHT_ON }, async ($, on) => {
     const { hold, release } = gateOf()
     const doc = nightDoc(ONE_HOUR, {}, EARLY)
-    doc.setHold = { key: 'notices', hold }
+    doc.setHold = { key: NOTICES_KEY, hold }
     const { rec, clk, events } = await watched($, on, doc)
     await clk.by(10 * 1000)
     expect(await keepaliveRows($)).toContain(OVERNIGHT_ROW)
-    expect(rec.store.has('notices')).toBe(false)
+    expect(rec.store.has(NOTICES_KEY)).toBe(false)
     expect(noticesOf(rec)).toEqual([])
     release()
     await clk.by(2000)
-    expect(events).toEqual(['notices {"window":true,"step":false} after 0 lines'])
+    expect(events).toEqual([`${NOTICES_KEY} {"window":true,"step":false} after 0 lines`])
     expect(noticesOf(rec)).toEqual([WINDOW_NOTICE])
     await clk.by(30 * 1000)
     expect(events).toHaveLength(1)
@@ -6634,16 +6643,16 @@ describe('the overnight notices: the user is told once per install, when the sto
     expect(await keepaliveRows($)).toContain('overnight: 00:00–05:00 · after 30m idle')
     await clk.by(60 * 1000)
     expect(noticesOf(rec)).toEqual([WINDOW_NOTICE])
-    expect(events).toEqual(['notices {"window":true,"step":false} after 0 lines'])
+    expect(events).toEqual([`${NOTICES_KEY} {"window":true,"step":false} after 0 lines`])
   })
 
   test('a load that reads the first line written, a reload or a session started after another wrote it, writes none, and leaves the record as it was', { options: OVERNIGHT_ON }, async ($, on) => {
-    const { rec, clk } = await watched($, on, nightDoc(ONE_HOUR, { notices: { window: true, step: false } }, EARLY))
+    const { rec, clk } = await watched($, on, nightDoc(ONE_HOUR, { [NOTICES_KEY]: { window: true, step: false } }, EARLY))
     await clk.by(30 * 1000)
     expect(await toggle($, '')).toContain(RUNNING)
     expect(await keepaliveRows($)).toContain(OVERNIGHT_ROW)
     expect(noticesOf(rec)).toEqual([])
-    expect(rec.store.get('notices')).toEqual({ window: true, step: false })
+    expect(rec.store.get(NOTICES_KEY)).toEqual({ window: true, step: false })
   })
 
   test('with keepalive off a learned window writes no line and leaves the record unspent; turning keepalive on writes the first line at the next tick', { options: { keepalive_lead_s: 60 } }, async ($, on) => {
@@ -6652,11 +6661,11 @@ describe('the overnight notices: the user is told once per install, when the sto
     expect(await toggle($, '')).toContain('Keepalive  off')
     expect(await keepaliveRows($)).toContain(`${OVERNIGHT_ROW} · only with keepalive on`)
     expect(noticesOf(rec)).toEqual([])
-    expect(rec.store.has('notices')).toBe(false)
+    expect(rec.store.has(NOTICES_KEY)).toBe(false)
     await toggle($, 'on 60 24')
     await clk.by(2000)
     expect(noticesOf(rec)).toEqual([WINDOW_NOTICE])
-    expect(rec.store.get('notices')).toEqual({ window: true, step: false })
+    expect(rec.store.get(NOTICES_KEY)).toEqual({ window: true, step: false })
   })
 
   test('with the option off a learned window writes no line and leaves the record unspent', { options: { ...OVERNIGHT_ON, overnight: 'off' } }, async ($, on) => {
@@ -6665,7 +6674,7 @@ describe('the overnight notices: the user is told once per install, when the sto
     expect(await toggle($, '')).toContain(RUNNING)
     expect(await keepaliveRows($)).toContain(REST_ROW)
     expect(noticesOf(rec)).toEqual([])
-    expect(rec.store.has('notices')).toBe(false)
+    expect(rec.store.has(NOTICES_KEY)).toBe(false)
   })
 
   test("at the 1 h TTL on Opus 5.5's own page, where no stop repays its rewrite, no line is written and the record is unspent", { options: OVERNIGHT_ON }, async ($, on) => {
@@ -6675,7 +6684,7 @@ describe('the overnight notices: the user is told once per install, when the sto
     expect(await keepaliveRows($)).toContain(REST_ROW)
     expect((await keepaliveRows($)).some((row) => row.startsWith('overnight:'))).toBe(false)
     expect(noticesOf(rec)).toEqual([])
-    expect(rec.store.has('notices')).toBe(false)
+    expect(rec.store.has(NOTICES_KEY)).toBe(false)
   })
 
   test('with no window learned no line is written and the record is unspent', { options: OVERNIGHT_ON }, async ($, on) => {
@@ -6683,7 +6692,7 @@ describe('the overnight notices: the user is told once per install, when the sto
     await clk.by(30 * 1000)
     expect(await keepaliveRows($)).toContain('rest: 6 of 7 seen')
     expect(noticesOf(rec)).toEqual([])
-    expect(rec.store.has('notices')).toBe(false)
+    expect(rec.store.has(NOTICES_KEY)).toBe(false)
   })
 
   test('the first line comes before the window opens: it is written when the step can act, at any hour', { options: OVERNIGHT_ON }, async ($, on) => {
@@ -6691,7 +6700,7 @@ describe('the overnight notices: the user is told once per install, when the sto
     const { rec, clk } = await watched($, on, nightDoc(ONE_HOUR, {}, NOON - 10 * MIN), NOON - 5000)
     await clk.by(10 * 1000)
     expect(noticesOf(rec)).toEqual([WINDOW_NOTICE])
-    expect(rec.store.get('notices')).toEqual({ window: true, step: false })
+    expect(rec.store.get(NOTICES_KEY)).toEqual({ window: true, step: false })
   })
 
   test('a stop already held does not hold the first line back: a window learned while the run stands paused is told at the next tick, and the run stays paused', { options: { ...OVERNIGHT_ON, keepalive_count: 1 } }, async ($, on) => {
@@ -6712,12 +6721,12 @@ describe('the overnight notices: the user is told once per install, when the sto
     const { rec, clk, events } = await watched($, on)
     await clk.to(NIGHT + 2000)
     const step = rec.store.get('overnight/s1') as number
-    expect(events).toEqual(['notices {"window":true,"step":false} after 0 lines', `overnight/s1 ${step} after 1 lines`, 'notices {"window":true,"step":true} after 1 lines'])
-    expect(noticesOf(rec)).toEqual([WINDOW_NOTICE, stepNoticeOf(step)])
+    expect(events).toEqual([`${NOTICES_KEY} {"window":true,"step":false} after 0 lines`, `overnight/s1 ${step} after 1 lines`, `${NOTICES_KEY} {"window":true,"step":true} after 1 lines`])
+    expect(noticesOf(rec)).toEqual([WINDOW_NOTICE, stepNoticeOf(step, false)])
     // A later tick writes no third line, and the lines are not what a refresh sent or a toast showed.
     await clk.by(10 * MIN)
-    expect(noticesOf(rec)).toEqual([WINDOW_NOTICE, stepNoticeOf(step)])
-    expect(rec.store.get('notices')).toEqual({ window: true, step: true })
+    expect(noticesOf(rec)).toEqual([WINDOW_NOTICE, stepNoticeOf(step, false)])
+    expect(rec.store.get(NOTICES_KEY)).toEqual({ window: true, step: true })
     expect(rec.forks.every((prompt) => prompt === 'ok')).toBe(true)
     expect(rec.toasts).toEqual([])
   })
@@ -6735,7 +6744,7 @@ describe('the overnight notices: the user is told once per install, when the sto
     expect(lost).toBe(1)
     expect(noticesOf(rec)).toEqual([WINDOW_NOTICE])
     await clk.by(1000)
-    expect(noticesOf(rec)).toEqual([WINDOW_NOTICE, stepNoticeOf(rec.store.get('overnight/s1') as number)])
+    expect(noticesOf(rec)).toEqual([WINDOW_NOTICE, stepNoticeOf(rec.store.get('overnight/s1') as number, false)])
   })
 
   test('a step mark that cannot be written writes no second line in this load and leaves the record unspent for it; the step of another session, its mark landing, writes it', { options: OVERNIGHT_ON }, async ($, on) => {
@@ -6748,7 +6757,7 @@ describe('the overnight notices: the user is told once per install, when the sto
     expect(debugOf(rec, 'cachier overnight')).toHaveLength(1)
     expect(await toggle($, '')).toContain(STOPPED)
     expect(noticesOf(rec)).toEqual([WINDOW_NOTICE])
-    expect(rec.store.get('notices')).toEqual({ window: true, step: false })
+    expect(rec.store.get(NOTICES_KEY)).toEqual({ window: true, step: false })
     await clk.by(10 * MIN)
     expect(noticesOf(rec)).toEqual([WINDOW_NOTICE])
     // A second session of the load steps later with its own mark landing: the line is written then, once.
@@ -6759,32 +6768,32 @@ describe('the overnight notices: the user is told once per install, when the sto
     await clk.by(70 * 1000)
     const second = rec.store.get('overnight/s2') as number
     expect(second).toBeGreaterThan(NIGHT)
-    expect(noticesOf(rec)).toEqual([WINDOW_NOTICE, stepNoticeOf(second)])
-    expect(rec.store.get('notices')).toEqual({ window: true, step: true })
+    expect(noticesOf(rec)).toEqual([WINDOW_NOTICE, stepNoticeOf(second, false)])
+    expect(rec.store.get(NOTICES_KEY)).toEqual({ window: true, step: true })
   })
 
   test("a later step, a day after the one that was told, steps and writes no line", { options: OVERNIGHT_ON }, async ($, on) => {
     const YESTERDAY = NIGHT - DAY_MS
-    const { rec, clk, journal } = await nearNight($, on, nightDoc(ONE_HOUR, { notices: { window: true, step: true }, 'overnight/s1': YESTERDAY, 'prompted/s1': YESTERDAY + 10 * MIN }))
+    const { rec, clk, journal } = await nearNight($, on, nightDoc(ONE_HOUR, { [NOTICES_KEY]: { window: true, step: true }, 'overnight/s1': YESTERDAY, 'prompted/s1': YESTERDAY + 10 * MIN }))
     await clk.to(NIGHT + 2000)
     expect(journal).toEqual(['stop', 'mark'])
     expect(noticesOf(rec)).toEqual([])
-    expect(rec.store.get('notices')).toEqual({ window: true, step: true })
+    expect(rec.store.get(NOTICES_KEY)).toEqual({ window: true, step: true })
   })
 
   test("a second session of the same load meets both lines already written: it steps later the same day and writes no line, the record being the install's", { options: OVERNIGHT_ON }, async ($, on) => {
     const { rec, clk } = await watched($, on)
     await clk.to(NIGHT + 2000)
     const step = rec.store.get('overnight/s1') as number
-    expect(noticesOf(rec)).toEqual([WINDOW_NOTICE, stepNoticeOf(step)])
+    expect(noticesOf(rec)).toEqual([WINDOW_NOTICE, stepNoticeOf(step, false)])
     await $.classic.SessionStart({ source: 'resume', transcript_path: PATH_2 })
     await clk.by(1000)
     await mainStep($)
     await turnEnd($)
     await clk.by(70 * 1000)
     expect(rec.store.get('overnight/s2')).toBeGreaterThan(step)
-    expect(noticesOf(rec)).toEqual([WINDOW_NOTICE, stepNoticeOf(step)])
-    expect(rec.store.get('notices')).toEqual({ window: true, step: true })
+    expect(noticesOf(rec)).toEqual([WINDOW_NOTICE, stepNoticeOf(step, false)])
+    expect(rec.store.get(NOTICES_KEY)).toEqual({ window: true, step: true })
   })
 
   test('a draw writes neither line: the pane and the bare answer drawn again and again before a tick write nothing, and the next tick writes the first line', { options: OVERNIGHT_ON }, async ($, on) => {
@@ -6799,70 +6808,70 @@ describe('the overnight notices: the user is told once per install, when the sto
     // The stop can act here, so a draw that wrote the line would have written it.
     expect(await keepaliveRows($)).toContain(OVERNIGHT_ROW)
     expect(noticesOf(rec)).toEqual([])
-    expect(rec.store.has('notices')).toBe(false)
+    expect(rec.store.has(NOTICES_KEY)).toBe(false)
     await clock.advance(2000)
     expect(noticesOf(rec)).toEqual([WINDOW_NOTICE])
   })
 
   test('a record write that throws writes no line and is reported once, and no later tick of the load tries again', { options: OVERNIGHT_ON }, async ($, on) => {
     const doc = nightDoc(ONE_HOUR, {}, EARLY)
-    doc.setDenied = new Set(['notices'])
+    doc.setDenied = new Set([NOTICES_KEY])
     const { rec, clk } = await watched($, on, doc)
     await clk.by(30 * 1000)
     expect(rec.logs.filter((l) => l.includes('write refused'))).toHaveLength(1)
     expect(noticesOf(rec)).toEqual([])
-    expect(rec.store.has('notices')).toBe(false)
+    expect(rec.store.has(NOTICES_KEY)).toBe(false)
     expect(await toggle($, '')).toContain(RUNNING)
   })
 
   test('a failed read of the record is reported once and writes no line; the tick after a read that lands writes the first line', { options: OVERNIGHT_ON }, async ($, on) => {
     const doc = nightDoc(ONE_HOUR, {}, EARLY)
-    doc.getDenied = new Set(['notices'])
+    doc.getDenied = new Set([NOTICES_KEY])
     const { rec, clk } = await watched($, on, doc)
     const refused = () => rec.logs.filter((l) => l.includes('read refused')).length
     await clk.by(20 * 1000)
     expect(refused()).toBe(1)
     expect(noticesOf(rec)).toEqual([])
-    expect(rec.store.has('notices')).toBe(false)
-    doc.getDenied.delete('notices')
+    expect(rec.store.has(NOTICES_KEY)).toBe(false)
+    doc.getDenied.delete(NOTICES_KEY)
     await clk.by(2000)
     expect(refused()).toBe(1)
     expect(noticesOf(rec)).toEqual([WINDOW_NOTICE])
-    expect(rec.store.get('notices')).toEqual({ window: true, step: false })
+    expect(rec.store.get(NOTICES_KEY)).toEqual({ window: true, step: false })
   })
 
   test('a step taken while the record cannot be read is still taken, and writes no line', { options: OVERNIGHT_ON }, async ($, on) => {
     const doc = nightDoc(ONE_HOUR)
-    doc.getDenied = new Set(['notices'])
+    doc.getDenied = new Set([NOTICES_KEY])
     const { rec, clk, journal } = await nearNight($, on, doc)
     await clk.to(NIGHT + 2000)
     expect(journal).toEqual(['stop', 'mark'])
     expect(noticesOf(rec)).toEqual([])
-    expect(rec.store.has('notices')).toBe(false)
+    expect(rec.store.has(NOTICES_KEY)).toBe(false)
   })
 
   test("both lines another session told since this load read the record are not told again, and its flags are not erased by this session's asks", { options: OVERNIGHT_ON }, async ($, on) => {
     const { rec, clk, journal, turn } = await beforeFirstTick($, on, nightDoc(ONE_HOUR, {}, EARLY))
     // The record was read untold at the learn; another session of the install has told the user both lines since.
-    rec.store.set('notices', { window: true, step: true })
+    rec.store.set(NOTICES_KEY, { window: true, step: true })
     await turn()
     await clk.by(10 * 1000)
     expect(noticesOf(rec)).toEqual([])
-    expect(rec.store.get('notices')).toEqual({ window: true, step: true })
+    expect(rec.store.get(NOTICES_KEY)).toEqual({ window: true, step: true })
     // The step at 03:20, this session's own, is not told either.
     await clk.to(NIGHT + 21 * MIN)
     expect(journal).toEqual(['stop', 'mark'])
     expect(noticesOf(rec)).toEqual([])
-    expect(rec.store.get('notices')).toEqual({ window: true, step: true })
+    expect(rec.store.get(NOTICES_KEY)).toEqual({ window: true, step: true })
   })
 
   test('the first line told after another session spent the step line keeps that flag in the record, and the step is not told again', { options: OVERNIGHT_ON }, async ($, on) => {
     const { rec, clk, journal, turn } = await beforeFirstTick($, on, nightDoc(ONE_HOUR, {}, EARLY))
-    rec.store.set('notices', { window: false, step: true })
+    rec.store.set(NOTICES_KEY, { window: false, step: true })
     await turn()
     await clk.by(10 * 1000)
     expect(noticesOf(rec)).toEqual([WINDOW_NOTICE])
-    expect(rec.store.get('notices')).toEqual({ window: true, step: true })
+    expect(rec.store.get(NOTICES_KEY)).toEqual({ window: true, step: true })
     await clk.to(NIGHT + 21 * MIN)
     expect(journal).toEqual(['stop', 'mark'])
     expect(noticesOf(rec)).toEqual([WINDOW_NOTICE])
@@ -6871,18 +6880,18 @@ describe('the overnight notices: the user is told once per install, when the sto
   test('a refused fresh read of the record writes no line and is reported once while it keeps failing; the tick whose read lands writes the first line', { options: OVERNIGHT_ON }, async ($, on) => {
     const doc = nightDoc(ONE_HOUR, {}, EARLY)
     // The first read of the record is the learn's; the next two, the ticks' fresh reads, are refused.
-    doc.getGate = (key: string, nth: number) => (key === 'notices' && (nth === 2 || nth === 3) ? Promise.resolve('read refused') : undefined)
+    doc.getGate = (key: string, nth: number) => (key === NOTICES_KEY && (nth === 2 || nth === 3) ? Promise.resolve('read refused') : undefined)
     const { rec, clk, turn } = await beforeFirstTick($, on, doc)
     const refused = () => rec.logs.filter((l) => l.includes('read refused')).length
     await turn()
     await clk.by(1500)
     expect(refused()).toBe(1)
     expect(noticesOf(rec)).toEqual([])
-    expect(rec.store.has('notices')).toBe(false)
+    expect(rec.store.has(NOTICES_KEY)).toBe(false)
     await clk.by(2000)
     expect(refused()).toBe(1)
     expect(noticesOf(rec)).toEqual([WINDOW_NOTICE])
-    expect(rec.store.get('notices')).toEqual({ window: true, step: false })
+    expect(rec.store.get(NOTICES_KEY)).toEqual({ window: true, step: false })
   })
 
   // A load that could not read the record at its learn is asked for it again by each tick. Refused until 03:00, it is read by the tick at 03:00:00.5, whose step is due and whose price list
@@ -6895,10 +6904,10 @@ describe('the overnight notices: the user is told once per install, when the sto
     const edit = gateOf()
     let holding = false
     const doc = nightDoc(ONE_HOUR)
-    doc.getDenied = new Set(['notices'])
+    doc.getDenied = new Set([NOTICES_KEY])
     let freshRead = 0
-    if (wait === 'write') doc.setHold = { key: 'notices', hold: notice.hold }
-    else doc.getGate = (key: string, nth: number) => (key === 'notices' && nth === freshRead ? notice.hold.then(() => undefined) : undefined)
+    if (wait === 'write') doc.setHold = { key: NOTICES_KEY, hold: notice.hold }
+    else doc.getGate = (key: string, nth: number) => (key === NOTICES_KEY && nth === freshRead ? notice.hold.then(() => undefined) : undefined)
     const world = await beforeFirstTick($, on, doc, NIGHT - 3500, async (e, next) => {
       if (holding && e.key === 'keepalive' && e.value?.stop === null) await edit.hold
       return next(e)
@@ -6908,9 +6917,9 @@ describe('the overnight notices: the user is told once per install, when the sto
       expect(world.rec.logs.filter((l) => l.includes('read refused'))).toHaveLength(1)
       doc.getDenied.clear()
       // The next read of the record is the retry's, the one after it the ask's fresh read.
-      freshRead = world.rec.gets.filter((key) => key === 'notices').length + 2
+      freshRead = world.rec.gets.filter((key) => key === NOTICES_KEY).length + 2
       await world.clk.by(1000)
-      expect(world.rec.store.has('notices')).toBe(false)
+      expect(world.rec.store.has(NOTICES_KEY)).toBe(false)
       await world.clk.by(10)
       await body({ ...world, notice, edit, holdEdits: () => void (holding = true) })
     } finally {
@@ -6940,7 +6949,7 @@ describe('the overnight notices: the user is told once per install, when the sto
       const step = rec.store.get('overnight/s1') as number
       expect(step).toBeGreaterThan(NIGHT + 30 * MIN)
       expect(journal).toEqual(['action', 'stop', 'mark'])
-      expect(noticesOf(rec)).toEqual([WINDOW_NOTICE, stepNoticeOf(step)])
+      expect(noticesOf(rec)).toEqual([WINDOW_NOTICE, stepNoticeOf(step, false)])
     })
   })
 
@@ -6950,7 +6959,7 @@ describe('the overnight notices: the user is told once per install, when the sto
       const toggled = toggle($, 'on 60 24')
       await clk.by(0)
       expect(journal).toEqual(['action'])
-      rec.store.set('notices', { window: true, step: true })
+      rec.store.set(NOTICES_KEY, { window: true, step: true })
       notice.release()
       await clk.by(0)
       expect(noticesOf(rec)).toEqual([])
@@ -6960,7 +6969,7 @@ describe('the overnight notices: the user is told once per install, when the sto
       edit.release()
       await toggled
       expect(await toggle($, '')).toContain(RUNNING)
-      expect(rec.store.get('notices')).toEqual({ window: true, step: true })
+      expect(rec.store.get(NOTICES_KEY)).toEqual({ window: true, step: true })
     })
   })
 
@@ -7001,7 +7010,7 @@ describe('the overnight notices: the user is told once per install, when the sto
     })
     // The record is refused until the fifth tick is over, so that the ticks before the ask are as steady as the ticks after it.
     const doc = nightDoc(ONE_HOUR, {}, EARLY)
-    doc.getDenied = new Set(['notices'])
+    doc.getDenied = new Set([NOTICES_KEY])
     const { rec, clk } = await beforeFirstTick($, on, doc, NIGHT - 12000)
     const used: number[] = []
     let asked = -1
@@ -7010,12 +7019,331 @@ describe('the overnight notices: the user is told once per install, when the sto
       const before = reads
       await clk.by(1000)
       used.push(reads - before)
-      if (asked < 0 && rec.store.has('notices')) asked = i
+      if (asked < 0 && rec.store.has(NOTICES_KEY)) asked = i
     }
     expect(asked).toBeGreaterThanOrEqual(5)
     expect(used[asked]).toBe(used[asked + 1]! + 1)
     expect(used[asked + 1]).toBe(used[asked + 2])
     expect(used[asked - 1]).toBe(used[asked + 1])
+  })
+})
+
+// The night compaction. A conversation's size is its last request's prompt and its reply: the fixture's request counts 8 input tokens and its reply 20, so a cache write of `tokens - 28`
+// makes a context of `tokens`. The engine answers a compaction as the test says (`answer` gets the call and the world's record). The world checks what a hook answers: a conversation of
+// messages as the engine types them, or a skip, and a hook that throws or answers otherwise is skipped, the engine going on to a base layer that refuses the call.
+const writeOf = (tokens: number): number => tokens - 28
+const STANDS = (over: Record<string, unknown> = {}) => ({
+  messages: [{ role: 'user', text: 'what the user typed', toolUses: [] }],
+  tokensBefore: 60000,
+  tokensAfter: 1500,
+  usage: { input_tokens: 52000, output_tokens: 900, cache_read_input_tokens: 8000, cache_creation_input_tokens: 300 },
+  ...over,
+})
+// The same compaction as the step's debug line states it.
+const STOOD_LINE = { kind: 'stood', size_before: 60000, size_after: 1500, summarizer: { in: 52000, out: 900, cache_read: 8000, cache_write: 300 } }
+
+// nearNight over a conversation of `tokens` tokens. `colds` holds the reason of each cold mark written (the write that clears a settled mark is none). `tune` changes the doc before the load
+// starts, and `around` is nearNight's own answer to a write of the state.
+const compactNight = async ($: any, on: any, tokens: number, answer: (e: any, rec: any) => unknown = () => STANDS(), store: Record<string, unknown> = {}, tune: (doc: any) => void = () => {}, around?: Around) => {
+  const colds: string[] = []
+  const doc = nightDoc(ONE_HOUR, store, REQ, undefined, writeOf(tokens))
+  doc.compact = answer
+  tune(doc)
+  const world = await nearNight($, on, doc, NIGHT - 5000, (e, next) => {
+    if (e.key === 'cold' && e.value !== null && e.value !== undefined) colds.push(e.value.reason)
+    return around === undefined ? next(e) : around(e, next)
+  })
+  return { ...world, colds }
+}
+
+describe('the night compaction: a step on a conversation at the floor also compacts it, once, and the lines say so', () => {
+  test('a step at the floor asks the engine for one compaction, with no instructions, after the step mark has landed, and the stop stands', { options: OVERNIGHT_ON }, async ($, on) => {
+    const marked: boolean[] = []
+    const { rec, clk, journal } = await compactNight($, on, COMPACT_FLOOR_TOKENS, (_e, world) => {
+      marked.push(world.store.has('overnight/s1'))
+      return STANDS()
+    })
+    await clk.to(NIGHT + 2000)
+    expect(rec.compacts).toHaveLength(1)
+    expect(rec.compacts[0].instructions).toBeUndefined()
+    expect(marked).toEqual([true])
+    expect(journal).toEqual(['stop', 'mark'])
+    expect(await toggle($, '')).toContain(STOPPED)
+    expect(await keepaliveRows($)).toContain(`overnight: done ${hhmm(NIGHT)}`)
+  })
+
+  test('a step one token below the floor asks for no compaction: the stop and the mark stand, the debug line states none, and the second line says none', { options: OVERNIGHT_ON }, async ($, on) => {
+    const { rec, clk, journal } = await compactNight($, on, COMPACT_FLOOR_TOKENS - 1)
+    await clk.to(NIGHT + 2000)
+    expect(rec.compacts).toEqual([])
+    expect(journal).toEqual(['stop', 'mark'])
+    expect(await toggle($, '')).toContain(STOPPED)
+    const [line, ...more] = debugOf(rec, 'cachier overnight')
+    expect(more).toEqual([])
+    expect('compaction' in line).toBe(false)
+    expect(noticesOf(rec)).toEqual([WINDOW_NOTICE, stepNoticeOf(rec.store.get('overnight/s1') as number, false)])
+    expect(noticesOf(rec)[1]).not.toContain('compacted')
+  })
+
+  test('the floor reads no TTL and no price: a step on the 5 m TTL compacts a conversation at the floor, as one on the 1 h TTL does', { options: OVERNIGHT_ON }, async ($, on) => {
+    const doc = nightDoc(FIVE, {}, REQ, undefined, writeOf(COMPACT_FLOOR_TOKENS))
+    doc.compact = () => STANDS()
+    const { rec, clk, journal } = await longNight($, on, doc)
+    await clk.to(NIGHT + 2000)
+    expect(journal).toEqual(['stop', 'mark'])
+    expect(rec.compacts).toHaveLength(1)
+  })
+
+  test('with the option off the step does not act, and no conversation is compacted, at the floor or above it', { options: { ...OVERNIGHT_ON, overnight: 'off' } }, async ($, on) => {
+    const { rec, clk, journal } = await compactNight($, on, COMPACT_FLOOR_TOKENS + 40000)
+    await clk.to(NIGHT + 2000)
+    expect(journal).toEqual([])
+    expect(rec.compacts).toEqual([])
+    expect(await toggle($, '')).toContain(RUNNING)
+  })
+
+  test("a compaction that stood is stated in the step's debug line by its sizes and the summarizer's usage, and in the second line; nothing the conversation holds is logged", { options: OVERNIGHT_ON }, async ($, on) => {
+    const { rec, clk } = await compactNight($, on, COMPACT_FLOOR_TOKENS, () => STANDS({ messages: [{ role: 'user', text: 'a private sentence', toolUses: [] }] }))
+    await clk.to(NIGHT + 2000)
+    const step = rec.store.get('overnight/s1') as number
+    expect(debugOf(rec, 'cachier overnight')).toMatchObject([{ time: iso(step), window: WINDOW, compaction: STOOD_LINE }])
+    expect(noticesOf(rec)).toEqual([WINDOW_NOTICE, stepNoticeOf(step, true)])
+    expect(noticesOf(rec)[1]).toContain(' and the conversation was compacted; ')
+    expect(rec.logs.join('\n')).not.toContain('a private sentence')
+  })
+
+  test('a compaction that stood with its sizes or its usage absent is stated with null for what the engine did not give', { options: OVERNIGHT_ON }, async ($, on) => {
+    const { rec, clk } = await compactNight($, on, COMPACT_FLOOR_TOKENS, () => ({ messages: STANDS().messages }))
+    await clk.to(NIGHT + 2000)
+    expect(debugOf(rec, 'cachier overnight')).toMatchObject([{ compaction: { kind: 'stood', size_before: null, size_after: null, summarizer: null } }])
+    expect(noticesOf(rec)).toEqual([WINDOW_NOTICE, stepNoticeOf(rec.store.get('overnight/s1') as number, true)])
+  })
+
+  // A hook of the test world that throws is skipped by the engine, which goes on to a base layer that refuses the call with words of its own.
+  const refusal = () => {
+    throw new Error('a turn is running')
+  }
+  for (const [what, answer, kind] of [
+    ['skipped by another plugin', () => ({ skip: 'another plugin vetoed it' }), 'skipped'],
+    ['refused, as the engine does while a turn runs', refusal, 'refused'],
+  ] as const) {
+    test(`a compaction ${what} leaves the stop and the mark, writes no cold mark of the step's own, is stated by the debug line, and the second line says none stood`, { options: OVERNIGHT_ON }, async ($, on) => {
+      const { rec, clk, journal, colds } = await compactNight($, on, COMPACT_FLOOR_TOKENS, answer)
+      await clk.to(NIGHT + 2000)
+      const step = rec.store.get('overnight/s1') as number
+      expect(rec.compacts).toHaveLength(1)
+      expect(journal).toEqual(['stop', 'mark'])
+      expect(colds).toEqual([])
+      expect(await toggle($, '')).toContain(STOPPED)
+      const lines = debugOf(rec, 'cachier overnight')
+      expect(lines).toHaveLength(1)
+      expect(lines[0].compaction.kind).toBe(kind)
+      if (kind === 'skipped') expect(lines[0].compaction.reason).toBe('another plugin vetoed it')
+      if (kind === 'refused') {
+        expect(typeof lines[0].compaction.error).toBe('string')
+        expect(lines[0].compaction.error).not.toBe('')
+      }
+      expect(noticesOf(rec)).toEqual([WINDOW_NOTICE, stepNoticeOf(step, false)])
+      expect(noticesOf(rec)[1]).not.toContain('compacted')
+      // It was the day's try: no later tick asks again.
+      await clk.by(10 * MIN)
+      expect(rec.compacts).toHaveLength(1)
+    })
+  }
+
+  // The engine fires a session start with source compact and the classic hook after the compaction while the call is still out; the measured order is the start first, and the other is as likely a
+  // build away, so both are run.
+  const startFirst = async ($: any) => {
+    await $.classic.SessionStart({ source: 'compact', transcript_path: PATH })
+    await COMPACT($)
+  }
+  const hookFirst = async ($: any) => {
+    await COMPACT($)
+    await $.classic.SessionStart({ source: 'compact', transcript_path: PATH })
+  }
+  for (const [order, hooks] of [
+    ['the session start first', startFirst],
+    ['the compaction hook first', hookFirst],
+  ] as const) {
+    test(`a compaction that stands is marked cold once, by the existing compaction handler and not by the step, with ${order}: the Cache line and the footer read reset, the pie red while the stop holds`, { options: OVERNIGHT_ON }, async ($, on) => {
+      const running = gateOf()
+      const { rec, clk, colds, journal } = await compactNight($, on, COMPACT_FLOOR_TOKENS, async () => {
+        await running.hold
+        return STANDS()
+      })
+      try {
+        await clk.to(NIGHT + 2000)
+        expect(rec.compacts).toHaveLength(1)
+        expect(colds).toEqual([])
+        const sent = rec.forks.length
+        await hooks($)
+        running.release()
+        await clk.by(2000)
+        expect(colds).toEqual(['compaction'])
+        expect(rec.forks.length).toBe(sent)
+      } finally {
+        running.release()
+      }
+      const text = await toggle($, '')
+      expect(text).toContain('Cache ○ reset')
+      expect(text).toContain(STOPPED)
+      const pie = await pieDrawn($)
+      expect(pie.words).toBe('reset')
+      expect(pie.pie).toContain('"color":"error"')
+      // The step adds none later, nor does anything else: one mark for the one compaction.
+      await clk.by(10 * MIN)
+      expect(colds).toEqual(['compaction'])
+      expect(journal).toEqual(['stop', 'mark'])
+    })
+  }
+
+  test("a start that resets keepalive after the compaction is followed, at the next tick, by the overnight stop and no refresh", { options: OVERNIGHT_ON }, async ($, on) => {
+    const { rec, clk, journal } = await compactNight($, on, COMPACT_FLOOR_TOKENS)
+    await clk.to(NIGHT + 2000)
+    const sent = rec.forks.length
+    expect(journal).toEqual(['stop', 'mark'])
+    await COMPACT($)
+    await $.classic.SessionStart({ source: 'resume', transcript_path: PATH })
+    await clk.by(3000)
+    expect(journal).toEqual(['stop', 'mark', 'stop'])
+    expect(await toggle($, '')).toContain(STOPPED)
+    await clk.by(30 * 1000)
+    expect(rec.forks.length).toBe(sent)
+    expect(rec.compacts).toHaveLength(1)
+  })
+
+  test("the second line and the step's debug line wait for the compaction's outcome: nothing is written while it runs, and they then say what happened", { options: OVERNIGHT_ON }, async ($, on) => {
+    const running = gateOf()
+    const { rec, clk } = await compactNight($, on, COMPACT_FLOOR_TOKENS, async () => {
+      await running.hold
+      return STANDS()
+    })
+    try {
+      await clk.to(NIGHT + 2000)
+      expect(rec.compacts).toHaveLength(1)
+      expect(rec.store.has('overnight/s1')).toBe(true)
+      expect(noticesOf(rec)).toEqual([WINDOW_NOTICE])
+      expect(debugOf(rec, 'cachier overnight')).toEqual([])
+      expect(rec.store.get(NOTICES_KEY)).toEqual({ window: true, step: false })
+      running.release()
+      await clk.by(1000)
+    } finally {
+      running.release()
+    }
+    const step = rec.store.get('overnight/s1') as number
+    expect(noticesOf(rec)).toEqual([WINDOW_NOTICE, stepNoticeOf(step, true)])
+    expect(rec.store.get(NOTICES_KEY)).toEqual({ window: true, step: true })
+    expect(debugOf(rec, 'cachier overnight')).toMatchObject([{ time: iso(step), compaction: STOOD_LINE }])
+  })
+
+  test('the compaction does not hold the tick: while it runs, a keepalive reset by a start is stopped again at the next tick', { options: OVERNIGHT_ON }, async ($, on) => {
+    const running = gateOf()
+    const { rec, clk, journal } = await compactNight($, on, COMPACT_FLOOR_TOKENS, async () => {
+      await running.hold
+      return STANDS()
+    })
+    try {
+      await clk.to(NIGHT + 2000)
+      const sent = rec.forks.length
+      await $.classic.SessionStart({ source: 'resume', transcript_path: PATH })
+      await clk.by(3000)
+      expect(journal).toEqual(['stop', 'mark', 'stop'])
+      expect(rec.forks.length).toBe(sent)
+      expect(rec.compacts).toHaveLength(1)
+    } finally {
+      running.release()
+    }
+  })
+
+  test("a prompt that lands while the compaction runs ends the stop as any prompt does, and the compaction's end changes neither that nor the day's step", { options: OVERNIGHT_ON }, async ($, on) => {
+    const running = gateOf()
+    const { rec, clk, journal } = await compactNight($, on, COMPACT_FLOOR_TOKENS, async () => {
+      await running.hold
+      return STANDS()
+    })
+    try {
+      await clk.to(NIGHT + 2000)
+      await userPrompt($)
+      await clk.by(2000)
+      expect(await toggle($, '')).toContain(RUNNING)
+      running.release()
+      await clk.by(5000)
+    } finally {
+      running.release()
+    }
+    expect(await toggle($, '')).toContain(RUNNING)
+    expect(journal).toEqual(['stop', 'mark', 'action'])
+    expect(rec.compacts).toHaveLength(1)
+  })
+
+  test("no second compaction is asked the same local day: the user returns for a reply on a context above the floor and goes idle in the window again, and the day's step is not taken again", { options: OVERNIGHT_ON }, async ($, on) => {
+    const { rec, clk, journal, doc } = await compactNight($, on, COMPACT_FLOOR_TOKENS)
+    await clk.to(NIGHT + 2000)
+    expect(rec.compacts).toHaveLength(1)
+    await userPrompt($)
+    doc.text += lines([assistant({ uuid: 'a2', parent: 'a1', ts: iso(clk.now()), write: writeOf(COMPACT_FLOOR_TOKENS + 5000), tags: ONE_HOUR, msg: 'm2', model: 'claude-opus-5-5', speed: 'standard' })])
+    await mainStep($)
+    await turnEnd($)
+    await clk.by(45 * MIN)
+    expect(rec.compacts).toHaveLength(1)
+    expect(journal).toEqual(['stop', 'mark', 'action'])
+    expect(debugOf(rec, 'cachier overnight')).toHaveLength(1)
+  })
+
+  test("no second compaction is asked across a reload: a load that finds the day's step mark in the store, over a conversation above the floor, takes no step and asks none", { options: OVERNIGHT_ON }, async ($, on) => {
+    const AFTER = NIGHT + 40 * MIN - 5000
+    const doc = nightDoc(ONE_HOUR, { 'overnight/s1': NIGHT }, AFTER - 30 * MIN, undefined, writeOf(COMPACT_FLOOR_TOKENS + 1000))
+    doc.compact = () => STANDS()
+    const { rec, clk, journal } = await nearNight($, on, doc, AFTER)
+    await clk.by(10 * 1000)
+    expect(journal).toEqual(['stop'])
+    expect(rec.compacts).toEqual([])
+    expect(rec.store.get('overnight/s1')).toBe(NIGHT)
+    expect(debugOf(rec, 'cachier overnight')).toEqual([])
+  })
+
+  test('a step whose mark cannot be written asks for no compaction, since a later load may step the same day: the stop holds and the debug line states none', { options: OVERNIGHT_ON }, async ($, on) => {
+    const { rec, clk, journal } = await compactNight($, on, COMPACT_FLOOR_TOKENS, undefined, {}, (doc) => {
+      doc.setDenied = new Set(['overnight/s1'])
+    })
+    await clk.to(NIGHT + 2000)
+    expect(journal).toEqual(['stop'])
+    expect(rec.store.has('overnight/s1')).toBe(false)
+    expect(rec.compacts).toEqual([])
+    const lines = debugOf(rec, 'cachier overnight')
+    expect(lines).toHaveLength(1)
+    expect('compaction' in lines[0]).toBe(false)
+    await clk.by(10 * MIN)
+    expect(rec.compacts).toEqual([])
+    expect(await toggle($, '')).toContain(STOPPED)
+  })
+
+  test('a tick whose stop commit loses its version check asks for no compaction, and the tick that steps asks for it', { options: OVERNIGHT_ON }, async ($, on) => {
+    let lost = 0
+    const { rec, clk } = await compactNight($, on, COMPACT_FLOOR_TOKENS, undefined, {}, () => {}, (e, next) => {
+      if (e.key === 'keepalive' && e.value?.stop === 'overnight' && lost === 0) {
+        lost++
+        return { value: { isSet: false } }
+      }
+      return next(e)
+    })
+    await clk.to(NIGHT)
+    expect(lost).toBe(1)
+    expect(rec.compacts).toEqual([])
+    await clk.by(1000)
+    expect(rec.compacts).toHaveLength(1)
+  })
+
+  test("an install the first build told its lines to is told each rewritten line once, under the new record: the second names the compaction, and the old record is left as it was", { options: OVERNIGHT_ON }, async ($, on) => {
+    const { rec, clk } = await compactNight($, on, COMPACT_FLOOR_TOKENS, undefined, { notices: { window: true, step: true } })
+    await clk.to(NIGHT + 2000)
+    const step = rec.store.get('overnight/s1') as number
+    expect(noticesOf(rec)).toEqual([WINDOW_NOTICE, stepNoticeOf(step, true)])
+    expect(rec.store.get(NOTICES_KEY)).toEqual({ window: true, step: true })
+    expect(rec.store.get('notices')).toEqual({ window: true, step: true })
+    expect(rec.gets).not.toContain('notices')
+    await clk.by(10 * MIN)
+    expect(noticesOf(rec)).toEqual([WINDOW_NOTICE, stepNoticeOf(step, true)])
   })
 })
 
