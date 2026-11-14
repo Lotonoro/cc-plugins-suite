@@ -802,9 +802,10 @@ const stepLine = ($: Dollar, atMs: number, i: RestInputs, compaction?: Compactio
 
 // The end of a step whose stop has committed: the compaction, where the step asks for one, then the step's debug line, which states its outcome, and the second notice, once per install, which says
 // whether a compaction stood. It is asked for only by a step whose mark has landed in the store: a refused write of the mark tells nothing in this load, and a later step does. The stop stands
-// whatever the compaction comes to, and the compaction is the day's one try.
+// whatever the compaction comes to, and the compaction is the day's one try. The mark's write is a wait in which the user can act, so the compaction itself leaves a user who has acted since the
+// step alone (nightCompact).
 const settleStep = async ($: Dollar, atMs: number, i: RestInputs, marked: boolean, compacting: boolean) => {
-  const compaction = compacting ? await nightCompact($) : undefined
+  const compaction = compacting ? await nightCompact($, night, atMs) : undefined
   stepLine($, atMs, i, compaction)
   if (marked && (await nightNotice($, night, 'step'))) $.ui.log(stepNoticeOf(atMs, compaction?.kind === 'stood'))
 }

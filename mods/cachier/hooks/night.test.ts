@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'claude-code/testing'
 import { pieces } from './fixture'
 import type { PauseRecord } from './history'
-import { COMPACT_FLOOR_TOKENS, compactionDueOf, IDLE_MS, overnightOf, overnightRowOf, restFactOf, restReadingOf, restsOf, scanWanted, SCAN_STANDS_MS, stepNoticeOf, windowNoticeOf, type RestInputs, type RestReading, type Scan, type StopCache } from './night'
+import { actedSince, COMPACT_FLOOR_TOKENS, compactionDueOf, IDLE_MS, overnightOf, overnightRowOf, restFactOf, restReadingOf, restsOf, scanWanted, SCAN_STANDS_MS, stepNoticeOf, windowNoticeOf, type RestInputs, type RestReading, type Scan, type StopCache } from './night'
 import { plainOf } from './sections'
 
 const MIN = 60000
@@ -446,6 +446,27 @@ describe('the rest fact: held from a step until the user\'s next action', () => 
   })
 })
 
+describe('the user acting since a step: an action at the step\'s moment or after it, never before it', () => {
+  test('an action later than the step, or in the same millisecond, has acted since it', () => {
+    expect(actedSince(NOW - 10 * MIN, NOW - 10 * MIN + 1)).toBe(true)
+    expect(actedSince(NOW - 10 * MIN, NOW - 10 * MIN)).toBe(true)
+    expect(actedSince(NOW - 10 * MIN, NOW)).toBe(true)
+  })
+
+  test('an action before the step, or none, has not', () => {
+    expect(actedSince(NOW - 10 * MIN, NOW - 10 * MIN - 1)).toBe(false)
+    expect(actedSince(NOW - 10 * MIN, NOW - 3 * H)).toBe(false)
+    expect(actedSince(NOW - 10 * MIN, null)).toBe(false)
+  })
+
+  test('it is the rule that ends a held step: the fact is held exactly while the user has not acted since', () => {
+    const step = NOW - 10 * MIN
+    for (const actionMs of [null, step - 1, step, step + 1, NOW]) {
+      expect([actionMs, factOf({ stepMs: step, actionMs }).kind === 'held']).toEqual([actionMs, !actedSince(step, actionMs)])
+    }
+  })
+})
+
 // The window is 3 h 10 min, from 03:18 to 06:28: three whole hours at most, from its opening.
 describe('the stop repays the rewrite it adds: at the 5 m TTL as it is built, at the 1 h TTL only with the break-even count of whole hours left in the window', () => {
   test('at the 5 m TTL the fact is due in a window of far fewer periods than the break-even count, and with the model unpriced', () => {
@@ -611,7 +632,7 @@ describe('the overnight row: its label dim, then the window and the idle figure,
   })
 })
 
-describe('the compaction floor: the smallest cached context the night step compacts', () => {
+describe('the compaction floor: the smallest conversation the night step compacts', () => {
   test('the floor is 60,000 tokens', () => {
     expect(COMPACT_FLOOR_TOKENS).toBe(60000)
   })

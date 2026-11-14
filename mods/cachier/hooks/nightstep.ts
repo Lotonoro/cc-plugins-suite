@@ -3,13 +3,13 @@
 // is the time of the user's last prompt or of the user turning keepalive on. A write of a time never reads first, so no update is lost between two writers; the scan reads every
 // session's action key for the idle check, and the clean-up deletes the keys two days old. The install's key, `notices-v2`, records which of the two notices the user has been told
 // (night.ts words them) and is written by nightNotice alone, from a fresh read of the record, outside the two families the clean-up scans. The compaction the step also asks of the engine,
-// and its outcome as the step's debug line states it, are here too (nightCompact). The rules that decide from these times are night.ts's; this module reads and writes them and holds the
-// state, as pricesync.ts keeps its own: one object per load of the plugin, so a reload starts with none of it, taken by function declarations because the engine follows `$` past an
-// import only into those.
+// unless its user has acted since the step, and its outcome as the step's debug line states it, are here too (nightCompact). The rules that decide from these times are night.ts's; this module
+// reads and writes them and holds the state, as pricesync.ts keeps its own: one object per load of the plugin, so a reload starts with none of it, taken by function declarations because the
+// engine follows `$` past an import only into those.
 
 import type { EngineInterface } from 'claude-code'
 import { idOf } from './history'
-import type { Scan } from './night'
+import { actedSince, type Scan } from './night'
 import { report } from './pricesync'
 
 type Dollar = EngineInterface
@@ -192,13 +192,16 @@ export async function nightStepped($: Dollar, state: NightState, atMs: number): 
   return state.id !== null && (await writeTime($, STEP_PREFIX + state.id, atMs))
 }
 
-// What a compaction came to, as the step's debug line states it. Nothing of the conversation is here, which the engine's result holds: only the counts it states and its own words. The keys
-// avoid the word token, whose numbers the engine's debug sink redacts.
+// What a compaction came to, as the step's debug line states it. Nothing of the conversation is here, which the engine's result holds, and none of the words the engine or another plugin gave,
+// which can quote it: only the counts the engine states, the length of any words it gave, and reasons of the mod's own. The keys avoid the word token, whose numbers the engine's debug sink
+// redacts.
 export type Compaction =
   | { kind: 'stood'; size_before: number | null; size_after: number | null; summarizer: { in: number; out: number; cache_read: number; cache_write: number } | null }
-  | { kind: 'skipped'; reason: string }
-  | { kind: 'refused'; error: string }
-  | { kind: 'thrown'; error: string }
+  | { kind: 'skipped'; reason: 'the user acted after the step' }
+  | { kind: 'skipped'; reason: 'a hook vetoed it'; reason_chars: number }
+  | { kind: 'refused'; error_chars: number }
+  | { kind: 'thrown'; reason: 'the call threw'; error_chars: number }
+  | { kind: 'thrown'; reason: 'the engine answered a compaction with neither a conversation nor a skip' }
 
 // A count the engine states: a finite number that is not negative. Any other shape is none.
 const countOf = (value: unknown): number | null => (typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : null)
@@ -214,30 +217,37 @@ const usageOf = (value: unknown): Extract<Compaction, { kind: 'stood' }>['summar
 }
 
 // The engine's answer to a compaction as the debug line states it. The answer is read for the shapes the engine declares (a skip with its reason, or the compacted conversation) and for nothing
-// else, so that no word of the conversation can pass: the result is built from the counts named here and never spreads the answer. Any other answer is thrown.
+// else, so that no word of the conversation can pass: the result is built from the counts named here and the length of the skip's words, and never spreads the answer. Any other answer is thrown.
 const outcomeOf = (answer: unknown): Compaction => {
   const held = typeof answer === 'object' && answer !== null ? (answer as Record<string, unknown>) : {}
-  if (typeof held.skip === 'string') return { kind: 'skipped', reason: held.skip }
-  if (!Array.isArray(held.messages)) return { kind: 'thrown', error: 'the engine answered a compaction with neither a conversation nor a skip' }
+  if (typeof held.skip === 'string') return { kind: 'skipped', reason: 'a hook vetoed it', reason_chars: held.skip.length }
+  if (!Array.isArray(held.messages)) return { kind: 'thrown', reason: 'the engine answered a compaction with neither a conversation nor a skip' }
   return { kind: 'stood', size_before: countOf(held.tokensBefore), size_after: countOf(held.tokensAfter), summarizer: usageOf(held.usage) }
 }
 
-const textOf = (err: unknown): string => (err instanceof Error ? err.message : String(err))
+// The length of the words a rejection or a throw carries, none where it carries none: a string, or an Error's message.
+const charsOf = (err: unknown): number => {
+  const words = err instanceof Error ? err.message : err
+  return typeof words === 'string' ? words.length : 0
+}
 
-// Compacts the conversation through the engine, once, with no instructions of the mod's own, and says what came of it. The engine rejects the call while a turn runs, which is refused, and
-// answers a skip when another plugin vetoed it; a call that throws instead of returning (an engine without the call, for one) is thrown, and so is an answer of neither shape. The call has
-// no timeout of the mod's own: the engine owns the request. It never throws.
-export async function nightCompact($: Dollar): Promise<Compaction> {
+// Compacts the conversation through the engine, once, with no instructions of the mod's own, and says what came of it. A user who acted since the step taken at `stepMs` is left alone and the
+// engine is not asked: the stop is taken and the step's mark written before this is called, a prompt can land in that wait, and the compaction would replace a conversation the user has
+// resumed. The action time is read in the run that calls the engine, with no wait between. The engine rejects the call while a turn runs, which is refused, and answers a skip when another plugin
+// vetoed it; a call that throws instead of returning (an engine without the call, for one) is thrown, and so is an answer of neither shape. The call has no timeout of the mod's own: the engine
+// owns the request. It never throws.
+export async function nightCompact($: Dollar, state: NightState, stepMs: number): Promise<Compaction> {
+  if (actedSince(stepMs, state.actionMs)) return { kind: 'skipped', reason: 'the user acted after the step' }
   let pending: Promise<unknown>
   try {
     pending = $.session.compact()
   } catch (err) {
-    return { kind: 'thrown', error: textOf(err) }
+    return { kind: 'thrown', reason: 'the call threw', error_chars: charsOf(err) }
   }
   try {
     return outcomeOf(await pending)
   } catch (err) {
-    return { kind: 'refused', error: textOf(err) }
+    return { kind: 'refused', error_chars: charsOf(err) }
   }
 }
 

@@ -152,7 +152,7 @@ a short terminal the lower sections are scrolled to with the wheel.
 Cachier learns the rest from your own pauses, at any hour (see [Learning from your pauses](#learning-from-your-pauses)), and the
 window it leaves, an hour inside each end of the habit, is where the night step may act. The step stops a session's keepalive for
 your rest, once per session per local day: it sends no more refreshes until your next prompt in that session. It also compacts the
-session's conversation when the cached context is at least 60,000 tokens (see **The compaction**).
+session's conversation when it is at least 60,000 tokens long (see **The compaction**).
 
 - **When it acts**: keepalive is on in the session and the `overnight` option is not `off`; the run has refreshes left to send and its
   cache is warm, with no turn running; the local time is inside the window (a window may cross midnight) and, at the 1 h TTL, a stop
@@ -173,7 +173,7 @@ session's conversation when the cached context is at least 60,000 tokens (see **
   `cachier: learned your daily rest, 03:18–06:28. After 30 min with no prompt in any session inside it, keepalive stops until your next prompt, and a conversation of 60,000 tokens or more is compacted, which is not undone. Turn it off with the overnight option in /config.`
   The second comes the first time the step acts, with the local time of the stop, once the compaction, if the step made one, has ended:
   `cachier: keepalive stopped for your daily rest at 03:19 and the conversation was compacted; keepalive resumes on your next prompt. Turn it off with the overnight option in /config.`
-  It leaves out ` and the conversation was compacted` where no compaction stood (the conversation was under 60,000 tokens, or the compaction was skipped, refused or failed).
+  It leaves out ` and the conversation was compacted` where no compaction stood (the conversation was under 60,000 tokens, you had acted since the step, or the compaction was skipped, refused or failed).
   A session where the step cannot act (the option `off`, or keepalive off, which is the default) tells you nothing and uses up neither line; turning keepalive on there later writes the
   first one. No line is written at later stops: the `overnight:` row says each day's step. These are the lines as reworded for the compaction: an install that was told the earlier
   wording is told each of these once more.
@@ -191,10 +191,11 @@ session's conversation when the cached context is at least 60,000 tokens (see **
   TTL the stop acts only where that pays: the whole hours left in the window, from the moment it would act to the window's close, must
   be at least the 1 h break-even count, which is 39 on Opus 5.5. Where the step acts at the 1 h TTL, setting the option to `off` keeps
   the cache warm through the rest.
-- **The compaction**: once the stop has been taken and its mark written, a session whose cached context (the last request's prompt and its reply) is at least 60,000 tokens is also compacted,
-  through Claude Code's own compaction, as `/compact` does, with no instructions of cachier's own; one token under, nothing is. It runs apart from the stop, which stands whatever it comes to.
-  It is the day's one try: a compaction that another plugin vetoes (skipped), one the engine refuses (a turn is running) and one that fails are not made again that day, and neither is a second
-  after one that stood, a reload included, since the step is once per session per local day. A prompt you type while it runs is queued by the terminal and runs after it, on the compacted
+- **The compaction**: once the stop has been taken and its mark written, a session whose conversation (the last request's prompt and its reply, the size the engine gives a compaction) is at least 60,000 tokens is also compacted,
+  through Claude Code's own compaction, as `/compact` does, with no instructions of cachier's own; one token under, nothing is. It runs apart from the stop, which stands whatever it comes to. A conversation you have acted in
+  since the step is left alone: a prompt, or turning keepalive on, while the step's mark is being written leaves it uncompacted, since it would replace what you just resumed.
+  It is the day's one try: a compaction that another plugin vetoes (skipped), one the engine refuses (a turn is running), one that fails and one left alone because you acted are not made again
+  that day, and neither is a second after one that stood, a reload included, since the step is once per session per local day. A prompt you type while it runs is queued by the terminal and runs after it, on the compacted
   conversation. A compaction that stands marks the cache cold as any compaction does, so the Cache line reads `reset` and, while the stop holds, the pie beside it is red; your first reply
   after the rest warms the cache again. It is not undone at your next prompt (see Known limits), and the `overnight` option turns it off with the stop.
   The compaction is one request that reads the whole conversation at the model's input price, not the cache-read price, and writes a summary of about 900 tokens; it saves the first prompt after
@@ -447,8 +448,10 @@ the debug log, and each model switch writes a `cachier switch` line holding the 
 cachier's own reading of the cache. Each night step writes a `cachier overnight` line holding its `time`, the `window`, this
 session's idle time (`idle_ms`) and the newest prompt time found across sessions (`newest_prompt`, `null` where none was found). Where the step
 also compacted, the line is written when the compaction ends and holds its `compaction`: `kind` `stood` with `size_before` and `size_after`, the conversation's size in tokens (`null` where the engine gave
-none), and `summarizer`, the summary request's `in`, `out`, `cache_read` and `cache_write` tokens (`null` where it gave no usage); `skipped` with its `reason`; or `refused` (the engine rejected the call) or `thrown` (the call threw, or its answer was neither a compaction nor a skip)
-with its `error`. It holds counts and the engine's own words, never the conversation. A step that made no compaction has no `compaction` in its line.
+none), and `summarizer`, the summary request's `in`, `out`, `cache_read` and `cache_write` tokens (`null` where it gave no usage); `skipped`, with a `reason` that is `the user acted after the step`,
+or `a hook vetoed it` with `reason_chars`; `refused` (the engine rejected the call) with `error_chars`; or `thrown`, with a `reason` that is `the call threw` (with `error_chars`) or `the engine answered a
+compaction with neither a conversation nor a skip`. It holds counts and cachier's own words, never the conversation: the words of a veto or of an error can quote it, so their length in characters is all
+it keeps of them. A step that made no compaction has no `compaction` in its line.
 
 Cachier keeps one record per pause your prompt ends, in its plugin store under your config directory: when the pause
 started, how long it ran, the local hour and weekday, the cache TTL, what a rewrite costs over a refresh, and the size of

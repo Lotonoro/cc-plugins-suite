@@ -6,7 +6,7 @@
 // after the arc's anchor, so nothing wraps around midnight or noon.
 //
 // The rest then gives keepalive its fact (restFactOf): whether the rest has begun for this session, from the option, the window, the clock, the idle times, the session's step
-// mark, which nightstep.ts reads and writes, and the cache the stop would let lapse: at the 1 h TTL the stop acts only where it repays the rewrite it adds. The smallest cached context
+// mark, which nightstep.ts reads and writes, and the cache the stop would let lapse: at the 1 h TTL the stop acts only where it repays the rewrite it adds. The smallest conversation
 // the step also compacts (compactionDueOf) is here too, and so are the words of the two notices the user is told once, when the stop can first act and when it first acts, beside the
 // row that states the same window.
 
@@ -157,11 +157,14 @@ const stopRepaysOf = (cache: StopCache | null, leftMs: number): boolean => {
 // Whether the step can act at all, whatever the moment: the setup, and a cache whose stop repays when taken at the window's opening, its best moment.
 const canActOf = (i: RestInputs): boolean => setupOf(i) && stopRepaysOf(i.cache, spanOf(i.window))
 
+// Whether the user has acted since the step taken at `stepMs`: an action in the step's own millisecond counts. It ends the step this session took, and the compaction that goes with the
+// step is left unasked once it has.
+export const actedSince = (stepMs: number, actionMs: number | null): boolean => actionMs !== null && actionMs >= stepMs
+
 // The step this session took stands until its user acts: the mark is later than the user's last action.
 const heldOf = (i: RestInputs): boolean => {
   const step = pastOf(i.stepMs, i.nowMs)
-  const action = pastOf(i.actionMs, i.nowMs)
-  return step !== null && (action === null || action < step)
+  return step !== null && !actedSince(step, pastOf(i.actionMs, i.nowMs))
 }
 
 // Every condition of a due fact but the scan's: the setup is there and the own times are read, the step is neither held nor taken today, the clock is inside the window and a
@@ -191,13 +194,14 @@ export const restFactOf = (i: RestInputs): RestFact => {
 // Whether the tick must scan the other sessions' action times to decide: every other condition gives a due fact, and the scan on hand does not stand.
 export const scanWanted = (i: RestInputs): boolean => readyOf(i) && standingOf(i.scan, i.nowMs) === 'none'
 
-// The smallest cached context, in tokens, that the step also compacts. A compaction costs one request that reads the whole conversation at the input price, and saves the first prompt
-// after the rest the difference between writing the whole conversation to the cache and writing the compacted one. Two compactions measured on Opus 5.5 at the 5 m TTL broke even near
-// 43,000 and 56,000 tokens; each is rounded up to the next 10,000 and the larger is the floor, so that it errs toward leaving a conversation alone. A larger prefix of instructions and tools
-// moves the break-even up, and the 1 h TTL, whose write costs more, down: neither was measured. The floor reads no price at run time, so every model and TTL share it.
+// The smallest conversation, in tokens, that the step also compacts. A conversation is counted as the engine counts a compaction's size before: the last request's prompt and its reply, which
+// the next request writes to the cache once it has lapsed. A compaction costs one request that reads the whole conversation at the input price, and saves the first prompt after the rest the
+// difference between writing the whole conversation to the cache and writing the compacted one. Two compactions measured on Opus 5.5 at the 5 m TTL broke even near 43,000 and 56,000 tokens;
+// each is rounded up to the next 10,000 and the larger is the floor, so that it errs toward leaving a conversation alone. A larger prefix of instructions and tools moves the break-even up,
+// and the 1 h TTL, whose write costs more, down: neither was measured. The floor reads no price at run time, so every model and TTL share it.
 export const COMPACT_FLOOR_TOKENS = 60000
 
-// Whether the step compacts a conversation whose cached context is `contextTokens` long: at the floor and above, never below it.
+// Whether the step compacts a conversation of `contextTokens` tokens: at the floor and above, never below it.
 export const compactionDueOf = (contextTokens: number): boolean => contextTokens >= COMPACT_FLOOR_TOKENS
 
 // The Keepalive section's `overnight:` row, after the `rest:` row: the window and the idle figure the step waits for, or `done` and its time once this session stepped today.

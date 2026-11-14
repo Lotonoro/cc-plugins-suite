@@ -7123,8 +7123,10 @@ describe('the night compaction: a step on a conversation at the floor also compa
   const refusal = () => {
     throw new Error('a turn is running')
   }
+  // A veto's words can quote the conversation, so the debug line gives their length and none of them.
+  const VETO = 'vetoed because the conversation is about a private matter'
   for (const [what, answer, kind] of [
-    ['skipped by another plugin', () => ({ skip: 'another plugin vetoed it' }), 'skipped'],
+    ['skipped by another plugin', () => ({ skip: VETO }), 'skipped'],
     ['refused, as the engine does while a turn runs', refusal, 'refused'],
   ] as const) {
     test(`a compaction ${what} leaves the stop and the mark, writes no cold mark of the step's own, is stated by the debug line, and the second line says none stood`, { options: OVERNIGHT_ON }, async ($, on) => {
@@ -7138,11 +7140,12 @@ describe('the night compaction: a step on a conversation at the floor also compa
       const lines = debugOf(rec, 'cachier overnight')
       expect(lines).toHaveLength(1)
       expect(lines[0].compaction.kind).toBe(kind)
-      if (kind === 'skipped') expect(lines[0].compaction.reason).toBe('another plugin vetoed it')
+      if (kind === 'skipped') expect(lines[0].compaction).toEqual({ kind: 'skipped', reason: 'a hook vetoed it', reason_chars: VETO.length })
       if (kind === 'refused') {
-        expect(typeof lines[0].compaction.error).toBe('string')
-        expect(lines[0].compaction.error).not.toBe('')
+        expect(Object.keys(lines[0].compaction)).toEqual(['kind', 'error_chars'])
+        expect(lines[0].compaction.error_chars).toBeGreaterThan(0)
       }
+      expect(rec.logs.join('\n')).not.toContain(VETO)
       expect(noticesOf(rec)).toEqual([WINDOW_NOTICE, stepNoticeOf(step, false)])
       expect(noticesOf(rec)[1]).not.toContain('compacted')
       // It was the day's try: no later tick asks again.
@@ -7274,6 +7277,61 @@ describe('the night compaction: a step on a conversation at the floor also compa
     expect(await toggle($, '')).toContain(RUNNING)
     expect(journal).toEqual(['stop', 'mark', 'action'])
     expect(rec.compacts).toHaveLength(1)
+  })
+
+  // The gap between the stop and the compaction is the wait for the step's mark to be written. The world holds that write, so that the user can act while it waits.
+  const inTheGap = async ($: any, on: any, acts: () => Promise<void>) => {
+    const writing = gateOf()
+    const world = await compactNight($, on, COMPACT_FLOOR_TOKENS, undefined, {}, (doc) => {
+      doc.setHold = { key: 'overnight/s1', hold: writing.hold }
+    })
+    try {
+      await world.clk.to(NIGHT + 2000)
+      // The stop has committed and the mark is being written: no compaction is asked yet.
+      expect(world.journal).toEqual(['stop'])
+      expect(world.rec.store.has('overnight/s1')).toBe(false)
+      expect(world.rec.compacts).toEqual([])
+      await acts()
+      writing.release()
+      await world.clk.by(2000)
+    } finally {
+      writing.release()
+    }
+    return world
+  }
+  const LEFT_ALONE = { kind: 'skipped', reason: 'the user acted after the step' }
+
+  test("a prompt that lands in the gap between the stop and the compaction, and finishes a short turn there, leaves the conversation alone: none is asked, the debug line says the user acted, and the second line says none stood", { options: OVERNIGHT_ON }, async ($, on) => {
+    const { rec, clk, journal } = await inTheGap($, on, async () => {
+      await userPrompt($)
+      await mainStep($)
+      await turnEnd($)
+    })
+    const step = rec.store.get('overnight/s1') as number
+    expect(rec.compacts).toEqual([])
+    expect(journal).toEqual(['stop', 'action', 'mark'])
+    expect(debugOf(rec, 'cachier overnight')).toMatchObject([{ time: iso(step), window: WINDOW, compaction: LEFT_ALONE }])
+    expect(noticesOf(rec)).toEqual([WINDOW_NOTICE, stepNoticeOf(step, false)])
+    expect(await toggle($, '')).toContain(RUNNING)
+    // It was the day's try: no later tick asks again.
+    await clk.by(10 * MIN)
+    expect(rec.compacts).toEqual([])
+  })
+
+  test("keepalive turned on in the gap is the user's action too: no compaction is asked", { options: OVERNIGHT_ON }, async ($, on) => {
+    const { rec, journal } = await inTheGap($, on, async () => {
+      expect(await toggle($, 'on 60')).toContain('keepalive on: lead')
+    })
+    expect(rec.compacts).toEqual([])
+    expect(journal).toContain('action')
+    expect(debugOf(rec, 'cachier overnight')).toMatchObject([{ compaction: LEFT_ALONE }])
+  })
+
+  test('an action of the user long before the step does not stop the compaction: only an action since the step does', { options: OVERNIGHT_ON }, async ($, on) => {
+    const { rec, clk } = await compactNight($, on, COMPACT_FLOOR_TOKENS, undefined, { 'prompted/s1': NIGHT - 40 * MIN })
+    await clk.to(NIGHT + 2000)
+    expect(rec.compacts).toHaveLength(1)
+    expect(debugOf(rec, 'cachier overnight')).toMatchObject([{ compaction: STOOD_LINE }])
   })
 
   test("no second compaction is asked the same local day: the user returns for a reply on a context above the floor and goes idle in the window again, and the day's step is not taken again", { options: OVERNIGHT_ON }, async ($, on) => {

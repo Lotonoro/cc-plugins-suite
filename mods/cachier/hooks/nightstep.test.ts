@@ -917,11 +917,15 @@ const without = (...keys: string[]): Record<string, unknown> => Object.fromEntri
 const keysOf = (value: unknown): string[] =>
   typeof value === 'object' && value !== null ? Object.entries(value).flatMap(([key, inner]) => [key, ...keysOf(inner)]) : []
 
+// The compaction of the step taken at STEP, by a session whose user has not acted since unless a test says it has.
+const STEP = NOW
+const compact = (w: ReturnType<typeof makeWorld>, state = nightState()) => nightCompact(w.dollar, state, STEP)
+
 describe('the compaction: one call to the engine with no instructions, and its outcome handed back as the debug line records it', () => {
   test('it asks the engine once, with no argument at all', async () => {
     const w = makeWorld()
     w.engine.answer = () => stood()
-    await nightCompact(w.dollar)
+    await compact(w)
     expect(w.compactions).toEqual([[]])
     expect(w.calls).toEqual(['compact'])
   })
@@ -929,7 +933,7 @@ describe('the compaction: one call to the engine with no instructions, and its o
   test("a compaction that stood gives the sizes before and after and the summarizer's usage", async () => {
     const w = makeWorld()
     w.engine.answer = async () => stood()
-    expect(await nightCompact(w.dollar)).toEqual({
+    expect(await compact(w)).toEqual({
       kind: 'stood',
       size_before: 59140,
       size_after: 1364,
@@ -941,76 +945,130 @@ describe('the compaction: one call to the engine with no instructions, and its o
     const w = makeWorld()
     const summarizer = { in: 52707, out: 917, cache_read: 8124, cache_write: 301 }
     w.engine.answer = async () => without('tokensBefore', 'tokensAfter')
-    expect(await nightCompact(w.dollar)).toEqual({ kind: 'stood', size_before: null, size_after: null, summarizer })
+    expect(await compact(w)).toEqual({ kind: 'stood', size_before: null, size_after: null, summarizer })
     w.engine.answer = async () => without('usage')
-    expect(await nightCompact(w.dollar)).toEqual({ kind: 'stood', size_before: 59140, size_after: 1364, summarizer: null })
+    expect(await compact(w)).toEqual({ kind: 'stood', size_before: 59140, size_after: 1364, summarizer: null })
     w.engine.answer = async () => without('tokensAfter', 'usage')
-    expect(await nightCompact(w.dollar)).toEqual({ kind: 'stood', size_before: 59140, size_after: null, summarizer: null })
+    expect(await compact(w)).toEqual({ kind: 'stood', size_before: 59140, size_after: null, summarizer: null })
     w.engine.answer = async () => ({ messages: [] })
-    expect(await nightCompact(w.dollar)).toEqual({ kind: 'stood', size_before: null, size_after: null, summarizer: null })
+    expect(await compact(w)).toEqual({ kind: 'stood', size_before: null, size_after: null, summarizer: null })
   })
 
   test('a size or a count of another shape is null, and one count short of the four leaves no usage', async () => {
     const w = makeWorld()
     for (const bad of [-1, Number.NaN, Number.POSITIVE_INFINITY, '59140', null, {}]) {
       w.engine.answer = async () => stood({ tokensBefore: bad, tokensAfter: bad })
-      expect(await nightCompact(w.dollar)).toMatchObject({ kind: 'stood', size_before: null, size_after: null })
+      expect(await compact(w)).toMatchObject({ kind: 'stood', size_before: null, size_after: null })
     }
     for (const field of ['input_tokens', 'output_tokens', 'cache_read_input_tokens', 'cache_creation_input_tokens']) {
       const usage = { ...(stood().usage as object), [field]: undefined }
       w.engine.answer = async () => stood({ usage })
-      expect(await nightCompact(w.dollar)).toMatchObject({ kind: 'stood', summarizer: null })
+      expect(await compact(w)).toMatchObject({ kind: 'stood', summarizer: null })
     }
     w.engine.answer = async () => stood({ usage: 'x' })
-    expect(await nightCompact(w.dollar)).toMatchObject({ kind: 'stood', summarizer: null })
+    expect(await compact(w)).toMatchObject({ kind: 'stood', summarizer: null })
   })
 
-  test("a compaction another plugin vetoed is skipped, with the engine's reason", async () => {
+  test("a compaction another plugin vetoed is skipped, with a reason of the mod's own and the length of the veto's words, which are not stated", async () => {
     const w = makeWorld()
-    w.engine.answer = async () => ({ skip: 'vetoed by another plugin' })
-    expect(await nightCompact(w.dollar)).toEqual({ kind: 'skipped', reason: 'vetoed by another plugin' })
+    w.engine.answer = async () => ({ skip: SECRET })
+    expect(await compact(w)).toEqual({ kind: 'skipped', reason: 'a hook vetoed it', reason_chars: SECRET.length })
     w.engine.answer = async () => ({ skip: '' })
-    expect(await nightCompact(w.dollar)).toEqual({ kind: 'skipped', reason: '' })
+    expect(await compact(w)).toEqual({ kind: 'skipped', reason: 'a hook vetoed it', reason_chars: 0 })
   })
 
-  test("a call the engine rejects, as it does while a turn runs, is refused, with the error's text", async () => {
+  test("a call the engine rejects, as it does while a turn runs, is refused, with the length of the error's words and none of them", async () => {
     const w = makeWorld()
-    w.engine.answer = () => Promise.reject(new Error('a turn is running'))
-    expect(await nightCompact(w.dollar)).toEqual({ kind: 'refused', error: 'a turn is running' })
-    w.engine.answer = () => Promise.reject('plain')
-    expect(await nightCompact(w.dollar)).toEqual({ kind: 'refused', error: 'plain' })
+    w.engine.answer = () => Promise.reject(new Error(SECRET))
+    expect(await compact(w)).toEqual({ kind: 'refused', error_chars: SECRET.length })
+    w.engine.answer = () => Promise.reject(SECRET)
+    expect(await compact(w)).toEqual({ kind: 'refused', error_chars: SECRET.length })
+    // A rejection with no words, or with words in a field the mod does not read, counts none.
+    for (const reason of [undefined, 7, { message: SECRET }]) {
+      w.engine.answer = () => Promise.reject(reason)
+      expect(await compact(w)).toEqual({ kind: 'refused', error_chars: 0 })
+    }
   })
 
-  test('a call that throws, or an answer that is neither a compaction nor a skip, is thrown', async () => {
+  test('a call that throws is thrown, with the length of its words and none of them', async () => {
     const w = makeWorld()
     w.engine.answer = () => {
-      throw new Error('compact is not a function')
+      throw new Error(SECRET)
     }
-    expect(await nightCompact(w.dollar)).toEqual({ kind: 'thrown', error: 'compact is not a function' })
+    expect(await compact(w)).toEqual({ kind: 'thrown', reason: 'the call threw', error_chars: SECRET.length })
+  })
+
+  test("an answer that is neither a compaction nor a skip is thrown, with a reason of the mod's own", async () => {
+    const w = makeWorld()
     for (const answer of [undefined, null, 'x', 7, {}, { skip: 5 }, { messages: 'x' }, { skip: undefined, messages: undefined }]) {
       w.engine.answer = async () => answer
-      expect(await nightCompact(w.dollar)).toMatchObject({ kind: 'thrown' })
+      expect(await compact(w)).toEqual({ kind: 'thrown', reason: 'the engine answered a compaction with neither a conversation nor a skip' })
     }
+  })
+
+  test("a user who acted after the step is left alone: the engine is not asked, and the outcome says why in words of the mod's own", async () => {
+    const w = makeWorld()
+    w.engine.answer = () => stood()
+    for (const actionMs of [STEP + 1, STEP, STEP + H]) {
+      const state = nightState()
+      await nightAction(w.dollar, state, actionMs)
+      expect(await compact(w, state)).toEqual({ kind: 'skipped', reason: 'the user acted after the step' })
+    }
+    expect(w.compactions).toEqual([])
+    expect(w.calls).toEqual([])
+  })
+
+  test('an action before the step, or none, leaves the engine asked', async () => {
+    const w = makeWorld()
+    w.engine.answer = () => stood()
+    for (const actionMs of [STEP - 1, STEP - 3 * H, null]) {
+      const state = nightState()
+      if (actionMs !== null) await nightAction(w.dollar, state, actionMs)
+      expect(await compact(w, state)).toMatchObject({ kind: 'stood' })
+    }
+    expect(w.compactions).toHaveLength(3)
+  })
+
+  test('the action is read in the run that calls the engine: one noted the moment after the call is asked for comes too late to stop it', async () => {
+    const w = makeWorld()
+    w.engine.answer = () => stood()
+    const state = nightState()
+    const outcome = compact(w, state)
+    await nightAction(w.dollar, state, STEP + 1)
+    expect(await outcome).toMatchObject({ kind: 'stood' })
+    expect(w.compactions).toHaveLength(1)
   })
 
   test('it never throws, whatever the engine does', async () => {
     const w = makeWorld()
-    for (const answer of [() => stood(), () => ({ skip: 'x' }), () => Promise.reject(new Error('x')), () => Promise.reject(undefined), () => { throw 'x' }, () => undefined]) {
+    for (const answer of [() => stood(), () => ({ skip: 'x' }), () => Promise.reject(new Error('x')), () => Promise.reject(undefined), () => Promise.reject(Object.create(null)), () => { throw 'x' }, () => undefined]) {
       w.engine.answer = answer
-      await expect(nightCompact(w.dollar)).resolves.toBeDefined()
+      await expect(compact(w)).resolves.toBeDefined()
     }
   })
 
-  test('the outcome holds none of the conversation, whatever shape the answer takes, and no key with token in its name, which the engine redacts', async () => {
+  test("the outcome holds none of the conversation or of anyone's words, whatever shape the answer takes, and no key with token in its name, which the engine redacts", async () => {
     const w = makeWorld()
-    const answers = [stood(), stood({ skip: 'x' }), stood({ summary: SECRET, extra: { text: SECRET } }), { skip: 'x', messages: [{ role: 'user', text: SECRET, toolUses: [] }] }, without('usage')]
+    const answers = [
+      () => stood(),
+      () => stood({ skip: SECRET }),
+      () => stood({ summary: SECRET, extra: { text: SECRET } }),
+      () => ({ skip: SECRET, messages: [{ role: 'user', text: SECRET, toolUses: [] }] }),
+      () => without('usage'),
+      () => ({ skip: SECRET }),
+      () => Promise.reject(new Error(SECRET)),
+      () => Promise.reject(SECRET),
+      () => {
+        throw new Error(SECRET)
+      },
+    ]
     for (const answer of answers) {
-      w.engine.answer = async () => answer
-      const outcome = await nightCompact(w.dollar)
+      w.engine.answer = answer
+      const outcome = await compact(w)
       expect(JSON.stringify(outcome)).not.toContain(SECRET)
       expect(keysOf(outcome).filter((key) => /token/i.test(key))).toEqual([])
     }
     w.engine.answer = async () => stood()
-    expect(keysOf(await nightCompact(w.dollar))).toEqual(['kind', 'size_before', 'size_after', 'summarizer', 'in', 'out', 'cache_read', 'cache_write'])
+    expect(keysOf(await compact(w))).toEqual(['kind', 'size_before', 'size_after', 'summarizer', 'in', 'out', 'cache_read', 'cache_write'])
   })
 })
