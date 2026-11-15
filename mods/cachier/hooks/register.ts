@@ -183,9 +183,18 @@ const fresh = new Set<string>()
 let unreadable = false
 // The transcript size at the last lookup pass; a pass also runs when the transcript has changed size since.
 let lastPassSize: number | undefined
-// The stamp pass's stretch: the consecutive passes on this transcript whose walk ended unread for one reason, and how many of them were written to the debug
-// log. Ended by a pass that reads through, and by a change of transcript.
+// The stamp pass's stretch: the consecutive passes on this transcript whose walk ended unread for one reason, and how many of them the doubling rule wrote to the debug
+// log. Ended by a pass that reads through, and by a change of transcript. What is written is bounded apart from it, by the budgets below.
 let stampStretch: { reason: StampUnread; passes: number; written: number } | undefined
+// The most `cachier stamps` lines one transcript path has written in a load, before its `muted` line; and the most paths that hold such a budget.
+const STAMP_BUDGET = 20
+const STAMP_PATHS = 32
+// The `cachier stamps` lines each transcript path has had written this load, up to STAMP_BUDGET, and one more once its `muted` line is written, which ends them. Kept for the whole load and
+// never evicted, so a change of transcript leaves them alone, unlike the stretch; only a reload starts them anew. A path is held from its first line, and at most STAMP_PATHS are held.
+const stampSpent = new Map<string, number>()
+// Whether the one `muted` line for the paths is written: the first pass that would write a line for a path not held, with STAMP_PATHS held, writes it, and after it nothing is written for a path
+// not held.
+let stampPathsMuted = false
 // The transcript's size when the last read started. A tick that sees a larger file asks for a reread, so a reply written after the
 // turn's last read is folded on the next tick. A read that failed after its stat leaves this at the size it saw, so it is not
 // reread every tick; only growth asks again.
@@ -1489,16 +1498,35 @@ const STAMP_REASONS: Record<StampUnread, string> = {
   'row-unparsed': 'a row naming a wanted id did not parse',
 }
 
-// Keeps the stretch and writes the `cachier stamps` line a pass's ending calls for. A pass that ends unread for the stretch's reason is its next pass, and one
+// Writes a `cachier stamps` line within the budgets (stampSpent). The pass that would write a path's line past STAMP_BUDGET writes its `muted` line, with `lines`, in its place, whichever kind
+// the line would have been, and the path writes nothing after it. The first pass that would write a line for a path not held, with STAMP_PATHS held, writes the one `muted` line for the paths,
+// with `paths`, in its place; after it nothing is written for a path not held, and the paths held keep their own budgets and `muted` lines. So a load writes at most
+// STAMP_PATHS × (STAMP_BUDGET + 1) + 1 lines, whatever the hooks do with the path.
+const stampLine = ($: Dollar, path: string, line: object) => {
+  const spent = stampSpent.get(path)
+  if (spent === undefined && stampSpent.size >= STAMP_PATHS) {
+    if (!stampPathsMuted) {
+      stampPathsMuted = true
+      debugLine($, 'cachier stamps', { ended: 'muted', paths: STAMP_PATHS })
+    }
+    return
+  }
+  const lines = spent ?? 0
+  if (lines > STAMP_BUDGET) return
+  stampSpent.set(path, lines + 1)
+  debugLine($, 'cachier stamps', lines === STAMP_BUDGET ? { ended: 'muted', lines: STAMP_BUDGET } : line)
+}
+
+// Keeps the stretch and writes the `cachier stamps` line a pass's ending calls for, through stampLine. A pass that ends unread for the stretch's reason is its next pass, and one
 // for another reason starts a new stretch; a stretch's 1st, 2nd, 4th, 8th pass and so on are written. A pass that reads through ends the stretch, and says so where
 // the stretch was written. Counts and the mod's own words only: nothing of the transcript.
-const stampEnded = ($: Dollar, ending: StampEnding, asked: number, stillWanted: number) => {
+const stampEnded = ($: Dollar, path: string, ending: StampEnding, asked: number, stillWanted: number) => {
   const stretch = stampStretch
   const counts = { asked, still_wanted: stillWanted, blocks_read: ending.blocksRead }
   if (ending.reason === null) {
     stampStretch = undefined
     if (stretch !== undefined) {
-      debugLine($, 'cachier stamps', { ended: 'read_through', reason: STAMP_REASONS[stretch.reason], passes: stretch.passes, suppressed: stretch.passes - stretch.written, ...counts })
+      stampLine($, path, { ended: 'read_through', reason: STAMP_REASONS[stretch.reason], passes: stretch.passes, suppressed: stretch.passes - stretch.written, ...counts })
     }
     return
   }
@@ -1507,13 +1535,13 @@ const stampEnded = ($: Dollar, ending: StampEnding, asked: number, stillWanted: 
   // A power of two has one bit set.
   const isWritten = (passes & (passes - 1)) === 0
   stampStretch = { reason: ending.reason, passes, written: (continued ? stretch.written : 0) + (isWritten ? 1 : 0) }
-  if (isWritten) debugLine($, 'cachier stamps', { ended: 'unread', reason: STAMP_REASONS[ending.reason], passes, ...counts })
+  if (isWritten) stampLine($, path, { ended: 'unread', reason: STAMP_REASONS[ending.reason], passes, ...counts })
 }
 
 // One backward pass over the transcript for the drawn ids not yet found. It runs when an id is newly drawn, or when the
 // transcript has changed size since the last pass, so an id that is missing is looked up again only after growth. A
 // failed lookup is retried the same way: on the next size change, not on every tick. A pass whose walk ended unread, or
-// read through after one that did, is written to the debug log (stampEnded); a pass that threw is reported alone.
+// read through after one that did, is written to the debug log within its path's budget (stampEnded): a budget stops the writing and never the pass. A pass that threw is reported alone.
 const lookupStamps = async ($: Dollar) => {
   const transcript = (await $.state.get(TRANSCRIPT)).value ?? null
   if (transcript === null) return
@@ -1563,7 +1591,7 @@ const lookupStamps = async ($: Dollar) => {
     }
     // The ids left wanted are those this pass asked for and did not find: an id drawn while it ran is not counted.
     const [ending] = endings
-    if (ending !== undefined) stampEnded($, ending, asked.length, asked.length - found.size)
+    if (ending !== undefined) stampEnded($, transcript, ending, asked.length, asked.length - found.size)
   }
   if (changed) $.ui.invalidate('ui.render')
 }

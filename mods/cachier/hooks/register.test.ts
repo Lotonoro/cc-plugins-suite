@@ -917,7 +917,10 @@ describe('countdown', () => {
 })
 
 // A stamp pass whose backward walk ends unread writes a `cachier stamps` line, then only at the 1st, 2nd, 4th, 8th pass and so on of a stretch of passes that end for one
-// reason; the first pass that reads through after a written stretch says so once. Each test starts with a fresh load of the mod, so no stretch carries over from an earlier test.
+// reason; the first pass that reads through after a written stretch says so once. The lines are bounded for the load: a transcript path has a budget of 20, and the pass that would write
+// its 21st writes one `muted` line instead, whichever kind the 21st would have been, and nothing after it. A change of path does not renew a budget. At most 32 paths are held, a path from its
+// first line, and the first pass that would write a line for a 33rd writes one `muted` line of its own, with `paths` 32, and nothing after it for any path not already held; the paths already
+// held keep their own budgets and their own `muted` lines. Each test starts with a fresh load of the mod, so no stretch or budget carries over from an earlier test.
 describe('the stamp pass: a walk that ends unread is written to the debug log', () => {
   type Doc = Parameters<typeof world>[1]
   // Ids and text of the transcript that no debug line may hold. Each is distinctive, so no other text holds one by chance.
@@ -935,10 +938,12 @@ describe('the stamp pass: a walk that ends unread is written to the debug log', 
   const grow = (doc: Doc) => {
     doc.text += lines([user({ uuid: `grown-${doc.text.length}-6d0b`, parent: null, ts: iso(T0 - 1000) })])
   }
+  // Draws the message of `requestId`, which asks for its time, and returns the drawing: the time is in it once a pass has found the row.
   const draw = async ($: any, requestId: string) => {
     const m = await $.ui.mount({ plugin: 'cachier', surface: 'terminal', component: 'UserMessage', requestId, props: { text: 'p', isExpanded: true, origin: { kind: 'composer' } } } as any)
-    await m.drawn()
+    const tree = JSON.stringify(await m.drawn())
     await m.unmount()
+    return tree
   }
   // The world with the session started on PATH over the transcript `doc` holds, before its first tick.
   const started = async ($: any, on: any, doc: Doc) => {
@@ -960,6 +965,61 @@ describe('the stamp pass: a walk that ends unread is written to the debug log', 
   const nextPass = async (clock: ReturnType<typeof mock.clock>, doc: Doc) => {
     grow(doc)
     await clock.advance(1000)
+  }
+
+  type Clock = ReturnType<typeof mock.clock>
+  const FAILED = 'a block read failed'
+  const TRUNCATED = 'a block read was truncated'
+  // The lines a pass writes over one wanted id and a walk of one block. The `read_through` line here closes a stretch of one or two passes, every one of them written.
+  const unreadLine = (reason: string, passes = 1) => ({ ended: 'unread', reason, passes, ...ONE_READ })
+  const readThroughLine = (reason: string, passes = 1) => ({ ended: 'read_through', reason, passes, suppressed: 0, ...ONE_READ })
+  // The line that ends a path's budget of 20, and the one that ends the paths: the 33rd path to be held, with 32 held.
+  const MUTED = { ended: 'muted', lines: 20 }
+  const NO_MORE_PATHS = { ended: 'muted', paths: 32 }
+  // A pass that ends unread, because a block read fails or is cut short; and one that reads through, the file covered with the id still missing.
+  const unread = (clock: Clock, doc: Doc, fault: 'exit' | 'truncated' = 'exit') => {
+    doc.blockFault = fault
+    return nextPass(clock, doc)
+  }
+  const readsThrough = (clock: Clock, doc: Doc) => {
+    doc.blockFault = undefined
+    return nextPass(clock, doc)
+  }
+  // Passes `from` to `to` that end unread for one reason and then the other: each starts a stretch of its own, so each is written at once.
+  const alternating = async (clock: Clock, doc: Doc, from: number, to: number) => {
+    for (let pass = from; pass <= to; pass++) await unread(clock, doc, pass % 2 === 1 ? 'exit' : 'truncated')
+  }
+  const alternatingLines = (from: number, to: number) => Array.from({ length: to - from + 1 }, (_, i) => unreadLine((from + i) % 2 === 1 ? FAILED : TRUNCATED))
+  // The session moves to the transcript at `path`. The tick after it drops the ids drawn under the old one, so a message is drawn again for a pass to run.
+  const switchTo = async ($: any, clock: Clock, path: string) => {
+    await $.classic.SessionStart({ source: 'resume', transcript_path: path })
+    await clock.advance(1000)
+  }
+  const pathOf = (n: number) => `${PATH}.${n}`
+  // 32 paths held. PATH and a second path only read through, so they write nothing and take no slot; on each of 32 paths after them a message is drawn and a pass ends unread, which writes the
+  // path's first line.
+  const hold32 = async ($: any, clock: Clock, doc: Doc) => {
+    await draw($, LATE)
+    await readsThrough(clock, doc)
+    for (let n = 1; n <= 32; n++) {
+      if (n === 17) {
+        await switchTo($, clock, `${PATH}.reads-through`)
+        await draw($, LATE)
+        await readsThrough(clock, doc)
+      }
+      await switchTo($, clock, pathOf(n))
+      await draw($, LATE)
+      await unread(clock, doc)
+    }
+  }
+  // The last step of a test that stopped a path's lines: the fault is lifted and the row of the wanted `id` made readable, so the next pass finds it and its message draws the time. A pass that
+  // did not run, or was skipped for this path, leaves the message without one.
+  const timeAfterMute = async ($: any, clock: Clock, doc: Doc, id: string) => {
+    expect(await draw($, id)).not.toContain(hhmm(T0 - 60000))
+    doc.blockFault = undefined
+    doc.text += lines([user({ uuid: id, parent: null, ts: iso(T0 - 60000) })])
+    await clock.advance(1000)
+    expect(await draw($, id)).toContain(hhmm(T0 - 60000))
   }
 
   test('a walk that meets a row naming a wanted id that does not parse is written once, with the counts of the pass and nothing of the transcript', async ($, on) => {
@@ -1112,6 +1172,145 @@ describe('the stamp pass: a walk that ends unread is written to the debug log', 
     release()
     await clock.settle()
     expect(stamps(rec)).toEqual([{ ended: 'unread', reason: 'a block read failed', passes: 1, ...ONE_READ }])
+  })
+
+  test('a pass that alternates unread and read through writes 20 lines, then one muted line in the 21st place, then nothing', async ($, on) => {
+    const doc: Doc = { text: lines([filler(1), filler(2)]) }
+    const { rec, clock } = await started($, on, doc)
+    await draw($, LATE)
+    // Seventeen cycles: ten fill the 20 lines, the 11th cycle's unread pass is the 21st line's place, and six cycles follow it.
+    for (let cycle = 1; cycle <= 17; cycle++) {
+      await unread(clock, doc)
+      await readsThrough(clock, doc)
+    }
+    const written = Array.from({ length: 10 }, () => [unreadLine(FAILED), readThroughLine(FAILED)]).flat()
+    expect(stamps(rec)).toEqual([...written, MUTED])
+    await timeAfterMute($, clock, doc, LATE)
+    expect(stamps(rec)).toEqual([...written, MUTED])
+  })
+
+  test('two reasons that alternate write 20 unread lines, then the muted line, and a pass that reads through after it writes nothing', async ($, on) => {
+    const doc: Doc = { text: lines([filler(1), filler(2)]) }
+    const { rec, clock } = await started($, on, doc)
+    await draw($, LATE)
+    // 27 passes: the 21st is the muted line's place and six follow it.
+    await alternating(clock, doc, 1, 27)
+    const written = alternatingLines(1, 20)
+    expect(stamps(rec)).toEqual([...written, MUTED])
+    // The last pass ended unread, so a stretch stands, and a path with budget left would get a read_through line; this path's budget is spent, so nothing is written.
+    await readsThrough(clock, doc)
+    await timeAfterMute($, clock, doc, LATE)
+    expect(stamps(rec)).toEqual([...written, MUTED])
+  })
+
+  test('the muted line takes the 21st place when that line would have been a read_through line', async ($, on) => {
+    const doc: Doc = { text: lines([filler(1), filler(2)]) }
+    const { rec, clock } = await started($, on, doc)
+    await draw($, LATE)
+    // Two unread passes of one stretch, both written, then nine pairs of a pass that reads through and one that ends unread: the 20th line is unread and the 21st would be a read_through.
+    const written = [unreadLine(FAILED, 1), unreadLine(FAILED, 2)]
+    await unread(clock, doc)
+    await unread(clock, doc)
+    for (let pair = 1; pair <= 9; pair++) {
+      await readsThrough(clock, doc)
+      await unread(clock, doc)
+      written.push(readThroughLine(FAILED, pair === 1 ? 2 : 1), unreadLine(FAILED, 1))
+    }
+    expect(stamps(rec)).toEqual(written)
+    await readsThrough(clock, doc)
+    expect(stamps(rec)).toEqual([...written, MUTED])
+    for (let cycle = 1; cycle <= 6; cycle++) {
+      await unread(clock, doc)
+      await readsThrough(clock, doc)
+    }
+    await timeAfterMute($, clock, doc, LATE)
+    expect(stamps(rec)).toEqual([...written, MUTED])
+  })
+
+  test('a muted path stays muted when the session goes to another path and back, and the other path has a budget of its own', async ($, on) => {
+    const doc: Doc = { text: lines([filler(1), filler(2)]) }
+    const { rec, clock } = await started($, on, doc)
+    await draw($, LATE)
+    // Path A: 21 passes that end unread, for one reason and then the other; the 21st is muted.
+    await alternating(clock, doc, 1, 21)
+    // Path B: its first unread pass is its 1st, and written.
+    await switchTo($, clock, pathOf(2))
+    await draw($, AGAIN)
+    await unread(clock, doc)
+    // Path A again: its budget is as it was left, so passes that end unread and one that reads through write nothing.
+    await switchTo($, clock, PATH)
+    await draw($, LATE)
+    await unread(clock, doc)
+    await readsThrough(clock, doc)
+    await alternating(clock, doc, 1, 5)
+    await timeAfterMute($, clock, doc, LATE)
+    expect(stamps(rec)).toEqual([...alternatingLines(1, 20), MUTED, unreadLine(FAILED, 1)])
+  })
+
+  test('a path that only ever reads through is not held: after 32 of them, the next path\'s first unread pass writes its own line, not the line for the paths', async ($, on) => {
+    const doc: Doc = { text: lines([filler(1), filler(2)]) }
+    const { rec, clock } = await started($, on, doc)
+    // PATH and 31 more paths: on each a message is drawn and a pass reads through with no stretch standing, which writes nothing.
+    await draw($, LATE)
+    await readsThrough(clock, doc)
+    for (let n = 1; n <= 31; n++) {
+      await switchTo($, clock, pathOf(n))
+      await draw($, LATE)
+      await readsThrough(clock, doc)
+    }
+    expect(stamps(rec)).toEqual([])
+    // A 33rd path: its first unread pass writes its own line, and its next pass, for another reason, writes another under its budget.
+    await switchTo($, clock, pathOf(32))
+    await draw($, LATE)
+    await unread(clock, doc)
+    await unread(clock, doc, 'truncated')
+    expect(stamps(rec)).toEqual([unreadLine(FAILED), unreadLine(TRUNCATED)])
+  })
+
+  test('the 33rd path to be held gets one muted line for the paths, and nothing is written for it or for a 34th after it', async ($, on) => {
+    const doc: Doc = { text: lines([filler(1), filler(2)]) }
+    const { rec, clock } = await started($, on, doc)
+    await hold32($, clock, doc)
+    // Each of the 32 paths wrote its first line before the 33rd is tried; the two that only read through wrote none.
+    const held = Array.from({ length: 32 }, () => unreadLine(FAILED))
+    expect(stamps(rec)).toEqual(held)
+    // The 33rd path's first unread pass writes the line for the paths in place of its own.
+    await switchTo($, clock, pathOf(33))
+    await draw($, LATE)
+    await unread(clock, doc)
+    expect(stamps(rec)).toEqual([...held, NO_MORE_PATHS])
+    await readsThrough(clock, doc)
+    await unread(clock, doc, 'truncated')
+    await unread(clock, doc)
+    await readsThrough(clock, doc)
+    await timeAfterMute($, clock, doc, LATE)
+    // A 34th path: the same silence, and its passes run.
+    await switchTo($, clock, pathOf(34))
+    await draw($, AGAIN)
+    await unread(clock, doc)
+    await readsThrough(clock, doc)
+    await unread(clock, doc, 'truncated')
+    await timeAfterMute($, clock, doc, AGAIN)
+    expect(stamps(rec)).toEqual([...held, NO_MORE_PATHS])
+  })
+
+  test('after the line for the paths, a path held before keeps its own budget and is muted at its own 21st line', async ($, on) => {
+    const doc: Doc = { text: lines([filler(1), filler(2)]) }
+    const { rec, clock } = await started($, on, doc)
+    await hold32($, clock, doc)
+    const held = Array.from({ length: 32 }, () => unreadLine(FAILED))
+    await switchTo($, clock, pathOf(33))
+    await draw($, LATE)
+    await unread(clock, doc)
+    // The 2nd path held has one line written of its 20. Back on it, the next 19 passes that end unread write theirs, and the 20th is muted.
+    await switchTo($, clock, pathOf(2))
+    await draw($, AGAIN)
+    await alternating(clock, doc, 1, 20)
+    expect(stamps(rec)).toEqual([...held, NO_MORE_PATHS, ...alternatingLines(1, 19), MUTED])
+    await alternating(clock, doc, 21, 26)
+    await readsThrough(clock, doc)
+    await timeAfterMute($, clock, doc, AGAIN)
+    expect(stamps(rec)).toEqual([...held, NO_MORE_PATHS, ...alternatingLines(1, 19), MUTED])
   })
 })
 
