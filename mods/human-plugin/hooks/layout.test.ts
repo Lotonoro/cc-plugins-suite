@@ -1,5 +1,5 @@
 import { expect, test } from 'claude-code/testing'
-import { backlogTail, bandDraws, bandRows, bandWidths, claudeRows, columnHeader, columnHeight, cutTitle, cutToColumns, headerLines, humanFoldRows, isChipShort, isSqueezed, rowLayout, squeezedFold, wrapText, type BandWidths, type ClaudeRow, type Control, type RowTexts } from './layout'
+import { backlogTail, bandDraws, bandRows, bandWidths, claudeRows, columnHeader, cutTitle, cutToColumns, foldCount, headerLines, humanFoldRows, isChipShort, isSqueezed, rowLayout, squeezedFold, wrapText, type BandWidths, type ClaudeRow, type Control, type RowTexts } from './layout'
 import { displayColumns, unitsOf } from './columns'
 import { endsJoining } from './joining-oracle'
 import { SEQUENCES } from './sequences'
@@ -139,11 +139,13 @@ test('human items and no Claude items: the human list alone at full width, at an
   expect(bandWidths(300, 2, [])).toEqual({ human: { box: 300, layout: 300 }, claude: null })
 })
 
-test('no human items: an item in flight draws the column alone at its width, however narrow the band, laid out in all of it, and queued items alone draw nothing', () => {
+test('no human items: a step in the agent\'s list, in flight or queued, draws the column alone at its width, however narrow the band, laid out in all of it, and an empty list draws nothing', () => {
   expect(bandWidths(40, 0, flying(1))).toEqual({ human: null, claude: { box: 32, layout: 32 } })
   expect(bandWidths(120, 0, [...waiting(2), ...flying(1)])).toEqual({ human: null, claude: { box: 40, layout: 40 } })
   expect(bandWidths(20, 0, flying(1))).toEqual({ human: null, claude: { box: 20, layout: 20 } })
-  expect(bandWidths(120, 0, waiting(2))).toEqual({ human: null, claude: null })
+  expect(bandWidths(120, 0, waiting(2))).toEqual({ human: null, claude: { box: 40, layout: 40 } })
+  expect(bandWidths(40, 0, waiting(1))).toEqual({ human: null, claude: { box: 32, layout: 32 } })
+  expect(bandWidths(12, 0, waiting(1))).toEqual({ human: null, claude: { box: 12, layout: 12 } })
   expect(bandWidths(120, 0, [])).toEqual({ human: null, claude: null })
 })
 
@@ -182,11 +184,13 @@ test('beside this plugin\'s docked pane both lists draw from 52 columns: the col
   expect(bandWidths(60, 2, waiting(1), false)).toEqual({ human: { box: 60, layout: 60 }, claude: null })
 })
 
-test('beside the docked pane the other rows of the width rule hold: no Claude items leave the human list full width, no human items leave the column alone at its width', () => {
+test('beside the docked pane the other rows of the width rule hold: no Claude items leave the human list full width, no human items leave the column alone at its width, queued steps alone included', () => {
   expect(bandWidths(52, 2, [], true)).toEqual({ human: { box: 52, layout: 52 }, claude: null })
   expect(bandWidths(52, 0, flying(1), true)).toEqual({ human: null, claude: { box: 32, layout: 32 } })
   expect(bandWidths(51, 0, flying(1), true)).toEqual({ human: null, claude: { box: 32, layout: 32 } })
-  expect(bandWidths(52, 0, waiting(2), true)).toEqual({ human: null, claude: null })
+  expect(bandWidths(52, 0, waiting(2), true)).toEqual({ human: null, claude: { box: 32, layout: 32 } })
+  expect(bandWidths(51, 0, waiting(2), true)).toEqual({ human: null, claude: { box: 32, layout: 32 } })
+  expect(bandWidths(52, 0, [], true)).toEqual({ human: null, claude: null })
 })
 
 test('beside the docked pane, at every width from 1 to 300, both lists draw from 52 with the box widths summing to the band, the column a third rounded down and at least 32, the human list at least 20, and each list laid out one column short of its box', () => {
@@ -229,9 +233,9 @@ test('a human list is squeezed when it is drawn beside the Claude column under 6
   }
 })
 
-test('the band draws when a human item exists or a Claude item is in flight, and hands on otherwise', () => {
+test('the band draws when a human item exists or the Claude list has a step, queued or in flight, and hands on otherwise', () => {
   expect(bandDraws(0, [])).toBe(false)
-  expect(bandDraws(0, waiting(3))).toBe(false)
+  expect(bandDraws(0, waiting(3))).toBe(true)
   expect(bandDraws(0, flying(1))).toBe(true)
   expect(bandDraws(1, [])).toBe(true)
 })
@@ -248,10 +252,16 @@ test('the column fills the human list\'s height after its header and every in-fl
   expect(titles(claudeRows([...waiting(1), ...flying(2)], 4))).toEqual(['f1', 'f2', 'q1'])
 })
 
-test('with the header and the in-flight rows filling the height, or over it, no queued row and no summary draws; every in-flight row stays', () => {
-  expect(titles(claudeRows([...waiting(2), ...flying(2)], 3))).toEqual(['f1', 'f2'])
-  expect(titles(claudeRows([...waiting(2), ...flying(12)], 5))).toEqual(flying(12).map(it => it.title))
-  expect(titles(claudeRows([...waiting(2), ...flying(2)], 0))).toEqual(['f1', 'f2'])
+test('with the header and the in-flight rows filling the height, or over it, the rows end with the queued line, after every in-flight row: the summary for several queued items and the item for one', () => {
+  expect(titles(claudeRows([...waiting(2), ...flying(2)], 3))).toEqual(['f1', 'f2', '+2 queued'])
+  expect(titles(claudeRows([...waiting(2), ...flying(12)], 5))).toEqual([...flying(12).map(it => it.title), '+2 queued'])
+  expect(titles(claudeRows([...waiting(2), ...flying(2)], 0))).toEqual(['f1', 'f2', '+2 queued'])
+  expect(titles(claudeRows([...waiting(1), ...flying(2)], 3))).toEqual(['f1', 'f2', 'q1'])
+  expect(titles(claudeRows([...waiting(1), ...flying(2)], 0))).toEqual(['f1', 'f2', 'q1'])
+})
+
+test('a column with no queued item draws no queued line, at any height', () => {
+  for (const height of [0, 1, 3, 9]) expect(titles(claudeRows(flying(2), height)), `${height}`).toEqual(['f1', 'f2'])
 })
 
 test('beside one human item the column is its header and one summary row for three queued items', () => {
@@ -264,6 +274,26 @@ test('queued only: the column fills the human list\'s height with queued rows, i
   expect(titles(claudeRows(waiting(5), 4))).toEqual(['q1', 'q2', '+3 queued'])
 })
 
+test('queued only, drawn alone at height 0: the one line the queued steps keep is the item for one queued step and the summary for several', () => {
+  expect(titles(claudeRows(waiting(1), 0))).toEqual(['q1'])
+  expect(titles(claudeRows(waiting(3), 0))).toEqual(['+3 queued'])
+})
+
+test('with no press in the header the last queued row is always +N queued, a lone queued step included, after the queued rows that the room holds; with a press the lone step is its row', () => {
+  expect(titles(claudeRows(waiting(1), 0, false))).toEqual(['+1 queued'])
+  expect(titles(claudeRows(waiting(1), 0, true))).toEqual(['q1'])
+  // The press is there unless said otherwise.
+  expect(titles(claudeRows(waiting(1), 0))).toEqual(['q1'])
+  // A room of 2 for two queued steps: both rows with a press; without one, the first and the summary of the other.
+  expect(titles(claudeRows(waiting(2), 3, true))).toEqual(['q1', 'q2'])
+  expect(titles(claudeRows(waiting(2), 3, false))).toEqual(['q1', '+1 queued'])
+  // When they do not all fit, the press changes nothing.
+  expect(titles(claudeRows(waiting(5), 4, true))).toEqual(['q1', 'q2', '+3 queued'])
+  expect(titles(claudeRows(waiting(5), 4, false))).toEqual(['q1', 'q2', '+3 queued'])
+  // The in-flight rows stay, and the press changes the queued line alone.
+  expect(titles(claudeRows([...flying(2), ...waiting(1)], 6, false))).toEqual(['f1', 'f2', '+1 queued'])
+})
+
 test('the in-flight rows come first and each group keeps its written order', () => {
   const mixed = [todoItem('q1', 'queued'), todoItem('f1', 'in_flight'), todoItem('q2', 'queued'), todoItem('f2', 'in_flight')]
   expect(titles(claudeRows(mixed, 10))).toEqual(['f1', 'f2', 'q1', 'q2'])
@@ -273,14 +303,37 @@ test('an empty Claude list has no rows', () => {
   expect(claudeRows([], 10)).toEqual([])
 })
 
-test('the column\'s height is its header and every in-flight row, and the queued rows fill what is left of the height the column is given', () => {
-  expect(columnHeight([])).toBe(1)
-  expect(columnHeight(waiting(4))).toBe(1)
-  expect(columnHeight([...flying(3), ...waiting(4)])).toBe(4)
-  // The queued rows start where columnHeight ends: a height one over it leaves one row.
+test('the fold count is the column\'s header, every in-flight row and, while a step is queued, the one line it keeps for the queued steps; the queued rows still start after the in-flight rows', () => {
+  expect(foldCount([])).toBe(1)
+  expect(foldCount(flying(3))).toBe(4)
+  expect(foldCount(waiting(1))).toBe(2)
+  expect(foldCount(waiting(4))).toBe(2)
+  expect(foldCount([...flying(3), ...waiting(4)])).toBe(5)
+  // The queued rows start after the in-flight rows: the fold count is the height that leaves them one line, and a height one over it leaves two.
   const todo = [...flying(3), ...waiting(4)]
-  expect(titles(claudeRows(todo, columnHeight(todo)))).toEqual(['f1', 'f2', 'f3'])
-  expect(titles(claudeRows(todo, columnHeight(todo) + 1))).toEqual(['f1', 'f2', 'f3', '+4 queued'])
+  expect(titles(claudeRows(todo, foldCount(todo)))).toEqual(['f1', 'f2', 'f3', '+4 queued'])
+  expect(titles(claudeRows(todo, foldCount(todo) + 1))).toEqual(['f1', 'f2', 'f3', 'q1', '+3 queued'])
+})
+
+test('for every list and height, with a press in the header or without one, the column\'s drawn lines are its fold count at least and the larger of its fold count and the height at most, and the rows stand for every item', () => {
+  for (let inFlight = 0; inFlight <= 5; inFlight++) {
+    for (let queued = 0; queued <= 5; queued++) {
+      const todo = [...flying(inFlight), ...waiting(queued)]
+      for (let height = 0; height <= 12; height++) {
+        for (const hasPress of [true, false]) {
+          const where = `${inFlight} in flight, ${queued} queued, height ${height}, press ${hasPress}`
+          const rows = claudeRows(todo, height, hasPress)
+          // The header and the rows: the floor in the fold count and the floor in the queued rows' room hold each other.
+          expect(1 + rows.length, where).toBeGreaterThanOrEqual(foldCount(todo))
+          expect(1 + rows.length, where).toBeLessThanOrEqual(Math.max(foldCount(todo), height))
+          // Every in-flight item first, then every queued item as a row or counted by the summary, which is the last row.
+          expect(titles(rows.slice(0, inFlight)), where).toEqual(flying(inFlight).map(it => it.title))
+          expect(rows.slice(inFlight).reduce((total, row) => total + (row.kind === 'item' ? 1 : row.count), 0), where).toBe(queued)
+          expect(rows.slice(0, -1).every(row => row.kind === 'item'), where).toBe(true)
+        }
+      }
+    }
+  }
 })
 
 test('a text wraps word by word at its spaces, in display columns, and a line break starts a line', () => {

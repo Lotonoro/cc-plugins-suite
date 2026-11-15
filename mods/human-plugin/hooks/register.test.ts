@@ -3462,18 +3462,20 @@ test('switching the pane to another item, and an item the agent removes from und
   expect(asked).toEqual([])
 })
 
-test('with no human items an item in flight draws the column alone, 40 wide, and nothing in flight hands on', async () => {
+test('with no human items a step in the agent\'s list, queued or in flight, draws the column alone, 40 wide, and an empty list hands on', async () => {
   reset()
   const { hooks } = wire()
   const { env, values } = memEnv([], [], null)
   const e = { props: { hasSurvey: false, maxRows: 20, bodyColumns: 120 } }
   values.todo = [entry('Only queued', 'queued')]
-  expect(await (hooks['ui.render {"component":"AbovePrompt"}'] as Handler)(env as never, e as never, next(false) as never)).toEqual({ passed: e })
+  const queuedOnly = await bandAt(hooks, env, 120)
+  expect(queuedOnly.children?.map(c => c.width)).toEqual([40])
+  expect(textOf(queuedOnly)).toContain('○ Only queued')
   values.todo = [entry('Running', 'in_flight'), entry('Later', 'queued')]
   const tree = await bandAt(hooks, env, 120)
   expect(tree.children?.map(c => c.width)).toEqual([40])
   expect(textOf(tree)).toContain('◐ Running')
-  expect(flat(tree)).not.toContain('Later')
+  expect(textOf(tree)).toContain('○ Later')
   values.todo = []
   expect(await (hooks['ui.render {"component":"AbovePrompt"}'] as Handler)(env as never, e as never, next(false) as never)).toEqual({ passed: e })
 })
@@ -3790,13 +3792,14 @@ test('a rebuild over a Claude list stored with a split ETA stores that list with
   expect(values.todo).toEqual([entry('Build', 'queued', REPAIRED_ETA)])
 })
 
-test('with no human items the band draws only the Claude column\'s header and in-flight rows, and a press on its header opens the pane with the queued items too; a second press closes it', async () => {
+test('with no human items the band draws the Claude column\'s header, its in-flight rows and one +2 queued line for the queued items, and a press on its header opens the pane with the queued items too; a second press closes it', async () => {
   reset()
   const { hooks } = wire()
   const { $, opens, closes, open } = backlogEnv([], [], null, [RUNNING, entry('Later', 'queued'), entry('Latest', 'queued')])
   await endSession(hooks, $)
   const tree = await bandAt(hooks, $, 120)
   expect(flat(tree)).not.toContain('Later')
+  expect(flat(tree)).toContain('"label":"+2 queued"')
   pressKey(tree, 'claude-header')
   await settle()
   expect(opens).toEqual([{ id: 'human-items', title: 'Claude TODO', rows: 4, focus: true }])
@@ -3805,6 +3808,25 @@ test('with no human items the band draws only the Claude column\'s header and in
   await settle()
   expect(closes).toEqual(['human-items'])
   expect(open).toEqual([])
+})
+
+test('a press on +N queued in a column drawn alone opens the pane and a second press closes it, at 120 columns and at 12, where the header has no counts to press', async () => {
+  for (const columns of [120, 12]) {
+    reset()
+    const { hooks } = wire()
+    const { $, opens, closes, open } = backlogEnv([], [], null, [entry('Next', 'queued'), entry('Then', 'queued'), entry('Last', 'queued')])
+    await endSession(hooks, $)
+    pressKey(await bandAt(hooks, $, columns), 'claude-queued')
+    // Before anything the press awaits: an open made after an await is not counted as asked.
+    expect(opens, `${columns}`).toEqual([{ id: 'human-items', title: 'Claude TODO', rows: 4, focus: true }])
+    await settle()
+    expect(open, `${columns}`).toEqual(['human-items'])
+    pressKey(await bandAt(hooks, $, columns), 'claude-queued')
+    await settle()
+    expect(opens, `${columns}`).toHaveLength(1)
+    expect(closes, `${columns}`).toEqual(['human-items'])
+    expect(open, `${columns}`).toEqual([])
+  }
 })
 
 test('a press on the Claude column while the pane shows the Claude list closes the pane, and the next one opens it again', async () => {

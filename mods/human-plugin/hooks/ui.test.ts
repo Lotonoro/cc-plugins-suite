@@ -935,9 +935,9 @@ test('the header is a row of the heading as text and the counts as a button, han
   expect(displayColumns(shown(over))).toBe(31)
 })
 
-test('the counts are a button while the cut leaves them a column and plain heading text below: `1…` at a layout width of 14 and `…` at 13, and at 12, 11 and 6 the header is the cut heading with no button in the column', () => {
-  // The column drawn alone is laid out in all of a band narrower than 32 columns, and is given no height, so `+N queued` never draws there.
-  for (const [columns, heading, counts] of [[14, 'Claude TODO ', '1…'], [13, 'Claude TODO ', '…'], [12, 'Claude TODO…', ''], [11, 'Claude TOD…', ''], [6, 'Claud…', '']] as const) {
+test('the counts are a button while the cut leaves them a column and plain heading text below: `1…` at a layout width of 14 and `…` at 13, and at 12, 11 and 6 the header is the cut heading with no button; +N queued is a button in the column at every width, the only one at 12 or less', () => {
+  // The column drawn alone is laid out in all of a band narrower than 32 columns, and is given no height: the queued steps keep their one line, `+2 queued` for the two, cut at the width.
+  for (const [columns, heading, counts, queued] of [[14, 'Claude TODO ', '1…', '+2 queued'], [13, 'Claude TODO ', '…', '+2 queued'], [12, 'Claude TODO…', '', '+2 queued'], [11, 'Claude TOD…', '', '+2 queued'], [6, 'Claud…', '', '+2 qu…']] as const) {
     const column = columnsOf(drawn(humans(0), [...flight(1), ...queue(2)], columns))[0] as Node
     const [head, ...rest] = (column.children as Node[])[0]?.children as Node[]
     const where = `${columns}`
@@ -946,8 +946,46 @@ test('the counts are a button while the cut leaves them a column and plain headi
       heading,
       counts === '' ? [] : [['Button', 'claude-header', counts]],
     ])
-    expect(nodes(column, 'Button').map(button => button.key), where).toEqual(counts === '' ? [] : ['claude-header'])
-    expect(lineTexts(column), where).toEqual([`${heading}${counts}`, '◐ f1'])
+    expect(nodes(column, 'Button').map(button => button.key), where).toEqual(counts === '' ? ['claude-queued'] : ['claude-header', 'claude-queued'])
+    expect(lineTexts(column), where).toEqual([`${heading}${counts}`, '◐ f1', queued])
+  }
+})
+
+test('a queued-only column drawn alone is its header and one queued line at every width: with three queued steps `+3 queued` as the dim button, cut at 6; with one, the step\'s row where the counts are a button and `+1 queued` where they are not', () => {
+  const alone = (columns: number, todo: TodoItem[]): Node => columnsOf(drawn(humans(0), todo, columns))[0] as Node
+  const buttons = (column: Node) => nodes(column, 'Button').map(button => [button.key, button.label, button.dimColor])
+  for (const [columns, header, counts, queued] of [
+    [120, 'Claude TODO 0 active, 3 queued', '0 active, 3 queued', '+3 queued'],
+    [14, 'Claude TODO 0…', '0…', '+3 queued'],
+    [13, 'Claude TODO …', '…', '+3 queued'],
+    [12, 'Claude TODO…', '', '+3 queued'],
+    [6, 'Claud…', '', '+3 qu…'],
+  ] as const) {
+    const column = alone(columns, queue(3))
+    expect(lineTexts(column), `three at ${columns}`).toEqual([header, queued])
+    expect(buttons(column), `three at ${columns}`).toEqual([...(counts === '' ? [] : [['claude-header', counts, undefined]]), ['claude-queued', queued, true]])
+  }
+  for (const [columns, header, counts, line] of [
+    [120, 'Claude TODO 0 active, 1 queued', '0 active, 1 queued', '○ q1'],
+    [14, 'Claude TODO 0…', '0…', '○ q1'],
+    [13, 'Claude TODO …', '…', '○ q1'],
+    [12, 'Claude TODO…', '', '+1 queued'],
+    [6, 'Claud…', '', '+1 qu…'],
+  ] as const) {
+    const column = alone(columns, queue(1))
+    expect(lineTexts(column), `one at ${columns}`).toEqual([header, line])
+    expect(buttons(column), `one at ${columns}`).toEqual(counts === '' ? [['claude-queued', line, true]] : [['claude-header', counts, undefined]])
+  }
+})
+
+test('every drawn column with a queued step has a press at every band width, +N queued the only one at 12 or less; a column with no queued step has the counts alone, so no press at 12 or less', () => {
+  for (let columns = 1; columns <= 40; columns++) {
+    const keys = (todo: TodoItem[]): unknown[] => nodes(columnsOf(drawn(humans(0), todo, columns))[0], 'Button').map(button => button.key)
+    for (const todo of [queue(1), queue(3), [...flight(2), ...queue(1)], [...flight(2), ...queue(4)]]) {
+      expect(keys(todo).length, `${columns}, ${todo.length} steps`).toBeGreaterThan(0)
+      if (columns <= 12) expect(keys(todo), `${columns}, ${todo.length} steps`).toEqual(['claude-queued'])
+    }
+    expect(keys(flight(2)), `${columns}, in flight only`).toEqual(columns <= 12 ? [] : ['claude-header'])
   }
 })
 
@@ -968,6 +1006,7 @@ test('a row is a glyph text in the state\'s colour beside a title text on one li
 test('beside one human item three queued items draw as the header and one +3 queued row, and no queued item', () => {
   const right = columnsOf(drawn(humans(1), queue(3), 120))[1] as Node
   expect(lineTexts(right)).toEqual(['Claude TODO 0 active, 3 queued', '+3 queued'])
+  expect(lineTexts(columnsOf(drawn(humans(1), queue(6), 120))[1] as Node)).toEqual(['Claude TODO 0 active, 6 queued', '+6 queued'])
 })
 
 test('queued rows fill down to the human list\'s height, the last a summary when they do not all fit', () => {
@@ -978,18 +1017,28 @@ test('queued rows fill down to the human list\'s height, the last a summary when
   expect(lineTexts(all)).toEqual(['Claude TODO 1 active, 2 queued', '◐ f1', '○ q1', '○ q2'])
 })
 
-test('every in-flight item has a row however many there are, and no queued row draws when they fill the human list\'s height', () => {
+test('every in-flight item has a row however many there are, and when they fill the human list\'s height the queued items keep one line, the +4 queued row', () => {
   const right = columnsOf(drawn(humans(2), [...flight(5), ...queue(4)], 120))[1] as Node
-  expect(lineTexts(right)).toEqual(['Claude TODO 5 active, 4 queued', ...flight(5).map(it => `◐ ${it.title}`)])
+  expect(lineTexts(right)).toEqual(['Claude TODO 5 active, 4 queued', ...flight(5).map(it => `◐ ${it.title}`), '+4 queued'])
 })
 
-test('with no human items and an item in flight the column draws alone: 40 wide at the band\'s right edge, nothing to its left', () => {
+test('the queued line counts toward the fold: at maxRows 6 a column of its header, five in-flight rows and +2 queued is seven lines, so the band scrolls and the human list folds one row earlier, to five lines with its summary row last', () => {
+  const [left, right] = columnsOf(drawn(humans(30), [...flight(5), ...queue(2)], 120, 6)) as [Node, Node]
+  expect(lineTexts(right)).toEqual(['Claude TODO 5 active, 2 queued', ...flight(5).map(it => `◐ ${it.title}`), '+2 queued'])
+  const rows = left.children as Node[]
+  expect(rows).toHaveLength(5)
+  expect(nodes(rows[4], 'Button').map(button => button.key)).toEqual(['band-more'])
+  // With no queued item the column is six lines, which the band holds, and the list draws six.
+  expect((columnsOf(drawn(humans(30), flight(5), 120, 6))[0] as Node).children).toHaveLength(6)
+})
+
+test('with no human items and a step in the agent\'s list the column draws alone: 40 wide at the band\'s right edge, nothing to its left', () => {
   const tree = drawn(humans(0), [...flight(2), ...queue(3)], 120)
   expect(tree).toMatchObject({ type: 'Box', flexDirection: 'row', justifyContent: 'flex-end', width: 120 })
   const [only, ...rest] = columnsOf(tree) as [Node, ...Node[]]
   expect(rest).toEqual([])
   expect(only).toMatchObject({ type: 'Box', flexDirection: 'column', width: 40 })
-  expect(lineTexts(only)).toEqual(['Claude TODO 2 active, 3 queued', '◐ f1', '◐ f2'])
+  expect(lineTexts(only)).toEqual(['Claude TODO 2 active, 3 queued', '◐ f1', '◐ f2', '+3 queued'])
   expect(JSON.stringify(tree)).not.toContain('To do for')
 })
 
@@ -1594,15 +1643,17 @@ test('beside the dock with no human items an item in flight draws the Claude col
 })
 
 test('every row of the Claude list\'s state table, drawn at a band of 52 and of 51 with the pane docked, holds what the row says with 52 as the two-list width', () => {
-  // Row 1: no human items and no item in flight: nothing draws.
+  // Row 1: no human items and no step in the agent's list: nothing draws.
   expect(bandDraws(0, [])).toBe(false)
-  expect(bandDraws(0, queue(2))).toBe(false)
   for (const columns of [52, 51]) {
     const both = columns === 52
     const where = (row: number): string => `row ${row}, ${columns}`
-    // Row 2: the column alone, at the right edge.
-    expect(columnsOf(docked(humans(0), [...flight(1), ...queue(2)], columns)), where(2)).toHaveLength(1)
-    sameTree(docked(humans(0), [...flight(1), ...queue(2)], columns), drawn(humans(0), [...flight(1), ...queue(2)], columns), where(2))
+    // Row 2: no human items and a step in the agent's list, in flight or queued only: the column alone, at the right edge.
+    for (const todo of [[...flight(1), ...queue(2)], queue(2)]) {
+      expect(bandDraws(0, todo), where(2)).toBe(true)
+      expect(columnsOf(docked(humans(0), todo, columns)), where(2)).toHaveLength(1)
+      sameTree(docked(humans(0), todo, columns), drawn(humans(0), todo, columns), where(2))
+    }
     // Row 3: the human list alone, full width.
     sameTree(docked(humans(2), [], columns), drawn(humans(2), [], columns), where(3))
     expect(JSON.stringify(docked(humans(2), [], columns)), where(3)).not.toContain('Claude TODO')
@@ -1622,15 +1673,15 @@ test('every row of the Claude list\'s state table, drawn at a band of 52 and of 
       expect([left.width, right.width], where(row)).toEqual([20, 32])
       expect(lineTexts(right), where(row)).toEqual(want)
     }
-    // Row 6: in flight overflowing the height: the header and every in-flight row, no queued or `+N queued` row, the header still counting the queued items.
+    // Row 6: in flight overflowing the height: the header, every in-flight row and the queued items' one line, `+2 queued`, the header counting the queued items too.
     const overflow = docked(humans(2), [...flight(10), ...queue(2)], columns, 6)
-    if (both) expect(lineTexts(columnsOf(overflow)[1] as Node), where(6)).toEqual(['Claude TODO 10 active, 2 queued', ...flight(10).map(it => `◐ ${it.title}`)])
+    if (both) expect(lineTexts(columnsOf(overflow)[1] as Node), where(6)).toEqual(['Claude TODO 10 active, 2 queued', ...flight(10).map(it => `◐ ${it.title}`), '+2 queued'])
     else sameTree(overflow, drawn(humans(2), [...flight(10), ...queue(2)], columns, 6), where(6))
     // Row 7: folded and overflowing: as row 6, with the human list folded into its summary row, its last.
     const taller = docked(humans(30), [...flight(12), ...queue(2)], columns, 10)
     if (both) {
       const [left, right] = columnsOf(taller) as [Node, Node]
-      expect(lineTexts(right), where(7)).toEqual(['Claude TODO 12 active, 2 queued', ...flight(12).map(it => `◐ ${it.title}`)])
+      expect(lineTexts(right), where(7)).toEqual(['Claude TODO 12 active, 2 queued', ...flight(12).map(it => `◐ ${it.title}`), '+2 queued'])
       expect(isFolded(left), where(7)).toBe(true)
       // The human list folds one row earlier, into the rows the band's window shows at its top: the header's two lines and the rows, the summary the last.
       expect(2 + (left.children as Node[]).length - 1, where(7)).toBeLessThanOrEqual(9)
@@ -1839,14 +1890,27 @@ test('a press on the counts and on +N queued runs the one handler for the Claude
   for (const node of [...nodes(right, 'Box'), ...nodes(right, 'Text')]) expect([node.onPress, node.hover], JSON.stringify(node)).toEqual([undefined, undefined])
 })
 
-test('the column drawn alone is the same: the counts as a button and each in-flight row as a glyph text and a title text', () => {
+test('the column drawn alone is the same: the counts as a button, each in-flight row as a glyph text and a title text, and +3 queued as a button', () => {
   const column = columnsOf(withClaude(humans(0), [...flight(2), ...queue(3)]))[0] as Node
   expect(claudeLines(column).map(line => [line.type, shown(line)])).toEqual([
     ['Box', 'Claude TODO 2 active, 3 queued'],
     ['Box', '◐ f1'],
     ['Box', '◐ f2'],
+    ['Box', '+3 queued'],
   ])
-  expect(nodes(column, 'Button').map(button => [button.key, button.label])).toEqual([['claude-header', '2 active, 3 queued']])
+  expect(nodes(column, 'Button').map(button => [button.key, button.label])).toEqual([['claude-header', '2 active, 3 queued'], ['claude-queued', '+3 queued']])
+})
+
+test('in a queued-only column drawn alone, at 120 and at 12, the +N queued button runs the backlog handler', () => {
+  for (const columns of [120, 12]) {
+    const calls: string[] = []
+    const press: Handlers = { ...handlers, backlog: () => void calls.push('backlog') }
+    const column = columnsOf(withClaude(humans(0), queue(3), press, columns))[0] as Node
+    const queued = nodes(column, 'Button').filter(button => button.key === 'claude-queued')
+    expect(queued, `${columns}`).toHaveLength(1)
+    for (const button of queued) (button.onPress as () => void)()
+    expect(calls, `${columns}`).toEqual(['backlog'])
+  }
 })
 
 test('in a column of 20 layout columns a row of 60 columns is a glyph text and a title text that end in an ellipsis within the 20, no wide character split; the header and +N queued are cut the same way, +N queued dim, and a row that fits is whole', () => {
@@ -1877,16 +1941,17 @@ test('in a column of 20 layout columns a row of 60 columns is a glyph text and a
 })
 
 test('a step row\'s two texts joined are the one line cut at the layout width at every width from 2, so at 2 it reads the glyph and an ellipsis; at 1 the row is the glyph alone, never cut, in its colour', () => {
-  const rowsAt = (layout: number, todo: TodoItem[]): Node[] => claudeLines(claudeColumn(table, handlers, todo, { box: layout, layout }, 20) as Node).slice(1)
+  // The in-flight row and the first queued row, of a list with two queued steps: where the header has no press (a layout of 12 or less) the last queued line is `+N queued`, so a lone queued step would not be a row.
+  const rowsAt = (layout: number, todo: TodoItem[]): Node[] => claudeLines(claudeColumn(table, handlers, todo, { box: layout, layout }, 20) as Node).slice(1, 3)
   const titles = ['f1', 'x'.repeat(80), '漢'.repeat(30), 'a漢b'.repeat(8), 'a'.repeat(5)]
   for (const layout of Array.from({ length: 44 }, (_, k) => k + 2)) {
     for (const title of titles) {
-      const rows = rowsAt(layout, [{ title, state: 'in_flight', eta: 'no ETA' }, { title, state: 'queued', eta: 'no ETA' }])
+      const rows = rowsAt(layout, [{ title, state: 'in_flight', eta: 'no ETA' }, { title, state: 'queued', eta: 'no ETA' }, ...queue(1)])
       expect(rows.map(row => shown(row)), `${layout}, ${title}`).toEqual((['in_flight', 'queued'] as const).map(state => cutToColumns(`${GLYPH[state]} ${title}`, layout)))
     }
   }
-  expect(rowsAt(2, [...flight(1), ...queue(1)]).map(row => shown(row))).toEqual(['◐…', '○…'])
-  expect(rowsAt(1, [...flight(1), ...queue(1)])).toStrictEqual([{ type: 'Box', children: [glyphText('in_flight')] }, { type: 'Box', children: [glyphText('queued')] }])
+  expect(rowsAt(2, [...flight(1), ...queue(2)]).map(row => shown(row))).toEqual(['◐…', '○…'])
+  expect(rowsAt(1, [...flight(1), ...queue(2)])).toStrictEqual([{ type: 'Box', children: [glyphText('in_flight')] }, { type: 'Box', children: [glyphText('queued')] }])
 })
 
 // The backlog pane: the Claude list whole, read-only. The header is one line the engine cuts at its end. Each item is one row of three parts: its glyph, which does not shrink, its title, which gives

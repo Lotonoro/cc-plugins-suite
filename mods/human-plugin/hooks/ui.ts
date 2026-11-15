@@ -11,8 +11,8 @@ import {
   bandWidths,
   claudeRows,
   columnHeader,
-  columnHeight,
   cutToColumns,
+  foldCount,
   headerLines,
   humanFoldRows,
   isChipShort,
@@ -335,21 +335,23 @@ const stepRow = (t: Table, item: TodoItem, room: number): RenderElement => {
 }
 
 // The Claude column: its header with the counts in the short form (columnHeader cuts its two parts), then its rows (see claudeRows), each cut at the column's layout width, inside
-// the box's padding. `height`: the human list's lines, which the queued rows fill down to. Two things in it open the backlog (the engine gives a box no press), each a plain button in a
-// row Box of its own: the counts, after the heading word, which is text, and the dim `+N queued` row. In a row a button is sized to its text, where the column's stretch would give
-// it the whole line, blank tail included; and under the pointer a plain button inverts, so those two reverse their colours and nothing else in the column does. The item rows (stepRow)
-// are a glyph Text beside a title Text, with no address, press or hover: no pane shows one Claude item alone, so a row offers nothing to press. Text and button alike wrap their text
-// rather than cutting it, so each is handed its text cut already.
+// the box's padding. `height`: the human list's lines, which the queued rows fill down to; the queued steps keep one line however small it is. Two things in it open the backlog (the
+// engine gives a box no press), each a plain button in a row Box of its own: the counts, after the heading word, which is text, and the dim `+N queued` row. A column too narrow for the
+// counts has no press in its header (columnHeader), and claudeRows is told so: the queued line is then `+N queued`, the only press left. In a row a button is sized to its text, where
+// the column's stretch would give it the whole line, blank tail included; and under the pointer a plain button inverts, so those two reverse their colours and nothing else in the
+// column does. The item rows (stepRow) are a glyph Text beside a title Text, with no address, press or hover: no pane shows one Claude item alone, so a row offers nothing to press.
+// Text and button alike wrap their text rather than cutting it, so each is handed its text cut already.
 export const claudeColumn = (t: Table, h: Handlers, todo: readonly TodoItem[], width: ListWidth, height: number): RenderElement => {
   const header = columnHeader(HEADING, bandCountsText(todo), width.layout)
+  const hasPress = header.counts !== ''
   const button = (key: string, label: string, isDim: boolean): RenderElement => t.Button({ key, plain: true, ...(isDim ? { dimColor: true } : {}), label, onPress: () => h.backlog() })
   return t.Box({
     flexDirection: 'column',
     width: width.box,
     ...(marginOf(width) > 0 ? { paddingLeft: marginOf(width) } : {}),
     children: [
-      t.Box({ children: [t.Text({ children: [header.heading] }), ...(header.counts === '' ? [] : [button('claude-header', header.counts, false)])] }),
-      ...claudeRows(todo, height).map(row =>
+      t.Box({ children: [t.Text({ children: [header.heading] }), ...(hasPress ? [button('claude-header', header.counts, false)] : [])] }),
+      ...claudeRows(todo, height, hasPress).map(row =>
         row.kind === 'item'
           ? stepRow(t, row.item, width.layout)
           : t.Box({ children: [button('claude-queued', cutToColumns(`+${row.count} queued`, width.layout), true)] }),
@@ -389,7 +391,8 @@ const squeezedHeader = (t: Table, chip: string, count: string, fill: Fill, lines
 // The band above the prompt: a header with the count, then the rows that fit. When items are folded, the summary row is the way into
 // the pane for them. The pane is also opened by a title, and closed by its own close or a press on the item it shows. On a band wide
 // enough, and with a Claude list to show, the Claude column is drawn beside the human list at the band's right edge (layout.ts). The human list's
-// rows are laid out and cut in its layout width, each one line, so the fold counts a line a row and the header's lines; the Claude column fills down to the same count.
+// rows are laid out and cut in its layout width, each one line, so the fold counts a line a row and the header's lines; the Claude column fills down to the same count, but is never
+// fewer lines than its fold count (layout.ts).
 // A squeezed human list (isSqueezed) and one narrower than its chip (isChipShort) have the two-line header of squeezedHeader, which squeezedFold counts; a squeezed list's rows start the ladder at its last stage.
 export const band = (t: Table, h: Handlers, store: Store, view: View): RenderElement => {
   const open = store.items.filter(it => it.state === 'open')
@@ -397,8 +400,8 @@ export const band = (t: Table, h: Handlers, store: Store, view: View): RenderEle
   const widths: BandWidths = view.claude === undefined ? { human: null, claude: null } : bandWidths(view.claude.columns, store.items.length, todo, view.claude.isDocked)
   // The columns the human rows are laid out in; null for a band with no width to lay them out in, which draws them whole.
   const fit = widths.human === null ? null : widths.human.layout
-  // The column's fixed lines (its header and every in-flight row) can make the band taller than `maxRows` beside the human list.
-  const columnLines = widths.human !== null && widths.claude !== null ? columnHeight(todo) : 0
+  // The column's fold count (its header, every in-flight row and its queued line) can make the band taller than `maxRows` beside the human list.
+  const columnLines = widths.human !== null && widths.claude !== null ? foldCount(todo) : 0
   const { chip, count } = headerTexts(store)
   const squeezed = isSqueezed(widths)
   const stacked = squeezed || isChipShort(widths, chip)
