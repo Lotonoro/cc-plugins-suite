@@ -16,24 +16,38 @@ const ROW_CAP_BYTES = 4194304
 
 export type Visit = 'stop' | 'more' | 'unread'
 export type Walk = 'stop' | 'covered' | 'unread'
+// Why a walk ended unread, as the walk names it to its observer: a block read that exited nonzero, or whose stdout was cut; a row over the cap; or a visit
+// answering unread.
+export type Unread = 'read-failed' | 'read-truncated' | 'row-over-cap' | 'visitor-unread'
 
 const encoder = new TextEncoder()
 
 // Visits each complete line from the newest back, to the start of the file. A block's first partial line is carried
 // into the next block. The file's last line is skipped while it is unterminated, its head in an earlier block
 // included: Claude Code is still writing it. A row over the cap, a failed or truncated block read, or a visit answering
-// unread ends the walk unread.
-export const walkBackward = async (host: Host, path: string, visitRow: (line: string) => Visit): Promise<Walk> => {
-  const visit = (line: string): Visit => (encoder.encode(line).byteLength > ROW_CAP_BYTES ? 'unread' : visitRow(line))
+// unread ends the walk unread, and the observer, if given, is told which, once. A walk that ends otherwise tells it nothing.
+export const walkBackward = async (host: Host, path: string, visitRow: (line: string) => Visit, observe?: (why: Unread) => void): Promise<Walk> => {
+  const unread = (why: Unread): Walk => {
+    observe?.(why)
+    return 'unread'
+  }
+  const overCap = (text: string) => encoder.encode(text).byteLength > ROW_CAP_BYTES
+  // What a complete line ends the walk with, or undefined where the walk goes on. A line over the cap is not shown to the visitor.
+  const endAt = (line: string): Walk | undefined => {
+    if (overCap(line)) return unread('row-over-cap')
+    const verdict = visitRow(line)
+    if (verdict === 'unread') return unread('visitor-unread')
+    return verdict === 'stop' ? 'stop' : undefined
+  }
   const size = await host.size(path)
   if (size === 0) return 'covered'
-  const overCap = (text: string) => encoder.encode(text).byteLength > ROW_CAP_BYTES
   let carry = ''
   let open = false
   let isLastBlock = true
   for (let block = Math.floor((size - 1) / CHUNK_BYTES); block >= 0; block--) {
     const run = await host.run(['dd', `if=${path}`, `bs=${CHUNK_BYTES}`, `skip=${block}`, 'count=1'])
-    if (run.exitCode !== 0 || run.isStdoutTruncated) return 'unread'
+    if (run.exitCode !== 0) return unread('read-failed')
+    if (run.isStdoutTruncated) return unread('read-truncated')
     const parts = (run.stdout + carry).split('\n')
     if (isLastBlock) {
       open = !run.stdout.endsWith('\n')
@@ -43,26 +57,24 @@ export const walkBackward = async (host: Host, path: string, visitRow: (line: st
       if (parts.length === 1) {
         // No newline yet: the unterminated row continues into the block below.
         carry = parts[0] ?? ''
-        if (overCap(carry)) return 'unread'
+        if (overCap(carry)) return unread('row-over-cap')
         continue
       }
       parts.pop()
       open = false
     }
     carry = parts[0] ?? ''
-    if (overCap(carry)) return 'unread'
+    if (overCap(carry)) return unread('row-over-cap')
     for (let i = parts.length - 1; i >= 1; i--) {
       const line = parts[i] ?? ''
       if (line === '') continue
-      const verdict = visit(line)
-      if (verdict !== 'more') return verdict === 'stop' ? 'stop' : 'unread'
+      const end = endAt(line)
+      if (end !== undefined) return end
     }
   }
   // An unterminated span is one row being written.
   if (open || carry === '') return 'covered'
-  const verdict = visit(carry)
-  if (verdict === 'unread') return 'unread'
-  return verdict === 'stop' ? 'stop' : 'covered'
+  return endAt(carry) ?? 'covered'
 }
 
 // The fields of a transcript row the reader uses, normalized at this boundary. A main-thread row is one with no
@@ -150,13 +162,30 @@ export const normalize = (line: string): Row | undefined => {
 
 const UUID_FIELD = /"uuid":"([^"]+)"/g
 
+// Why a stamp lookup's walk ended unread: the walk's causes, with the visitor's unread being a row that names a wanted key and does not parse.
+export type StampUnread = Exclude<Unread, 'visitor-unread'> | 'row-unparsed'
+// How a stamp lookup's walk ended: `reason` is why it ended unread, null where it stopped or covered the file; `blocksRead` is the block reads it started, a
+// failed or truncated one included.
+export type StampEnding = { reason: StampUnread | null; blocksRead: number }
+
 // The rows of the keys the transcript holds, found in one backward pass for all of them; a key with no row has no entry.
 // A row that only names a key as its parent does not match, nor does a nested field holding the key as a uuid.
-export const lookupRows = async (host: Host, path: string, keys: readonly string[]): Promise<Map<string, Row>> => {
+// The observer, if given, is told once how the walk ended, however it ended. A lookup that throws tells it nothing.
+export const lookupRows = async (host: Host, path: string, keys: readonly string[], observe?: (ending: StampEnding) => void): Promise<Map<string, Row>> => {
   const pending = new Set(keys)
   const found = new Map<string, Row>()
+  let blocksRead = 0
+  // The block reads the walk starts are counted as they start, so a read that fails or is cut is counted.
+  const counted: Host = {
+    size: (p) => host.size(p),
+    run: (argv) => {
+      blocksRead++
+      return host.run(argv)
+    },
+  }
+  let reason: StampUnread | null = null
   await walkBackward(
-    host,
+    counted,
     path,
     (line) => {
       let row: Row | undefined
@@ -176,7 +205,11 @@ export const lookupRows = async (host: Host, path: string, keys: readonly string
       }
       return pending.size === 0 ? 'stop' : 'more'
     },
+    (why) => {
+      reason = why === 'visitor-unread' ? 'row-unparsed' : why
+    },
   )
+  observe?.({ reason, blocksRead })
   return found
 }
 

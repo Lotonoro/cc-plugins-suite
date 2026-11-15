@@ -66,7 +66,7 @@ import { answerOf, paneLayoutOf, spanOf, type Line, type PaneRow, type PaneSize,
 import { secsTerse } from './setup'
 import { stampLabel, withStamp } from './stamp'
 import { foldStatsEvents, INITIAL_STATS, noRefreshesLine, pendingFor, rundownSections, sessionLineOf, type MissEvent, type LongPauseEvent } from './stats'
-import { lookupRows, readCache, type History, type Host, type Row } from './transcript'
+import { lookupRows, readCache, type History, type Host, type Row, type StampEnding, type StampUnread } from './transcript'
 import { NO_KINDS, spendOf, unitOf, uponOf, writeReadRatio, type Money } from './prices'
 import { priceCheck, priceList, priceReady, priceSink, priceSync, report, type PriceEvent } from './pricesync'
 
@@ -183,6 +183,9 @@ const fresh = new Set<string>()
 let unreadable = false
 // The transcript size at the last lookup pass; a pass also runs when the transcript has changed size since.
 let lastPassSize: number | undefined
+// The stamp pass's stretch: the consecutive passes on this transcript whose walk ended unread for one reason, and how many of them were written to the debug
+// log. Ended by a pass that reads through, and by a change of transcript.
+let stampStretch: { reason: StampUnread; passes: number; written: number } | undefined
 // The transcript's size when the last read started. A tick that sees a larger file asks for a reread, so a reply written after the
 // turn's last read is folded on the next tick. A read that failed after its stat leaves this at the size it saw, so it is not
 // reread every tick; only growth asks again.
@@ -1478,9 +1481,39 @@ const drawStatus = async ($: Dollar) => {
 // Whether a main-thread turn is running. Its first step and its end read the transcript, so growth while it runs needs no reread.
 const turnRunning = async ($: Dollar) => ((await $.state.get(KEEPALIVE)).value ?? INITIAL).active
 
+// The debug log's words for each reason a stamp pass's walk can end unread.
+const STAMP_REASONS: Record<StampUnread, string> = {
+  'read-failed': 'a block read failed',
+  'read-truncated': 'a block read was truncated',
+  'row-over-cap': 'a row is over the 4 MiB cap',
+  'row-unparsed': 'a row naming a wanted id did not parse',
+}
+
+// Keeps the stretch and writes the `cachier stamps` line a pass's ending calls for. A pass that ends unread for the stretch's reason is its next pass, and one
+// for another reason starts a new stretch; a stretch's 1st, 2nd, 4th, 8th pass and so on are written. A pass that reads through ends the stretch, and says so where
+// the stretch was written. Counts and the mod's own words only: nothing of the transcript.
+const stampEnded = ($: Dollar, ending: StampEnding, asked: number, stillWanted: number) => {
+  const stretch = stampStretch
+  const counts = { asked, still_wanted: stillWanted, blocks_read: ending.blocksRead }
+  if (ending.reason === null) {
+    stampStretch = undefined
+    if (stretch !== undefined) {
+      debugLine($, 'cachier stamps', { ended: 'read_through', reason: STAMP_REASONS[stretch.reason], passes: stretch.passes, suppressed: stretch.passes - stretch.written, ...counts })
+    }
+    return
+  }
+  const continued = stretch !== undefined && stretch.reason === ending.reason
+  const passes = continued ? stretch.passes + 1 : 1
+  // A power of two has one bit set.
+  const isWritten = (passes & (passes - 1)) === 0
+  stampStretch = { reason: ending.reason, passes, written: (continued ? stretch.written : 0) + (isWritten ? 1 : 0) }
+  if (isWritten) debugLine($, 'cachier stamps', { ended: 'unread', reason: STAMP_REASONS[ending.reason], passes, ...counts })
+}
+
 // One backward pass over the transcript for the drawn ids not yet found. It runs when an id is newly drawn, or when the
 // transcript has changed size since the last pass, so an id that is missing is looked up again only after growth. A
-// failed lookup is retried the same way: on the next size change, not on every tick.
+// failed lookup is retried the same way: on the next size change, not on every tick. A pass whose walk ended unread, or
+// read through after one that did, is written to the debug log (stampEnded); a pass that threw is reported alone.
 const lookupStamps = async ($: Dollar) => {
   const transcript = (await $.state.get(TRANSCRIPT)).value ?? null
   if (transcript === null) return
@@ -1489,6 +1522,7 @@ const lookupStamps = async ($: Dollar) => {
     stampSession = transcript
     stampTimes.clear()
     lastPassSize = undefined
+    stampStretch = undefined
     changed = true
   }
   let size: number | undefined
@@ -1511,8 +1545,10 @@ const lookupStamps = async ($: Dollar) => {
     fresh.clear()
     lastPassSize = size
     let found: Map<string, Row>
+    // The lookup tells how its walk ended once, however it ended; one that throws tells nothing.
+    const endings: StampEnding[] = []
     try {
-      found = await lookupRows(hostOf($), transcript, asked)
+      found = await lookupRows(hostOf($), transcript, asked, (ending) => endings.push(ending))
     } catch (err) {
       report($, err)
       found = new Map()
@@ -1525,6 +1561,9 @@ const lookupStamps = async ($: Dollar) => {
         changed = true
       }
     }
+    // The ids left wanted are those this pass asked for and did not find: an id drawn while it ran is not counted.
+    const [ending] = endings
+    if (ending !== undefined) stampEnded($, ending, asked.length, asked.length - found.size)
   }
   if (changed) $.ui.invalidate('ui.render')
 }

@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'claude-code/testing'
 import { assistant, hostOver, lines, user, CHUNK_BYTES } from './fixture'
-import { CHUNK_BYTES as BLOCK, lookupRows, readCache, walkBackward } from './transcript'
+import { CHUNK_BYTES as BLOCK, lookupRows, readCache, walkBackward, type Host, type StampEnding, type Unread, type Visit, type Walk } from './transcript'
 
 const T0 = '2026-10-18T10:00:00.000Z'
 const T1 = '2026-10-18T10:03:00.000Z'
@@ -396,5 +396,91 @@ describe('readCache: the same pass also yields the main-thread responses, for th
     ])
     const { history } = await readCache(hostOver(text), '/t.jsonl', null)
     expect(history?.responses.map((r) => r.messageId)).toEqual(['m2'])
+  })
+})
+
+// How a walk ends, as the observer the walk and the stamp lookup take tells it. Each unread ending has a transcript built to end it that way.
+const CAP = 4194304
+const FAILED = { exitCode: 1, isStdoutTruncated: false }
+const CUT = { exitCode: 0, isStdoutTruncated: true }
+
+// A user row of exactly `bytes` bytes: its text is ASCII, so a character is a byte.
+const userOf = (uuid: string, bytes: number) => user({ uuid, parent: null, ts: T0, pad: bytes - user({ uuid, parent: null, ts: T0, pad: 0 }).length })
+// A row that names `uuid` and is cut off before it closes, so it does not parse.
+const unparsable = (uuid: string) => `{"type":"user","uuid":"${uuid}","note":"cut`
+// Rows a, b and c over three blocks, c the newest: the first read holds c and the tail of b.
+const spread = () => hostOver(lines([user({ uuid: 'a', parent: null, ts: T0, pad: BLOCK }), user({ uuid: 'b', parent: null, ts: T1, pad: BLOCK }), user({ uuid: 'c', parent: null, ts: T2 })]))
+// The host of rows a, b and c, but its read of block 1 is answered with `answer` and no output: the walk's second read.
+const refusedAtSecondRead = (answer: { exitCode: number; isStdoutTruncated: boolean }): Host => {
+  const whole = spread()
+  return { size: whole.size, run: async (argv) => (argv.includes('skip=1') ? { ...answer, stdout: '' } : whole.run(argv)) }
+}
+const small = () => user({ uuid: 'small', parent: null, ts: T1 })
+// A row of 5 MiB and a little, older than a small one. The walk carries it back a block at a time and ends past the cap in its 5th read, before the file's start.
+const carriedPastCap = () => hostOver(lines([userOf('big', 5 * BLOCK + 1000), small()]))
+// The same row last in the file and not yet terminated, as Claude Code is still writing it.
+const openPastCap = () => hostOver(lines([small()]) + userOf('big', 5 * BLOCK + 1000))
+// A row of one byte over the cap that starts 100 bytes before a block boundary: the carry never passes the cap, and the row is met whole, as a line, in the walk's 6th read.
+const lineOverCap = () => hostOver(lines([userOf('first', BLOCK - 101), userOf('big', CAP + 1), small()]))
+// A row naming `bad` that does not parse, with an older row before it and a padded row after it that puts it in the older of two blocks, then a newer row.
+const unparsedMid = () => hostOver(lines([user({ uuid: 'first', parent: null, ts: T0 }), unparsable('bad'), user({ uuid: 'pad', parent: null, ts: T0, pad: BLOCK }), user({ uuid: 'newer', parent: null, ts: T1 })]))
+// The same row as the first of the file, which the walk meets last, as the row left in its carry.
+const unparsedFirst = () => hostOver(lines([unparsable('bad'), user({ uuid: 'pad', parent: null, ts: T0, pad: BLOCK }), user({ uuid: 'newer', parent: null, ts: T1 })]))
+
+const more = (): Visit => 'more'
+const answersUnreadAtBad = (line: string): Visit => (line.includes('"uuid":"bad"') ? 'unread' : 'more')
+const stopsAtC = (line: string): Visit => (line.includes('"uuid":"c"') ? 'stop' : 'more')
+
+describe('walkBackward: the observer is told why a walk ended unread, once, and nothing when it did not', () => {
+  const cases: [name: string, host: () => Host, visit: (line: string) => Visit, status: Walk, why: Unread | null][] = [
+    ['a block read that exits nonzero', () => refusedAtSecondRead(FAILED), more, 'unread', 'read-failed'],
+    ['a block read whose stdout is truncated', () => refusedAtSecondRead(CUT), more, 'unread', 'read-truncated'],
+    ['a row carried past the cap', carriedPastCap, more, 'unread', 'row-over-cap'],
+    ['an unterminated last row carried past the cap', openPastCap, more, 'unread', 'row-over-cap'],
+    ['a line over the cap, met whole after the carry check passed it', lineOverCap, more, 'unread', 'row-over-cap'],
+    ['a visit answering unread, mid-file', unparsedMid, answersUnreadAtBad, 'unread', 'visitor-unread'],
+    ['a visit answering unread at the first row of the file', unparsedFirst, answersUnreadAtBad, 'unread', 'visitor-unread'],
+    ['a visit that stops the walk', spread, stopsAtC, 'stop', null],
+    ['a file covered to its start', spread, more, 'covered', null],
+    ['an empty file', () => hostOver(''), more, 'covered', null],
+  ]
+  for (const [name, host, visit, status, why] of cases) {
+    test(`${name}: the walk is ${status} with or without an observer, which is told ${why === null ? 'nothing' : why}`, async () => {
+      const told: Unread[] = []
+      expect(await walkBackward(host(), '/t.jsonl', visit)).toBe(status)
+      expect(await walkBackward(host(), '/t.jsonl', visit, (reason) => told.push(reason))).toBe(status)
+      expect(told).toEqual(why === null ? [] : [why])
+    })
+  }
+})
+
+describe('lookupRows: a stamp lookup reports how its walk ended, and the block reads it started', () => {
+  const cases: [name: string, host: () => Host, keys: string[], ending: StampEnding, found: string[]][] = [
+    ['whose block read exits nonzero', () => refusedAtSecondRead(FAILED), ['c', 'a'], { reason: 'read-failed', blocksRead: 2 }, ['c']],
+    ['whose block read is truncated', () => refusedAtSecondRead(CUT), ['c', 'a'], { reason: 'read-truncated', blocksRead: 2 }, ['c']],
+    ['that meets a row over 4 MiB carried back block by block', carriedPastCap, ['small', 'big'], { reason: 'row-over-cap', blocksRead: 5 }, ['small']],
+    ['that meets an unterminated last row over 4 MiB', openPastCap, ['small'], { reason: 'row-over-cap', blocksRead: 5 }, []],
+    ['that meets a row over 4 MiB as a line the carry check passed', lineOverCap, ['small', 'first'], { reason: 'row-over-cap', blocksRead: 6 }, ['small']],
+    ['that meets a row naming a wanted id that is not valid JSON', unparsedMid, ['newer', 'bad', 'first'], { reason: 'row-unparsed', blocksRead: 2 }, ['newer']],
+    ['that meets such a row as the first of the file', unparsedFirst, ['newer', 'bad'], { reason: 'row-unparsed', blocksRead: 2 }, ['newer']],
+    ['that stops with every id found', spread, ['c'], { reason: null, blocksRead: 1 }, ['c']],
+    ['that covers the file with an id missing', spread, ['a', 'nope'], { reason: null, blocksRead: 3 }, ['a']],
+    ['over an empty file', () => hostOver(''), ['k'], { reason: null, blocksRead: 0 }, []],
+  ]
+  for (const [name, host, keys, ending, found] of cases) {
+    test(`a lookup ${name} reports one ending, ${ending.reason ?? 'with no reason'}, and finds the same rows with or without an observer`, async () => {
+      const endings: StampEnding[] = []
+      const rows = await lookupRows(host(), '/t.jsonl', keys, (e) => endings.push(e))
+      expect(endings).toEqual([ending])
+      expect([...rows.keys()].sort()).toEqual(found)
+      expect([...rows]).toEqual([...(await lookupRows(host(), '/t.jsonl', keys))])
+    })
+  }
+
+  test('a lookup whose host read throws reports no ending', async () => {
+    const endings: StampEnding[] = []
+    const throwing: Host = { size: async () => 10, run: async () => Promise.reject(new Error('read refused')) }
+    await expect(lookupRows(throwing, '/t.jsonl', ['k'], (e) => endings.push(e))).rejects.toThrow('read refused')
+    expect(endings).toEqual([])
   })
 })

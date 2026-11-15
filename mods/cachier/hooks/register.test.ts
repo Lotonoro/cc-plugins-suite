@@ -1,5 +1,5 @@
 import { describe, expect, mock, test } from 'claude-code/testing'
-import { assistant, drawnLabels, fakeFiles, LABELS, lines, mislabelled, UNLABELLED, user, withoutLabel } from './fixture'
+import { assistant, CHUNK_BYTES, drawnLabels, fakeFiles, LABELS, lines, mislabelled, UNLABELLED, user, withoutLabel } from './fixture'
 import { HISTORY_BOUND, keyOf } from './history'
 import { INITIAL as INITIAL_KEEPALIVE } from './keepalive'
 import { COMPACT_FLOOR_TOKENS, stepNoticeOf, windowNoticeOf } from './night'
@@ -26,7 +26,7 @@ const PRICING_PAGE = [
 
 // The engine's answers beneath the plugin: the transcript (its text read from `doc`, so a test can grow it), the status
 // line, the debug log, and each host read the reader makes. `runs` counts the reads.
-const world = (on: any, doc: { text: string; broken?: boolean; exists?: boolean; hold?: Promise<void>; deny?: string; pricing?: string; pricingStatus?: number; pricingHold?: Promise<void>; fork?: unknown; forkSends?: { reply: unknown; delayMs: number }[]; clock?: { sleep: (ms: number) => Promise<void> }; forkHold?: Promise<void>; switchHold?: Promise<void>; compactHold?: Promise<void>; forkThrows?: boolean; dropPrompt?: boolean; promptThrows?: boolean; store?: Record<string, unknown>; auditor?: boolean; markdown?: boolean; engineNode?: boolean; openThrows?: boolean; openUnplaced?: boolean; closeKeeps?: boolean; closeThrows?: boolean; panesThrow?: boolean; listUnplaced?: boolean; keysThrows?: boolean; keysHold?: Promise<void>; getHold?: { key: string; hold: Promise<void>; nth?: number }; getHeldDenied?: { key: string; hold: Promise<void>; deny: string }; setHold?: { key: string; hold: Promise<void> }; getDenied?: Set<string>; setDenied?: Set<string>; deleteDenied?: Set<string>; getGate?: (key: string, nth: number) => Promise<string | undefined> | undefined; onSet?: (key: string) => void; compact?: (e: any, rec: any) => unknown }) => {
+const world = (on: any, doc: { text: string; broken?: boolean; exists?: boolean; hold?: Promise<void>; deny?: string; blockFault?: 'exit' | 'truncated'; pricing?: string; pricingStatus?: number; pricingHold?: Promise<void>; fork?: unknown; forkSends?: { reply: unknown; delayMs: number }[]; clock?: { sleep: (ms: number) => Promise<void> }; forkHold?: Promise<void>; switchHold?: Promise<void>; compactHold?: Promise<void>; forkThrows?: boolean; dropPrompt?: boolean; promptThrows?: boolean; store?: Record<string, unknown>; auditor?: boolean; markdown?: boolean; engineNode?: boolean; openThrows?: boolean; openUnplaced?: boolean; closeKeeps?: boolean; closeThrows?: boolean; panesThrow?: boolean; listUnplaced?: boolean; keysThrows?: boolean; keysHold?: Promise<void>; getHold?: { key: string; hold: Promise<void>; nth?: number }; getHeldDenied?: { key: string; hold: Promise<void>; deny: string }; setHold?: { key: string; hold: Promise<void> }; getDenied?: Set<string>; setDenied?: Set<string>; deleteDenied?: Set<string>; getGate?: (key: string, nth: number) => Promise<string | undefined> | undefined; onSet?: (key: string) => void; compact?: (e: any, rec: any) => unknown }) => {
   const rec = {
     status: [] as (string | undefined)[],
     logs: [] as string[],
@@ -181,7 +181,11 @@ const world = (on: any, doc: { text: string; broken?: boolean; exists?: boolean;
     rec.runs++
     if (doc.deny !== undefined) return { deny: doc.deny }
     if (doc.hold !== undefined) await doc.hold
-    return { value: fakeFiles(doc.text).run(e.argv) }
+    const run = fakeFiles(doc.text).run(e.argv)
+    // `blockFault` answers every block read with the refusal the reader tells apart from an engine's: a nonzero exit with no output, or its stdout cut.
+    if (doc.blockFault === 'exit') return { value: { ...run, exitCode: 1, stdout: '' } }
+    if (doc.blockFault === 'truncated') return { value: { ...run, isStdoutTruncated: true } }
+    return { value: run }
   })
   // A keepalive ping's fork: the next reply the test queues in `forkSends`, which comes its own delay after the send on the test's clock
   // (the engine refuses a test hook's own `$.clock` wait); else what the test set as `doc.fork`, else nothing to fork.
@@ -909,6 +913,205 @@ describe('countdown', () => {
     const before = rec.runs
     await clock.advance(3000)
     expect(rec.runs).toBe(before)
+  })
+})
+
+// A stamp pass whose backward walk ends unread writes a `cachier stamps` line, then only at the 1st, 2nd, 4th, 8th pass and so on of a stretch of passes that end for one
+// reason; the first pass that reads through after a written stretch says so once. Each test starts with a fresh load of the mod, so no stretch carries over from an earlier test.
+describe('the stamp pass: a walk that ends unread is written to the debug log', () => {
+  type Doc = Parameters<typeof world>[1]
+  // Ids and text of the transcript that no debug line may hold. Each is distinctive, so no other text holds one by chance.
+  const BAD = 'wanted-bad-4c1e9a'
+  const NEWER = 'wanted-newer-7d02f1'
+  const LATE = 'wanted-late-5be80c'
+  const AGAIN = 'wanted-again-2f6a17'
+  const PLANTED = 'planted-text-b83c5e'
+  const PARSE = 'a row naming a wanted id did not parse'
+  const ONE_READ = { asked: 1, still_wanted: 1, blocks_read: 1 }
+  // A row naming `id` that is cut off before it closes, so it does not parse; its text is one no line may repeat.
+  const unparsable = (id: string) => `{"type":"user","uuid":"${id}","note":"${PLANTED}"`
+  const filler = (n: number) => user({ uuid: `filler-${n}-91d3`, parent: null, ts: iso(T0 - 90000) })
+  // A row no id asks for: the transcript grows by it, which changes its size and so asks for another pass.
+  const grow = (doc: Doc) => {
+    doc.text += lines([user({ uuid: `grown-${doc.text.length}-6d0b`, parent: null, ts: iso(T0 - 1000) })])
+  }
+  const draw = async ($: any, requestId: string) => {
+    const m = await $.ui.mount({ plugin: 'cachier', surface: 'terminal', component: 'UserMessage', requestId, props: { text: 'p', isExpanded: true, origin: { kind: 'composer' } } } as any)
+    await m.drawn()
+    await m.unmount()
+  }
+  // The world with the session started on PATH over the transcript `doc` holds, before its first tick.
+  const started = async ($: any, on: any, doc: Doc) => {
+    const rec = world(on, doc)
+    const clock = mock.clock(on, { now: T0 })
+    await $.classic.SessionStart({ source: 'startup', transcript_path: PATH })
+    await clock.settle()
+    return { rec, clock }
+  }
+  // The `cachier stamps` lines written so far. Reading them also checks what no debug line may hold: an id or text of the transcript, and, in these lines, its path.
+  const stamps = (rec: { logs: string[] }) => {
+    const all = rec.logs.join('\n')
+    for (const secret of [BAD, NEWER, LATE, AGAIN, PLANTED]) expect(all).not.toContain(secret)
+    const written = debugOf(rec, 'cachier stamps')
+    expect(JSON.stringify(written)).not.toContain(PATH)
+    return written
+  }
+  // A pass over a transcript that has just grown, run by the next tick.
+  const nextPass = async (clock: ReturnType<typeof mock.clock>, doc: Doc) => {
+    grow(doc)
+    await clock.advance(1000)
+  }
+
+  test('a walk that meets a row naming a wanted id that does not parse is written once, with the counts of the pass and nothing of the transcript', async ($, on) => {
+    // The bad row is in the older of two blocks, behind a padded row and the newer row: the pass reads both, finds the newer id and ends unread at the bad one.
+    const doc: Doc = { text: lines([filler(1), unparsable(BAD), user({ uuid: 'pad-5a7e', parent: null, ts: iso(T0 - 80000), pad: CHUNK_BYTES }), user({ uuid: NEWER, parent: null, ts: iso(T0 - 60000) })]) }
+    const { rec, clock } = await started($, on, doc)
+    await draw($, BAD)
+    await draw($, NEWER)
+    await clock.advance(1000)
+    expect(stamps(rec)).toEqual([{ ended: 'unread', reason: PARSE, passes: 1, asked: 2, still_wanted: 1, blocks_read: 2 }])
+  })
+
+  const refusals: [what: string, doc: () => Doc, reason: string, blocksRead: number][] = [
+    ['a block read that fails', () => ({ text: lines([filler(1), filler(2)]), blockFault: 'exit' }), 'a block read failed', 1],
+    ['a block read that is truncated', () => ({ text: lines([filler(1), filler(2)]), blockFault: 'truncated' }), 'a block read was truncated', 1],
+    // The row is carried back through four blocks and passes the cap in the fifth read, where it is whole.
+    ['a row over 4 MiB', () => ({ text: lines([user({ uuid: 'big-row-3f0b', parent: null, ts: iso(T0 - 90000), pad: 4194304 + 10 }), filler(1)]) }), 'a row is over the 4 MiB cap', 5],
+  ]
+  for (const [what, doc, reason, blocksRead] of refusals) {
+    test(`a walk that meets ${what} is written with its own reason`, async ($, on) => {
+      const { rec, clock } = await started($, on, doc())
+      await draw($, LATE)
+      await clock.advance(1000)
+      expect(stamps(rec)).toEqual([{ ended: 'unread', reason, passes: 1, asked: 1, still_wanted: 1, blocks_read: blocksRead }])
+    })
+  }
+
+  test('a stretch of passes that end unread for one reason is written at its 1st, 2nd, 4th and 8th pass, each line giving the count', async ($, on) => {
+    const doc: Doc = { text: lines([filler(1), unparsable(BAD), filler(2)]) }
+    const { rec, clock } = await started($, on, doc)
+    await draw($, BAD)
+    await clock.advance(1000)
+    for (let pass = 2; pass <= 8; pass++) await nextPass(clock, doc)
+    expect(stamps(rec)).toEqual([1, 2, 4, 8].map((passes) => ({ ended: 'unread', reason: PARSE, passes, ...ONE_READ })))
+  })
+
+  test('a pass that throws writes no line and leaves the stretch as it was', async ($, on) => {
+    const doc: Doc = { text: lines([filler(1), unparsable(BAD), filler(2)]) }
+    const { rec, clock } = await started($, on, doc)
+    await draw($, BAD)
+    await clock.advance(1000)
+    await nextPass(clock, doc)
+    expect(stamps(rec).map((l) => l.passes)).toEqual([1, 2])
+    doc.deny = 'refused-by-test-8f4a'
+    await nextPass(clock, doc)
+    expect(rec.logs.some((l) => l.includes('refused-by-test-8f4a'))).toBe(true)
+    expect(stamps(rec).map((l) => l.passes)).toEqual([1, 2])
+    doc.deny = undefined
+    // The throwing pass did not count: this is the stretch's 3rd pass, which is not written, and the next its 4th.
+    await nextPass(clock, doc)
+    expect(stamps(rec).map((l) => l.passes)).toEqual([1, 2])
+    await nextPass(clock, doc)
+    expect(stamps(rec)).toEqual([1, 2, 4].map((passes) => ({ ended: 'unread', reason: PARSE, passes, ...ONE_READ })))
+  })
+
+  const readThroughs: [what: string, change: (doc: Doc) => void, counts: { still_wanted: number; blocks_read: number }][] = [
+    ['covers the file with its id still missing', (doc) => { doc.blockFault = undefined; grow(doc) }, { still_wanted: 1, blocks_read: 1 }],
+    ['stops with every id found', (doc) => { doc.blockFault = undefined; doc.text += lines([user({ uuid: LATE, parent: null, ts: iso(T0 - 60000) })]) }, { still_wanted: 0, blocks_read: 1 }],
+    ['reads an empty file, though a block read would still fail', (doc) => { doc.text = '' }, { still_wanted: 1, blocks_read: 0 }],
+  ]
+  for (const [what, change, counts] of readThroughs) {
+    test(`the first pass that ${what} after a written stretch says so, with the stretch's reason, passes and unwritten passes; a later unread pass starts a new stretch`, async ($, on) => {
+      const doc: Doc = { text: lines([filler(1), filler(2)]), blockFault: 'exit' }
+      const { rec, clock } = await started($, on, doc)
+      await draw($, LATE)
+      await clock.advance(1000)
+      await nextPass(clock, doc)
+      await nextPass(clock, doc)
+      change(doc)
+      await clock.advance(1000)
+      expect(stamps(rec)).toEqual([
+        { ended: 'unread', reason: 'a block read failed', passes: 1, ...ONE_READ },
+        { ended: 'unread', reason: 'a block read failed', passes: 2, ...ONE_READ },
+        { ended: 'read_through', reason: 'a block read failed', passes: 3, suppressed: 1, asked: 1, ...counts },
+      ])
+      await draw($, AGAIN)
+      doc.blockFault = 'exit'
+      await nextPass(clock, doc)
+      expect(stamps(rec).slice(3)).toMatchObject([{ ended: 'unread', reason: 'a block read failed', passes: 1 }])
+    })
+  }
+
+  test('a pass that ends unread for another reason starts a new stretch, written at once, and the stretch it cut short gets no line', async ($, on) => {
+    const doc: Doc = { text: lines([filler(1), filler(2)]), blockFault: 'exit' }
+    const { rec, clock } = await started($, on, doc)
+    await draw($, LATE)
+    // Three passes end unread because a block read fails, the 3rd not written; then three end unread because one is truncated, which is a new stretch.
+    await clock.advance(1000)
+    await nextPass(clock, doc)
+    await nextPass(clock, doc)
+    doc.blockFault = 'truncated'
+    await nextPass(clock, doc)
+    await nextPass(clock, doc)
+    await nextPass(clock, doc)
+    // The pass that reads through gives the new stretch's own count: its 3 passes, 1 of them not written.
+    doc.blockFault = undefined
+    await nextPass(clock, doc)
+    expect(stamps(rec)).toEqual([
+      { ended: 'unread', reason: 'a block read failed', passes: 1, ...ONE_READ },
+      { ended: 'unread', reason: 'a block read failed', passes: 2, ...ONE_READ },
+      { ended: 'unread', reason: 'a block read was truncated', passes: 1, ...ONE_READ },
+      { ended: 'unread', reason: 'a block read was truncated', passes: 2, ...ONE_READ },
+      { ended: 'read_through', reason: 'a block read was truncated', passes: 3, suppressed: 1, ...ONE_READ },
+    ])
+  })
+
+  test('a change of transcript ends the stretch with no line: the first unread pass on the new one is its 1st', async ($, on) => {
+    const doc: Doc = { text: lines([filler(1), unparsable(BAD), filler(2)]) }
+    const { rec, clock } = await started($, on, doc)
+    await draw($, BAD)
+    await clock.advance(1000)
+    await nextPass(clock, doc)
+    expect(stamps(rec).map((l) => l.passes)).toEqual([1, 2])
+    await $.classic.SessionStart({ source: 'resume', transcript_path: `${PATH}.other` })
+    await clock.advance(1000)
+    await draw($, BAD)
+    await nextPass(clock, doc)
+    expect(stamps(rec)).toEqual([1, 2, 1].map((passes) => ({ ended: 'unread', reason: PARSE, passes, ...ONE_READ })))
+  })
+
+  test('a pass that reads through when no stretch was written writes no line, and the next one that ends unread is written', async ($, on) => {
+    const doc: Doc = { text: lines([filler(1), filler(2)]) }
+    const { rec, clock } = await started($, on, doc)
+    await draw($, LATE)
+    // It covers the file: the id is not in it yet.
+    await clock.advance(1000)
+    expect(stamps(rec)).toEqual([])
+    // It stops: the id is found.
+    doc.text += lines([user({ uuid: LATE, parent: null, ts: iso(T0 - 60000) })])
+    await clock.advance(1000)
+    expect(stamps(rec)).toEqual([])
+    await draw($, AGAIN)
+    doc.blockFault = 'truncated'
+    await nextPass(clock, doc)
+    expect(stamps(rec)).toEqual([{ ended: 'unread', reason: 'a block read was truncated', passes: 1, ...ONE_READ }])
+  })
+
+  test('an id drawn while a pass runs is not among the ids the pass leaves wanted', async ($, on) => {
+    let release: () => void = () => undefined
+    const hold = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    const doc: Doc = { text: lines([filler(1), filler(2)]), blockFault: 'exit' }
+    const { rec, clock } = await started($, on, doc)
+    await draw($, LATE)
+    doc.hold = hold
+    void clock.advance(1000)
+    await clock.settle()
+    await draw($, AGAIN)
+    release()
+    await clock.settle()
+    expect(stamps(rec)).toEqual([{ ended: 'unread', reason: 'a block read failed', passes: 1, ...ONE_READ }])
   })
 })
 

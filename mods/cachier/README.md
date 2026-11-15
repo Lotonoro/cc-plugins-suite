@@ -451,7 +451,14 @@ also compacted, the line is written when the compaction ends and holds its `comp
 none), and `summarizer`, the summary request's `in`, `out`, `cache_read` and `cache_write` tokens (`null` where it gave no usage); `skipped`, with a `reason` that is `the user acted after the step`,
 or `a hook vetoed it` with `reason_chars`; `refused` (the engine rejected the call) with `error_chars`; or `thrown`, with a `reason` that is `the call threw` (with `error_chars`) or `the engine answered a
 compaction with neither a conversation nor a skip`. It holds counts and cachier's own words, never the conversation: the words of a veto or of an error can quote it, so their length in characters is all
-it keeps of them. A step that made no compaction has no `compaction` in its line.
+it keeps of them. A step that made no compaction has no `compaction` in its line. The pass that looks up the times shown on messages (see [Message times](#message-times)) walks the transcript back
+from its newest row, and when that walk ends unread it writes a `cachier stamps` line, so a message that gets no time can be traced. The line holds `ended` (`unread`), the `reason` (`a block read failed`,
+`a block read was truncated`, `a row is over the 4 MiB cap` or `a row naming a wanted id did not parse`), `passes` (how many passes in a row on this transcript, this one included, have ended unread for that
+reason), `asked` (how many messages the pass looked up), `still_wanted` (how many of them it did not find) and `blocks_read` (the block reads it started). A cause that stands repeats on every pass, and a pass
+follows each growth of the transcript, so a stretch of passes with one reason writes its 1st, 2nd, 4th, 8th pass and so on, not every one; a pass that ends unread for another reason starts a new stretch,
+written at once. The first pass after a stretch that reads through (every message found, or the whole file covered) writes one more line: `ended` `read_through`, the stretch's `reason` and `passes`,
+`suppressed` (its passes that were not written) and its own `asked`, `still_wanted` and `blocks_read`. A change of transcript or a reload ends a stretch with no line, and a pass that fails with an error is
+logged as before and leaves the stretch as it was. These lines hold counts and cachier's own words only: no message id, path or text from the transcript.
 
 Cachier keeps one record per pause your prompt ends, in its plugin store under your config directory: when the pause
 started, how long it ran, the local hour and weekday, the cache TTL, what a rewrite costs over a refresh, and the size of
