@@ -7,7 +7,7 @@ import { REMINDER_TEXT } from './reminder'
 import { TODO_SPEC, TOOL_SPEC } from './steering'
 import { paneRows } from './ui'
 import { correctionText } from './restatement'
-import { ARG_HINT, CLAUDE_DESCRIPTION, CLAUDE_FAILED, CLAUDE_REBUILDING, CLAUDE_USAGE, DESCRIPTION, FAILED, PHONE_REBUILDING, REBUILDING, USAGE } from './commands'
+import { ALREADY_ASKING, ARG_HINT, CLAUDE_DESCRIPTION, CLAUDE_FAILED, CLAUDE_REBUILDING, CLAUDE_USAGE, DESCRIPTION, FAILED, NOTHING_OPEN, PHONE_REBUILDING, REBUILDING, USAGE } from './commands'
 import { resetRebuild, setForkedTranscript, startRestore } from './rebuild'
 import { pressAnswer, pressDone, stopTicker } from './windows'
 import type { Item } from '../types'
@@ -28,7 +28,8 @@ const wire = (load: Load = on => register(on, {} as never)) => {
   const on = (event: string, ...rest: unknown[]) => {
     const handler = rest[rest.length - 1] as Handler
     hooks[event] = handler
-    // A filtered hook (`{ component }`, `{ requestId }`) is also kept under its filter, as two can share an event.
+    // A filtered hook (`{ component }`, `{ requestId }`) is also kept under its filter, as two can share an event. The bare event key holds the last hook
+    // registered for the event, so the bare `tool.call` is the mod's own tool's (registered after the AskUserQuestion hook, which is read by its filter).
     if (rest.length === 2) hooks[`${event} ${JSON.stringify(rest[0])}`] = handler
     return {
       catch: (catchHandler: Handler) => {
@@ -4410,4 +4411,205 @@ test('the backlog\'s draw reported as a dock records that placement when the pan
   expect(await columnDrawn(hooks, $)).toBe(true)
   await paneAt(hooks, $, 'dock')
   expect(asked).toEqual(['ui.render'])
+})
+
+// `/asks answer` through the hooks: the command, the AskUserQuestion hook that sees the walk's dialogs, and the session's end. The walk's own behaviour is
+// walk.test.ts's; these tests drive the wiring, with a `$.ui.ask` that goes through the registered AskUserQuestion hook as the engine's does.
+const ASKED = 'tool.call {"tool":"AskUserQuestion"}'
+type CalledBy = Next & { origin: { plugin: string; tier: string } }
+
+// A `next` that answers an AskUserQuestion call with `result`, as the engine's dialog does beneath the hook, for a call a hook of `plugin` made.
+const nextFrom = (result: unknown, plugin: string): CalledBy => {
+  const pass = (async (_e: unknown) => result) as CalledBy
+  pass.called = false
+  pass.error = { kind: 'throw', message: 'unused', budget: 1000 }
+  pass.origin = { plugin, tier: 'append' }
+  return pass
+}
+
+// What a scripted dialog gives back: the person's answer, or a dismissal with its message.
+type Given = string | { rejects: string }
+// What a scripted host records or does besides: the questions asked, every log line, whether the hook handed each result back as it got it, the plugin whose
+// hook makes the call, a promise that keeps every dialog open until it settles, and the start of a log line that throws instead.
+type Scripted = { asked?: string[]; logs?: string[]; through?: boolean[]; plugin?: string; hold?: Promise<void>; refuseLog?: string }
+
+// `env` with a `$.ui.ask` that answers each dialog from `given`, as the engine answers one a hook raises: the call and its result go through the registered
+// AskUserQuestion hook, made by a hook of `plugin`, before the dialog returns.
+const askingHost = (hooks: Record<string, Handler>, env: object, given: Given[], scripted: Scripted = {}) => {
+  const { asked = [], logs = [], through = [], plugin = 'human-plugin', hold, refuseLog } = scripted
+  let n = 0
+  const host: { ui: object } & Record<string, unknown> = {
+    ...env,
+    ui: {
+      ...(env as { ui: object }).ui,
+      log: (text: string) => {
+        if (refuseLog !== undefined && text.startsWith(refuseLog)) throw new Error('log refused')
+        logs.push(text)
+      },
+      ask: async (question: string, options: { options: string[]; header: string }) => {
+        const answer = given[n++]
+        asked.push(question)
+        if (answer === undefined) throw new Error('a dialog nobody scripted')
+        await hold
+        const said = typeof answer === 'string' ? answer : answer.rejects
+        const questions = [{ question, header: options.header, options: options.options.map(label => ({ label })), multiSelect: false }]
+        const result =
+          typeof answer === 'string'
+            ? { ref: 'r', result: { questions, answers: { [question]: said } }, text: said, isReadOnly: true }
+            : { ref: 'r', result: `Error: ${said}`, text: `Error: ${said}`, isError: true }
+        through.push((await (hooks[ASKED] as Handler)(host as never, { tool: 'AskUserQuestion', questions } as never, nextFrom(result, plugin) as never)) === result)
+        if (typeof answer !== 'string') throw new Error(said)
+        return said
+      },
+    },
+  }
+  return host
+}
+
+// Lets pending work run until `done` holds. The bound makes a walk that never asks fail its test's next check instead of hanging it.
+const until = async (done: () => boolean): Promise<void> => {
+  for (let i = 0; i < 40 && !done(); i++) await settle()
+}
+
+test('the AskUserQuestion hook is registered with the tool\'s name spelled out in its matcher, and it has no .catch, which would pass a dismissed dialog on again', () => {
+  const { hooks, catches } = wire()
+  expect(typeof hooks[ASKED]).toBe('function')
+  expect(catches[ASKED]).toBeUndefined()
+})
+
+test('/asks answer asks about each open item through the hooks, blocking first, writes the answer it is given, and returns the walk\'s end text as the command\'s output', async () => {
+  freshModule()
+  const { hooks } = wire()
+  const submitted: unknown[] = []
+  const timers: Timer[] = []
+  const { env, values, clock } = memEnv([made(1, { detail: '' }), made(2, { detail: '', blocking: true })], [], null, submitted, timers)
+  await endSession(hooks, env)
+  const asked: string[] = []
+  const through: boolean[] = []
+  clock.now = 1000
+  const answered = await asksOf(hooks)(askingHost(hooks, env, ['Done', 'Skip'], { asked, through }) as never, { args: ' Answer ' } as never, next(false) as never)
+  expect(asked).toHaveLength(2)
+  expect(asked[0]?.split('\n')[2]).toBe('1 of 2 — #2 blocking: Item 2')
+  expect(asked[1]?.split('\n').slice(0, 2)).toEqual(['answered #2 with done', '2 of 2 — #1 non-blocking: Item 1'])
+  expect(through).toEqual([true, true])
+  expect(answered).toEqual({
+    text: ['  skipped #1', '  It asked about every open item.', '  The walk sent 1 answer; 1 item is still open. /asks answer asks about it again.'].join('\n'),
+  })
+  expect(values.list).toMatchObject({ items: [{ id: 1, state: 'open' }, { id: 2, state: 'done-waiting' }] })
+  expect(submitted).toEqual([])
+  await tickAt(timers, clock, 1000)
+  expect(submitted).toHaveLength(1)
+  expect((submitted[0] as { text: string }).text.startsWith('#2 is done: Item 2')).toBe(true)
+})
+
+test('/asks answer with anything after it answers the usage and asks nothing', async () => {
+  freshModule()
+  const { hooks } = wire()
+  const { env } = memEnv([made(1, { detail: '' })], [], null)
+  await endSession(hooks, env)
+  const asked: string[] = []
+  expect(await askText(hooks, askingHost(hooks, env, ['Done'], { asked }), 'answer now')).toBe(USAGE)
+  expect(asked).toEqual([])
+})
+
+test('/asks answer while the list is being rebuilt answers the rebuilding line and asks nothing', async () => {
+  freshModule()
+  const wired = wire()
+  const timers: Timer[] = []
+  const { env, clock } = memEnv([], [], null, [], timers)
+  const { host, finish } = rebuilding(env)
+  const asked: string[] = []
+  setForkedTranscript('/sessions/s.jsonl')
+  try {
+    await started(wired, host)
+    const waiting = askText(wired.hooks, askingHost(wired.hooks, host, ['Done'], { asked }), 'answer')
+    await tickAt(timers, clock, 5000)
+    expect(await waiting).toBe(REBUILDING)
+    expect(asked).toEqual([])
+    finish()
+  } finally {
+    resetRebuild()
+  }
+})
+
+test('/asks answer with nothing open says so and asks nothing, and one started while a walk is asking is told so and asks nothing', async () => {
+  freshModule()
+  const { hooks } = wire()
+  const none = memEnv([made(1, { state: 'done-pending', answer: 'done' })], [], null)
+  await endSession(hooks, none.env)
+  const asked: string[] = []
+  expect(await askText(hooks, askingHost(hooks, none.env, ['Done'], { asked }), 'answer')).toBe(NOTHING_OPEN)
+  expect(asked).toEqual([])
+
+  const { env } = memEnv([made(1, { detail: '' })], [], null)
+  let release = (): void => {}
+  const hold = new Promise<void>(resolve => (release = resolve))
+  const first = askText(hooks, askingHost(hooks, env, ['Skip'], { asked, hold }), 'answer')
+  await until(() => asked.length === 1)
+  expect(asked).toHaveLength(1)
+  expect(await askText(hooks, askingHost(hooks, env, ['Skip'], { asked }), 'answer')).toBe(ALREADY_ASKING)
+  expect(asked).toHaveLength(1)
+  release()
+  expect(await first).toContain('It asked about every open item.')
+})
+
+test('the session\'s end releases the walk that is asking: the next /asks answer asks while the old dialog is still open, and the old walk ends with its session when that dialog returns', async () => {
+  freshModule()
+  const { hooks } = wire()
+  const { env, values } = memEnv([made(1, { detail: '' })], [], null)
+  await endSession(hooks, env)
+  const asked: string[] = []
+  let release = (): void => {}
+  const hold = new Promise<void>(resolve => (release = resolve))
+  const old = askText(hooks, askingHost(hooks, env, ['Done'], { asked, hold }), 'answer')
+  await until(() => asked.length === 1)
+  expect(asked).toHaveLength(1)
+  await endSession(hooks, env)
+  expect(await askText(hooks, askingHost(hooks, env, ['Skip'], { asked }), 'answer')).toContain('It asked about every open item.')
+  expect(asked).toHaveLength(2)
+  release()
+  expect(await old).toBe(['  It ended with its session; nothing more was asked or sent.', '  The walk sent nothing; 1 item is still open. /asks answer asks about it again.'].join('\n'))
+  expect(values.list).toMatchObject({ items: [{ id: 1, state: 'open' }] })
+})
+
+test('the AskUserQuestion hook hands every result back as it got it, whoever made the call, and a walk whose dialog another plugin or the engine made cannot confirm its answer', async () => {
+  freshModule()
+  const { hooks } = wire()
+  const hook = hooks[ASKED] as Handler
+  const { env: quiet } = memEnv([], [], null)
+  const call = { tool: 'AskUserQuestion', questions: [{ question: 'Which?', header: 'h', options: [], multiSelect: false }] }
+  const answered = { ref: 'r', result: { answers: {} }, text: 'x', isReadOnly: true }
+  const dismissed = { ref: 'r', result: 'Error: dismissed', text: 'Error: dismissed', isError: true }
+  for (const plugin of ['human-plugin', 'auditor', 'engine']) {
+    for (const result of [answered, dismissed]) {
+      expect(await hook(quiet as never, call as never, nextFrom(result, plugin) as never)).toBe(result)
+    }
+  }
+
+  for (const plugin of ['auditor', 'engine']) {
+    const { env, values } = memEnv([made(1, { detail: '' })], [], null)
+    await endSession(hooks, env)
+    const logs: string[] = []
+    const through: boolean[] = []
+    const text = await askText(hooks, askingHost(hooks, env, ['Done'], { logs, through, plugin }), 'answer')
+    expect([plugin, text.split('\n')[0]]).toEqual([plugin, '  It ended because the answer to #1 could not be confirmed as yours; nothing was sent, and this was logged.'])
+    expect(through).toEqual([true])
+    expect(values.list).toMatchObject({ items: [{ id: 1, state: 'open' }] })
+    expect(logs).toContain('human-plugin: walk ask #1: label "Done"; record missing; not written')
+  }
+})
+
+test('a throw inside the AskUserQuestion hook\'s record is logged and leaves the result as it was, and the record the walk already had stands', async () => {
+  freshModule()
+  const { hooks } = wire()
+  const { env, values } = memEnv([made(1, { detail: '' })], [], null)
+  await endSession(hooks, env)
+  const logs: string[] = []
+  const through: boolean[] = []
+  // The record's own debug line is the throwing call: the observer has made the record by then.
+  const text = await askText(hooks, askingHost(hooks, env, ['Done'], { logs, through, refuseLog: 'human-plugin: walk record' }), 'answer')
+  expect(logs.some(line => line.startsWith("human-plugin: the record of a walk's question failed: Error: log refused"))).toBe(true)
+  expect(through).toEqual([true])
+  expect(text.split('\n')[0]).toBe('  answered #1 with done')
+  expect(values.list).toMatchObject({ items: [{ id: 1, state: 'done-waiting' }] })
 })

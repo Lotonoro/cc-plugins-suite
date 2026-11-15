@@ -1,5 +1,5 @@
 import { expect, test } from 'claude-code/testing'
-import { answerOf, doneNotice, expire, formsOf, isNumbered, orderedOptions, pointerText, press, reopen, reply, replyText, turnsOf, type Form } from './done'
+import { answerOf, answerShown, doneNotice, expire, formsOf, isNumbered, orderedOptions, pointerText, press, reopen, reply, replyText, turnsOf, type Form } from './done'
 import { act, parseInput } from './items'
 import type { Item, Store, Turn } from '../types'
 
@@ -429,4 +429,67 @@ test('a refused form leaves an unread item unread, and a number no item has leav
   const unread: Store = { items: [{ ...item, unread: true }], next: 4, term: null }
   expect(answerOf(unread, '3', { kind: 'yes' }, TOKEN).store).toEqual(unread)
   expect(answerOf(unread, '9', { kind: 'done' }, TOKEN).store).toEqual(unread)
+})
+
+// A walk's guarded answer: the item as the walk showed it (`item`), and the list as it stands when the answer is written.
+const listOf = (shown: Item): Store => ({ items: [shown], next: 4, term: null })
+const answeredAs = (now: Item, shown: Item, form: Form) => answerShown(listOf(now), shown, form, TOKEN)
+const decisionItem: Item = { ...item, options: DECISION }
+
+test('an unchanged item takes a walk\'s answer as the same form of /asks <n> <form> takes it: the same list, the same outcome', () => {
+  const forms: [Item, Form][] = [
+    [item, { kind: 'done' }],
+    [{ ...item, doneLabel: 'Ship it' }, { kind: 'done' }],
+    [{ ...item, yesno: true }, { kind: 'yes' }],
+    [{ ...item, yesno: true }, { kind: 'no' }],
+    [decisionItem, { kind: 'option', n: 2 }],
+    [item, { kind: 'reply', text: 'Use sqlite\nnot postgres' }],
+  ]
+  for (const [shown, form] of forms) {
+    const direct = answerOf(listOf(shown), '3', form, TOKEN)
+    expect(answeredAs(shown, shown, form)).toEqual(direct)
+    expect(direct.outcome.kind).toBe('applied')
+  }
+})
+
+test('a note or brief edit, and an agent append to an item the human never answered, leave the item as shown: the answer is written', () => {
+  const edited: Item = { ...item, note: 'A new note', detail: `${item.detail}\n\nAn appended section`, unread: true }
+  const out = answeredAs(edited, item, { kind: 'done' })
+  expect(out.outcome).toEqual({ kind: 'applied', item: edited, answer: 'done' })
+  expect(out.store.items[0]).toMatchObject({ state: 'done-waiting', pressedAt: TOKEN, unread: false })
+})
+
+test('an item changed since it was shown takes no answer: the list is left as it is and the outcome is changed', () => {
+  const thread: Turn[] = [{ speaker: 'human', words: 'Use sqlite' }]
+  const changes: [string, Item, Item][] = [
+    ['a new title', item, { ...item, title: 'Pick a cache' }],
+    ['a new done label', item, { ...item, doneLabel: 'Ship it' }],
+    ['a relabelled option', decisionItem, { ...decisionItem, options: [{ ...DECISION[0]!, label: 'Use mysql' }, DECISION[1]!] }],
+    ['an option removed', decisionItem, { ...decisionItem, options: [DECISION[0]!] }],
+    ['options given to a to-do', item, decisionItem],
+    ['the recommended mark moved, which reorders the pane', decisionItem, { ...decisionItem, options: [{ ...DECISION[0]!, recommended: true }, { ...DECISION[1]!, recommended: false }] }],
+    ['an answer sent elsewhere', item, { ...item, state: 'done-pending', answer: 'done' }],
+    ['an answer in its undo window elsewhere', item, { ...item, state: 'done-waiting', pressedAt: 1, answer: 'done' }],
+    ['a turn added to its thread', item, { ...item, thread }],
+    ['a thread that grew while the item is open again', { ...item, thread }, { ...item, thread: [...thread, { speaker: 'agent', words: 'Which one?' }] }],
+    ['a thread turn reworded', { ...item, thread }, { ...item, thread: [{ speaker: 'human', words: 'Use postgres' }] }],
+  ]
+  for (const [name, shown, now] of changes) {
+    const out = answeredAs(now, shown, shown.options.length > 0 ? { kind: 'option', n: 1 } : { kind: 'done' })
+    expect([name, out.outcome]).toEqual([name, { kind: 'changed' }])
+    expect([name, out.store]).toEqual([name, listOf(now)])
+  }
+})
+
+test('an item that has left the list takes no answer and the outcome is missing', () => {
+  const out = answerShown({ items: [], next: 4, term: null }, item, { kind: 'done' }, TOKEN)
+  expect(out).toEqual({ store: { items: [], next: 4, term: null }, outcome: { kind: 'missing' } })
+  const other = answerShown({ items: [{ ...item, id: 4 }], next: 5, term: null }, item, { kind: 'done' }, TOKEN)
+  expect(other.outcome).toEqual({ kind: 'missing' })
+  expect(other.store.items[0]).toMatchObject({ id: 4, state: 'open' })
+})
+
+test('the guard reads the options in the pane\'s order: the same labels in another stored order are the same item', () => {
+  const reordered: Item = { ...decisionItem, options: [DECISION[1]!, DECISION[0]!] }
+  expect(answeredAs(reordered, decisionItem, { kind: 'option', n: 1 }).outcome.kind).toBe('applied')
 })

@@ -1,7 +1,7 @@
 import type { EngineInterface } from 'claude-code'
 import type { Item, Store } from '../types'
 import { send } from './deliver'
-import { answerOf, expire, isNumbered, press, reply, type AnswerOutcome, type Form } from './done'
+import { answerOf, answerShown, expire, isNumbered, press, reply, type AnswerOutcome, type Form, type ShownOutcome } from './done'
 import { followSent } from './pane'
 import { pushBlocking } from './push'
 import { inBackground, readList, updateList } from './shared'
@@ -101,6 +101,14 @@ export function pressReply($: EngineInterface, id: number, text: string, windowM
 // first tick after the write ends it; the notice is sent from the ticker's callback, never from the command's hook.
 export function pressAnswer($: EngineInterface, digits: string, form: Form, windowMs: number): Promise<AnswerOutcome> {
   return openWindow($, windowMs, digits, { source: '/asks', back: windowMs, endsAtOnce: false }, (store, token) => answerOf(store, digits, form, token))
+}
+
+// A walk's answer to the item it showed: the guarded write (answerShown), and the undo window an applied one leaves, which is `pressAnswer`'s: it counts from
+// one window back, so the first tick after the write ends it and sends the notice. A walk's writes carry their own source in the debug line.
+export function pressShown($: EngineInterface, shown: Item, form: Form, windowMs: number): Promise<ShownOutcome> {
+  return openWindow($, windowMs, String(shown.id), { source: '/asks answer', back: windowMs, endsAtOnce: false }, (store, token) =>
+    answerShown(store, shown, form, token),
+  )
 }
 
 // The window of press `token` has passed: sends the item, unless the press was cancelled or already sent. An item the window's end reopens is

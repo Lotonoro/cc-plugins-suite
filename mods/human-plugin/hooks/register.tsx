@@ -1,7 +1,7 @@
 import { atom, read, update, type EngineInterface } from 'claude-code'
 import type { HookFailure, On, Register, UiCopyArgs } from 'claude-code'
 import type { OwedNotices, Store } from '../types'
-import { TOOL, act, carryNext, clearAll, parseInput, type Outcome } from './items'
+import { PLUGIN, TOOL, act, carryNext, clearAll, parseInput, type Outcome } from './items'
 import { STEERING, TODO_SPEC, TOOL_SPEC } from './steering'
 import { countBatch } from './reminder'
 import { SUBAGENT_REFUSAL, TODO_NAME, TODO_TOOL, emptyTodo, parseTodo, readTodo, todoLine, todoReply, writeTodo } from './todo'
@@ -21,6 +21,7 @@ import { endPushes, pushAnswer } from './push'
 import { pressAnswer, pressDone, pressReply, rearmWindows, stopTicker } from './windows'
 import { restored, resetRebuild, setForkedTranscript, startForkRestore, startRestore } from './rebuild'
 import { emptyList, inBackground, readList, updateList } from './shared'
+import { endWalk, observeAsked, walk } from './walk'
 
 const SOUND = '/System/Library/Sounds/Glass.aiff'
 const UNDO_WINDOW_MS = 3000
@@ -172,15 +173,16 @@ const answer = async ($: EngineInterface, e: unknown) => {
   return { result: out.reply }
 }
 
-// The `/asks` command's answer: the list, one item whole, or the confirmation of an answer form. It waits for a rebuild in progress as the tool
-// does, and clears the unread mark of the one item it shows, if that item is still the one it printed (markRead); an answer form clears its
-// item's mark in its own write (pressAnswer). The wording and the parse are commands.ts's. A mark that cannot be cleared is logged, and the text
-// is still returned: the item is what the person asked for.
+// The `/asks` command's answer: the list, one item whole, the confirmation of an answer form, or the walk's end text (`/asks answer`, walk.ts, which asks
+// about each open item before it returns). It waits for a rebuild in progress as the tool does, and clears the unread mark of the one item it shows, if that
+// item is still the one it printed (markRead); an answer form clears its item's mark in its own write (pressAnswer). The wording and the parse are
+// commands.ts's. A mark that cannot be cleared is logged, and the text is still returned: the item is what the person asked for.
 const asks = async ($: EngineInterface, args: string, windowMs: number): Promise<string> => {
   const ask = parseAsk(args)
   if (ask.kind === 'usage') return USAGE
   if (!(await restored($))) return REBUILDING
   if (ask.kind === 'answer') return answerLine(await pressAnswer($, ask.digits, ask.form, windowMs))
+  if (ask.kind === 'walk') return walk($, windowMs)
   const { items } = await readList($)
   const { text, shown } = answerTo(items, ask)
   const printed = items.find(it => it.id === shown)
@@ -284,6 +286,20 @@ export const wireHooks = (on: On, windowMs: number): void => {
     return { sections: [...composed.sections, STEERING] }
   })
 
+  // The walk's own dialogs (`$.ui.ask`, raised from the `/asks` hook) reach this hook as AskUserQuestion calls, and it sees each result before the dialog
+  // returns. Every call passes through unchanged: the model's and other plugins' as well as the walk's. A call this plugin made is also handed, with its
+  // result, to the walk, which records it (walk.ts); a throw there is logged and leaves the result as it was. The hook has no `.catch`: one that passed the
+  // call on again would raise a dismissed dialog a second time. The matcher spells the tool's name out, as the others do.
+  on('tool.call', { tool: 'AskUserQuestion' }, async ($, e, next) => {
+    const result = await next(e)
+    try {
+      if (next.origin.plugin === PLUGIN) observeAsked($, e, result)
+    } catch (err) {
+      $.ui.log(`human-plugin: the record of a walk's question failed: ${messageOf(err)}`)
+    }
+    return result
+  })
+
   // The mod answers its own calls in tool.call, so the engine never checks them; this allow is the verdict the
   // engine's own check would otherwise ask the person for (the default is ask). The matchers spell the tool's name out, since
   // `claude plugin validate` reports a matcher whose value is a constant as {tool=?}.
@@ -383,14 +399,16 @@ export const wireHooks = (on: On, windowMs: number): void => {
   })
 
   // A session's end ends what the mod holds for its conversation: the turn's notices, the undo countdown's redraw, a rebuild in progress
-  // (its generation is dropped after a /clear or a /resume alike, so it cannot fill the next conversation's list) and a fork waiting for
-  // its transcript. /clear also empties the list; a resume starts with a fresh one (the state is held per session), which its rebuild fills.
+  // (its generation is dropped after a /clear or a /resume alike, so it cannot fill the next conversation's list), a fork waiting for
+  // its transcript and the walk that is asking (its flag is released, so a dialog it leaves open cannot block the next walk). /clear also empties
+  // the list; a resume starts with a fresh one (the state is held per session), which its rebuild fills.
   // The id counter goes to the plugin store for the new session to carry (see carry).
   on('session.end', async ($, e, next) => {
     endPushes()
     reset()
     stopTicker()
     resetRebuild()
+    endWalk()
     // The pane goes first, before anything that can fail: after a /clear its item leaves with the list, and a resume rebuilds the Claude list the backlog shows, so the pane must
     // not stay open on nothing or on the old list's rows.
     endPane($, e.reason === 'clear')

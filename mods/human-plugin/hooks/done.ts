@@ -153,6 +153,9 @@ export type AnswerOutcome =
   | { kind: 'undoing'; item: Item }
   | { kind: 'takes'; item: Item }
 
+// What a walk's guarded answer did: the applied answer, the item gone from the list, or the item not as the walk showed it (nothing is written then).
+export type ShownOutcome = Extract<AnswerOutcome, { kind: 'applied' | 'missing' }> | { kind: 'changed' }
+
 // The answer a press of a form carries, for a form that is not a reply: a to-do's label as it stands, `yes` or `no`, or the option's label in the
 // order the pane draws the options.
 const pressOf = (item: Item, form: Exclude<Form, { kind: 'reply' }>): string | null => {
@@ -182,4 +185,30 @@ export const answerOf = (store: Store, digits: string, form: Form, token: number
   if (form.kind === 'reply') return { store: readItem(reply(store, target.id, token, form.text)), outcome: { kind: 'applied', item: target, answer: form.text } }
   const answer = pressOf(target, form)
   return { store: readItem(press(store, target.id, token, answer)), outcome: { kind: 'applied', item: target, answer: answer ?? 'done' } }
+}
+
+const sameLabels = (a: readonly ItemOption[], b: readonly ItemOption[]): boolean => a.length === b.length && a.every((option, k) => option.label === b[k]?.label)
+const sameThread = (a: readonly Turn[], b: readonly Turn[]): boolean =>
+  a.length === b.length && a.every((turn, k) => turn.speaker === b[k]?.speaker && turn.words === b[k]?.words)
+
+// Whether an item still means to an answer what it meant when a walk showed it: it is open, and its title, its options' labels in the pane's order, its
+// done label and its thread are as shown. A turn is added to the thread only once the item has been answered, so an item answered elsewhere and reopened, or
+// one the agent has answered back, differs. A note or brief edit, and the agent's append to an item the human never answered (which lands in the brief),
+// leave it as it was, since they change what the item says and not what an answer to it means. The yes/no mark cannot change after filing.
+const sameAsShown = (now: Item, shown: Item): boolean =>
+  now.state === 'open' &&
+  now.title === shown.title &&
+  now.doneLabel === shown.doneLabel &&
+  sameLabels(orderedOptions(now), orderedOptions(shown)) &&
+  sameThread(now.thread, shown.thread)
+
+// A walk's answer to the item it showed: the resolver's write (answerOf) for `form`, unless the item is no longer as shown (sameAsShown), which writes
+// nothing and answers `changed`, or has left the list, which answers `missing`. The guard sits in the same update as the write, so nothing can change
+// the item between the two. What the guard lets through cannot be refused by the resolver, so a refusal of it is read as a change as well.
+export const answerShown = (store: Store, shown: Item, form: Form, token: number): { store: Store; outcome: ShownOutcome } => {
+  const now = store.items.find(it => it.id === shown.id)
+  if (now === undefined) return { store, outcome: { kind: 'missing' } }
+  if (!sameAsShown(now, shown)) return { store, outcome: { kind: 'changed' } }
+  const result = answerOf(store, String(shown.id), form, token)
+  return result.outcome.kind === 'applied' ? { store: result.store, outcome: result.outcome } : { store, outcome: { kind: 'changed' } }
 }
