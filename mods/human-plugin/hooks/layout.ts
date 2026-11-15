@@ -37,12 +37,13 @@ export const squeezedFold = (items: readonly Item[], room: number): { top: numbe
 
 const isInFlight = (item: TodoItem): boolean => item.state === 'in_flight'
 
-// The Claude column's lines that never fold: its header and every in-flight row.
-export const columnHeight = (todo: readonly TodoItem[]): number => 1 + todo.filter(isInFlight).length
+// The Claude column's lines that never fold: its header, every in-flight row and, while a step is queued, the one line it keeps for the queued steps whatever height it is given
+// (claudeRows). The band's fold and scroll count them, the queued line as they count the in-flight rows (humanFoldRows).
+export const foldCount = (todo: readonly TodoItem[]): number => 1 + todo.filter(isInFlight).length + (todo.some(item => !isInFlight(item)) ? 1 : 0)
 
-// The lines the human list folds to, header and summary row included, beside a Claude column of `columnLines` lines (its header and its
-// in-flight rows). A band taller than `maxRows` is scrolled by the engine's window, which shows `maxRows` less one row (the `n more` row) at
-// its top at first draw, so the list folds to that and its summary row is in view; a band that fits folds to `maxRows`.
+// The lines the human list folds to, header and summary row included, beside a Claude column of `columnLines` lines (its fold count). A band taller than `maxRows` is scrolled by
+// the engine's window, which shows `maxRows` less one row (the `n more` row) at its top at first draw, so the list folds to that and its summary row is in view; a band that fits
+// folds to `maxRows`.
 export const humanFoldRows = (maxRows: number, columnLines: number): number => (columnLines > maxRows ? maxRows - 1 : maxRows)
 
 // The columns the band's tree is laid out in, per list: null for a list that does not draw. `box`: the width of the list's box. `layout`: the
@@ -61,16 +62,16 @@ const MARGIN = 1
 
 const whole = (box: number): ListWidth => ({ box, layout: box })
 
-// Whether the band draws anything: the human list when it has items, the Claude column alone when something is in flight.
-export const bandDraws = (humanCount: number, todo: readonly TodoItem[]): boolean => humanCount > 0 || todo.some(isInFlight)
+// Whether the band draws anything: the human list when it has items, the Claude column alone when the agent's list has a step, queued or in flight.
+export const bandDraws = (humanCount: number, todo: readonly TodoItem[]): boolean => humanCount > 0 || todo.length > 0
 
 // The widths of the band's lists at `columns`. Beside a human list the Claude column draws when it has any item and the band is wide enough
-// for both, 96 columns or 52 beside this plugin's pane docked (`isDocked`, pane.ts); alone it draws when an item is in flight, at any width. It is a third of
+// for both, 96 columns or 52 beside this plugin's pane docked (`isDocked`, pane.ts); alone it draws when it has any item, queued or in flight, at any width. It is a third of
 // the band, rounded down, never under 32 columns or wider than the band; the human list takes the rest, or all of the band when the column does not draw.
 // Both lists keep their boxes' empty column (`layout` one less than `box`) only while both draw.
 export const bandWidths = (columns: number, humanCount: number, todo: readonly TodoItem[], isDocked = false): BandWidths => {
   const column = Math.min(columns, Math.max(CLAUDE_MIN_WIDTH, Math.floor(columns / 3)))
-  if (humanCount === 0) return { human: null, claude: todo.some(isInFlight) ? whole(column) : null }
+  if (humanCount === 0) return { human: null, claude: todo.length > 0 ? whole(column) : null }
   if (todo.length > 0 && columns >= (isDocked ? DOCKED_TWO_LIST_WIDTH : TWO_LIST_WIDTH)) {
     const human = columns - column
     return { human: { box: human, layout: human - MARGIN }, claude: { box: column, layout: column - MARGIN } }
@@ -88,18 +89,24 @@ export const isSqueezed = (widths: BandWidths): boolean => widths.human !== null
 
 export type ClaudeRow = { kind: 'item'; item: TodoItem } | { kind: 'queued'; count: number }
 
-// The Claude column's rows under its header, within `height` lines (the human list's, header included; 0 beside none): every in-flight item,
-// then queued items down to `height`. When the queued items do not all fit the last row is `+N queued`, held back from the items, and with one
-// row left for several queued items it is the summary alone. When the header and the in-flight rows fill `height` no queued row draws.
-export const claudeRows = (todo: readonly TodoItem[], height: number): ClaudeRow[] => {
+// The Claude column's rows under its header, within `height` lines (the human list's, header included; 0 beside none): every in-flight item, then queued items down to `height`.
+// The queued items' room is `height` less the header and the in-flight rows, but at least 1: the queued steps keep one line however small `height` is, the in-flight rows not
+// counting toward it. When the queued items do not all fit the room the last row is `+N queued`, held back from the items, and with one row left for several queued items it is
+// the summary alone. `hasPress`: whether the column's header has a press (columnHeader). Without one the queued steps are the column's only way to the pane, so the last queued
+// row is always `+N queued`, `+1 queued` included, after the queued items that the room holds.
+export const claudeRows = (todo: readonly TodoItem[], height: number, hasPress = true): ClaudeRow[] => {
   const ordered = inDisplayOrder(todo)
   const flying = ordered.filter(isInFlight)
   const queued = ordered.filter(item => !isInFlight(item))
-  const room = height - columnHeight(todo)
-  const rows = flying.map((item): ClaudeRow => ({ kind: 'item', item }))
-  if (queued.length === 0 || room <= 0) return rows
-  if (queued.length <= room) return [...rows, ...queued.map((item): ClaudeRow => ({ kind: 'item', item }))]
-  return [...rows, ...queued.slice(0, room - 1).map((item): ClaudeRow => ({ kind: 'item', item })), { kind: 'queued', count: queued.length - (room - 1) }]
+  const asRows = (items: readonly TodoItem[]): ClaudeRow[] => items.map((item): ClaudeRow => ({ kind: 'item', item }))
+  if (queued.length === 0) return asRows(flying)
+  // The fill base: the header and every in-flight row, the lines before the queued rows start.
+  const fillBase = 1 + flying.length
+  const room = Math.max(1, height - fillBase)
+  if (hasPress && queued.length <= room) return [...asRows(flying), ...asRows(queued)]
+  // The queued items drawn above the `+N queued` row, which takes a line of the room and stands for at least one queued item.
+  const shown = Math.min(room, queued.length) - 1
+  return [...asRows(flying), ...asRows(queued.slice(0, shown)), { kind: 'queued', count: queued.length - shown }]
 }
 
 // One line of text wrapped into rows of `width` columns, as the surface wraps a Text: word by word at its spaces, a word wider than a row broken across
