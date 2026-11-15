@@ -26,7 +26,7 @@ import {
   type RowTexts,
 } from './layout'
 import { tablesAsLists } from './tables'
-import { GLYPH, HEADING, bandCountsText, countsText, etaTail, inDisplayOrder } from './todo'
+import { GLYPH, HEADING, NO_ETA, bandCountsText, countsText, etaTail, inDisplayOrder } from './todo'
 
 // The elements the band and the pane are built from, as the surface's table hands them out. The constructors take the
 // props with `children`, as JSX would pass them; the mod has no JSX factory in an imported module.
@@ -316,31 +316,51 @@ const chipText = (term: string | null): string => (term === null || term === '' 
 // The columns a list's box keeps empty inside its width: its box less its layout width (layout.ts).
 const marginOf = (width: ListWidth): number => width.box - width.layout
 
-// How a Claude TODO step draws in each state, in the column and the pane alike: the props of its glyph's Text and of its title's Text. The glyph takes the state's colour and is
-// never dim. An in-flight title takes the normal colour, which is no props, and a queued title is dim. Typed over every state, so a state with no style does not compile.
+// How a Claude TODO step draws in each state, in the column and the pane alike: the props of its glyph's Text, of its title's Text and of its ETA tail's Text. The glyph takes the state's
+// colour and is never dim. An in-flight title takes the normal colour, which is no props, and a queued title is dim. The tail is dim with no colour in both states, so it never reads as a
+// second state mark. Typed over every state, so a state with no style does not compile.
 // A queued glyph is `planMode` because it must draw unlike both `suggestion` and the dim title: on the dark theme `remember` draws as `suggestion` and `inactive` as the dim title.
-const STEP_STYLE: Record<TodoItem['state'], { glyph: TextProps; title: TextProps }> = {
-  in_flight: { glyph: { color: 'suggestion' }, title: {} },
-  queued: { glyph: { color: 'planMode' }, title: { dimColor: true } },
+const STEP_STYLE: Record<TodoItem['state'], { glyph: TextProps; title: TextProps; tail: TextProps }> = {
+  in_flight: { glyph: { color: 'suggestion' }, title: {}, tail: { dimColor: true } },
+  queued: { glyph: { color: 'planMode' }, title: { dimColor: true }, tail: { dimColor: true } },
 }
 
 // A step's glyph as a Text in its state's colour.
 const stepGlyph = (t: Table, state: TodoItem['state']): RenderElement => t.Text({ ...STEP_STYLE[state].glyph, children: [GLYPH[state]] })
 
-// A step's row in the column: its glyph and its title side by side, each a Text in its state's style. The title Text holds the space and the title, handed cut at the layout
-// width `room` less the glyph's columns, so the glyph is never cut and an ellipsis is the title's. Where the room leaves the title no column, the row is the glyph alone.
-const stepRow = (t: Table, item: TodoItem, room: number): RenderElement => {
-  const title = cutToColumns(` ${item.title}`, room - displayColumns(GLYPH[item.state]))
-  return t.Box({ children: [stepGlyph(t, item.state), ...(title === '' ? [] : [t.Text({ ...STEP_STYLE[item.state].title, children: [title] })])] })
+// A step's title as its row draws it, a space and the title, and its ETA tail cut (backlogTail) to the room `width` leaves beside the head, which is the glyph and that title. The column's
+// row (stepRow) and the pane's (backlogItem) both take the two from here, so the head's format is set once. The tail is empty where that room keeps none of the ETA, and the cut is the
+// same for every ETA, `no ETA` included.
+const stepTexts = (item: TodoItem, width: number): { title: string; tail: string } => {
+  const title = ` ${item.title}`
+  return { title, tail: backlogTail(`${GLYPH[item.state]}${title}`, etaTail(item), width) }
 }
 
-// The Claude column: its header with the counts in the short form (columnHeader cuts its two parts), then its rows (see claudeRows), each cut at the column's layout width, inside
-// the box's padding. `height`: the human list's lines, which the queued rows fill down to; the queued steps keep one line however small it is. Two things in it open the backlog (the
-// engine gives a box no press), each a plain button in a row Box of its own: the counts, after the heading word, which is text, and the dim `+N queued` row. A column too narrow for the
-// counts has no press in its header (columnHeader), and claudeRows is told so: the queued line is then `+N queued`, the only press left. In a row a button is sized to its text, where
-// the column's stretch would give it the whole line, blank tail included; and under the pointer a plain button inverts, so those two reverse their colours and nothing else in the
-// column does. The item rows (stepRow) are a glyph Text beside a title Text, with no address, press or hover: no pane shows one Claude item alone, so a row offers nothing to press.
-// Text and button alike wrap their text rather than cutting it, so each is handed its text cut already.
+// A step's row in the column: its glyph, its title and its ETA tail side by side, each a Text in its state's style (STEP_STYLE). The tail is cut by the pane's rule (stepTexts) at the
+// layout width `room`, and a step with no ETA draws none: it would say only that nothing is known, in nine columns a row, where the pane and `/claude-todo` still print it. The title
+// Text holds the space and the title, handed cut at `room` less the glyph's columns and the tail's, so the glyph is never cut and an ellipsis is the title's or, once the title is down to
+// 11 columns, the tail's. Where the room leaves the title no column, the row is the glyph alone.
+const stepRow = (t: Table, item: TodoItem, room: number): RenderElement => {
+  const { title, tail: cut } = stepTexts(item, room)
+  const tail = item.eta === NO_ETA ? '' : cut
+  const fitted = cutToColumns(title, room - displayColumns(GLYPH[item.state]) - displayColumns(tail))
+  return t.Box({
+    children: [
+      stepGlyph(t, item.state),
+      ...(fitted === '' ? [] : [t.Text({ ...STEP_STYLE[item.state].title, children: [fitted] })]),
+      ...(tail === '' ? [] : [t.Text({ ...STEP_STYLE[item.state].tail, children: [tail] })]),
+    ],
+  })
+}
+
+// The Claude column: its header with the counts in the short form (columnHeader cuts its two parts), then its rows (see claudeRows), each within the column's layout width, inside
+// the box's padding: the header's parts and `+N queued` cut at it, a step's row by stepRow. `height`: the human list's lines, which the queued rows fill down to; the queued steps keep
+// one line however small it is. Two things in it open the backlog (the engine gives a box no press), each a plain button in a row Box of its own: the counts, after the heading word,
+// which is text, and the dim `+N queued` row. A column too narrow for the counts has no press in its header (columnHeader), and claudeRows is told so: the queued line is then
+// `+N queued`, the only press left. In a row a button is sized to its text, where the column's stretch would give it the whole line, blank tail included; and under the pointer a plain
+// button inverts, so those two reverse their colours and nothing else in the column does. The item rows (stepRow) are a glyph Text, a title Text and, for a step with an ETA, a tail Text,
+// side by side, with no address, press or hover: no pane shows one Claude item alone, so a row offers nothing to press. Text and button alike wrap their text rather than cutting it, so
+// each is handed its text cut already.
 export const claudeColumn = (t: Table, h: Handlers, todo: readonly TodoItem[], width: ListWidth, height: number): RenderElement => {
   const header = columnHeader(HEADING, bandCountsText(todo), width.layout)
   const hasPress = header.counts !== ''
@@ -486,18 +506,17 @@ export const pane = (t: Table, h: Handlers, store: Store, view: View): RenderEle
 // The rows the backlog asks for: its header line and one for each item.
 export const backlogRows = (todo: readonly TodoItem[]): number => 1 + todo.length
 
-// One backlog item's row: its glyph in a box that does not shrink, then a space and its whole title as one text set to cut at its end, in a box that shrinks, then its ETA tail, dim,
-// in a box that does not. The glyph and the title take their state's style (STEP_STYLE). The tail is cut beforehand (backlogTail), given the head as the glyph, a space and the title,
-// to the room `body` leaves beside the head's minimum, and left out when that room keeps none of the ETA, so the tail never outgrows the body: the engine cuts the title, by the
-// measure it draws by, in the room the glyph and the tail leave, and the row stays one line.
+// One backlog item's row: its glyph in a box that does not shrink, then its whole title as one text set to cut at its end, in a box that shrinks, then its ETA tail, dim, in a box that
+// does not. The three take their state's style (STEP_STYLE). The title and the tail come from stepTexts, the tail cut beforehand to the room `body` leaves beside the head's minimum and
+// left out when that room keeps none of the ETA, so the tail never outgrows the body: the engine cuts the title, by the measure it draws by, in the room the glyph and the tail leave,
+// and the row stays one line.
 const backlogItem = (t: Table, item: TodoItem, body: number): RenderElement => {
-  const head = `${GLYPH[item.state]} ${item.title}`
-  const tail = backlogTail(head, etaTail(item), body)
+  const { title, tail } = stepTexts(item, body)
   return t.Box({
     children: [
       t.Box({ flexShrink: 0, children: [stepGlyph(t, item.state)] }),
-      t.Box({ flexShrink: 1, children: [t.Text({ ...STEP_STYLE[item.state].title, wrap: 'truncate-end', children: [` ${item.title}`] })] }),
-      ...(tail === '' ? [] : [t.Box({ flexShrink: 0, children: [t.Text({ dimColor: true, children: [tail] })] })]),
+      t.Box({ flexShrink: 1, children: [t.Text({ ...STEP_STYLE[item.state].title, wrap: 'truncate-end', children: [title] })] }),
+      ...(tail === '' ? [] : [t.Box({ flexShrink: 0, children: [t.Text({ ...STEP_STYLE[item.state].tail, children: [tail] })] })]),
     ],
   })
 }

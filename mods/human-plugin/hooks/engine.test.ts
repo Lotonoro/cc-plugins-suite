@@ -68,7 +68,7 @@ test('the steering section is byte-identical with an empty Claude list, one entr
   expect(empty).toBe(STEERING.text)
 })
 
-test('the band\'s Claude column draws each row as its glyph and title, and no ETA', async ($, on) => {
+test('the band\'s Claude column draws each row as its glyph, its title and its ETA', async ($, on) => {
   mock.clock(on)
   mock.store(on)
   on('ui.panes', () => ({ value: [] }))
@@ -76,11 +76,11 @@ test('the band\'s Claude column draws each row as its glyph and title, and no ET
   await $.tool.call({ tool: TODO_TOOL, entries: [{ title: 'Build it', state: 'in_flight', eta: '~10 min' }, { title: 'Test it', state: 'queued', eta: 'after tests' }] })
   const ui = await $.ui.mount({ plugin: 'human-plugin', surface: 'terminal', component: 'AbovePrompt', props: { ...BAND_PROPS, bodyColumns: 120 } })
   const tree = await ui.drawn()
-  const drawn = JSON.stringify(tree)
-  expect(shownOf(tree as El)).toContain('◐ Build it')
-  expect(drawn).not.toContain('ETA')
-  expect(drawn).not.toContain('~10 min')
-  expect(drawn).not.toContain('after tests')
+  expect(shownOf(tree as El)).toContain('◐ Build it · ~10 min')
+  expect(shownOf(tree as El)).toContain('○ Test it · after tests')
+  // Each tail is a text of its own, dim with no colour and no key, as the terminal's table draws it.
+  const tails = await ui.findAll({ type: 'Text', text: /^ · / })
+  expect(tails.map(tail => [tail.key, tail.text, tail.props.color, tail.props.dimColor])).toEqual([[undefined, ' · ~10 min', undefined, true], [undefined, ' · after tests', undefined, true]])
 })
 
 const BAND_PROPS = { hasSurvey: false, isWorking: false, maxRows: 20, bodyColumns: 80, scroll: { offset: 0, bodyRows: 20 }, view: {} }
@@ -1399,7 +1399,7 @@ test('the Pane cuts a backlog row\'s ETA tail to the body it is given and leaves
   expect(await tails()).toEqual([[], []])
 })
 
-test('with the pane open on the Claude list the Pane draws each ETA and the band\'s Claude column still draws each row as its glyph and title, and no ETA', async ($, on) => {
+test('with the pane open on the Claude list the Pane draws each ETA and the band\'s Claude column draws each row as its glyph, its title and its ETA', async ($, on) => {
   mock.clock(on)
   mock.store(on)
   backlogRecord(on)
@@ -1413,8 +1413,8 @@ test('with the pane open on the Claude list the Pane draws each ETA and the band
   expect(inPane).toContain('after tests')
   await band.redraw()
   const column = boxes(await band.drawn()).column
-  expect(shownOf(column)).toContain('◐ Build it')
-  for (const eta of ['ETA', '~10 min', 'after tests']) expect(JSON.stringify(column), eta).not.toContain(eta)
+  expect(shownOf(column)).toContain('◐ Build it · ~10 min')
+  expect(shownOf(column)).toContain('○ Test it · after tests')
 })
 
 test('the band\'s Claude column has a button for its counts and one for +N queued, and its rows are a glyph text and a title text with no address, so two rows with one title are two title texts; a long title is cut with an ellipsis within the column, and +N queued is dim', async ($, on) => {
