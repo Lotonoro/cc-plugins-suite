@@ -1,5 +1,6 @@
 import type { ButtonProps, BoxProps, ElementConstructor, InputProps, MarkdownProps, RenderElement, TextProps, UiCopyArgs } from 'claude-code'
 import type { Item, Selection, Store, TodoItem, Turn } from '../types'
+import { displayColumns } from './columns'
 import { oneLine } from './cut'
 import { labelOf, orderedOptions, replyText, turnsOf } from './done'
 import { briefParts } from './fences'
@@ -315,12 +316,30 @@ const chipText = (term: string | null): string => (term === null || term === '' 
 // The columns a list's box keeps empty inside its width: its box less its layout width (layout.ts).
 const marginOf = (width: ListWidth): number => width.box - width.layout
 
+// How a Claude TODO step draws in each state, in the column and the pane alike: the props of its glyph's Text and of its title's Text. The glyph takes the state's colour and is
+// never dim. An in-flight title takes the normal colour, which is no props, and a queued title is dim. Typed over every state, so a state with no style does not compile.
+// A queued glyph is `planMode` because it must draw unlike both `suggestion` and the dim title: on the dark theme `remember` draws as `suggestion` and `inactive` as the dim title.
+const STEP_STYLE: Record<TodoItem['state'], { glyph: TextProps; title: TextProps }> = {
+  in_flight: { glyph: { color: 'suggestion' }, title: {} },
+  queued: { glyph: { color: 'planMode' }, title: { dimColor: true } },
+}
+
+// A step's glyph as a Text in its state's colour.
+const stepGlyph = (t: Table, state: TodoItem['state']): RenderElement => t.Text({ ...STEP_STYLE[state].glyph, children: [GLYPH[state]] })
+
+// A step's row in the column: its glyph and its title side by side, each a Text in its state's style. The title Text holds the space and the title, handed cut at the layout
+// width `room` less the glyph's columns, so the glyph is never cut and an ellipsis is the title's. Where the room leaves the title no column, the row is the glyph alone.
+const stepRow = (t: Table, item: TodoItem, room: number): RenderElement => {
+  const title = cutToColumns(` ${item.title}`, room - displayColumns(GLYPH[item.state]))
+  return t.Box({ children: [stepGlyph(t, item.state), ...(title === '' ? [] : [t.Text({ ...STEP_STYLE[item.state].title, children: [title] })])] })
+}
+
 // The Claude column: its header with the counts in the short form (columnHeader cuts its two parts), then its rows (see claudeRows), each cut at the column's layout width, inside
 // the box's padding. `height`: the human list's lines, which the queued rows fill down to. Two things in it open the backlog (the engine gives a box no press), each a plain button in a
 // row Box of its own: the counts, after the heading word, which is text, and the dim `+N queued` row. In a row a button is sized to its text, where the column's stretch would give
-// it the whole line, blank tail included; and under the pointer a plain button inverts, so those two reverse their colours and nothing else in the column does. The item rows are
-// plain text with no address, press or hover: no pane shows one Claude item alone, so a row offers nothing to press. Text and button alike wrap their text rather than cutting it,
-// so each is handed its text cut already.
+// it the whole line, blank tail included; and under the pointer a plain button inverts, so those two reverse their colours and nothing else in the column does. The item rows (stepRow)
+// are a glyph Text beside a title Text, with no address, press or hover: no pane shows one Claude item alone, so a row offers nothing to press. Text and button alike wrap their text
+// rather than cutting it, so each is handed its text cut already.
 export const claudeColumn = (t: Table, h: Handlers, todo: readonly TodoItem[], width: ListWidth, height: number): RenderElement => {
   const header = columnHeader(HEADING, bandCountsText(todo), width.layout)
   const button = (key: string, label: string, isDim: boolean): RenderElement => t.Button({ key, plain: true, ...(isDim ? { dimColor: true } : {}), label, onPress: () => h.backlog() })
@@ -332,7 +351,7 @@ export const claudeColumn = (t: Table, h: Handlers, todo: readonly TodoItem[], w
       t.Box({ children: [t.Text({ children: [header.heading] }), ...(header.counts === '' ? [] : [button('claude-header', header.counts, false)])] }),
       ...claudeRows(todo, height).map(row =>
         row.kind === 'item'
-          ? t.Text({ children: [cutToColumns(`${GLYPH[row.item.state]} ${row.item.title}`, width.layout)] })
+          ? stepRow(t, row.item, width.layout)
           : t.Box({ children: [button('claude-queued', cutToColumns(`+${row.count} queued`, width.layout), true)] }),
       ),
     ],
@@ -464,15 +483,17 @@ export const pane = (t: Table, h: Handlers, store: Store, view: View): RenderEle
 // The rows the backlog asks for: its header line and one for each item.
 export const backlogRows = (todo: readonly TodoItem[]): number => 1 + todo.length
 
-// One backlog item's row: its head, the glyph, a space and its whole title as one text set to cut at its end, in a box that shrinks, then its ETA tail, dim, in a box that does not.
-// The tail is cut beforehand (backlogTail) to the room `body` leaves beside the head's minimum, and left out when that room keeps none of the ETA, so the tail never outgrows the
-// body: the engine cuts the head, by the measure it draws by, in the room the tail leaves, and the row stays one line.
+// One backlog item's row: its glyph in a box that does not shrink, then a space and its whole title as one text set to cut at its end, in a box that shrinks, then its ETA tail, dim,
+// in a box that does not. The glyph and the title take their state's style (STEP_STYLE). The tail is cut beforehand (backlogTail), given the head as the glyph, a space and the title,
+// to the room `body` leaves beside the head's minimum, and left out when that room keeps none of the ETA, so the tail never outgrows the body: the engine cuts the title, by the
+// measure it draws by, in the room the glyph and the tail leave, and the row stays one line.
 const backlogItem = (t: Table, item: TodoItem, body: number): RenderElement => {
   const head = `${GLYPH[item.state]} ${item.title}`
   const tail = backlogTail(head, etaTail(item), body)
   return t.Box({
     children: [
-      t.Box({ flexShrink: 1, children: [t.Text({ wrap: 'truncate-end', children: [head] })] }),
+      t.Box({ flexShrink: 0, children: [stepGlyph(t, item.state)] }),
+      t.Box({ flexShrink: 1, children: [t.Text({ ...STEP_STYLE[item.state].title, wrap: 'truncate-end', children: [` ${item.title}`] })] }),
       ...(tail === '' ? [] : [t.Box({ flexShrink: 0, children: [t.Text({ dimColor: true, children: [tail] })] })]),
     ],
   })

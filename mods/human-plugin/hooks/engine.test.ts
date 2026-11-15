@@ -75,8 +75,9 @@ test('the band\'s Claude column draws each row as its glyph and title, and no ET
   await $.tool.call({ tool: TOOL, action: 'add', title: 'Pick a db' })
   await $.tool.call({ tool: TODO_TOOL, entries: [{ title: 'Build it', state: 'in_flight', eta: '~10 min' }, { title: 'Test it', state: 'queued', eta: 'after tests' }] })
   const ui = await $.ui.mount({ plugin: 'human-plugin', surface: 'terminal', component: 'AbovePrompt', props: { ...BAND_PROPS, bodyColumns: 120 } })
-  const drawn = JSON.stringify(await ui.drawn())
-  expect(drawn).toContain('◐ Build it')
+  const tree = await ui.drawn()
+  const drawn = JSON.stringify(tree)
+  expect(shownOf(tree as El)).toContain('◐ Build it')
   expect(drawn).not.toContain('ETA')
   expect(drawn).not.toContain('~10 min')
   expect(drawn).not.toContain('after tests')
@@ -808,7 +809,7 @@ test('a band mounted at 120 columns draws the Claude column beside the human lis
   const tree = await ui.drawn()
   const drawn = JSON.stringify(tree)
   expect(shownOf(tree as El)).toContain('Claude TODO 1 active, 1 queued')
-  expect(drawn).toContain('◐ Build it')
+  expect(shownOf(tree as El)).toContain('◐ Build it')
   expect(drawn).toContain('"width":40')
   await $.tool.call({ tool: TODO_TOOL, entries: [] })
   expect(JSON.stringify(await ui.drawn())).not.toContain('Claude TODO')
@@ -924,7 +925,7 @@ test('a close another plugin refuses leaves the pane docked: a band drawn alone 
 })
 
 // The band's rows as the terminal's element table gives them: nodes of `{ type, props, children }`, a Text's children its strings.
-type El = { type?: string; props?: { key?: string; width?: number; flexShrink?: number; paddingLeft?: number; paddingRight?: number; flexDirection?: string; label?: string; backgroundColor?: string; wrap?: string; dimColor?: boolean; plain?: boolean }; children?: (El | string)[] }
+type El = { type?: string; props?: { key?: string; width?: number; flexShrink?: number; paddingLeft?: number; paddingRight?: number; flexDirection?: string; label?: string; color?: string; backgroundColor?: string; wrap?: string; dimColor?: boolean; plain?: boolean }; children?: (El | string)[] }
 const elementsOf = (node: El | string | undefined, type: string): El[] =>
   node === undefined || typeof node === 'string' ? [] : [...(node.type === type ? [node] : []), ...(node.children ?? []).flatMap(child => elementsOf(child, type))]
 // What a subtree shows: its text and its buttons' labels, in drawing order.
@@ -1340,11 +1341,16 @@ const backlogRecord = (on: On) => {
   return { shown, opens, closes }
 }
 const CLAUDE_PANE = { ...PANE_PROPS, title: 'Claude TODO', bodyColumns: 48 }
-// A backlog item's row as the Pane draws it, part by part: whether the part shrinks, and its texts with their wrap and dim. The head gives way and is set to cut at its end; the ETA tail is dim and does not shrink.
-const partsOf = (row: El): unknown[] => (row.children as El[]).map(part => [part.props?.flexShrink, elementsOf(part, 'Text').map(text => [shownOf(text), text.props?.wrap, text.props?.dimColor])])
-const backlogRow = (head: string, tail: string): unknown[] => [[1, [[head, 'truncate-end', undefined]]], [0, [[tail, undefined, true]]]]
+// A backlog item's row as the Pane draws it, part by part: whether the part shrinks, and its texts with their colour, wrap and dim. The glyph does not shrink and takes its state's colour; the title gives way, is set
+// to cut at its end and is dim when the item is queued; the ETA tail is dim and does not shrink.
+const partsOf = (row: El): unknown[] => (row.children as El[]).map(part => [part.props?.flexShrink, elementsOf(part, 'Text').map(text => [shownOf(text), text.props?.color, text.props?.wrap, text.props?.dimColor])])
+const backlogRow = (state: 'in_flight' | 'queued', title: string, tail: string): unknown[] => [
+  [0, [state === 'in_flight' ? ['◐', 'suggestion', undefined, undefined] : ['○', 'planMode', undefined, undefined]]],
+  [1, [[` ${title}`, undefined, 'truncate-end', state === 'queued' ? true : undefined]]],
+  [0, [[tail, undefined, undefined, true]]],
+]
 
-test('a press on the band\'s Claude counts and on +N queued each opens the pane on the Claude list, titled Claude TODO, with a row for the header and one for each item, and the keyboard; the Pane drawn through the terminal\'s table is a header line and a row for each item, a head set to cut at its end and its dim ETA tail, and no control', async ($, on) => {
+test('a press on the band\'s Claude counts and on +N queued each opens the pane on the Claude list, titled Claude TODO, with a row for the header and one for each item, and the keyboard; the Pane drawn through the terminal\'s table is a header line and a row for each item, a glyph, a title set to cut at its end and its dim ETA tail, and no control', async ($, on) => {
   mock.clock(on)
   mock.store(on)
   const { shown, opens } = backlogRecord(on)
@@ -1365,7 +1371,7 @@ test('a press on the band\'s Claude counts and on +N queued each opens the pane 
   const tree = (await pane.drawn()) as El
   const [header, ...rows] = (tree.children ?? []) as El[]
   expect([shownOf(header), header?.props?.wrap]).toEqual(['Claude TODO 1 in flight, 5 queued', 'truncate-end'])
-  expect(rows.map(partsOf)).toEqual([backlogRow('◐ Build it', ' · ~10 min'), ...[1, 2, 3, 4, 5].map(k => backlogRow(`○ Queued ${k}`, ' · no ETA'))])
+  expect(rows.map(partsOf)).toEqual([backlogRow('in_flight', 'Build it', ' · ~10 min'), ...[1, 2, 3, 4, 5].map(k => backlogRow('queued', `Queued ${k}`, ' · no ETA'))])
   expect(elementsOf(tree, 'Button')).toEqual([])
   expect(elementsOf(tree, 'Input')).toEqual([])
 })
@@ -1379,8 +1385,10 @@ test('the Pane cuts a backlog row\'s ETA tail to the body it is given and leaves
   const band = await $.ui.mount({ plugin: 'human-plugin', surface: 'terminal', component: 'AbovePrompt', props: { ...BAND_PROPS, bodyColumns: 120 } })
   await band.press({ key: 'claude-header' })
   const pane = await $.ui.mount({ plugin: 'human-plugin', surface: 'terminal', component: 'Pane', requestId: 'human-items', props: CLAUDE_PANE })
-  const heads = async (): Promise<string[]> => (((await pane.drawn()) as El).children as El[]).slice(1).map(row => shownOf(elementsOf(row, 'Text')[0] as El))
-  const tails = async (): Promise<string[][]> => (((await pane.drawn()) as El).children as El[]).slice(1).map(row => elementsOf(row, 'Text').filter(text => text.props?.dimColor === true).map(text => shownOf(text)))
+  const rows = async (): Promise<El[]> => (((await pane.drawn()) as El).children as El[]).slice(1)
+  // A row's parts are the glyph's box, the title's box and the tail's box, which is left out where no ETA character fits: the head is the first two, the tail the third.
+  const heads = async (): Promise<string[]> => (await rows()).map(row => `${shownOf(row.children?.[0])}${shownOf(row.children?.[1])}`)
+  const tails = async (): Promise<string[][]> => (await rows()).map(row => elementsOf(row.children?.[2], 'Text').map(text => shownOf(text)))
   expect(await tails()).toEqual([[` · ${'漢'.repeat(16)}…`], [' · ~10 min']])
   expect(await heads()).toEqual([`◐ ${'Long title '.repeat(7).trim()}`, `○ ${'Long title '.repeat(7).trim()}`])
   await pane.redraw({ ...CLAUDE_PANE, bodyColumns: 97 })
@@ -1402,12 +1410,12 @@ test('with the pane open on the Claude list the Pane draws each ETA and the band
   expect(inPane).toContain('~10 min')
   expect(inPane).toContain('after tests')
   await band.redraw()
-  const column = JSON.stringify(boxes(await band.drawn()).column)
-  expect(column).toContain('◐ Build it')
-  for (const eta of ['ETA', '~10 min', 'after tests']) expect(column, eta).not.toContain(eta)
+  const column = boxes(await band.drawn()).column
+  expect(shownOf(column)).toContain('◐ Build it')
+  for (const eta of ['ETA', '~10 min', 'after tests']) expect(JSON.stringify(column), eta).not.toContain(eta)
 })
 
-test('the band\'s Claude column has a button for its counts and one for +N queued, and its rows are text with no address, so two rows with one title are two texts; a long title is cut with an ellipsis within the column, and +N queued is dim', async ($, on) => {
+test('the band\'s Claude column has a button for its counts and one for +N queued, and its rows are a glyph text and a title text with no address, so two rows with one title are two title texts; a long title is cut with an ellipsis within the column, and +N queued is dim', async ($, on) => {
   mock.clock(on)
   mock.store(on)
   backlogRecord(on)
@@ -1421,10 +1429,34 @@ test('the band\'s Claude column has a button for its counts and one for +N queue
   // The column is 32 wide with one column kept empty: 31 columns of text, the heading's 12 and the counts' 19.
   expect(buttons.map(button => button.props?.label)).toEqual(['3 active, 2 queued', '+2 queued'])
   expect(buttons.map(button => button.props?.dimColor)).toEqual([undefined, true])
-  // The rows are texts found by their text, each with no key, and no element answers at the address a row had.
-  const rows = await band.findAll({ type: 'Text', text: '◐ ' })
-  expect(rows.map(row => [row.key, row.text])).toEqual([[undefined, '◐ Same title'], [undefined, '◐ Same title'], [undefined, `◐ ${'x'.repeat(28)}…`]])
+  // The glyphs and the titles are texts found by their text, each with no key, and no element answers at the address a row had. The title cut to the 30 columns beside the glyph is the one line cut to the 31.
+  const glyphs = await band.findAll({ type: 'Text', text: '◐' })
+  expect(glyphs.map(glyph => [glyph.key, glyph.text, glyph.props.color, glyph.props.dimColor])).toEqual(Array.from({ length: 3 }, () => [undefined, '◐', 'suggestion', undefined]))
+  const titles = await band.findAll({ type: 'Text', text: /^ (Same title|x+…)$/ })
+  expect(titles.map(title => [title.key, title.text, title.props.color, title.props.dimColor])).toEqual([[undefined, ' Same title', undefined, undefined], [undefined, ' Same title', undefined, undefined], [undefined, ` ${'x'.repeat(28)}…`, undefined, undefined]])
   expect(await band.find({ key: 'claude-row-0' })).toBeUndefined()
+})
+
+test('the band\'s Claude column draws a step in flight with a coloured glyph and a title of the normal colour, and a queued step with a glyph of its own colour and a dim title, none of them with a key', async ($, on) => {
+  mock.clock(on)
+  mock.store(on)
+  on('ui.panes', () => ({ value: [] }))
+  // Three human items: the column's header and one in-flight row leave it two lines for its queued rows, which are two, so both draw.
+  for (const title of ['Pick a db', 'Pick a cache', 'Pick a queue']) await $.tool.call({ tool: TOOL, action: 'add', title })
+  await $.tool.call({ tool: TODO_TOOL, entries: [{ title: 'Build it', state: 'in_flight' }, { title: 'Test it', state: 'queued' }, { title: 'Ship it', state: 'queued' }] })
+  const band = await $.ui.mount({ plugin: 'human-plugin', surface: 'terminal', component: 'AbovePrompt', props: { ...BAND_PROPS, bodyColumns: 120 } })
+  const glyphs = await band.findAll({ type: 'Text', text: /^[◐○]$/ })
+  expect(glyphs.map(glyph => [glyph.key, glyph.text, glyph.props.color, glyph.props.dimColor])).toEqual([
+    [undefined, '◐', 'suggestion', undefined],
+    [undefined, '○', 'planMode', undefined],
+    [undefined, '○', 'planMode', undefined],
+  ])
+  const titles = await band.findAll({ type: 'Text', text: /^ (Build|Test|Ship) it$/ })
+  expect(titles.map(title => [title.key, title.text, title.props.color, title.props.dimColor])).toEqual([
+    [undefined, ' Build it', undefined, undefined],
+    [undefined, ' Test it', undefined, true],
+    [undefined, ' Ship it', undefined, true],
+  ])
 })
 
 test('one pane serves the human item and the Claude list: a press on the Claude column while the pane shows an item, and a press on a human title while it shows the list, each switch it in place, and the engine lists one pane', async ($, on) => {

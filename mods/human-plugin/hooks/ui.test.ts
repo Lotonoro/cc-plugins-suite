@@ -2,9 +2,9 @@ import { expect, test } from 'claude-code/testing'
 import { displayColumns } from './columns'
 import { act, listText, normalizeItem } from './items'
 import { answerOf, doneNotice, expire, press, reply, type Form } from './done'
-import { bandDraws, headerLines, rowLayout, wrapText } from './layout'
+import { bandDraws, cutToColumns, headerLines, rowLayout, wrapText } from './layout'
 import { backlogPane, backlogRows, band, claudeColumn, pane, paneRows, rowTexts, toolLine, type Handlers, type Table, type View } from './ui'
-import { etaTail } from './todo'
+import { GLYPH, etaTail } from './todo'
 import type { Item, Store, TodoItem, Turn } from '../types'
 
 // A table whose constructors return their props, so a test reads the tree the drawing built.
@@ -951,12 +951,18 @@ test('the counts are a button while the cut leaves them a column and plain headi
   }
 })
 
-test('a row is a plain text of the state\'s glyph and the title on one line, in-flight first, handed its text cut at the column\'s layout width, with no address, press or hover', () => {
+// A step's row as the column draws it: a row Box of the glyph's Text and the title's Text, which holds the space and the title. The glyph is in the state's colour and not dim; an in-flight
+// title has no colour and no dim, and a queued title is dim. A node of either has no key, press or hover.
+const glyphText = (state: 'in_flight' | 'queued') => ({ type: 'Text', color: state === 'in_flight' ? 'suggestion' : 'planMode', children: [state === 'in_flight' ? '◐' : '○'] })
+const flyingRow = (title: string) => ({ type: 'Box', children: [glyphText('in_flight'), { type: 'Text', children: [title] }] })
+const queuedRow = (title: string) => ({ type: 'Box', children: [glyphText('queued'), { type: 'Text', dimColor: true, children: [title] }] })
+
+test('a row is a glyph text in the state\'s colour beside a title text on one line, in-flight first, the title alone handed its text cut at the column\'s layout width less the glyph\'s, with no address, press or hover', () => {
   const long = 'x'.repeat(80)
   const right = columnsOf(drawn(humans(6), [{ title: 'queued one', state: 'queued', eta: 'no ETA' }, { title: long, state: 'in_flight', eta: 'no ETA' }], 120))[1] as Node
   const rows = (right.children as Node[]).slice(1)
-  // The column is 40 wide and keeps one column empty: a title that does not fit the 39 is cut to 38 columns and an ellipsis, the glyph and its space among them.
-  expect(rows).toEqual([{ type: 'Text', children: [`◐ ${'x'.repeat(36)}…`] }, { type: 'Text', children: ['○ queued one'] }])
+  // The column is 40 wide and keeps one column empty: a title that does not fit the 38 left beside the glyph is cut to 37 columns and an ellipsis, its space among them.
+  expect(rows).toStrictEqual([flyingRow(` ${'x'.repeat(36)}…`), queuedRow(' queued one')])
 })
 
 test('beside one human item three queued items draw as the header and one +3 queued row, and no queued item', () => {
@@ -1004,9 +1010,9 @@ test('at a bodyColumns of 96, 120 and 155 with both lists drawn, the boxes keep 
     expect(right, where).toMatchObject({ type: 'Box', flexDirection: 'column', width: claude, paddingLeft: 1 })
     expect(left.paddingLeft, where).toBeUndefined()
     expect(right.paddingRight, where).toBeUndefined()
-    // The Claude column's lines are the header's row and a text for each item, handed their text cut to the box less its padding, none with a width of its own or a cut of its own.
+    // The Claude column's lines are the header's row and a row for each item, handed their text cut to the box less its padding, none with a width of its own or a cut of its own.
     expect(Number(right.width) - Number(right.paddingLeft), where).toBe(cut)
-    expect((right.children as Node[]).map(line => line.type), where).toEqual(['Box', 'Text', 'Text'])
+    expect((right.children as Node[]).map(line => line.type), where).toEqual(['Box', 'Box', 'Box'])
     for (const line of right.children as Node[]) expect([line.wrap, line.width, displayColumns(shown(line)) <= cut], where).toEqual([undefined, undefined, true])
   }
 })
@@ -1014,8 +1020,8 @@ test('at a bodyColumns of 96, 120 and 155 with both lists drawn, the boxes keep 
 // The trees the band draws for a list alone, with no padding on any box: the human list of two plain to-dos whose rows fit their lines, each its prefix, its title in a
 // box that shrinks and a control cell of 17 columns (the reply's `✓ replied [↶ 5s]` and the space before it), and the Claude column alone at 120 and at 40.
 const TODAY_HUMAN = '{"type":"Box","flexDirection":"column","children":[{"type":"Box","children":[{"type":"Box","flexShrink":0,"children":[{"type":"Text","bold":true,"color":"inverseText","backgroundColor":"permission","children":[" To do for you "]}]},{"type":"Text","children":[" 2 open "]}]},{"type":"Box","key":"item-1","children":[{"type":"Box","flexShrink":0,"children":[{"type":"Text","bold":false,"dimColor":true,"children":["  #1 "]}]},{"type":"Box","flexShrink":1,"children":[{"type":"Button","key":"title-1","plain":true,"label":"Pick a db"}]},{"type":"Box","width":17,"flexShrink":0,"children":[{"type":"Text","children":[" "]},{"type":"Button","key":"done-1","plain":true,"label":"[✓]"}]}]},{"type":"Box","key":"item-2","children":[{"type":"Box","flexShrink":0,"children":[{"type":"Text","bold":false,"dimColor":true,"children":["  #2 "]}]},{"type":"Box","flexShrink":1,"children":[{"type":"Button","key":"title-2","plain":true,"label":"Pick a db"}]},{"type":"Box","width":17,"flexShrink":0,"children":[{"type":"Text","children":[" "]},{"type":"Button","key":"done-2","plain":true,"label":"[✓]"}]}]}]}'
-const TODAY_CLAUDE_120 = '{"type":"Box","flexDirection":"row","justifyContent":"flex-end","width":120,"children":[{"type":"Box","flexDirection":"column","width":40,"children":[{"type":"Box","children":[{"type":"Text","children":["Claude TODO "]},{"type":"Button","key":"claude-header","plain":true,"label":"1 active, 0 queued"}]},{"type":"Text","children":["◐ f1"]}]}]}'
-const TODAY_CLAUDE_40 = '{"type":"Box","flexDirection":"row","justifyContent":"flex-end","width":40,"children":[{"type":"Box","flexDirection":"column","width":32,"children":[{"type":"Box","children":[{"type":"Text","children":["Claude TODO "]},{"type":"Button","key":"claude-header","plain":true,"label":"1 active, 0 queued"}]},{"type":"Text","children":["◐ f1"]}]}]}'
+const TODAY_CLAUDE_120 = '{"type":"Box","flexDirection":"row","justifyContent":"flex-end","width":120,"children":[{"type":"Box","flexDirection":"column","width":40,"children":[{"type":"Box","children":[{"type":"Text","children":["Claude TODO "]},{"type":"Button","key":"claude-header","plain":true,"label":"1 active, 0 queued"}]},{"type":"Box","children":[{"type":"Text","color":"suggestion","children":["◐"]},{"type":"Text","children":[" f1"]}]}]}]}'
+const TODAY_CLAUDE_40 = '{"type":"Box","flexDirection":"row","justifyContent":"flex-end","width":40,"children":[{"type":"Box","flexDirection":"column","width":32,"children":[{"type":"Box","children":[{"type":"Text","children":["Claude TODO "]},{"type":"Button","key":"claude-header","plain":true,"label":"1 active, 0 queued"}]},{"type":"Box","children":[{"type":"Text","color":"suggestion","children":["◐"]},{"type":"Text","children":[" f1"]}]}]}]}'
 
 test('a list drawn alone is the tree the band draws with no padding on any box: the human list at 120 and 90 columns with no Claude items, the Claude column at 120 and 40 with no human items', () => {
   const alone: [string, Node, string][] = [
@@ -1794,21 +1800,21 @@ test('a human list with no Claude items is never squeezed, docked or not, at any
   }
 })
 
-// The Claude column's press targets: the counts in its header and its `+N queued` row, each a button in a row of its own. Its heading and its rows are plain text, with no address,
-// press or hover: no pane shows a Claude item by itself.
+// The Claude column's press targets: the counts in its header and its `+N queued` row, each a button in a row of its own. Its heading is text and each step's row is a glyph text beside a
+// title text, with no address, press or hover: no pane shows a Claude item by itself.
 const claudeLines = (right: Node): Node[] => right.children as Node[]
 const withClaude = (human: Store, todo: TodoItem[], press: Handlers = handlers, columns = 120): Node =>
   band(table, press, human, { ...view(), maxRows: 50, claude: { items: todo, columns } }) as Node
 
-test('the Claude column is a row of the heading as text and the counts as a plain button, then a plain text for each row, and +N queued as a dim plain button in a row of its own', () => {
+test('the Claude column is a row of the heading as text and the counts as a plain button, then a row of a glyph text and a title text for each step, and +N queued as a dim plain button in a row of its own', () => {
   const right = columnsOf(withClaude(humans(4), [...flight(1), ...queue(5)]))[1] as Node
   const lines = claudeLines(right)
   expect(lineTexts(right)).toEqual(['Claude TODO 1 active, 5 queued', '◐ f1', '○ q1', '○ q2', '+3 queued'])
-  expect(lines.map(line => line.type)).toEqual(['Box', 'Text', 'Text', 'Text', 'Box'])
+  expect(lines.map(line => line.type)).toEqual(['Box', 'Box', 'Box', 'Box', 'Box'])
   // The heading keeps its space and is text; the counts are the button, addressed `claude-header`.
   expect((lines[0]?.children as Node[]).map(part => [part.type, shown(part)])).toEqual([['Text', 'Claude TODO '], ['Button', '1 active, 5 queued']])
-  // The rows are the text and nothing else: no key, press, hover or dimming.
-  expect(lines.slice(1, 4)).toEqual([{ type: 'Text', children: ['◐ f1'] }, { type: 'Text', children: ['○ q1'] }, { type: 'Text', children: ['○ q2'] }])
+  // The rows are the two texts and nothing else: no key, press or hover, and the dim and the colours are the state's alone.
+  expect(lines.slice(1, 4)).toStrictEqual([flyingRow(' f1'), queuedRow(' q1'), queuedRow(' q2')])
   expect(nodes(right, 'Button').map(button => [button.key, button.label, button.plain, button.dimColor])).toEqual([
     ['claude-header', '1 active, 5 queued', true, undefined],
     ['claude-queued', '+3 queued', true, true],
@@ -1833,17 +1839,17 @@ test('a press on the counts and on +N queued runs the one handler for the Claude
   for (const node of [...nodes(right, 'Box'), ...nodes(right, 'Text')]) expect([node.onPress, node.hover], JSON.stringify(node)).toEqual([undefined, undefined])
 })
 
-test('the column drawn alone is the same: the counts as a button and each in-flight row as text', () => {
+test('the column drawn alone is the same: the counts as a button and each in-flight row as a glyph text and a title text', () => {
   const column = columnsOf(withClaude(humans(0), [...flight(2), ...queue(3)]))[0] as Node
   expect(claudeLines(column).map(line => [line.type, shown(line)])).toEqual([
     ['Box', 'Claude TODO 2 active, 3 queued'],
-    ['Text', '◐ f1'],
-    ['Text', '◐ f2'],
+    ['Box', '◐ f1'],
+    ['Box', '◐ f2'],
   ])
   expect(nodes(column, 'Button').map(button => [button.key, button.label])).toEqual([['claude-header', '2 active, 3 queued']])
 })
 
-test('in a column of 20 layout columns a row of 60 columns is one text that ends in an ellipsis within the 20, no wide character split; the header and +N queued are cut the same way, +N queued dim, and a row that fits is whole', () => {
+test('in a column of 20 layout columns a row of 60 columns is a glyph text and a title text that end in an ellipsis within the 20, no wide character split; the header and +N queued are cut the same way, +N queued dim, and a row that fits is whole', () => {
   expect(displayColumns('漢')).toBe(2)
   const todo: TodoItem[] = [
     { title: 'x'.repeat(58), state: 'in_flight', eta: 'no ETA' },
@@ -1862,47 +1868,67 @@ test('in a column of 20 layout columns a row of 60 columns is one text that ends
     '+3 queued',
   ])
   expect(lineTexts(column).map(line => displayColumns(line)).every(columns => columns <= 20)).toBe(true)
-  expect(claudeLines(column).map(line => line.type)).toEqual(['Box', 'Text', 'Text', 'Text', 'Text', 'Box'])
+  expect(claudeLines(column).map(line => line.type)).toEqual(['Box', 'Box', 'Box', 'Box', 'Box', 'Box'])
   expect(nodes(column, 'Button').map(button => [button.key, button.dimColor])).toEqual([['claude-header', undefined], ['claude-queued', true]])
   // `+3 queued` is cut like the rest where the column is narrower than it, and stays a dim button; the header is then the cut heading as text alone.
   const narrow = claudeColumn(table, handlers, [...flight(1), ...queue(3)], { box: 6, layout: 6 }, 3) as Node
-  expect(claudeLines(narrow).map(line => [line.type, shown(line)])).toEqual([['Box', 'Claud…'], ['Text', '◐ f1'], ['Box', '+3 qu…']])
+  expect(claudeLines(narrow).map(line => [line.type, shown(line)])).toEqual([['Box', 'Claud…'], ['Box', '◐ f1'], ['Box', '+3 qu…']])
   expect(nodes(narrow, 'Button').map(button => [button.key, button.label, button.dimColor])).toEqual([['claude-queued', '+3 qu…', true]])
 })
 
-// The backlog pane: the Claude list whole, read-only. The header is one line the engine cuts at its end. Each item is one row: a head that gives way, which the engine cuts at its end
-// in the room the tail leaves, and the item's ETA tail, dim and never shrunk.
-test('the backlog view is a header line with the counts in the long form and then every item, in-flight first and each group in written order: each a row of a head that gives way, holding its glyph, a space and its whole title, set to cut at its end, and a dim part that does not shrink, holding its tail', () => {
+test('a step row\'s two texts joined are the one line cut at the layout width at every width from 2, so at 2 it reads the glyph and an ellipsis; at 1 the row is the glyph alone, never cut, in its colour', () => {
+  const rowsAt = (layout: number, todo: TodoItem[]): Node[] => claudeLines(claudeColumn(table, handlers, todo, { box: layout, layout }, 20) as Node).slice(1)
+  const titles = ['f1', 'x'.repeat(80), '漢'.repeat(30), 'a漢b'.repeat(8), 'a'.repeat(5)]
+  for (const layout of Array.from({ length: 44 }, (_, k) => k + 2)) {
+    for (const title of titles) {
+      const rows = rowsAt(layout, [{ title, state: 'in_flight', eta: 'no ETA' }, { title, state: 'queued', eta: 'no ETA' }])
+      expect(rows.map(row => shown(row)), `${layout}, ${title}`).toEqual((['in_flight', 'queued'] as const).map(state => cutToColumns(`${GLYPH[state]} ${title}`, layout)))
+    }
+  }
+  expect(rowsAt(2, [...flight(1), ...queue(1)]).map(row => shown(row))).toEqual(['◐…', '○…'])
+  expect(rowsAt(1, [...flight(1), ...queue(1)])).toStrictEqual([{ type: 'Box', children: [glyphText('in_flight')] }, { type: 'Box', children: [glyphText('queued')] }])
+})
+
+// The backlog pane: the Claude list whole, read-only. The header is one line the engine cuts at its end. Each item is one row of three parts: its glyph, which does not shrink, its title, which gives
+// way and which the engine cuts at its end in the room the glyph and the tail leave, and the item's ETA tail, dim and never shrunk.
+test('the backlog view is a header line with the counts in the long form and then every item, in-flight first and each group in written order: each a row of the glyph in a box that does not shrink, the space and the whole title in a box that gives way, set to cut at its end, and a dim part that does not shrink, holding its tail', () => {
   const todo: TodoItem[] = [
     { title: 'Queued first', state: 'queued', eta: 'no ETA' },
     { title: 'x'.repeat(80), state: 'in_flight', eta: '~10 min' },
     { title: 'Queued second', state: 'queued', eta: 'no ETA' },
     { title: '漢'.repeat(40), state: 'in_flight', eta: 'no ETA' },
   ]
-  const row = (head: string, tail: string) => ({
+  const row = (state: 'in_flight' | 'queued', title: string, tail: string) => ({
     type: 'Box',
     children: [
-      { type: 'Box', flexShrink: 1, children: [{ type: 'Text', wrap: 'truncate-end', children: [head] }] },
+      { type: 'Box', flexShrink: 0, children: [glyphText(state)] },
+      { type: 'Box', flexShrink: 1, children: [{ type: 'Text', ...(state === 'queued' ? { dimColor: true } : {}), wrap: 'truncate-end', children: [` ${title}`] }] },
       { type: 'Box', flexShrink: 0, children: [{ type: 'Text', dimColor: true, children: [tail] }] },
     ],
   })
-  expect((backlogPane(table, todo, 120) as Node).children).toEqual([
+  expect((backlogPane(table, todo, 120) as Node).children).toStrictEqual([
     { type: 'Text', wrap: 'truncate-end', children: ['Claude TODO 2 in flight, 2 queued'] },
-    row(`◐ ${'x'.repeat(80)}`, ' · ~10 min'),
-    row(`◐ ${'漢'.repeat(40)}`, ' · no ETA'),
-    row('○ Queued first', ' · no ETA'),
-    row('○ Queued second', ' · no ETA'),
+    row('in_flight', 'x'.repeat(80), ' · ~10 min'),
+    row('in_flight', '漢'.repeat(40), ' · no ETA'),
+    row('queued', 'Queued first', ' · no ETA'),
+    row('queued', 'Queued second', ' · no ETA'),
   ])
 })
 
-test('the dim part of each backlog row is its entry\'s ETA tail, and an item stored with no ETA draws no ETA after its title', () => {
+// A backlog row's parts side by side: the glyph's box, the title's box and the ETA tail's box, which is left out where no ETA character fits.
+const rowParts = (row: Node): { glyph: Node; title: Node; tail: Node | undefined } => {
+  const [glyph, title, tail] = row.children as Node[]
+  return { glyph: glyph as Node, title: title as Node, tail }
+}
+
+test('the last part of each backlog row is its entry\'s ETA tail, dim in both states, and an item stored with no ETA draws no ETA after its title', () => {
   const todo: TodoItem[] = [
     { title: 'Run the tests', state: 'in_flight', eta: '~10 min' },
     { title: 'Ship it', state: 'queued', eta: 'z'.repeat(30) },
     { title: 'Wait', state: 'queued', eta: 'no ETA' },
   ]
   const rows = (backlogPane(table, todo, 120) as Node).children?.slice(1) as Node[]
-  expect(rows.map(row => nodes(row, 'Text').filter(text => text.dimColor === true).map(text => shown(text)))).toEqual(todo.map(it => [etaTail(it)]))
+  expect(rows.map(row => nodes(rowParts(row).tail, 'Text').map(text => [shown(text), text.dimColor]))).toEqual(todo.map(it => [[etaTail(it), true]]))
   expect(rows.map(row => shown(row))).toEqual(['◐ Run the tests · ~10 min', `○ Ship it · ${'z'.repeat(30)}`, '○ Wait · no ETA'])
 })
 
@@ -1912,12 +1938,32 @@ test('a backlog row\'s tail is cut to the room the body leaves beside the head\'
     { title: 'x'.repeat(80), state: 'in_flight', eta: cjk },
     { title: 'x'.repeat(80), state: 'queued', eta: '~10 min' },
   ]
-  const tails = (body: number): string[][] => ((backlogPane(table, todo, body) as Node).children?.slice(1) as Node[]).map(row => nodes(row, 'Text').filter(text => text.dimColor === true).map(text => shown(text)))
+  const tails = (body: number): string[][] => ((backlogPane(table, todo, body) as Node).children?.slice(1) as Node[]).map(row => nodes(rowParts(row).tail, 'Text').map(text => shown(text)))
   expect(tails(48)).toEqual([[` · ${'漢'.repeat(16)}…`], [' · ~10 min']])
   expect(tails(97)).toEqual([[etaTail(todo[0] as TodoItem)], [' · ~10 min']])
   expect(tails(14)).toEqual([[], []])
-  const heads = ((backlogPane(table, todo, 14) as Node).children?.slice(1) as Node[]).map(row => shown(nodes(row, 'Text')[0]))
+  const heads = ((backlogPane(table, todo, 14) as Node).children?.slice(1) as Node[]).map(row => shown(rowParts(row).glyph) + shown(rowParts(row).title))
   expect(heads).toEqual([`◐ ${'x'.repeat(80)}`, `○ ${'x'.repeat(80)}`])
+})
+
+test('a backlog row whose head is under the 12-column minimum keeps its tail beside the head\'s own columns: the head handed to the tail rule is the glyph, a space and the title', () => {
+  // `◐ Wait` is 6 columns, so a body of 12 leaves the tail 6, ` · ~1…`; handed the title alone, 4 columns, the tail would keep 8.
+  const todo: TodoItem[] = [{ title: 'Wait', state: 'in_flight', eta: '~10 min' }, { title: 'Wait', state: 'queued', eta: '~10 min' }]
+  const rows = (backlogPane(table, todo, 12) as Node).children?.slice(1) as Node[]
+  expect(rows.map(row => nodes(rowParts(row).tail, 'Text').map(text => shown(text)))).toEqual([[' · ~1…'], [' · ~1…']])
+})
+
+test('a step has the same style in the column and in the pane: the glyph in the state\'s colour and not dim, an in-flight title with no colour and no dim and a queued title dim with no colour; no node of a step row takes a press, has an address or has a hover', () => {
+  const todo = [...flight(1), ...queue(1)]
+  const inColumn = claudeLines(claudeColumn(table, handlers, todo, { box: 40, layout: 40 }, 10) as Node).slice(1)
+  const inPane = (backlogPane(table, todo, 80) as Node).children?.slice(1) as Node[]
+  // A row's glyph and title by their props alone: the cut text and the pane's wrap are not the style.
+  const styleOf = (row: Node) => [rowParts(row).glyph, rowParts(row).title].flatMap(part => nodes(part, 'Text')).map(({ children, wrap, ...style }) => style)
+  const flying = [{ type: 'Text', color: 'suggestion' }, { type: 'Text' }]
+  const queued = [{ type: 'Text', color: 'planMode' }, { type: 'Text', dimColor: true }]
+  expect(inPane.map(styleOf)).toStrictEqual([flying, queued])
+  expect(inColumn.map(row => nodes(row, 'Text').map(({ children, ...style }) => style))).toStrictEqual([flying, queued])
+  for (const row of [...inColumn, ...inPane]) for (const node of [...nodes(row, 'Box'), ...nodes(row, 'Text')]) expect([node.key, node.onPress, node.hover], JSON.stringify(node)).toEqual([undefined, undefined, undefined])
 })
 
 test('the backlog view asks for one row for its header and one for each item, as many as it draws: 2, 4 and 13 rows for lists of 1, 3 and 12 items', () => {

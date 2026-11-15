@@ -3088,6 +3088,8 @@ const bandAt = (hooks: Record<string, Handler>, env: unknown, bodyColumns: numbe
 // Trees are compared as JSON: a press handler is a fresh closure on every draw.
 const flat = (node: unknown): string => JSON.stringify(node)
 const sameTree = flat
+// What a drawn subtree shows: its strings in drawing order. A step's glyph and its title are two texts, so a step reads through this and not through `flat`.
+const textOf = (node: unknown): string => (typeof node === 'string' ? node : ((node as Tree).children ?? []).map(textOf).join(''))
 
 test('with two human items and no Claude items the band is the one drawn today at 120 columns and at 90; one queued item brings the column at 120', async () => {
   reset()
@@ -3100,7 +3102,7 @@ test('with two human items and no Claude items the band is the one drawn today a
   const wide = await bandAt(hooks, env, 120)
   expect(wide.width).toBe(120)
   expect(wide.children?.map(c => c.width)).toEqual([80, 40])
-  expect(flat(wide.children?.[1])).toContain('○ Write the tests')
+  expect(textOf(wide.children?.[1])).toContain('○ Write the tests')
   expect(sameTree(await bandAt(hooks, env, 90))).toBe(sameTree(today))
 })
 
@@ -3165,7 +3167,7 @@ test('a band of 52 and one of 56 draw both lists once the pane is open and its s
   const docked = await bandAt(hooks, $, 52)
   expect(docked.width).toBe(52)
   expect(docked.children?.map(c => c.width)).toEqual([20, 32])
-  expect(flat(docked.children?.[1])).toContain('◐ Running')
+  expect(textOf(docked.children?.[1])).toContain('◐ Running')
   const wider = await bandAt(hooks, $, 56)
   expect(wider.children?.map(c => c.width)).toEqual([24, 32])
   // A later pane draw on the surface, docked or in another placement, asks for nothing, and the band still shows both lists.
@@ -3470,7 +3472,7 @@ test('with no human items an item in flight draws the column alone, 40 wide, and
   values.todo = [entry('Running', 'in_flight'), entry('Later', 'queued')]
   const tree = await bandAt(hooks, env, 120)
   expect(tree.children?.map(c => c.width)).toEqual([40])
-  expect(flat(tree)).toContain('◐ Running')
+  expect(textOf(tree)).toContain('◐ Running')
   expect(flat(tree)).not.toContain('Later')
   values.todo = []
   expect(await (hooks['ui.render {"component":"AbovePrompt"}'] as Handler)(env as never, e as never, next(false) as never)).toEqual({ passed: e })
@@ -3504,7 +3506,7 @@ test('a list the agent writes through the tool is drawn: the column follows the 
   // The header is the heading as text, then the counts as a button.
   expect(flat(wide)).toContain('Claude TODO ')
   expect(flat(wide)).toContain('1 active, 1 queued')
-  expect(flat(wide)).toContain('◐ Build')
+  expect(textOf(wide)).toContain('◐ Build')
   await runTodo(hooks, env, { entries: [] })
   expect(flat(await bandAt(hooks, env, 120))).not.toContain('Claude TODO')
 })
@@ -3696,12 +3698,13 @@ const pressKey = (tree: unknown, key: string): void => {
 // One item in flight and five queued. A band of 120 columns beside two human items draws the column's header, the in-flight row and `+5 queued`.
 const RUNNING = entry('Build the pane', 'in_flight')
 const SIX = [RUNNING, ...[1, 2, 3, 4, 5].map(k => entry(`Queued ${k}`, 'queued'))]
-// A drawn backlog's lines: each child of its root is a line, the header's text or an item's head and its ETA tail in drawing order.
-const textOf = (node: unknown): string => (typeof node === 'string' ? node : ((node as Tree).children ?? []).map(textOf).join(''))
+// A drawn backlog's lines: each child of its root is a line, the header's text or an item's glyph, title and ETA tail in drawing order.
 const linesOf = (tree: unknown): string[] => ((tree as Tree).children ?? []).map(textOf)
-// An item's row is a head that gives way, holding a text set to cut at its end, and an ETA tail that does not shrink, holding a dim text: each part's shrink, then its text's wrap and dim.
-const shapeOf = (row: Tree): unknown[] => (row.children ?? []).map(part => [part.flexShrink, (part.children?.[0] as Tree).wrap, (part.children?.[0] as Tree).dimColor])
-const ROW_SHAPE = [[1, 'truncate-end', undefined], [0, undefined, true]]
+// An item's row is its glyph in a box that does not shrink, its title in a box that gives way, holding a text set to cut at its end, and an ETA tail that does not shrink, holding a dim text: each part's
+// shrink, then its text's colour, wrap and dim. The glyph takes its state's colour, and the title is dim when the item is queued.
+const shapeOf = (row: Tree): unknown[] => (row.children ?? []).map(part => [part.flexShrink, (part.children?.[0] as Tree).color, (part.children?.[0] as Tree).wrap, (part.children?.[0] as Tree).dimColor])
+const FLYING_SHAPE = [[0, 'suggestion', undefined, undefined], [1, undefined, 'truncate-end', undefined], [0, undefined, undefined, true]]
+const QUEUED_SHAPE = [[0, 'planMode', undefined, undefined], [1, undefined, 'truncate-end', true], [0, undefined, undefined, true]]
 const ITEM_ONE = '#1 non-blocking, open: Item 1'
 
 test('a press on the Claude counts and on +N queued each opens the pane on the Claude list within the press: one request, titled Claude TODO, with a row for the header and one for each item of the whole list, and the keyboard', async () => {
@@ -3719,7 +3722,7 @@ test('a press on the Claude counts and on +N queued each opens the pane on the C
   }
 })
 
-test('the pane on the Claude list draws a header line with the counts in the long form, then every item, in-flight first and each group in written order, each a head set to cut at its end and its dim ETA tail; no control, and no state written', async () => {
+test('the pane on the Claude list draws a header line with the counts in the long form, then every item, in-flight first and each group in written order, each a glyph, a title set to cut at its end and its dim ETA tail; no control, and no state written', async () => {
   reset()
   const { hooks } = wire()
   const { $ } = backlogEnv([made(1)], [], 'claude-todo', [entry('Queued first', 'queued', 'after tests'), entry('Build', 'in_flight', '~10 min'), entry('Queued second', 'queued')])
@@ -3728,7 +3731,7 @@ test('the pane on the Claude list draws a header line with the counts in the lon
   expect(linesOf(tree)).toEqual(['Claude TODO 1 in flight, 2 queued', '◐ Build · ~10 min', '○ Queued first · after tests', '○ Queued second · no ETA'])
   const [header, ...rows] = (tree as Tree).children ?? []
   expect(header?.wrap).toBe('truncate-end')
-  expect(rows.map(shapeOf)).toEqual([ROW_SHAPE, ROW_SHAPE, ROW_SHAPE])
+  expect(rows.map(shapeOf)).toEqual([FLYING_SHAPE, QUEUED_SHAPE, QUEUED_SHAPE])
   expect(flat(tree)).not.toContain('"type":"Button"')
   expect(flat(tree)).not.toContain('"type":"Markdown"')
 })
