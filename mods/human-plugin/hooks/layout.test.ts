@@ -122,10 +122,15 @@ const flying = (n: number): TodoItem[] => Array.from({ length: n }, (_, k) => to
 const waiting = (n: number): TodoItem[] => Array.from({ length: n }, (_, k) => todoItem(`q${k + 1}`, 'queued'))
 const titles = (rows: ClaudeRow[]): string[] => rows.map(r => (r.kind === 'item' ? r.item.title : `+${r.count} queued`))
 
-test('the width rule gives the column a third of the band, rounded down, never under 32, and the human list the rest; each list\'s layout width is one column short of its box while both draw', () => {
+test('the width rule gives the column half the band, rounded down, but no wider than the band less 64 and never under 32, and the human list the rest; each list\'s layout width is one column short of its box while both draw', () => {
   expect(bandWidths(96, 2, waiting(1))).toEqual({ human: { box: 64, layout: 63 }, claude: { box: 32, layout: 31 } })
-  expect(bandWidths(120, 2, waiting(1))).toEqual({ human: { box: 80, layout: 79 }, claude: { box: 40, layout: 39 } })
-  expect(bandWidths(155, 2, waiting(1))).toEqual({ human: { box: 104, layout: 103 }, claude: { box: 51, layout: 50 } })
+  expect(bandWidths(100, 2, waiting(1))).toEqual({ human: { box: 64, layout: 63 }, claude: { box: 36, layout: 35 } })
+  expect(bandWidths(120, 2, waiting(1))).toEqual({ human: { box: 64, layout: 63 }, claude: { box: 56, layout: 55 } })
+  expect(bandWidths(128, 2, waiting(1))).toEqual({ human: { box: 64, layout: 63 }, claude: { box: 64, layout: 63 } })
+  expect(bandWidths(139, 2, waiting(1))).toEqual({ human: { box: 70, layout: 69 }, claude: { box: 69, layout: 68 } })
+  expect(bandWidths(155, 2, waiting(1))).toEqual({ human: { box: 78, layout: 77 }, claude: { box: 77, layout: 76 } })
+  expect(bandWidths(200, 2, waiting(1))).toEqual({ human: { box: 100, layout: 99 }, claude: { box: 100, layout: 99 } })
+  expect(bandWidths(300, 2, waiting(1))).toEqual({ human: { box: 150, layout: 149 }, claude: { box: 150, layout: 149 } })
 })
 
 test('under 96 columns the column hides and the human list keeps the full width, laid out in all of it', () => {
@@ -141,15 +146,15 @@ test('human items and no Claude items: the human list alone at full width, at an
 
 test('no human items: a step in the agent\'s list, in flight or queued, draws the column alone at its width, however narrow the band, laid out in all of it, and an empty list draws nothing', () => {
   expect(bandWidths(40, 0, flying(1))).toEqual({ human: null, claude: { box: 32, layout: 32 } })
-  expect(bandWidths(120, 0, [...waiting(2), ...flying(1)])).toEqual({ human: null, claude: { box: 40, layout: 40 } })
+  expect(bandWidths(120, 0, [...waiting(2), ...flying(1)])).toEqual({ human: null, claude: { box: 56, layout: 56 } })
   expect(bandWidths(20, 0, flying(1))).toEqual({ human: null, claude: { box: 20, layout: 20 } })
-  expect(bandWidths(120, 0, waiting(2))).toEqual({ human: null, claude: { box: 40, layout: 40 } })
+  expect(bandWidths(120, 0, waiting(2))).toEqual({ human: null, claude: { box: 56, layout: 56 } })
   expect(bandWidths(40, 0, waiting(1))).toEqual({ human: null, claude: { box: 32, layout: 32 } })
   expect(bandWidths(12, 0, waiting(1))).toEqual({ human: null, claude: { box: 12, layout: 12 } })
   expect(bandWidths(120, 0, [])).toEqual({ human: null, claude: null })
 })
 
-test('the margin is one column off each box while both lists draw and none otherwise; the box widths, the 96 two-list width, the 32 floor and the 64 the human list keeps are unchanged', () => {
+test('the margin is one column off each box while both lists draw and none otherwise; the box widths sum to the band, the column is half of it capped to leave the human list 64 and at least 32, and both lists draw from 96', () => {
   const todos: [string, TodoItem[]][] = [['none', []], ['queued', waiting(2)], ['in flight', flying(2)], ['both', [...flying(1), ...waiting(1)]]]
   for (const [name, todo] of todos) {
     for (const humans of [0, 2]) {
@@ -157,9 +162,9 @@ test('the margin is one column off each box while both lists draw and none other
         const { human, claude } = bandWidths(columns, humans, todo)
         const where = `${name}, ${humans} human, ${columns} columns`
         if (human !== null && claude !== null) {
-          // Both lists: the box widths sum to the band, the column is a third rounded down and at least 32, and the human list keeps at least 64.
+          // Both lists: the box widths sum to the band, the column is half the band rounded down but no wider than the band less 64, and at least 32, and the human list keeps at least 64.
           expect(human.box + claude.box, where).toBe(columns)
-          expect(claude.box, where).toBe(Math.max(32, Math.floor(columns / 3)))
+          expect(claude.box, where).toBe(Math.max(32, Math.min(Math.floor(columns / 2), columns - 64)))
           expect(human.box, where).toBeGreaterThanOrEqual(64)
           expect(columns, where).toBeGreaterThanOrEqual(96)
           expect([human.layout, claude.layout], where).toEqual([human.box - 1, claude.box - 1])
@@ -193,7 +198,7 @@ test('beside the docked pane the other rows of the width rule hold: no Claude it
   expect(bandWidths(52, 0, [], true)).toEqual({ human: null, claude: null })
 })
 
-test('beside the docked pane, at every width from 1 to 300, both lists draw from 52 with the box widths summing to the band, the column a third rounded down and at least 32, the human list at least 20, and each list laid out one column short of its box', () => {
+test('beside the docked pane, at every width from 1 to 300, both lists draw from 52 with the box widths summing to the band, the column half the band rounded down but no wider than the band less 64 and at least 32, the human list at least 20, and each list laid out one column short of its box', () => {
   const todos: [string, TodoItem[]][] = [['none', []], ['queued', waiting(2)], ['in flight', flying(2)], ['both', [...flying(1), ...waiting(1)]]]
   for (const [name, todo] of todos) {
     for (const humans of [0, 2]) {
@@ -203,7 +208,7 @@ test('beside the docked pane, at every width from 1 to 300, both lists draw from
         if (human !== null && claude !== null) {
           expect(columns, where).toBeGreaterThanOrEqual(52)
           expect(human.box + claude.box, where).toBe(columns)
-          expect(claude.box, where).toBe(Math.max(32, Math.floor(columns / 3)))
+          expect(claude.box, where).toBe(Math.max(32, Math.min(Math.floor(columns / 2), columns - 64)))
           expect(human.box, where).toBeGreaterThanOrEqual(20)
           expect([human.layout, claude.layout], where).toEqual([human.box - 1, claude.box - 1])
         } else {

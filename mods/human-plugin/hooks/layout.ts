@@ -52,11 +52,14 @@ export const humanFoldRows = (maxRows: number, columnLines: number): number => (
 export type ListWidth = { box: number; layout: number }
 export type BandWidths = { human: ListWidth | null; claude: ListWidth | null }
 
-// The band's smallest width for both lists to draw (the human list keeps 64 of it), and the Claude column's narrowest width.
+// The band's smallest width for both lists to draw, and the Claude column's narrowest width.
 const TWO_LIST_WIDTH = 96
 const CLAUDE_MIN_WIDTH = 32
 // Beside this plugin's docked pane the band is the transcript's column, and both lists draw from a narrower band: the column's 32 and a human list of 20.
 const DOCKED_TWO_LIST_WIDTH = 52
+// The human list's width at the undocked two-list floor: the least the Claude column leaves it in a band of 96 or more (bandWidths caps the column to keep it), and the width under which a
+// human list drawn beside the column is squeezed.
+const SQUEEZE_UNDER = TWO_LIST_WIDTH - CLAUDE_MIN_WIDTH
 // The empty column each box keeps while both lists draw.
 const MARGIN = 1
 
@@ -66,11 +69,12 @@ const whole = (box: number): ListWidth => ({ box, layout: box })
 export const bandDraws = (humanCount: number, todo: readonly TodoItem[]): boolean => humanCount > 0 || todo.length > 0
 
 // The widths of the band's lists at `columns`. Beside a human list the Claude column draws when it has any item and the band is wide enough
-// for both, 96 columns or 52 beside this plugin's pane docked (`isDocked`, pane.ts); alone it draws when it has any item, queued or in flight, at any width. It is a third of
-// the band, rounded down, never under 32 columns or wider than the band; the human list takes the rest, or all of the band when the column does not draw.
+// for both, 96 columns or 52 beside this plugin's pane docked (`isDocked`, pane.ts); alone it draws when it has any item, queued or in flight, at any width. It is half the band,
+// rounded down, but no wider than the band less the human list's SQUEEZE_UNDER; never under 32 columns, which outranks that cap (beside the docked pane the column is 32 under a band
+// of 96, and the human list is squeezed), and never wider than the band. The human list takes the rest, or all of the band when the column does not draw.
 // Both lists keep their boxes' empty column (`layout` one less than `box`) only while both draw.
 export const bandWidths = (columns: number, humanCount: number, todo: readonly TodoItem[], isDocked = false): BandWidths => {
-  const column = Math.min(columns, Math.max(CLAUDE_MIN_WIDTH, Math.floor(columns / 3)))
+  const column = Math.min(columns, Math.max(CLAUDE_MIN_WIDTH, Math.min(Math.floor(columns / 2), columns - SQUEEZE_UNDER)))
   if (humanCount === 0) return { human: null, claude: todo.length > 0 ? whole(column) : null }
   if (todo.length > 0 && columns >= (isDocked ? DOCKED_TWO_LIST_WIDTH : TWO_LIST_WIDTH)) {
     const human = columns - column
@@ -78,9 +82,6 @@ export const bandWidths = (columns: number, humanCount: number, todo: readonly T
   }
   return { human: whole(columns), claude: null }
 }
-
-// The human list's width at the undocked two-list floor, under which a human list drawn beside the Claude column is squeezed.
-const SQUEEZE_UNDER = TWO_LIST_WIDTH - CLAUDE_MIN_WIDTH
 
 // Whether the human list is squeezed: it draws beside the Claude column in a box under 64 columns, which only a band of 52 to 95 beside this plugin's docked pane has.
 // A human list drawn alone is never squeezed, at any width, nor is any list from a band of 96, docked or not. A squeezed list's rows start the ladder at its third rung

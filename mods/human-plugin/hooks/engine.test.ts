@@ -810,7 +810,7 @@ test('a band mounted at 120 columns draws the Claude column beside the human lis
   const drawn = JSON.stringify(tree)
   expect(shownOf(tree as El)).toContain('Claude TODO 1 active, 1 queued')
   expect(shownOf(tree as El)).toContain('◐ Build it')
-  expect(drawn).toContain('"width":40')
+  expect(drawn).toContain('"width":56')
   await $.tool.call({ tool: TODO_TOOL, entries: [] })
   expect(JSON.stringify(await ui.drawn())).not.toContain('Claude TODO')
 })
@@ -829,7 +829,7 @@ test('a band mounted at 96, 120 and 155 columns sets the human list\'s box and t
   await $.tool.call({ tool: TOOL, action: 'add', title: 'Pick a db' })
   await $.tool.call({ tool: TODO_TOOL, entries: [{ title: 'Build it', state: 'in_flight' }, { title: 'Test it', state: 'queued' }] })
   const band = await $.ui.mount({ plugin: 'human-plugin', surface: 'terminal', component: 'AbovePrompt', props: { ...BAND_PROPS, bodyColumns: 96 } })
-  for (const [columns, human, claude] of [[96, 64, 32], [120, 80, 40], [155, 104, 51]] as const) {
+  for (const [columns, human, claude] of [[96, 64, 32], [120, 64, 56], [155, 78, 77]] as const) {
     await band.redraw({ ...BAND_PROPS, bodyColumns: columns })
     const tree = await band.drawn()
     expect((tree as Drawn).props?.width, `${columns}`).toBe(columns)
@@ -844,13 +844,13 @@ test('a band mounted at 96, 120 and 155 columns sets the human list\'s box and t
   expect(JSON.stringify(await band.drawn())).not.toContain('padding')
 })
 
-test('the Claude column drawn alone, with no human items, keeps its whole box: 40 wide at 120 columns and 32 at 40, with no padding', async ($, on) => {
+test('the Claude column drawn alone, with no human items, keeps its whole box: 56 wide at 120 columns and 32 at 40, with no padding', async ($, on) => {
   mock.clock(on)
   mock.store(on)
   on('ui.panes', () => ({ value: [] }))
   await $.tool.call({ tool: TODO_TOOL, entries: [{ title: 'Build it', state: 'in_flight' }] })
   const band = await $.ui.mount({ plugin: 'human-plugin', surface: 'terminal', component: 'AbovePrompt', props: { ...BAND_PROPS, bodyColumns: 120 } })
-  for (const [columns, claude] of [[120, 40], [40, 32]] as const) {
+  for (const [columns, claude] of [[120, 56], [40, 32]] as const) {
     await band.redraw({ ...BAND_PROPS, bodyColumns: columns })
     const tree = await band.drawn()
     expect((tree as Drawn).children, `${columns}`).toHaveLength(1)
@@ -1093,8 +1093,8 @@ test('the band drawn through the terminal\'s table, with every kind of control a
         const drawing = `ids from ${first}, band of ${columns}`
         const where = `${phase}, ${drawing}`
         // Two lists from 96 columns, each box at the width rule's, the human one padded on its right and the Claude one on its left; below that the human
-        // list alone, with no width and no padding of its own.
-        const column = Math.max(32, Math.floor(columns / 3))
+        // list alone, with no width and no padding of its own. The column is half the band, rounded down, but no wider than the band less 64, and at least 32.
+        const column = Math.max(32, Math.min(Math.floor(columns / 2), columns - 64))
         const twoLists = columns >= 96
         if (twoLists) {
           const { human, column: claude } = boxes(tree)
@@ -1156,7 +1156,7 @@ test('the summary row drawn through the terminal\'s table is one line cut at the
   }
 })
 
-test('a band mounted at 105 columns draws each row as one line in the 69 columns its list of 70 keeps: the prefix, a title cut to the room the control column leaves it, and the control cell, and a press moves neither', async ($, on) => {
+test('a band mounted at 139 columns draws each row as one line in the 69 columns its list of 70 keeps: the prefix, a title cut to the room the control column leaves it, and the control cell, and a press moves neither', async ($, on) => {
   on('prompt.submit', (_$, e) => ({ text: e.text }))
   mock.clock(on)
   mock.store(on)
@@ -1166,11 +1166,12 @@ test('a band mounted at 105 columns draws each row as one line in the 69 columns
   await $.tool.call({ tool: TOOL, action: 'add', title: 'Is the third item a yes or no question that wraps', yesno: true })
   await $.tool.call({ tool: TOOL, action: 'add', title: 'Pick a decision with options that wraps as well', options: [{ label: 'Alpha', recommended: true }, { label: 'Beta' }] })
   await $.tool.call({ tool: TODO_TOOL, entries: [{ title: 'Writing the probe step', state: 'in_flight' }, { title: 'Second step in flight', state: 'in_flight' }, { title: 'Queued one', state: 'queued' }] })
-  const band = await $.ui.mount({ plugin: 'human-plugin', surface: 'terminal', component: 'AbovePrompt', props: { ...BAND_PROPS, bodyColumns: 105 } })
+  const band = await $.ui.mount({ plugin: 'human-plugin', surface: 'terminal', component: 'AbovePrompt', props: { ...BAND_PROPS, bodyColumns: 139 } })
   const cells = async (id: number): Promise<El[]> => cellsOf(rowElement(await band.drawn(), id) as El)
   const tree = await band.drawn()
+  // The rows were captured in a human list of 70 columns; a band of 139 is the smallest whose list is that wide, the Claude column taking half the band, 69.
   expect(boxes(tree).human?.props).toMatchObject({ width: 70, paddingRight: 1 })
-  expect(boxes(tree).column?.props).toMatchObject({ width: 35, paddingLeft: 1 })
+  expect(boxes(tree).column?.props).toMatchObject({ width: 69, paddingLeft: 1 })
   // The unread mark and the id take 5. #1, #3 and #4 have a control column of 17 (the reply's `✓ replied [↶ 3s]` and the space before it), leaving their
   // titles 47 of the 69. #2's label of 24 columns makes its pressed control `✓ Approve the migration ok [↶ 3s]`, so 34 with the space, leaving its title 30.
   const want: [number, number, string][] = [
@@ -1250,8 +1251,9 @@ test('beside the docked pane the band drawn through the terminal\'s table in ban
         const tree = await band.drawn()
         const drawing = `ids from ${first}, band of ${columns}`
         const where = `${phase}, ${drawing}`
-        // Both lists at every width here, the pane being docked: each box at the width rule's, the human one padded on its right and the Claude one on its left.
-        const column = Math.max(32, Math.floor(columns / 3))
+        // Both lists at every width here, the pane being docked: each box at the width rule's, the human one padded on its right and the Claude one on its left. The column is half the
+        // band, rounded down, but no wider than the band less 64, and at least 32, which under 96 is the 32.
+        const column = Math.max(32, Math.min(Math.floor(columns / 2), columns - 64))
         const { human, column: claude } = boxes(tree)
         expect((tree as Drawn).props?.width, where).toBe(columns)
         expect(human?.props, where).toMatchObject({ width: columns - column, paddingRight: 1 })

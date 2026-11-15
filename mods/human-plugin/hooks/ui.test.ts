@@ -872,12 +872,12 @@ test('with no Claude items the human list draws the same at a wide band and a na
   for (const columns of [90, 300]) sameTree(drawn(humans(2), [], columns), wide)
 })
 
-test('at 120 columns the band is two boxes, the human list 80 wide and the Claude column 40 wide at the right, each with its empty column inside', () => {
+test('at 120 columns the band is two boxes, the human list 64 wide and the Claude column 56 wide at the right, each with its empty column inside', () => {
   const tree = drawn(humans(2), queue(1), 120)
   const [left, right] = columnsOf(tree)
   expect(tree).toMatchObject({ type: 'Box', flexDirection: 'row', width: 120 })
-  expect(left).toMatchObject({ type: 'Box', flexDirection: 'column', width: 80, paddingRight: 1 })
-  expect(right).toMatchObject({ type: 'Box', flexDirection: 'column', width: 40, paddingLeft: 1 })
+  expect(left).toMatchObject({ type: 'Box', flexDirection: 'column', width: 64, paddingRight: 1 })
+  expect(right).toMatchObject({ type: 'Box', flexDirection: 'column', width: 56, paddingLeft: 1 })
   expect(columnsOf(tree).length).toBe(2)
   expect(texts(left).join('')).toContain('To do for you')
   expect(texts(left).join('')).not.toContain('Claude TODO')
@@ -886,8 +886,8 @@ test('at 120 columns the band is two boxes, the human list 80 wide and the Claud
 
 test('the human column holds the rows the human list draws alone in the layout width it keeps beside the column', () => {
   const store = humans(3, true)
-  // The box of 80 beside the column keeps one column empty: its rows are laid out in 79.
-  const alone = drawn(store, [], 79) as Node
+  // The box of 64 beside the column keeps one column empty: its rows are laid out in 63.
+  const alone = drawn(store, [], 63) as Node
   const left = columnsOf(drawn(store, queue(1), 120))[0] as Node
   sameTree(left.children, alone.children)
   expect(nodes(left, 'Button').map(b => b.key)).toEqual(nodes(alone, 'Button').map(b => b.key))
@@ -999,8 +999,8 @@ test('a row is a glyph text in the state\'s colour beside a title text on one li
   const long = 'x'.repeat(80)
   const right = columnsOf(drawn(humans(6), [{ title: 'queued one', state: 'queued', eta: 'no ETA' }, { title: long, state: 'in_flight', eta: 'no ETA' }], 120))[1] as Node
   const rows = (right.children as Node[]).slice(1)
-  // The column is 40 wide and keeps one column empty: a title that does not fit the 38 left beside the glyph is cut to 37 columns and an ellipsis, its space among them.
-  expect(rows).toStrictEqual([flyingRow(` ${'x'.repeat(36)}…`), queuedRow(' queued one')])
+  // The column is 56 wide and keeps one column empty: a title that does not fit the 54 left beside the glyph is cut to 53 columns and an ellipsis, its space among them.
+  expect(rows).toStrictEqual([flyingRow(` ${'x'.repeat(52)}…`), queuedRow(' queued one')])
 })
 
 test('beside one human item three queued items draw as the header and one +3 queued row, and no queued item', () => {
@@ -1032,12 +1032,12 @@ test('the queued line counts toward the fold: at maxRows 6 a column of its heade
   expect((columnsOf(drawn(humans(30), flight(5), 120, 6))[0] as Node).children).toHaveLength(6)
 })
 
-test('with no human items and a step in the agent\'s list the column draws alone: 40 wide at the band\'s right edge, nothing to its left', () => {
+test('with no human items and a step in the agent\'s list the column draws alone: 56 wide at the band\'s right edge, nothing to its left', () => {
   const tree = drawn(humans(0), [...flight(2), ...queue(3)], 120)
   expect(tree).toMatchObject({ type: 'Box', flexDirection: 'row', justifyContent: 'flex-end', width: 120 })
   const [only, ...rest] = columnsOf(tree) as [Node, ...Node[]]
   expect(rest).toEqual([])
-  expect(only).toMatchObject({ type: 'Box', flexDirection: 'column', width: 40 })
+  expect(only).toMatchObject({ type: 'Box', flexDirection: 'column', width: 56 })
   expect(lineTexts(only)).toEqual(['Claude TODO 2 active, 3 queued', '◐ f1', '◐ f2', '+3 queued'])
   expect(JSON.stringify(tree)).not.toContain('To do for')
 })
@@ -1048,8 +1048,8 @@ test('the column alone never hides on a narrow band, and keeps 32 columns', () =
   expect(columnsOf(tree)[0]).toMatchObject({ width: 32 })
 })
 
-test('at a bodyColumns of 96, 120 and 155 with both lists drawn, the boxes keep the widths the width rule rules, the human box padded one column on its right and the Claude box one on its left, so the Claude column\'s lines are cut at 31, 39 and 50 columns', () => {
-  for (const [columns, human, claude, cut] of [[96, 64, 32, 31], [120, 80, 40, 39], [155, 104, 51, 50]] as const) {
+test('at a bodyColumns of 96, 120 and 155 with both lists drawn, the boxes keep the widths the width rule rules, the human box padded one column on its right and the Claude box one on its left, so the Claude column\'s lines are cut at 31, 55 and 76 columns', () => {
+  for (const [columns, human, claude, cut] of [[96, 64, 32, 31], [120, 64, 56, 55], [155, 78, 77, 76]] as const) {
     const tree = drawn(humans(2), [...flight(1), ...queue(1)], columns)
     const [left, right] = columnsOf(tree) as [Node, Node]
     const where = `${columns}`
@@ -1069,7 +1069,7 @@ test('at a bodyColumns of 96, 120 and 155 with both lists drawn, the boxes keep 
 // The trees the band draws for a list alone, with no padding on any box: the human list of two plain to-dos whose rows fit their lines, each its prefix, its title in a
 // box that shrinks and a control cell of 17 columns (the reply's `✓ replied [↶ 5s]` and the space before it), and the Claude column alone at 120 and at 40.
 const TODAY_HUMAN = '{"type":"Box","flexDirection":"column","children":[{"type":"Box","children":[{"type":"Box","flexShrink":0,"children":[{"type":"Text","bold":true,"color":"inverseText","backgroundColor":"permission","children":[" To do for you "]}]},{"type":"Text","children":[" 2 open "]}]},{"type":"Box","key":"item-1","children":[{"type":"Box","flexShrink":0,"children":[{"type":"Text","bold":false,"dimColor":true,"children":["  #1 "]}]},{"type":"Box","flexShrink":1,"children":[{"type":"Button","key":"title-1","plain":true,"label":"Pick a db"}]},{"type":"Box","width":17,"flexShrink":0,"children":[{"type":"Text","children":[" "]},{"type":"Button","key":"done-1","plain":true,"label":"[✓]"}]}]},{"type":"Box","key":"item-2","children":[{"type":"Box","flexShrink":0,"children":[{"type":"Text","bold":false,"dimColor":true,"children":["  #2 "]}]},{"type":"Box","flexShrink":1,"children":[{"type":"Button","key":"title-2","plain":true,"label":"Pick a db"}]},{"type":"Box","width":17,"flexShrink":0,"children":[{"type":"Text","children":[" "]},{"type":"Button","key":"done-2","plain":true,"label":"[✓]"}]}]}]}'
-const TODAY_CLAUDE_120 = '{"type":"Box","flexDirection":"row","justifyContent":"flex-end","width":120,"children":[{"type":"Box","flexDirection":"column","width":40,"children":[{"type":"Box","children":[{"type":"Text","children":["Claude TODO "]},{"type":"Button","key":"claude-header","plain":true,"label":"1 active, 0 queued"}]},{"type":"Box","children":[{"type":"Text","color":"suggestion","children":["◐"]},{"type":"Text","children":[" f1"]}]}]}]}'
+const TODAY_CLAUDE_120 = '{"type":"Box","flexDirection":"row","justifyContent":"flex-end","width":120,"children":[{"type":"Box","flexDirection":"column","width":56,"children":[{"type":"Box","children":[{"type":"Text","children":["Claude TODO "]},{"type":"Button","key":"claude-header","plain":true,"label":"1 active, 0 queued"}]},{"type":"Box","children":[{"type":"Text","color":"suggestion","children":["◐"]},{"type":"Text","children":[" f1"]}]}]}]}'
 const TODAY_CLAUDE_40 = '{"type":"Box","flexDirection":"row","justifyContent":"flex-end","width":40,"children":[{"type":"Box","flexDirection":"column","width":32,"children":[{"type":"Box","children":[{"type":"Text","children":["Claude TODO "]},{"type":"Button","key":"claude-header","plain":true,"label":"1 active, 0 queued"}]},{"type":"Box","children":[{"type":"Text","color":"suggestion","children":["◐"]},{"type":"Text","children":[" f1"]}]}]}]}'
 
 test('a list drawn alone is the tree the band draws with no padding on any box: the human list at 120 and 90 columns with no Claude items, the Claude column at 120 and 40 with no human items', () => {
@@ -1129,7 +1129,7 @@ test('state table row 7: with a column taller than maxRows the human list folds 
   const same = human(flight(9))
   expect(rowCount(same)).toBe(10)
   expect(nodes(same, 'Button').filter(b => b.key === 'band-more')).toHaveLength(1)
-  sameTree(same.children, drawn(store, [], 79, 10).children)
+  sameTree(same.children, drawn(store, [], 63, 10).children)
   // Header and 10 in-flight rows are 11 rows: one row earlier, the summary the 9th row.
   const earlier = human(flight(10))
   expect(rowCount(earlier)).toBe(9)
@@ -1140,7 +1140,7 @@ test('state table row 7: with a column taller than maxRows the human list folds 
 
 test('with maxRows 10 and a column no taller than maxRows the human list folds as it does with no Claude items', () => {
   const store = humans(12)
-  sameTree((columnsOf(drawn(store, flight(3), 120, 10))[0] as Node).children, drawn(store, [], 79, 10).children)
+  sameTree((columnsOf(drawn(store, flight(3), 120, 10))[0] as Node).children, drawn(store, [], 63, 10).children)
 })
 
 test('with maxRows 10 and 30 in-flight items the column is taller than maxRows and holds every one', () => {
@@ -1177,10 +1177,10 @@ const shown = (node: unknown): string => {
   return n.type === 'Button' ? String(n.label) : (n.children ?? []).map(shown).join('')
 }
 
-// A box of `box` columns for the human list beside the Claude column: the smallest band whose human box is that wide (the column is a third of the band,
-// at least 32).
+// A box of `box` columns for the human list beside the Claude column: the smallest band whose human box is that wide (the column is half the band, rounded down, but no wider
+// than the band less 64, and at least 32).
 const bandFor = (box: number): number => {
-  for (let columns = 96; ; columns++) if (columns - Math.max(32, Math.floor(columns / 3)) === box) return columns
+  for (let columns = 96; ; columns++) if (columns - Math.max(32, Math.min(Math.floor(columns / 2), columns - 64)) === box) return columns
 }
 
 // A human list as the band draws it, with the columns its rows are laid out in: beside the Claude column, in a box of `list` columns that keeps one
@@ -1553,7 +1553,7 @@ test('in the pane an item\'s pressed control is drawn as the band has always dra
   }
 })
 
-// The four rows of a live capture at a band of 105, whose human list is a box of 70: a to-do whose title is longer than its room beside its `[✓]`, one with a
+// The four rows of a live capture in a human list of 70 columns (a box of 70, laid out in 69): a to-do whose title is longer than its room beside its `[✓]`, one with a
 // label whose control is 28 columns, a yes/no, and a decision. They were new, so each has the unread mark.
 const CAPTURED: Store = {
   items: [
@@ -1567,7 +1567,8 @@ const CAPTURED: Store = {
 }
 
 test('in the list of 70 beside the column that a live capture drew, each row is one line of the prefix, a title cut to its room and a control cell, which together are the 69 columns the list is laid out in', () => {
-  const left = columnsOf(drawn(CAPTURED, [...flight(2), ...queue(3)], 105))[0] as Node
+  // A band of 139 is the smallest whose human list is a box of 70, the Claude column taking half the band, 69.
+  const left = columnsOf(drawn(CAPTURED, [...flight(2), ...queue(3)], 139))[0] as Node
   expect(left).toMatchObject({ width: 70, paddingRight: 1 })
   // The id and the unread mark take 5. #1, #3 and #4 have a control column of 17 (the reply's `✓ replied [↶ 5s]` and the space), leaving their titles 47; #2's
   // label of 24 columns makes it 34 (`✓ Approve the migration ok [↶ 5s]` and the space), leaving 30.
@@ -1586,10 +1587,10 @@ test('in the list of 70 beside the column that a live capture drew, each row is 
   expect(shown(cellsOf(left, 2)[2])).toBe(' [✓ Approve the migration ok]')
 })
 
-test('the human rows are laid out in one column less than their box while the Claude column draws beside them, and in all of it alone: a title cut at the room beside `[✓]` is 41, 57 and 81 columns at a bodyColumns of 96, 120 and 155, and 74, 98 and 133 with no Claude items', () => {
+test('the human rows are laid out in one column less than their box while the Claude column draws beside them, and in all of it alone: a title cut at the room beside `[✓]` is 41, 41 and 55 columns at a bodyColumns of 96, 120 and 155, and 74, 98 and 133 with no Claude items', () => {
   const store: Store = { items: [{ ...at(1, false), title: LONGER }], next: 2, term: null }
   const labelColumns = (left: Node): number => displayColumns(shown(cellsOf(left, 1)[1]))
-  for (const [columns, beside, alone] of [[96, 41, 74], [120, 57, 98], [155, 81, 133]] as const) {
+  for (const [columns, beside, alone] of [[96, 41, 74], [120, 41, 98], [155, 55, 133]] as const) {
     // The id takes 5 and `[✓]` with the reply's `✓ replied [↶ 5s]` makes the control column 17: the title keeps the layout width less 22.
     expect(labelColumns(columnsOf(drawn(store, queue(1), columns))[0] as Node), `${columns} beside the column`).toBe(beside)
     expect(labelColumns(drawn(store, [], columns)), `${columns} alone`).toBe(alone)

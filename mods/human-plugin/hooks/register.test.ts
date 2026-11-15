@@ -3101,7 +3101,7 @@ test('with two human items and no Claude items the band is the one drawn today a
   values.todo = [entry('Write the tests', 'queued')]
   const wide = await bandAt(hooks, env, 120)
   expect(wide.width).toBe(120)
-  expect(wide.children?.map(c => c.width)).toEqual([80, 40])
+  expect(wide.children?.map(c => c.width)).toEqual([64, 56])
   expect(textOf(wide.children?.[1])).toContain('○ Write the tests')
   expect(sameTree(await bandAt(hooks, env, 90))).toBe(sameTree(today))
 })
@@ -3462,18 +3462,18 @@ test('switching the pane to another item, and an item the agent removes from und
   expect(asked).toEqual([])
 })
 
-test('with no human items a step in the agent\'s list, queued or in flight, draws the column alone, 40 wide, and an empty list hands on', async () => {
+test('with no human items a step in the agent\'s list, queued or in flight, draws the column alone, 56 wide, and an empty list hands on', async () => {
   reset()
   const { hooks } = wire()
   const { env, values } = memEnv([], [], null)
   const e = { props: { hasSurvey: false, maxRows: 20, bodyColumns: 120 } }
   values.todo = [entry('Only queued', 'queued')]
   const queuedOnly = await bandAt(hooks, env, 120)
-  expect(queuedOnly.children?.map(c => c.width)).toEqual([40])
+  expect(queuedOnly.children?.map(c => c.width)).toEqual([56])
   expect(textOf(queuedOnly)).toContain('○ Only queued')
   values.todo = [entry('Running', 'in_flight'), entry('Later', 'queued')]
   const tree = await bandAt(hooks, env, 120)
-  expect(tree.children?.map(c => c.width)).toEqual([40])
+  expect(tree.children?.map(c => c.width)).toEqual([56])
   expect(textOf(tree)).toContain('◐ Running')
   expect(textOf(tree)).toContain('○ Later')
   values.todo = []
