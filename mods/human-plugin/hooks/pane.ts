@@ -33,7 +33,7 @@ let pendingOpen = false
 // as it is, so within one opening a surface only goes from unseen to seen. The records outlive a close and reset on the next open from closed (openPane).
 const docks = new Set<string>()
 // The human list the surface drew last, from the band or the item view, and the whole stored Claude list the band or the backlog read last (not only the rows they drew, which the
-// band may limit to the column's header and in-flight rows). A press reads them synchronously when it opens or resizes the pane (see openPane). The surface redraws on each change,
+// band may limit to the column's header, in-flight rows and queued line). A press reads them synchronously when it opens or resizes the pane (see openPane). The surface redraws on each change,
 // so each is at most one draw behind its list.
 let drawnItems: readonly Item[] = []
 let drawnTodo: readonly TodoItem[] = []
