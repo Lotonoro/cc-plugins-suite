@@ -1,525 +1,102 @@
 # cachier
 
-A prompt-cache countdown, an opt-in keepalive, and a time on every message. It stays out of the way until you look
-for it.
+**Ca-ching!** Let’s see if keeping your cache warm knocks a few tokens off the bill.
 
-## The footer line
+Cachier can keep Claude Code’s prompt cache warm while you’re away. A cheap
+refresh can save you the cost of rebuilding the cache when you return.
+By default, Cachier measures cache costs and shows what could save you money.
+You decide whether to flip the switch.
 
-In the prompt footer, at the right after the mode labels (`auditor is on`, say), a pie shows how much of the prompt cache's
-lifetime is left, and next to it the time left, or a word where there is no time:
+## How it works
 
-| State | Footer |
-| --- | --- |
-| Warm | `◕ 3:12` (the time dim) |
-| Expired, the model priced | `○ ~$0.42 to rebuild` (dim; `~29k tokens to rebuild` in the token unit, or unpriced) |
-| Cache reset by a model switch or compaction | `○ reset` (dim) |
-| Keepalive on, nothing to count yet (before the first reply, after `/clear`) | `○ no count` (dim) |
-| Keepalive on, a model switch or compaction before any reply has written the cache | `○ no count` (dim) |
-| Keepalive off, nothing to count | nothing: the footer's labels alone |
+Claude Code gives you two built-in cache lifetimes (TTLs), five minutes and
+one hour. With keepalive on, Cachier sends a refresh shortly before expiry.
+A refresh costs a cache read and buys another full TTL. If the cache
+goes cold, the next request may have to write the context again.
 
-- The pie's shape is the time left in quarters of the cache's lifetime, rounded up: `●` above three quarters, then `◕`,
-  `◑`, `◔`, and `○` once the cache is gone. The lifetime is 5 minutes or 1 hour, as the transcript records it: on a subscription the
-  main conversation defaults to 1 hour and on an API key to 5 minutes, and the `promptCacheTtl` setting changes it.
-- The pie's colour: green while keepalive is refreshing, and also beside `reset` (after a model switch or compaction) or `no count`
-  while keepalive is on and no stop is recorded. While keepalive has a recorded stop (its refreshes used up, the cache expired,
-  your daily rest began, or a failure), the pie beside `reset` or `no count` is red until your next prompt; a pending cold mark alone leaves it green.
-  Otherwise (keepalive off, or on but paused or spent) it is the normal text
-  colour, then amber in the cache's last quarter, and red in its last tenth (1:15 and 0:30 on a 5-minute cache, 15 and 6
-  minutes on an hour's). An expired cache is red with keepalive on and dim with it off, and a cache reset after a model switch or
-  compaction is dim with it off.
-- The price cue: after the words (not after a footer that is not drawn), `⟳` (dim) shows while this session reads Anthropic's pricing
-  page, whoever started the read (the weekly schedule, a switch to dollars). When the read lands a `✓` takes its place, and when it
-  fails an amber `!` does, each for about 3 seconds; then the footer is as before. Only the session that ran the read shows it, a
-  reload or a session end clears it, and no toast is raised. The pie and the words stay clickable.
-- A click on the pie switches keepalive, as `/keepalive on` with the last-used lead and count (else the defaults) or
-  `/keepalive off` does. A click on the time, the rebuild figure, `reset` or `no count` opens the details pane, at any terminal width. Esc closes it.
-- Hovering the time or the figure shows the refresh cost in a popup just above it; nothing on the line moves, so the time stays
-  clickable. While the cache is warm it shows what keeping it warm costs beside what the next prompt pays to rebuild it if it goes
-  cold:
-  `keep warm $0.006/refresh · if cold ~$0.21 rebuild`
-  Once the cache has expired it shows the refresh figure alone, as `$0.006/refresh`. With keepalive off, where a press would send no
-  refresh (a lead at or above the TTL, or a learned count of 0), a warm cache shows the rebuild price alone, as
-  `if cold ~$0.21 rebuild`
-  and keepalive on shows nothing there.
-- Hovering the pie shows what its colour stands for, in a popup just above it: `cache keepalive is on` on the green pie,
-  `cache keepalive is paused` on a pie that is not green while keepalive is on (normal, amber or red), or `cache keepalive is off`
-  with keepalive off, in any colour. It moves nothing on the line either.
-- On the phone cachier draws no mod UI, so the footer and the pane don't show there. Keepalive keeps running on the Mac.
+With keepalive enabled, Cachier starts with the *ski rental* rule. A refresh
+rents more time, and the buy price is the extra cost of returning to a cold
+cache. Cachier caps refresh spending at that price. In the classic model,
+this break-even rule costs at most twice what you’d pay if you knew how long
+the pause would last. [Purohit et al., NeurIPS 2018](https://proceedings.neurips.cc/paper/2018/file/73a427badebe0e32caa2e1fc7530b7f3-Paper.pdf)
 
-## The details pane
+### What keepalive costs
 
-A click on the time, the rebuild figure, `reset` or `no count` opens the pane, sized to its text laid out as the `/keepalive` answer lays its text out: that answer's rows and longest row. Before the
-pane has drawn this session it opens at 12 rows by 48 columns, and an open pane is re-sized to its text within a second. A terminal too short for the rows
-scrolls them with the wheel. A click on that word while it is open closes it, as Esc or the person's close does. The click acts on the pane as the engine
-lists it: a pane closed some way cachier did not hear of (a reload, another plugin) is opened by the next click after a second,
-and a close another plugin refuses leaves the pane open to be closed by the next click. The pane shows the five sections a bare
-`/keepalive` answers with, in the same order with the same words, each heading in bold; the Keepalive heading's state word, the pie on the Cache line, and `amber` and `red` in the pie line are also coloured (below). Each row's label is dim and its value is not, so the eye runs down the values (below). The pane's text wraps at the width the pane is drawn at, so dragging the dock wider gives wider lines and fewer rows; each sentence's rows share one indent:
+For 250,000 cached tokens on Opus 5.5, a five-minute cache write costs $1.25,
+a one-hour write costs $2.00, and a cache read costs $0.05.
+[Anthropic API pricing](https://platform.claude.com/docs/en/about-claude/pricing#prompt-caching)
 
-- **Cache**: the cache's warmth after the footer's pie, `◕ warm · 3:12 left · 5m TTL`, or, once the cache has expired or been reset, `○ expired · rebuild ~$0.13` or
-  `○ reset · rebuild ~$0.13` (the state alone where no figure is drawn). The pie is the footer's: in the pane it is drawn in the colour the footer draws it in
-  (see [The footer line](#the-footer-line)), and in the bare `/keepalive` answer it is plain text. With nothing to count there is no Cache line, so no pie. The rebuild figure is the context plus the last reply's output, which the next prompt writes with it, priced
-  at the model that last wrote the cache, so after a model switch it is at the rates of the model switched from;
-- **Keepalive**: its state on the heading (`off`, `on, refreshing`, `on, no count`, `paused`, `stopped`), the state word bold and coloured by state:
-  `on, refreshing` green, `paused` and `on, no count` amber, `stopped` red, `off` dim. These colours show keepalive's state, not the cache's time,
-  so they differ from the pie's (`on, no count` is amber here with a green pie, and `paused` is always amber here whatever the pie shows). Beneath the heading, why it is paused or stopped and
-  whether it resumes or restarts on the next prompt (`count used · resumes on next prompt`), what the pie's colours warn of while it is amber or red (`pie: amber ≤¼ TTL left, red ≤⅒`, with `amber` and `red` drawn in those colours), what a refresh costs
-  and when the next is due (`refresh $0.004 (~19k cached) · every 4:45`, then `next in 4:44 · 24 left`; while the cache is warm, with a row of its own for what your
-  next prompt pays to rebuild it, `if cold: rebuild ~$0.09 (~19k written)`; a run whose lead is not below the TTL states that row alone on a warm cache), how many
-  refreshes a pause sends (`max 24 refreshes/pause (break-even)`), when keepalive pays off (`pays off if back in 5:00–1:54:00`), the daily rest your pauses
-  show (`rest: from ≤02:18 · back ≥07:28 · 12 rests`, or `rest: 3 of 7 seen` until there are enough; see [Learning from your pauses](#learning-from-your-pauses)), the window
-  the night step acts in once one is learned and a stop in it would act (`overnight: 03:18–06:28 · after 30m idle`, or `overnight: done 03:19` once this session has stepped today; see [Overnight](#overnight)), and this
-  pause's and this session's refreshes and their cost (`pause: 6 refreshes · $0.022`);
-- **This session**: the session's refreshes and their cost (`session: no refreshes yet` before the first), keepalive's
-  balance against the other setting once a pause is judged, and the cache misses once one is counted. The refreshes and the
-  balance start over at a `/clear` or a resume and are kept at a compaction; the misses line is the Advice section's, counted
-  over the current transcript, so a resume of the same transcript keeps its misses;
-- **Advice**: the best setup as rows, `setup:`, `best:`, `do:` (see [Best setup](#best-setup)), priced from your recorded pauses; the other TTL's
-  rows once it would have cost less (see [5 m or 1 h](#5-m-or-1-h)); the misses by cause; and the note on the unit;
-- **Settings**: each setting's value, where it came from, and what changes it (`night stop: on (overnight) · overnight` is the night step's switch: its value, the option it comes from, and the option key that changes it).
+- **Five-minute TTL.** At break-even, 24 refreshes plus the read on return cost
+  the same as a cold rebuild. With the default 15-second lead, those
+  refreshes can keep the cache warm for nearly two hours.
+- **One-hour TTL.** The break-even budget is 39 refreshes, enough to cover more
+  than a day. After a 25-hour pause, 25 refreshes plus the read on return can
+  still cost less than a cold rebuild.
 
-The pane draws these rows itself, from the same figures the command reads, and its countdown advances each second. A press on the pie
-changes what an open pane shows at once; the pane is re-sized to the new rows by the next second's tick. The rows run to about 30 to 45, so in
-a short terminal the lower sections are scrolled to with the wheel.
+Cachier compares these four setups. The example includes the initial write,
+any refreshes, and a cache read or rebuild on return. It assumes the same
+context throughout. The keepalive examples use the default lead and assume
+refreshes run through the pause.
 
-## Glossary
+| Cache lifetime | Pause | Keepalive off | Keepalive on | Savings with keepalive |
+| --- | --- | ---: | ---: | ---: |
+| 5 min | 45 min | $2.50 | **$1.75** | 30% |
+| 5 min | 90 min | $2.50 | $2.20 | 12% |
+| 1 hour | 90 min | $4.00 | **$2.10** | 47.5% |
+| 1 hour | 25 hours | $4.00 | **$3.30** | 17.5% |
 
-- **TTL**: how long the prompt cache lives after its last use, `5m` or `1h`. Cachier reads it from your last response.
-- **setup**: a TTL and a keepalive state, written `5m/on`, `1h/off` or `5m/paused (lead 300s ≥ 300s TTL)`, which is keepalive on at a lead not below the TTL, so it sends nothing. The Advice section's `setup:` row is the one you are on.
-- **rebuild**: what the next prompt pays to write an expired or reset cache again, in dollars or in the tokens written
-  (`~26k tokens`). The footer words the same figure `to rebuild`.
-- **`·`**: separates the parts of a line, as in `warm · 3:12 left · 5m TTL`.
-- **`~`**: about; the figure is an estimate.
-- **`≥`**: at or above; `lead 300s ≥ 300s TTL` says the lead is not below the TTL, so no refresh is sent.
-- **`> ½ of 30s TTL`**: the lead a slow round trip needs, twice that round trip, is over half the whole TTL, here 30s, so keepalive stops instead of raising it.
-- **read** / **written**: a count of tokens read from or written to the cache, `~19k read`; `cached` after a count (`~19k cached`) is the context a refresh reads.
-- **kept**: a running pause keeps the count it started with until the next prompt recounts it (`kept from pause start; recounted next prompt`).
-- **`○ ◔ ◑ ◕ ●`**: the time left in quarters, as the footer's pie; `○` also means cold, expired or nothing to count (see [The footer line](#the-footer-line)).
-- **`≤¼`** / **`≤⅒`**: the last quarter / tenth of the TTL left; the pie turns amber, then red.
-- **`amber`** / **`red`** in the `pie:` line: drawn in those colours in the pane, as a legend for the pie's colours, not a state; the bare `/keepalive` answer states them as plain words.
-- **heading colours**: the Keepalive heading's state word in the pane is coloured by keepalive's state: green `on, refreshing` (refreshing the cache), amber `paused` and `on, no count` (waiting), red `stopped`, dim `off`. They show keepalive's state, not the cache's time, so they differ from the pie's colours.
-- **dim label**: the words that open a row in the pane (`pie:`, `session:`, `next in`, `setup:`, a setting's name) are drawn dim and the value after them at full strength. A dim label names its row and is not a state, unlike the heading's state word or the pie's colours; the bare `/keepalive` answer prints each label as a plain word.
-- **refresh**: a small request keepalive sends shortly before the cache expires, so it stays warm. Each costs one cache read of the whole context.
-- **lead**: how long before expiry a refresh is sent (`15s`); `lead raised to 16s (slow refresh)` says a slow refresh raised it, and the Settings row then reads `lead: 16s (raised: slow refresh)`.
-- **refreshes/pause**: the most refreshes one pause sends. **break-even**: the most that cost no more than the rewrite they avoid. **pinned**: a count you gave `/keepalive on <lead_s> <count>`. **cap**: `keepalive_count`, which bounds the break-even and learned counts. **learned**: the count your own pauses say is cheapest; **covers** `33:30` is how long that many refreshes keep the cache warm, and `10/13 pauses within` how many of your pauses ended inside it.
-- **pays off if back in a–b**: keepalive on costs less than off if you return between those times (`–` is a range); `never pays off on this context` says no return time does.
-- **`rest:`**: your daily rest, read from the gaps between your recorded pauses (see [Learning from your pauses](#learning-from-your-pauses)): `rest: 3 of 7 seen` while your habit holds fewer than the 7 rests it needs, and `rest: from ≤02:18 · back ≥07:28 · 12 rests` once it does, with `no window` in place of the count where an hour's margin kept inside each end leaves nothing between them.
-- **`from ≤`** / **`back ≥`**: the time of day by which nine in ten of the habit's rests had begun / the time nine in ten of them lasted until, or past. Both are local clocks.
-- **`overnight:`**: the row after `rest:` in the Keepalive section: the window the night step acts in and the idle it waits for (`overnight: 03:18–06:28 · after 30m idle`), then `done` and its time once this session has stepped today (`overnight: done 03:19`). With keepalive off it ends `· only with keepalive on`; with the `overnight` option off, or no window learned, there is no row, and none while no cache is known or, at the 1 h TTL, where the window is too short for a stop to repay (see [Overnight](#overnight)).
-- **`night stop`**: the Settings row of the `overnight` option, `night stop: on (overnight) · overnight`: its value (`on` or `off`), the option it comes from and the option key that changes it.
-- **`overnight` stop**: a stop by design that your daily rest gives, `overnight · resumes on next prompt` beneath the heading `paused`; the `/keepalive on` answer words it `Paused: your daily rest began; it resumes after your next prompt.` (see [Overnight](#overnight)).
-- **resumes / restarts on next prompt**: a pause by design (`count used`, `cache expired`, `overnight`) resumes; a failure stop restarts.
-- **balance vs other setting**: this session's net saving of keepalive as you ran it against the opposite setting (`saved $0.15 net`, `$0.09 net more`, `even`); `$ only` says the figure is stated only in dollars.
-- **earlier**: pauses before this one, by outcome: **saved** (a refresh kept the cache; the write it avoided is counted), **wasted, ran out** (the count ran out and the cache lapsed anyway), **wasted, not needed** (you came back before the TTL).
-- **miss**: a reply that rewrote the cache. Causes: **lapse** (past the TTL), **switch/compaction**, **unexplained**.
-- **long pauses**: pauses past the TTL; **p90** is the time 90% of them stay under.
-- **best** / **next best** / **too little to change**: `best:` is the cheapest setup over the pauses priced and what it would have saved, when that clears the change threshold, a saving of at least $0.01 and at least 5% of what your setup cost. `next best:` is a cheaper setup that does not clear it, so it is too little to change to.
-- **other TTL**: the other cache lifetime, priced against yours over every priced pause as a new session would run it; its `other TTL:` row shows once it would have cost less.
-- **recent pauses**: the newest priced pauses across sessions (up to 50), which are priced when this session has fewer than five; `5 pauses this session` says the session's own were priced. **priced pauses, all sessions**: every recorded pause with its context, which the other TTL is priced over.
-- **start mode**: whether new sessions start keepalive on or off, which `keepalive_default` decides, as `new sessions start on: keepalive_default` says.
-- **unit**: whether figures are shown in dollars or in tokens; `cost_unit` sets it for new sessions, and `switched this session` says `/keepalive unit` changed it.
-- **`do:`**: how to make the change, the command first and the click after it (`do: /keepalive on 15 or click pie on`); a change of TTL sets `promptCacheTtl` for new sessions.
-- **`(cheapest)`**: no setup priced would have cost less than yours. **`vs`**: the setup a saving is stated against (`saves ~$4.40 vs 5m/off`). **`≈ same cost`**: that setup would have cost about the same, within half a cent. **`a little cheaper`**: it would have cost a little less, too little to change.
-- **in tokens**: a figure with no dollars is shown in tokens, and `in tokens: no price for …` says why. In the tokens unit a saving is stated as `money`, with `$ only, /keepalive unit dollars` pointing to the dollars that state it.
-- **`≈`**: about equal, as in `1 write ≈ 24 refreshes`. **`<$0.001`**: under a tenth of a cent.
+Savings use keepalive off at the same cache lifetime as the baseline.
+Bold marks the lowest cost shown for each pause.
 
-## Keepalive
+At 45 minutes, nine refreshes cost less than the $0.75 premium for a one-hour
+write. At 90 minutes, the one-hour cache needs just one refresh. If you stay
+away longer than the refresh budget, you can pay for both refreshes and a
+rebuild.
 
-- Every session starts off. `/keepalive default on` makes later sessions start on, and `/keepalive default off` goes
-  back. The pie, or `/keepalive on <lead_s> [count]` or `/keepalive off`, changes only the session it's made in, so
-  "off everywhere but here" takes `/keepalive default on` and a click on the pie.
-- While it's on, a refresh is sent shortly before the cache expires, so the next prompt reads the cache instead of
-  rewriting it. A refresh reads the whole cached context, so each one costs a cache read. While the cache is warm that cost
-  shows on hover over the time and in the pane beside the cost of the rebuild if the cache goes cold:
-  `keep warm ~19k read/refresh · if cold ~19k tokens rebuild`
-  in tokens, `keep warm $0.006/refresh · if cold ~$0.21 rebuild` in dollars.
-- Output tokens are never priced: a refresh's cost is its cache read, plus any uncached input or cache write its reply reports.
-- Refreshes stop after a count per pause, learned from your own pauses or the break-even count until they say otherwise
-  (see [How many refreshes](#how-many-refreshes)). Then keepalive is paused until your next prompt. It is paused too if
-  you turn it on after the cache has expired, and, as `overnight`, when your daily rest begins (see [Overnight](#overnight)). A message from another session or a finished background task doesn't
-  resume it.
-- A refresh that fails stops keepalive, except a rate limit, which is retried: at most once a second (one attempt per round trip,
-  rounded up to a tick) until shortly before the cache would expire, none being let through in the last half of the lead. The
-  Keepalive heading reads `stopped` and the first line beneath it says what broke in one clause, such as
-  `API error 529 (overloaded) · restarts on next prompt` in the section, or, once no retry is left, `API error 429 (rate_limit), no retry
-  before expiry · restarts on next prompt`. The `/keepalive on` answer words the same stop as `…; your next prompt restarts it`.
-- The lead (how long before expiry a refresh is sent) starts at 15 s. An answered refresh slower than half the lead raises it to
-  twice that round trip for the session. It is never lowered, and keepalive stops instead of raising it past half the
-  TTL.
+### Advice based on your pauses
 
-## Overnight
+Cachier learns from your pauses and switches from break-even only when a
+learned strategy does better on pauses it held out. It also prices all
+four setups against your recorded pauses and shows what to change when the
+savings make it worth switching.
 
-"Overnight" is cachier's word for your daily rest, whenever in the day it falls: a night sleeper's night, or a night worker's day.
-Cachier learns the rest from your own pauses, at any hour (see [Learning from your pauses](#learning-from-your-pauses)), and the
-window it leaves, an hour inside each end of the habit, is where the night step may act. The step stops a session's keepalive for
-your rest, once per session per local day: it sends no more refreshes until your next prompt in that session. It also compacts the
-session's conversation when it is at least 60,000 tokens long (see **The compaction**).
+## Get started
 
-- **When it acts**: keepalive is on in the session and the `overnight` option is not `off`; the run has refreshes left to send and its
-  cache is warm, with no turn running; the local time is inside the window (a window may cross midnight) and, at the 1 h TTL, a stop
-  would repay the rewrite it adds (see **What it saves**); the session's last request began at least 30 minutes ago; and no session of
-  yours has had a prompt from you, or keepalive turned on by you, in the last 30 minutes. A run that sends nothing (a learned count of 0,
-  or a lead not below the TTL) and a stop already held (the refreshes used up, the cache expired, a failure) are left as they are. A session that has stepped today does not step again that day, by the local date,
-  so a rest that crosses midnight can see a second stop if you prompt after midnight and go idle again inside the window.
-- **What you see**: the Keepalive heading reads `paused` with `overnight · resumes on next prompt` beneath it, for as long as the stop
-  holds. The pie follows the cache, as under any stop held with keepalive on: toned by the time left while the cache is warm, red once
-  it has lapsed. The `overnight:` row, after `rest:`, gives the window and the idle the step waits for
-  (`overnight: 03:18–06:28 · after 30m idle`, ending `· only with keepalive on` while keepalive is off) until the session has
-  stepped, then `overnight: done 03:19`, the step's time, also after a reload; with the option off, or no window learned, there is no
-  row, and none while no cache is known or, at the 1 h TTL, where even the whole window is too short for a stop to repay. The
-  `/keepalive on` answer words the stop `Paused: your daily rest began; it resumes after your next prompt.`
-- **What you are told**: cachier writes two lines into the transcript, once each per install of the mod, whichever session meets one first, drawn dim like a system notice
-  and not sent to the model. The first comes the first time the step can act for you: the `overnight` option is not `off`, keepalive is on in a session, a window is learned,
-  a cache is known and, at the 1 h TTL, a stop in the window would repay its rewrite. It states the window and what the step does in it:
-  `cachier: learned your daily rest, 03:18–06:28. After 30 min with no prompt in any session inside it, keepalive stops until your next prompt, and a conversation of 60,000 tokens or more is compacted, which is not undone. Turn it off with the overnight option in /config.`
-  The second comes the first time the step acts, with the local time of the stop, once the compaction, if the step made one, has ended:
-  `cachier: keepalive stopped for your daily rest at 03:19 and the conversation was compacted; keepalive resumes on your next prompt. Turn it off with the overnight option in /config.`
-  It leaves out ` and the conversation was compacted` where no compaction stood (the conversation was under 60,000 tokens, you had acted since the step, or the compaction was skipped, refused or failed).
-  A session where the step cannot act (the option `off`, or keepalive off, which is the default) tells you nothing and uses up neither line; turning keepalive on there later writes the
-  first one. No line is written at later stops: the `overnight:` row says each day's step. These are the lines as reworded for the compaction: an install that was told the earlier
-  wording is told each of these once more.
-- **How it ends**: your next prompt in the session ends the stop, or turning keepalive on in it: `/keepalive on`, or the pie, whose
-  first click turns keepalive off, as for any held stop, and whose second turns it on. A message from another session or a plugin does
-  not end it. Where keepalive is turned on again without the stop (a reload or a start that resets it to on, or a lost write of its
-  state), the next tick stops it again, so the refreshes do not come back during your rest.
-- **What it saves**: the refreshes the run would still have sent after the stop, each a cache read of the whole context. The cache then
-  lapses, so your first prompt after the rest pays the rewrite. At the 5 m TTL a run's refreshes end after about two hours (24 on
-  Opus 5.5, fewer where cachier has learned fewer), so a rest outlasts them and that rewrite is paid with or without the stop: the stop
-  saves only what is left of the run once the window has opened and you have been idle 30 minutes, about a dozen refreshes at most for
-  a rest begun by the `from ≤` time of its `rest:` row, half of the run's 24. At the 1 h TTL a run can outlast the rest, and keepalive
-  would have carried the cache through it: the stop would save those refreshes, one cache read an hour, and your first prompt after the
-  rest would pay the rewrite instead, a 1 h write (40 reads on Opus 5.5; see [How many refreshes](#how-many-refreshes)). So at the 1 h
-  TTL the stop acts only where that pays: the whole hours left in the window, from the moment it would act to the window's close, must
-  be at least the 1 h break-even count, which is 39 on Opus 5.5. Where the step acts at the 1 h TTL, setting the option to `off` keeps
-  the cache warm through the rest.
-- **The compaction**: once the stop has been taken and its mark written, a session whose conversation (the last request's prompt and its reply, the size the engine gives a compaction) is at least 60,000 tokens is also compacted,
-  through Claude Code's own compaction, as `/compact` does, with no instructions of cachier's own; one token under, nothing is. It runs apart from the stop, which stands whatever it comes to. A conversation you have acted in
-  since the step is left alone: a prompt, or turning keepalive on, while the step's mark is being written leaves it uncompacted, since it would replace what you just resumed.
-  It is the day's one try: a compaction that another plugin vetoes (skipped), one the engine refuses (a turn is running), one that fails and one left alone because you acted are not made again
-  that day, and neither is a second after one that stood, a reload included, since the step is once per session per local day. A prompt you type while it runs is queued by the terminal and runs after it, on the compacted
-  conversation. A compaction that stands marks the cache cold as any compaction does, so the Cache line reads `reset` and, while the stop holds, the pie beside it is red; your first reply
-  after the rest warms the cache again. It is not undone at your next prompt (see Known limits), and the `overnight` option turns it off with the stop.
-  The compaction is one request that reads the whole conversation at the model's input price, not the cache-read price, and writes a summary of about 900 tokens; it saves the first prompt after
-  the rest the difference between writing the whole conversation to the cache and writing the compacted one. The two compactions measured, on Opus 5.5 at the 5 m TTL, took conversations of
-  59,140 and 48,726 tokens to 1,364 and 3,223; the request cost $0.23 and $0.19 and the smaller rewrite saved $0.25 and $0.18. They broke even near 43,000 and 56,000 tokens, and 60,000, the
-  larger of the two rounded up, is the floor, so it errs toward leaving a conversation alone; each further 10,000 tokens adds about a cent to the net. The floor reads no price, so every model and
-  TTL share it. A real session's larger prefix of instructions and tools moves the break-even up, and the 1 h TTL, whose write costs more, down; neither was measured.
-- **How often it acts**: rarely. At the 5 m TTL a run's refreshes end after about two hours and keepalive then holds its own pause,
-  and the step replaces no held stop, so it reaches only the rests you begin within about two hours before the window opens; on the
-  others the refreshes have ended by then. At the 1 h TTL it acts only where the stop repays its rewrite, as above: a window holds at
-  most 14 hours (a rest of 5 to 16, less an hour inside each end), so on Opus 5.5, where the count is 39, it does not act at the
-  1 h TTL, and keepalive's own count decides when its refreshes end.
-- **Keeping clear of night work**: no hour of the day is assumed. The window is learned from your own rests, so a night worker's window
-  falls in their day and not in their working night. The step also waits for 30 minutes with no prompt in any of your sessions, and a
-  prompt in any of them holds it off until 30 minutes after that prompt. A half hour away inside your window is taken as the rest: the
-  stop comes, and your next prompt resumes keepalive.
-- **Turning it off**: set the `overnight` option to `off`. Only `off` turns it off: an empty or other value leaves it on, as the
-  default says. The Settings section shows it as `night stop: on (overnight) · overnight`. With keepalive off the step never acts. The option turns the compaction off with the stop: there is no
-  setting for either alone.
+Run this at a Claude Code prompt.
 
-## Cost unit
-
-- Every cost is in dollars or in tokens. `/keepalive unit dollars|tokens` switches the unit for the session, and every
-  figure in the hover and in the pane follows it. The `cost_unit` option sets the unit a session starts in; dollars by
-  default.
-- Dollars are Anthropic's list prices, read from the official pricing page
-  (`platform.claude.com/docs/en/about-claude/pricing.md`), except where your overrides file below sets your own rates. One price list, kept in the plugin store, is shared by every
-  session: a read happens when the newest successful read is seven days old, and at once on every switch to dollars. A
-  session about to read checks the shared record again, so a read another session has already stamped is not repeated.
-  Until the page has been read, the built-in table in `hooks/prices.ts` prices the models it lists; after that the last
-  stored list stays in force, and a failed read falls back to it and goes to the debug log. An unreachable page is tried
-  again an hour later, then once a day; a page with no readable table waits for the next weekly read. A model the page
-  stops listing keeps its last stored rates. A 5 m or 1 h cache write is priced at its own rate, a read at the read
-  rate, and a prompt over a model's size threshold (Haiku 5.5 over 100,000 tokens) at its higher rates.
-- A model id from Amazon Bedrock (`anthropic.claude-opus-4-1-20250805-v1:0`, with or without a region prefix such as
-  `us.`, `eu.`, `apac.` or `global.`) or Google Vertex (`claude-opus-4-1@20250805`) is matched to its list model and
-  priced at that model's list rates. An id the price list holds exactly as given is priced by its own entry first. The
-  partners' own rates aren't known, so a figure for such a session may differ from its bill. Ids in the older Bedrock
-  naming, such as `anthropic.claude-3-5-sonnet-20241022-v2:0`, normalise to `claude-3-5-sonnet`, which the
-  price list does not name, so they show no price; the overrides file below prices them.
-- Your own rates go in an overrides file, `~/.claude/cachier/prices.json` (under `CLAUDE_CONFIG_DIR` when that is set).
-  Cachier reads it and never writes it, so you, or Claude when you ask it to read a pricing page and write the entries,
-  edit it with the ordinary editor. It is read each time cachier re-reads the shared record, about once a minute, so an
-  edit, or deleting the file, is in force in every open session within about two minutes, with no page read and no
-  reload. It holds two kinds of entry:
-
-  ```json
-  {
-    "rates": {
-      "claude-opus-5-5": { "input": 4, "read": 0.4, "write5m": 5, "write1h": 8, "date": "2026-10-26T09:00" }
-    },
-    "mappings": {
-      "anthropic.claude-3-5-sonnet-20241022-v2:0": "claude-sonnet-4-5"
-    }
-  }
-  ```
-
-  - **rates**: a model id and its dollars per million tokens. `input` and `read` are required and must be positive;
-    `write5m` and `write1h` are optional and, when left out, are worked out from `input` as the built-in table does (a
-    5 m write is 1.25 inputs, a 1 h write 2). An optional `above` holds a size tier (`threshold` in tokens, then
-    `input`, `read` and optionally the writes). Every rates entry needs a `date`, when you set it: a calendar date, or a
-    date and time. A date with no time counts as the end of that day, and a date or time with no offset is local time;
-    one with an offset (`2026-10-26T09:00+02:00`, or `Z`) is that instant. The rates must be in the sanity order: read
-    at most input, input at most 5 m write, 5 m write at most 1 h write.
-  - **mappings**: an id as the session reports it, mapped to a model id that has a price (a model on the page, in the
-    built-in table, or a rates entry). The id is matched exactly, so a mapping for an id the page lists wins, and the
-    target may be a dated or partner form of a priced model. A mapping has no date. Mappings do not chain: a target that
-    is itself a mapping key is skipped.
-
-  The last editor wins. A hand rate stands over the built-in table and the page's rates until a page read changes that
-  model's rates after the entry's date; the page's rates are then in force. A first sighting of a model on the page is
-  no change, and a model the page never lists keeps its hand rate. An entry that breaks a rule above, or a mapping to a
-  model with no price, is skipped and written to the debug log; a file that is not JSON or cannot be read is skipped
-  whole and logged as unreadable. An unknown field or section is ignored and named in the debug log.
-- A figure with no price is shown in tokens, and the bare `/keepalive` answer says why (`in tokens: no price for …`). That covers a
-  model neither the page nor the built-in table lists, fast mode, and a response that names no model. This holds for the figure to
-  rebuild an expired or reset cache too, wherever the Cache section draws one. Both prices of the pair fall to tokens together: the
-  rebuild figure reads `~33k tokens`, `<1k tokens` or `0 tokens`, the tokens of the context plus the last reply's output.
-- Tokens name what was done with them (`~19k read`, `~20k written`), since a write costs many reads. The
-  bare `/keepalive` answer says how many reads a write at the current TTL costs on the current model (`5m write ≈ 25 reads (claude-opus-5-5)`).
-
-## Message times
-
-Each message has its time at its top right, so you can see how long each phase took.
-
-## `/keepalive`
-
-`on <lead_s> [count]`, `off`, `default on|off`, `unit dollars|tokens`, or no argument for the state and the full
-rundown, in five sections: Cache (the warmth, with the figure to rebuild an expired or reset cache), Keepalive (the
-refresh cost, how many refreshes a pause gets and why, when it pays off, your daily rest and, once one is learned, the window the night step acts in, this session and your pauses), This session (the
-session's refreshes, balance and misses), Advice (the best
-setup's rows, the other TTL's rows, the misses by cause, why figures are in tokens) and Settings (the TTL, lead,
-refresh count, start mode, unit and night stop: each value, where it came from when that is known, and what changes it; the TTL and
-start mode apply to new sessions). The Keepalive heading names keepalive's state, one of `off`, `on, refreshing`,
-`on, no count`, `paused` and `stopped`; the reason for a pause or stop is the first line beneath it. When no refresh is
-coming, the Keepalive section words the pie's warning (`pie: amber ≤¼ TTL left, red ≤⅒`) just below the heading or that reason, whatever the pie's colour, with keepalive off or on
-with a reading and not refreshing, on a reset or expired cache too. With keepalive off, and where a press would send refreshes,
-the refresh's cost or the context it reads (`refresh $0.004 (~19k cached)` on a warm cache, `next refresh $0.004 (~19k read)` on an expired one), and how often one is sent (`every 4:45`, a row of its own), come straight after the warning. While the cache is warm, each price
-of a refresh is followed by a row of its own for what the next prompt pays to rebuild the cache if it goes cold (`if cold: rebuild ~$0.21 (~33k written)`);
-once it has expired the refresh's price stands alone. A run whose lead is not below the TTL sends no refresh, so on a warm cache it states the `if cold: rebuild` row alone, under the reason `lead 300s ≥ 300s TTL · sends nothing`. A keepalive paused by design
-(`count used`, `cache expired` or `overnight`, shown as those words, `· resumes on next prompt`) names what a refresh costs (`refresh $0.004 (~19k cached)`) and, where the cache is known and the lead is below the TTL, how often one would
-be sent. A run that learned no refreshes reads `0 refreshes this pause (learned: pauses rarely outlast TTL) · resumes on next prompt`. With keepalive on and no stop held, the heading reads `paused` while a cache reset is being recorded, and the first row
-beneath it says so (`recording cache reset`); the reason the section would give with no reset pending, when it has one, follows as a second reason row, after
-the colour row when that shows. A run with no cache to count from reads `no live cache · nothing scheduled`, with `· cache from next reply` before the first reply. A refresh slower than half the lead raises it, and the section says so (`lead raised to 16s (slow refresh)`). The Keepalive section is always shown, with its `rest:` row at the least (`rest: 0 of 7 seen` before a rest is seen), and so is This session, which says `session: no refreshes yet` before the first refresh. Cache, Advice and Settings
-are left out when they have nothing to say. The `/keepalive` answer wraps at 48 columns. A count pins the refreshes per pause for the session;
-without one, each pause sends the learned count, else the break-even count.
-
-Options: `keepalive_lead_s` (default 15), the lead the pie uses until a command sets one; `keepalive_count` (unset by default), a cap on the
-break-even count; `keepalive_default` (`off` or `on`, default `off`), the mode a session starts in, which
-`/keepalive default` sets; `cost_unit` (`dollars` or `tokens`, default `dollars`); `overnight` (`on` or `off`, default `on`), whether
-keepalive stops for your daily rest (see [Overnight](#overnight)).
-
-## How many refreshes
-
-Keepalive can't know how long you'll be away, so each pause is a bet. A refresh costs a cache read of the whole context;
-a lapse costs a rewrite of it. On Opus 5.5 a 5 m write costs 25 reads and a 1 h write 40, so letting the cache lapse and
-paying for the rewrite costs 24 reads more than one refresh, or 39 at the 1 h TTL.
-
-This is the ski-rental problem: rent (refresh) until the rent has cost one purchase (the rewrite), then buy (stop and let
-the cache lapse). Cachier refreshes until the refreshes have cost as much as the rewrite they avoid: the write rate less
-the read rate, over the read rate, rounded down. That is 24 refreshes at the 5 m TTL, covering a pause of about 1 h 54 m
-with the default lead, and 39 at the 1 h TTL. It is a ratio of prices, so the size of the context doesn't change it.
-
-However long the pause turns out to be, this rule never costs more than twice what the best choice in hindsight would
-have, give or take the one refresh sent in the lead before you came back:
-
-- Back before the refreshes run out: you paid only for the refreshes you needed, which cost less than the rewrite.
-- Back after: you paid for the refreshes and then the rewrite, about two rewrites, against the one rewrite turning
-  keepalive off would have cost.
-
-A model with no price (see Cost unit) has no break-even count, and sends `keepalive_count`, or 3 when it is unset.
-
-### Learning from your pauses
-
-Break-even is the safe bet with nothing known about you. Once cachier has seen your pauses (kept as below), it prices
-each count from 0 up to break-even over them, the way the marker prices a pause: the refreshes sent before you came
-back, plus a rewrite if the cache lapsed. The cheapest count wins, and the bare `/keepalive` answer says what it learned from
-(`learned: 6 refreshes/pause · covers 33:30 · 10/13 pauses within`).
-
-The savings come from long pauses. A pause shorter than the time between refreshes costs nothing at any count, but one
-longer than any count covers (lunch, a meeting, the night) costs break-even's 24 refreshes and the rewrite too, where no
-refreshes would have cost the rewrite alone. So if your long pauses are usually much longer than half an hour, keepalive
-learns to send fewer refreshes, down to none. With none, it stays on and sends nothing, and the answer says so
-(`learned: 0 refreshes · 1/10 pauses within 5:00 TTL`).
-
-Which pauses to learn from is left to the history: all of them, or only those that started in the same hour of the day.
-Each rule is checked by leaving one pause out at a time and pricing it at the count the others teach. The rule that
-would have cost least on pauses it hadn't seen is used, and break-even wins a tie. With only a few pauses no learned
-rule beats break-even, so nothing changes until your history earns it. No threshold is set by hand.
-
-A count you pin with `/keepalive on <lead> <count>` is sent as pinned, and `keepalive_count` caps the learned count as
-it caps break-even.
-
-The same pauses show when you rest. Each pause's start and its end are moments cachier recorded, across all your sessions;
-a gap of 5 to 16 hours between two moments with none recorded between them is a rest, at any time of day, so a night
-sleeper's 01:00 to 08:00 and a night worker's 08:30 to 16:00 are learned alike. A shorter gap is a long lunch or a meeting,
-and a longer one a day or a weekend away, which would read as a rest that ends a day late, so neither counts. Of your newest
-14 rests, the habit is the 4 hours of the clock that hold the starts of the most of them: a routine begins its rests near one
-time, while a nap or an afternoon away begins elsewhere and is left out, never averaged in. A routine that moves takes over
-once 7 of the newest 14 are at the new time. Until the habit holds 7 rests the row counts them (`rest: 3 of 7 seen`); from 7
-it says when nine in ten of them had begun and until when nine in ten lasted, and how many rests that is read from
-(`rest: from ≤02:18 · back ≥07:28 · 12 rests`). The window keeps an hour inside each of those times, so it opens an hour
-after `from` and closes an hour before `back`; where that leaves nothing between them the row says `no window` in place of
-the count (`rest: from ≤03:10 · back ≥05:00 · no window`).
-
-### 5 m or 1 h
-
-A 1 h cache makes every write dearer (on Opus 5.5, $8 per million tokens against $5) and every pause up to an hour free.
-Which is cheaper depends on how long you pause and how much each turn writes, so cachier prices your recorded pauses at
-both, at today's rates, in the mode keepalive is in: no refreshes while it is off, your pinned count, or the count it
-would learn for that TTL. A switch takes a new session, so the other TTL is priced as one starts: keepalive on or off as
-`keepalive_default` says, at the `keepalive_lead_s` lead and no pinned count. Once the other TTL would have cost less,
-the answer says so and how to switch, as rows:
-
-```
-setup: 5m/off
-other TTL: 1h/off · would have saved $4.74 (10 priced pauses, all sessions)
-do: set "promptCacheTtl": "1h" in settings.json (new sessions start off: keepalive_default)
+```text
+/plugin install cachier --marketplace Lotonoro/claude-code-plugin
 ```
 
-The `setup:` row names the setup you are on and the `other TTL:` row the setup it is priced against, each by its TTL and
-keepalive state; keepalive that sends nothing is named paused, with its reason (a lead not below the TTL). The `do:` row
-names the keepalive state new sessions start with and `keepalive_default`, which decides it. The figure is what it is,
-in dollars in either unit, over every priced pause across sessions (those recorded with their context); this block has
-no threshold, so weigh a saving over a few pauses as the few pauses it is. Where the best-setup block below is shown it
-opens with the same `setup:` row, so this block leaves its own out.
+To try a local clone for one session, run `claude --plugin-dir mods/cachier`
+from the repository root.
 
-### Best setup
+## Use it
 
-Pauses are also priced, the same way, at all four setups: 5 m or 1 h, keepalive on or off (which pauses: below). Each
-"on" setup at your current TTL uses the lead and count keepalive runs with, or a click on the pie would start with: a
-pinned count, else the count learned from your whole history, else break-even. An "on" setup at the other TTL needs a new
-session, so it uses the lead and count a new session's click starts with: the `keepalive_lead_s` lead and no pinned count.
-A change of TTL says what keepalive state new sessions start with, as keepalive_default sets it; where that is not what
-the change wants, it names /keepalive default as well as the command and the click, and where new sessions would start
-keepalive on at a lead that sends nothing, it names them paused and asks for nothing more. The click is made in the new
-session, e.g.
+- **Check the cache.** The footer pie shows how much time is left. Hover over the
+  countdown to compare the cost of a refresh with the cost of a rebuild. Click
+  the countdown or status to open the details pane.
+- **Read the advice.** Open the pane or run `/keepalive` to see session totals,
+  cache misses, and any recommended setup. Message timestamps give you a quick
+  sense of how long each phase took.
+- **Control refreshes.** Click the pie to toggle keepalive for this session. Run
+  `/keepalive on <lead_s> [count]` to choose how early to refresh and optionally
+  pin a refresh count. Use `/keepalive off` to stop it or
+  `/keepalive default on|off` to set the default for future sessions.
 
-```
-setup: 5m/on
-best: 1h/off · would have saved $1.20 (10 recent pauses)
-do: set "promptCacheTtl": "1h" in settings.json (new sessions start on: keepalive_default); then /keepalive default off before the new session, or in it /keepalive off or click pie off
-```
+## Settings and limits
 
-and, where new sessions start paused,
+- **Cache lifetime.** Set `promptCacheTtl` to `"5m"` or `"1h"` in Claude
+  Code’s settings and start a new session to use the recommended lifetime.
+- **Cost display.** Run `/keepalive unit dollars|tokens` to switch units.
+  Dollar estimates use API list prices or the rates you supply in
+  `~/.claude/cachier/prices.json`.
+- **Daily rest.** When keepalive is on, Cachier can pause refreshes during your
+  learned rest window and compact long conversations. Set the plugin’s
+  `overnight` option to `off` to disable both.
+- **Surfaces.** The footer and pane are designed for the terminal. With Remote
+  Control, keepalive continues in the host session.
 
-```
-setup: 1h/off
-best: 5m/off · would have saved $1.25 (10 recent pauses)
-do: set "promptCacheTtl": "5m" in settings.json (new sessions start on: keepalive_default, so run 5m/paused (lead 300s ≥ 300s TTL))
-```
-
-Each click is also given as the /keepalive command that does the same, at the lead and pinned count the setup was priced at,
-so it can be sent from the phone; the command comes first. The block is added beside the figures above and the TTL block,
-which stay. Every block opens with a `setup:` row naming your TTL and keepalive state, `setup: 5m/off`, and the setup a saving
-is stated against is named in full (`vs 5m/off`). Keepalive on at a lead not below the TTL is named paused, with the
-reason the Keepalive section gives (`setup: 5m/paused (lead 300s ≥ 300s TTL)`), since such a run sends no refresh and is
-priced as keepalive off. A block says one thing:
-
-- a change, when the cheapest setup differs from yours and saves at least $0.01 and at least 5% of what your setup cost
-  over those pauses: a `best:` row names the setup to change to and the saving, and a `do:` row the settings that change. A TTL
-  change names the `promptCacheTtl` setting and applies to new sessions; a keepalive change at the same TTL names its
-  /keepalive command and the click, made in this session;
-- or that you're on the cheapest setup, and what it saves against the other: keepalive on against keepalive off at the
-  same TTL, or the other TTL with keepalive off when keepalive is off (`setup: 5m/on (cheapest)`,
-  `saves ~$4.40 vs 5m/off (10 recent pauses)`). Priced from the pause records at today's setting, not money already saved;
-- or that you're on the cheapest setup, and the baseline costs about the same
-  (`setup: 1h/off (cheapest)`, `5m/off ≈ same cost (10 recent pauses)`).
-
-When a cheaper setup exists but would not clear the threshold, a `next best:` row names it and its saving after your setup
-(`next best: 1h/off · would have saved $0.02, too little to change`), and your setup is never marked `(cheapest)`. Where no
-change is worth making and the baseline costs no more, the block says the baseline is `≈ same cost` when the two are
-within half a cent, else that it was `a little cheaper`, too little to change, with no figure; when the setup the
-`next best:` row names is the baseline, that row names the pauses and nothing follows it.
-
-A keepalive run whose lead is not below a TTL sends no refresh at that TTL, so it is priced there as keepalive off.
-
-The pauses are this session's once five of them can be priced, else the 50 newest priced pauses across sessions, and
-every block says which (`5 pauses this session`, `10 recent pauses`); with fewer than five priced pauses anywhere there is no
-block. In tokens a saving is stated as `money`, and the first row that states one points to
-`$ only, /keepalive unit dollars` for the figure, once. The rows are the first lines of the Advice section, in the details
-pane and in a bare `/keepalive`.
-
-Cachier can't switch the TTL itself: no plugin setting controls it. Set `"promptCacheTtl": "5m"` or `"1h"` in
-settings.json; `FORCE_PROMPT_CACHING_5M` and `CLAUDE_CODE_PROMPT_CACHE_TTL` override it. The docs don't say a running
-session picks up the change, so cachier counts a switch as taking effect in sessions started after you set it.
-
-With `--debug` or `--debug-file`, each refresh, lead raise, miss and long pause writes a `cachier` line to
-the debug log, and each model switch writes a `cachier switch` line holding the engine's `prompt_cache_warm` flag beside
-cachier's own reading of the cache. Each night step writes a `cachier overnight` line holding its `time`, the `window`, this
-session's idle time (`idle_ms`) and the newest prompt time found across sessions (`newest_prompt`, `null` where none was found). Where the step
-also compacted, the line is written when the compaction ends and holds its `compaction`: `kind` `stood` with `size_before` and `size_after`, the conversation's size in tokens (`null` where the engine gave
-none), and `summarizer`, the summary request's `in`, `out`, `cache_read` and `cache_write` tokens (`null` where it gave no usage); `skipped`, with a `reason` that is `the user acted after the step`,
-or `a hook vetoed it` with `reason_chars`; `refused` (the engine rejected the call) with `error_chars`; or `thrown`, with a `reason` that is `the call threw` (with `error_chars`) or `the engine answered a
-compaction with neither a conversation nor a skip`. It holds counts and cachier's own words, never the conversation: the words of a veto or of an error can quote it, so their length in characters is all
-it keeps of them. A step that made no compaction has no `compaction` in its line. The pass that looks up the times shown on messages (see [Message times](#message-times)) walks the transcript back
-from its newest row, and when that walk ends unread it writes a `cachier stamps` line, so a message that gets no time can be traced. The line holds `ended` (`unread` for this line), the `reason` (`a block read failed`,
-`a block read was truncated`, `a row is over the 4 MiB cap` or `a row naming a wanted id did not parse`), `passes` (how many passes in a row on this transcript, this one included, have ended unread for that
-reason), `asked` (how many messages the pass looked up), `still_wanted` (how many of them it did not find) and `blocks_read` (the block reads it started). A cause that stands repeats on every pass, and a pass
-follows each growth of the transcript, so a stretch of passes with one reason writes its 1st, 2nd, 4th, 8th pass and so on, not every one; a pass that ends unread for another reason starts a new stretch,
-written at once. The first pass after a stretch that reads through (every message found, or the whole file covered) writes one more line: `ended` `read_through`, the stretch's `reason` and `passes`,
-`suppressed` (its passes that were not written) and its own `asked`, `still_wanted` and `blocks_read`. A change of transcript ends a stretch with no line, and so does a reload, and a pass that fails with an error is
-logged as before and leaves the stretch as it was. The lines are bounded for a load of the mod, so a cause that flaps cannot grow the log without end: each transcript path has a budget of 20
-`cachier stamps` lines, `unread` and `read_through` alike. The pass that would write a path's 21st line writes in its place one line with `ended` `muted` and `lines` (20, the budget), and after it nothing is
-written for that path, whatever its passes do; so `ended` is one of `unread`, `read_through` and `muted`. Budgets are kept for up to 32 paths, a path from its first line, and none is evicted. A change of transcript
-does not renew a budget, so a session that goes back to a muted path finds it muted; only a reload starts every budget anew, whatever starts it, a `/keepalive default` toggle included. The first pass that would
-write a line for a 33rd path writes in its place one line with `ended` `muted` and `paths` (32), and from then on, until a reload, nothing is written for any path not already held: a new transcript is silent, however
-its passes end. The paths already held keep their own budgets and their own `muted` lines. So a load writes at most 673 `cachier stamps` lines: 21 for each of 32 paths, its 20 and its `muted` line, and the one for the
-paths. These lines hold counts and cachier's own words only: no message id, path or text from the transcript.
-
-Cachier keeps one record per pause your prompt ends, in its plugin store under your config directory: when the pause
-started, how long it ran, the local hour and weekday, the cache TTL, what a rewrite costs over a refresh, and the size of
-the cached context and how much it grew since the session's previous pause. Nothing from the conversation is kept. It
-holds the newest 2,000 or so pauses across all sessions, for keepalive to learn its refresh count from. It also keeps one
-shared price record under the key `prices`: the rates each read gave every model it listed, when each model's rates last
-changed, whether the newest read dropped it, when the newest successful read landed and when a read last changed any
-rates, and the last read attempt with its outcome and failure count. For the night step it keeps two small keys per session,
-`overnight/<session id>`, the time of the step the session took, and `prompted/<session id>`, the time of your last prompt in it or of
-your last turning keepalive on in it; a key two days old is deleted. One more key for the install, `notices-v2`, records which of the two overnight lines (see
-[Overnight](#overnight)) it has written, so that each is written once; it is never deleted. The earlier wording of the lines kept its record in `notices`, which is no longer read or written and stays where it is. Nothing else is written to disk. Cachier also reads
-the overrides file `cachier/prices.json` under your config directory, and never writes it. The only request
-cachier makes itself is the pricing page, with nothing sent but the request. Each keepalive refresh is a model request.
-
-## Known limits
-
-- A miss is a reply that rewrote at least half its context while reading at most half the previous one. The half is a
-  chosen threshold, not a measured one.
-- A model switch counts as a reset only when cachier read the cache as warm at the switch. Otherwise (expired, no
-  cache, cleared, an unread view or unknown TTL) the next miss is classified by its gap: a lapse past the TTL, else
-  unexplained. A reset already standing still makes the next miss a reset miss.
-- Pause gaps run between replies' logged times, so they include the next reply's duration, usually a few seconds.
-- Dollars are priced when each figure is counted, so a price change mid-session leaves earlier figures at the old
-  price.
-- Cachier draws nothing in the engine's hint row. Its pie goes after the footer's labels, with a dim separator between
-  them wherever a label is drawn before it. A label drawn after the line gets its separator from the plugin that draws
-  it, as auditor's does.
-- A change of time zone moves the learned clocks. Rests are recorded as moments and read as clock times in the zone the machine has
-  now, so the window, with the `rest:` and `overnight:` rows, sits where the old rests fall in the new zone until new rests replace
-  them (see [Learning from your pauses](#learning-from-your-pauses)).
-- Another session's activity counts toward the night step's idle check only through the prompts you enter in it, or your turning
-  keepalive on there. Its requests do not: a long turn running unattended in another session is not you, and does not hold the step off.
-- The night step's idle check sees only the sessions of the same install of the mod. Each install has its own store, and a session of
-  another install is not seen.
-- The pause a night stop ends is counted as a pause whose refreshes ran out (`wasted, ran out`), as any pause with refreshes whose cache
-  lapsed is, though the stop and not the count ended them.
-- Whether the two overnight lines reach a phone under Remote Control is not measured.
-- A compaction is not undone at your next prompt: the conversation stays compacted, the summary standing in for what it replaced. The `overnight` option off keeps the step from compacting.
-- A reload while the compaction runs leaves its outcome out of the `cachier overnight` line, and the second overnight line unwritten until a later step writes it.
-- Two sessions that write an overnight line in the same moment, between each one's read of the record and its write, may both write the same line, or the later write may leave
-  the other's line unrecorded, so that a later session writes it again. The engine's store has no version check, so a write cannot be made to fail because another session's landed
-  after the read.
-- The first overnight line can come after the stop it explains, while that stop stands and whatever the cache has become since, where it was not written before the stop was taken:
-  the stop was taken before the record existed (an update over a held stop), the record could not be read then, or an earlier write of the first line was refused.
-
-## Loading
-
-Load it with `claude --plugin-dir <path>/mods/cachier`, or install it from the flea-market marketplace.
-
-Terminal only. The desktop surface is not tested.
-
-## Checks
-
-`claude plugin validate mods/cachier`, `tsc -p mods/cachier`, `claude plugin test mods/cachier`.
-
-`tsc` needs `.claude-plugin/types/`, which the engine writes the first time it loads the mod from a folder (for
-example `claude --plugin-dir mods/cachier`). Before that the `tsconfig.json` it extends is missing, and `tsc` writes
-compiled `.js` files into `hooks/` instead of checking anything.
+For implementation details, see [refresh scheduling](hooks/keepalive.ts),
+[setup recommendations](hooks/advice.ts), [overnight behavior](hooks/nightstep.ts),
+and the [plugin settings](.claude-plugin/plugin.json).

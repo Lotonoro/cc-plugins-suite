@@ -4,9 +4,9 @@ A Claude Code marketplace of mods.
 
 | Mod | What it does |
 | --- | --- |
-| [`cachier`](mods/cachier/README.md) | The prompt cache's time left on the footer as a pie, an opt-in keepalive that keeps an idle cache warm, costs in dollars or tokens, and a time on every message. |
-| [`auditor`](mods/auditor/README.md) | A persistent reviewer subagent that audits each worker turn and hands its corrections back to the worker, like the navigator in a pair. |
-| [`human-plugin`](mods/human-plugin/README.md) | A to-do list for you, kept by the agent: each ask the agent has of the human is pinned above the prompt until you mark it done. |
+| [`cachier`](mods/cachier/README.md) | Ca-ching! Let’s see if keeping your cache warm knocks a few tokens off the bill. |
+| [`auditor`](mods/auditor/README.md) | Supreme judge, billing at Haiku rates. Live reviews for your orchestrator. |
+| [`human-plugin`](mods/human-plugin/README.md) | Congrats human, you are now a claude code plugin. It changes how you interact with Claude agents. |
 
 ## Install
 
