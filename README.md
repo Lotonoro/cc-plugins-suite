@@ -1,6 +1,6 @@
 # claude-code-plugin
 
-A Claude Code marketplace of mods.
+A Claude Code marketplace of mods, registered as `lotonoro-cc-plugins`.
 
 | Mod | What it does |
 | --- | --- |
@@ -22,7 +22,7 @@ From a local clone, add the folder as a marketplace, then install by name:
 
 ```
 claude plugin marketplace add <path-to-clone>
-claude plugin install cachier@claude-code-plugin
+claude plugin install cachier@lotonoro-cc-plugins
 ```
 
 A mod's folder is read in place when the marketplace is a folder, so an edit is picked up by `/reload-plugins`.
