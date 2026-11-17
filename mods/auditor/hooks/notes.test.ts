@@ -39,7 +39,7 @@ describe('readSend', () => {
   })
 
   test('only an address that is exactly main goes to main', () => {
-    for (const to of ['Main', 'main ', 'flea-market', 'team-lead']) expect(SENT('auditor, review 3:\nx', to).toMain).toBe(false)
+    for (const to of ['Main', 'main ', 'other-agent', 'team-lead']) expect(SENT('auditor, review 3:\nx', to).toMain).toBe(false)
   })
 
   test('a mark counts only where it opens the body', () => {

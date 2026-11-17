@@ -1,4 +1,4 @@
-# flea-market
+# claude-code-plugin
 
 A Claude Code marketplace of mods.
 
@@ -10,19 +10,19 @@ A Claude Code marketplace of mods.
 
 ## Install
 
-From a terminal session, with `<owner>/<repo>` the GitHub repository that holds this marketplace:
+From a Claude Code terminal session:
 
 ```
-/plugin install cachier --marketplace <owner>/<repo>
-/plugin install auditor --marketplace <owner>/<repo>
-/plugin install human-plugin --marketplace <owner>/<repo>
+/plugin install cachier --marketplace Lotonoro/claude-code-plugin
+/plugin install auditor --marketplace Lotonoro/claude-code-plugin
+/plugin install human-plugin --marketplace Lotonoro/claude-code-plugin
 ```
 
 From a local clone, add the folder as a marketplace, then install by name:
 
 ```
 claude plugin marketplace add <path-to-clone>
-claude plugin install cachier@flea-market
+claude plugin install cachier@claude-code-plugin
 ```
 
 A mod's folder is read in place when the marketplace is a folder, so an edit is picked up by `/reload-plugins`.
