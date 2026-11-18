@@ -559,7 +559,7 @@ test('whatever the text and the room, the cut is the longest start of the text t
   }
 })
 
-// Text built from sub-plan 3's measured sequences, every 37th of them (the doubled-joiner unit among them by name), each between ASCII, CJK and spaces so no two join into a
+// Text built from the measured sequences, every 37th of them (the doubled-joiner unit among them by name), each between ASCII, CJK and spaces so no two join into a
 // longer one, except the two pieces that end on a joiner followed by U+FE0F or by a combining mark: a joiner joins the piece after it, so no cut may fall directly after either.
 // Its pieces, whose ends are the only places a cut or a wrap may fall.
 const MEASURED = SEQUENCES.filter((_, k) => k % 37 === 0).map(([hex]) => cps(...hex.split(' ').map(code => parseInt(code, 16))))
@@ -922,7 +922,7 @@ test('for an id of one to four digits, a row draws its control and prefix from t
 
 // A squeezed list (layout.ts's isSqueezed) starts the ladder at its third rung. What hand work gives for the id 12 and the 3-second window: for each kind and layout
 // width, the answer width, the control column and the title's room, the rung always the third. The widths are the lists of 20, 32 and 42 columns beside the
-// Claude column, laid out in one column less (19, 31 and 41), and sub-plan 7's `oneline-output.txt` figures at 20, 32 and 42.
+// Claude column, laid out in one column less (19, 31 and 41), and the one-line output figures measured at 20, 32 and 42.
 const SQUEEZED_FIGURES: [Kind, [number, number, number, number][]][] = [
   [PLAIN, [[19, 24, 9, 4], [20, 24, 9, 5], [31, 24, 9, 16], [32, 24, 9, 17], [41, 24, 9, 26], [42, 24, 9, 27]]],
   [YES_NO, [[19, 24, 9, 4], [20, 24, 9, 5], [31, 24, 9, 16], [32, 24, 9, 17], [41, 24, 9, 26], [42, 24, 9, 27]]],
