@@ -7,6 +7,8 @@ import type { FakeTimer } from './fakes'
 
 const DIR = '/home/test/.claude/cache/model-catalog'
 const entry = (name: string, over: Record<string, unknown> = {}) => ({ name, kind: 'file', size: 16_000, mtimeMs: 1, isLink: false, ...over })
+// A file whose list of models is `list`, whatever it holds, fetched at `fetchedAt` when that is given.
+const models = (list: unknown, fetchedAt?: number): string => JSON.stringify({ fetchedAt, catalog: { config: { models: list } } })
 
 type Home = {
   // The environment the engine answers from.
@@ -167,8 +169,7 @@ describe('readCatalog', () => {
     expect(reads).toHaveLength(1)
   })
 
-  test('a file that does not parse, one with no list of models, one whose list holds an entry that is no model with an id and one whose entries are all dropped each give no catalog, recorded', async () => {
-    const models = (list: unknown): string => JSON.stringify({ catalog: { config: { models: list } } })
+  test('a file that does not parse, one with no list of models and one whose list leaves no full model id once its entries with no id are skipped each give no catalog, recorded', async () => {
     const texts = [
       '{ not json',
       'null',
@@ -179,10 +180,9 @@ describe('readCatalog', () => {
       JSON.stringify({ catalog: { config: {} } }),
       models('claude-opus-4-6'),
       models({ id: 'claude-opus-4-6' }),
-      models([{ id: 'claude-opus-4-6' }, 'claude-opus-5-5']),
-      models([{ id: 'claude-opus-4-6' }, null]),
-      models([{ id: 'claude-opus-4-6' }, { name: 'Opus 5.5' }]),
-      models([{ id: 'claude-opus-4-6' }, { id: 7 }]),
+      models([{ name: 'Opus 5.5' }]),
+      models([null, 'claude-opus-5-5', { id: 7 }]),
+      models([{ name: 'Opus 5.5' }, { id: 'haiku' }]),
       catalogFile([]),
       catalogFile(['haiku', 'sonnet', 'default']),
     ]
@@ -192,6 +192,27 @@ describe('readCatalog', () => {
       expect(logs).toHaveLength(1)
       expect(logs[0]).toContain('model catalog file a-cc.json failed')
     }
+  })
+
+  test('an entry with no string id is skipped, and recorded once for its file: the others still give the catalog, in their order', async () => {
+    for (const bad of ['claude-opus-5-5', null, 7, [], ['claude-opus-5-5'], {}, { name: 'Opus 5.5' }, { id: 7 }, { id: null }, { id: ['claude-opus-5-5'] }]) {
+      const { $, logs } = home({ 'a-cc.json': models([{ id: 'claude-opus-4-6' }, bad, { id: 'claude-haiku-5-5' }]) })
+      expect(await readCatalog($)).toEqual(['claude-opus-4-6', 'claude-haiku-5-5'])
+      expect(logs).toHaveLength(1)
+      expect(logs[0]).toContain('model catalog file a-cc.json failed')
+      expect(logs[0]).toContain('dropped for having no id: 1')
+    }
+  })
+
+  test('several entries with no id are one record for their file, and each file is recorded for its own', async () => {
+    const { $, logs } = home({
+      'a-cc.json': models([{ id: 'claude-opus-4-6' }, null, { name: 'Opus 5.5' }, 7], 100),
+      'b-cc.json': models([{ id: 'claude-opus-5-5' }, {}], 200),
+    })
+    expect(await readCatalog($)).toEqual(['claude-opus-5-5'])
+    expect(logs).toHaveLength(2)
+    expect(logs.find(log => log.includes('a-cc.json'))).toContain('dropped for having no id: 3')
+    expect(logs.find(log => log.includes('b-cc.json'))).toContain('dropped for having no id: 1')
   })
 
   test('an entry that is not a full id is dropped, a repeated id is kept once in its first spelling, and the others keep their order', async () => {
@@ -374,5 +395,12 @@ describe('readChoices', () => {
     const { $, logs } = home({ 'a-cc.json': catalogFile() }, { nouns: { settings: { read: () => Promise.reject(new Error('settings unreadable')) } } })
     expect((await readChoices($)).list).toHaveLength(4 + CATALOG_IDS.length)
     expect(logs).toHaveLength(1)
+  })
+
+  test('a catalog with an entry that has no id still gives its other ids, and the entry is recorded', async () => {
+    const { $, logs } = engineWith({ 'a-cc.json': models([{ id: 'claude-opus-4-6' }, { name: 'Opus 5.5' }]) }, undefined)
+    expect((await readChoices($)).list).toEqual(['haiku', 'sonnet', 'opus', 'fable', 'claude-opus-4-6'])
+    expect(logs).toHaveLength(1)
+    expect(logs[0]).toContain('model catalog file a-cc.json failed')
   })
 })

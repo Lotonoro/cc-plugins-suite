@@ -16,21 +16,20 @@ const MAX_IDS = 50
 // The newest files read: a config home holds one file per account it served, and only the latest fetch counts, so a directory of many is not read whole.
 const MAX_FILES = 8
 
-// One file's ids and when it was fetched, as the file says; a file that says nothing sorts last.
-type Catalog = { ids: string[]; fetchedAt: number }
+// One file's ids, when it was fetched, as the file says (a file that says nothing sorts last), and how many entries of its list had no string `id`.
+type Catalog = { ids: string[]; fetchedAt: number; withoutId: number }
 
 const fieldsOf = (value: unknown): Record<string, unknown> => (typeof value === 'object' && value !== null && !Array.isArray(value) ? (value as Record<string, unknown>) : {})
 
-// The catalog a file's text holds; throws the reason it holds none. The file holds `catalog.config.models`, a list of records, each with the `id` of a model: the catalog's ids are those that are full ids, one repeated in canonical form once, in the file's order. The file's alias targets (`catalog.config.provider_alias_targets`) are never read: they named a Fable the engine did not run.
+// The catalog a file's text holds; throws the reason it holds none. The file holds `catalog.config.models`, a list of records, each with the `id` of a model: the catalog's ids are those that are full ids, one repeated in canonical form once, in the file's order. An entry with no string `id` is skipped and counted, for the caller to record: one such entry is no reason to reject the file. The file's alias targets (`catalog.config.provider_alias_targets`) are never read: they named a Fable the engine did not run.
 const catalogOf = (text: string): Catalog => {
   const file = fieldsOf(JSON.parse(text))
   const models = fieldsOf(fieldsOf(file['catalog'])['config'])['models']
   if (!Array.isArray(models)) throw new Error('the file holds no list of models at catalog.config.models')
-  const listed = models.map(model => fieldsOf(model)['id'])
-  if (!isNames(listed)) throw new Error('a model in catalog.config.models has no id')
+  const named = models.map(model => fieldsOf(model)['id']).filter((id): id is string => typeof id === 'string')
   const kept = new Set<string>()
   const ids: string[] = []
-  for (const id of listed) {
+  for (const id of named) {
     const canonical = canonicalOf(id)
     if (canonical === undefined || kept.has(canonical)) continue
     kept.add(canonical)
@@ -39,7 +38,7 @@ const catalogOf = (text: string): Catalog => {
   }
   if (ids.length === 0) throw new Error('no entry of the list is a full model id')
   const fetchedAt = file['fetchedAt']
-  return { ids, fetchedAt: typeof fetchedAt === 'number' && Number.isFinite(fetchedAt) ? fetchedAt : -Infinity }
+  return { ids, fetchedAt: typeof fetchedAt === 'number' && Number.isFinite(fetchedAt) ? fetchedAt : -Infinity, withoutId: models.length - named.length }
 }
 
 // The directory of the engine's catalog cache: under `CLAUDE_CONFIG_DIR` when that is set, else under `.claude` in the home directory. Undefined, recorded, where the read failed or neither is known.
@@ -55,7 +54,7 @@ async function catalogDir($: Scope): Promise<string | undefined> {
   return `${base.replace(/\/+$/, '')}/${CATALOG_DIR}`
 }
 
-// One file's catalog, or undefined with the reason recorded: too large to read, unread, late, or not a catalog.
+// One file's catalog, or undefined with the reason recorded: too large to read, unread, late, or not a catalog. A catalog that skipped entries is returned, and the skip is recorded once for the file.
 async function readCatalogFile($: Scope, dir: string, file: FsEntry): Promise<Catalog | undefined> {
   const what = `model catalog file ${file.name}`
   if (file.size > MAX_FILE_BYTES) {
@@ -64,12 +63,15 @@ async function readCatalogFile($: Scope, dir: string, file: FsEntry): Promise<Ca
   }
   const read = await within($, what, () => $.fs.read(`${dir}/${file.name}`))
   if (read === undefined) return undefined
+  let catalog: Catalog
   try {
-    return catalogOf(read.value)
+    catalog = catalogOf(read.value)
   } catch (err) {
     recordFailed($, what, err)
     return undefined
   }
+  if (catalog.withoutId > 0) recordFailed($, what, new Error(`entries of catalog.config.models dropped for having no id: ${catalog.withoutId}`))
+  return catalog
 }
 
 // The catalog's ids in its order, or undefined, recorded, where there is none: no directory, no file, or no file that holds a list of full ids. Of several valid files the one fetched last wins, so a config home that served two accounts still gives a list.
