@@ -50,8 +50,8 @@ const stateNamed = (store: Store, digits: string): Item['state'] | 'missing' => 
 // names the item as `/asks <n>` does (a press passes its id). The write's time is the clock's less `back`: a press counts from when it was made,
 // a command from one window earlier, so its window is due at once and the first tick ends it. A zero window that a press opens ends inside the
 // write (`endsAtOnce`); a command's never does, since its notice is the ticker's to send. Each write leaves a debug line with its time and the
-// state change it made. A write whose outcome says its session has ended (`lostSession`) goes no further than that line: the session's end stopped the
-// ticker, and one started now would end windows on a list that is no longer the session's. What fails after the write is logged, and the write stands.
+// state change it made. A write whose outcome says the session's end refused it (`lostSession`) leaves no window to wait for, so it starts no ticker and
+// touches nothing after that line. What fails after the write is logged, and the write stands.
 async function openWindow<T>(
   $: EngineInterface,
   windowMs: number,
