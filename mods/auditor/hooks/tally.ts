@@ -16,7 +16,7 @@ const added = (c: Conversation, usage: ModelUsage, model: string): Conversation 
 // One reviewer response, at the model it reports.
 export const withResponse = (c: Conversation, usage: ReviewUsage): Conversation => added(c, usage, usage.model)
 
-// A reviewer compaction's own request, at the reviewer's resolved model (the pinned one when none is resolved), which its usage does not name. No usage adds nothing: core reused a summary already computed, and that request was counted when it ran.
+// A reviewer compaction's own request, at the reviewer's resolved model, which its usage does not name. Where none is resolved (no reviewer is stored, or the stored one was adopted before its spawn result landed), `PRICED_MODEL` prices it. That holds only while every reviewer runs the default, the alias `haiku`, and the default resolves to `claude-haiku-5-5`. No usage adds nothing: core reused a summary already computed, and that request was counted when it ran.
 export const withCompaction = (c: Conversation, usage: ModelUsage | undefined): Conversation => (usage === undefined ? c : added(c, usage, c.reviewer?.model || PRICED_MODEL))
 
 // A review that completed at `at`, with a note or quiet. Nothing is counted while the auditor is off.
