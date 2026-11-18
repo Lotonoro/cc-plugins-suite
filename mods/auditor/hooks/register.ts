@@ -1,6 +1,7 @@
 import type { AgentInfo, AgentSpawnResult, CoreEngineInterface, ProcessRunResult, Register, TurnUsage } from 'claude-code'
 import { update } from 'claude-code'
 import type { BriefTo, Conversation, FailCause, OpenReview, PendingNote, ReviewUsage, TurnEnd, TurnRecord, TurnStart, Wake } from '../types/index'
+import { PLUGIN, recordFailed, within } from './boundary'
 import { MEMORY, MEMORY_ACTION, MEMORY_FIELD, MEMORY_LOG_CHARS, REVIEW_ENDED, WHY_CHARS, bounded, changeMemory, printMemory, renderMemory, withNote } from './memory'
 import type { MemoryChange } from './memory'
 import { answerOf, buttonOf } from './button'
@@ -14,7 +15,6 @@ import type { Identity, IdleTimer, Release } from './reviewer'
 import { purged, withCompaction, withNoteGiven, withResponse, withReviewDone } from './tally'
 import { DIGEST_CHARS, LOOKUP_TIMEOUT_MS, SEARCH_TERM_CHARS, digestBlocks, digestOf, lineCommand, lookupOf, parseSearch, renderSearch, searchCommand } from './transcript'
 
-const PLUGIN = 'auditor'
 const REVIEWER = 'auditor-reviewer'
 const REVIEWER_TYPE = `${PLUGIN}:reviewer`
 // What the spawn is described as, which the engine's task notification for the reviewer names.
@@ -58,8 +58,6 @@ const UNCHECKED = 'auditor could not check this message, so it was not sent'
 const INTERRUPTED = 'INTERRUPTED: the user stopped this turn before it finished.'
 const NONE_INTERRUPTED = '(none: the user interrupted the turn)'
 const EMPTY_RECORD: TurnRecord = { blocks: [] }
-// How long the session's cost ledger may take to answer before the figures read as unknown.
-const LEDGER_TIMEOUT_MS = 1000
 // How long a reviewer stop with its check, or an idle sweep, may run before it is given up (`withinTime`): both are started and left to run, and an engine call of theirs that never answered would otherwise hold their guard (`stopsRunning`, `sweeping`) until a reload.
 const BACKGROUND_TIMEOUT_MS = 90_000
 
@@ -104,29 +102,12 @@ const wordsOf = (node: unknown, engine: string): string => {
   return own.join('') + wordsOf(el.children, engine)
 }
 
-// The session's total cost in US dollars from the engine's ledger (`/cost`'s figure), or undefined when it cannot be known: no `cost` (the host keeps no ledger), a figure that is not finite and non-negative, a rejected call, or no answer within LEDGER_TIMEOUT_MS. The last two are logged. The one reader of the ledger: the footer and `/auditor` both go through `figuresOf`.
+// The session's total cost in US dollars from the engine's ledger (`/cost`'s figure), or undefined when it cannot be known: no `cost` (the host keeps no ledger), a figure that is not finite and non-negative, a rejected call, or no answer within BOUND_MS. The last two are logged. The one reader of the ledger: the footer and `/auditor` both go through `figuresOf`.
 // Exported for its test, which calls it with a hand-made `$`: the test engine cannot make a hook's call reject.
 export const readLedger = async ($: Pick<Scope, 'session' | 'clock' | 'ui'>): Promise<number | undefined> => {
-  let late: () => void = () => undefined
-  const timeout = new Promise<null>(resolve => {
-    late = () => resolve(null)
-  })
-  let timer: { cancel: () => void } | undefined
-  try {
-    timer = $.clock.after(LEDGER_TIMEOUT_MS, late)
-    const usage = await Promise.race([$.session.usage(), timeout])
-    if (usage === null) {
-      recordFailed($, 'session cost read', new Error(`no answer within ${LEDGER_TIMEOUT_MS} ms`))
-      return undefined
-    }
-    const usd = usage.cost?.usd
-    return typeof usd === 'number' && Number.isFinite(usd) && usd >= 0 ? usd : undefined
-  } catch (err) {
-    recordFailed($, 'session cost read', err)
-    return undefined
-  } finally {
-    timer?.cancel()
-  }
+  const read = await within($, 'session cost read', async () => (await $.session.usage()).cost?.usd)
+  const usd = read?.value
+  return typeof usd === 'number' && Number.isFinite(usd) && usd >= 0 ? usd : undefined
 }
 
 // What the button's words read for a conversation: its state and tally, and the session total where there is a share to show (off shows no figures, and nothing spent or an unknown cost has no share, so the ledger is not read for them).
@@ -144,11 +125,6 @@ const sessionDir = async ($: Pick<CoreEngineInterface, 'env'>, sessionId: string
 }
 
 const numbered = (n: number): string => String(n).padStart(4, '0')
-
-// A failed record or log write must not fail the worker's turn or re-run its call: log it with its stack. Nothing is shown: only an escalation and a failing reviewer (the footer label) reach the user.
-const recordFailed = ($: Pick<Scope, 'ui'>, what: string, err: unknown): void => {
-  $.ui.log(`${PLUGIN}: ${what} failed: ${err instanceof Error ? (err.stack ?? err.message) : String(err)}`, { to: 'debug' })
-}
 
 const reasonOf = (err: unknown): string => (err instanceof Error ? err.message : String(err))
 
