@@ -1,6 +1,6 @@
 # auditor
 
-**Supreme judge, billing at Haiku rates by default.**
+**Supreme judge, billing at Haiku rates.**
 
 Agentic workflows commonly validate a coder’s output with tests and code
 review. The costliest mistakes can happen upstream. One skipped check or a
@@ -90,20 +90,16 @@ from the repository root.
   to write per-review JSON under `~/.claude/auditor/`, including timing, token
   use, the reviewer’s model, and notes. `/clear` starts a new transcript and
   resets the reviewer’s memory.
-- **Choose the reviewer’s model.** Run `/auditor model` to list the choices,
-  and `/auditor model <name>` to set one; both work on a phone. The choices
-  are the aliases `haiku`, `sonnet`, `opus` and `fable`, plus the ids of the
-  models `/model` lists when Auditor can read them, narrowed by your
-  `availableModels` setting. The list marks the current choice, the default,
-  each Fable, and `cost unknown` beside a model Auditor has no price for (an
-  alias, once it has been used). Haiku is the default. If `availableModels`
-  rules it out, the default is the first model in the list that is not Fable,
-  and Fable only when nothing else is left.
-- **Switch mid-session.** A switch applies from the next review: an idle
-  reviewer is retired at once, and a review in progress finishes on its old
-  model. The choice belongs to the session and survives `/auditor off` and
-  `/auditor on`. A new session or `/clear` starts on the last model any session
-  set, or on the default when none was set or the list no longer offers it.
+- **Choose the reviewer’s model.** Run `/auditor model` to list the choices and
+  `/auditor model <name>` to set one. The choices are `haiku`, `sonnet`,
+  `opus`, and `fable`, plus the model ids `/model` lists, narrowed by your
+  `availableModels` setting. The list marks the current choice, the default
+  (Haiku, unless `availableModels` rules it out), each Fable, and
+  `cost unknown` beside a model Auditor has no price for.
+- **Switch mid-session.** A switch applies from the next review; one in
+  progress finishes on its old model. The choice survives `/auditor off` and
+  `/auditor on`, and a new session or `/clear` starts on the last model any
+  session set.
 
 For implementation details, see the [reviewer’s instructions](hooks/prompt.ts),
 [review dispatch](hooks/register.ts), [finding memory](hooks/memory.ts),
