@@ -2,7 +2,7 @@ import type { ModelUsage } from 'claude-code'
 
 // What the auditor's spend costs at API list prices, as pure functions: it knows nothing of the conversation or the engine.
 
-// The one model priced: the id the reviewer's alias (`REVIEWER_MODEL` in register.ts, `haiku`) resolves to today. When the alias moves to a newer Haiku, responses come back unpriced until this id and RATES are updated.
+// The one model priced: the id the reviewer's default alias (`DEFAULT_MODEL` in models.ts, `haiku`) resolves to today. When the alias moves to a newer Haiku, responses come back unpriced until this id and RATES are updated.
 export const PRICED_MODEL = 'claude-haiku-5-5'
 
 // Haiku 5.5 list prices in dollars per million tokens, from the claude-api skill's model table (cached 2026-10-06) and checked on 2026-11-09 (engine 2.1.311) against the session ledger: over a reviewer-only stretch, one past 100,000 tokens of prompt and one with three compactions, the ledger grew by exactly the sum these rates give. The prompt is the uncached input, the cache reads and the cache writes; a response whose prompt is over TIER_PROMPT_TOKENS is priced whole, output included, at the `large` set. Every cache write prices as a 5-minute write: the engine's usage gives one write count with no lifetime split, and the reviewer writes the 5-minute cache.

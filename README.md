@@ -1,28 +1,29 @@
-# flea-market
+# cc-plugins-suite
 
-A Claude Code marketplace of mods.
+A Claude Code marketplace of mods, registered as `lotonoro-cc-plugins-suite`.
 
 | Mod | What it does |
 | --- | --- |
-| [`cachier`](mods/cachier/README.md) | The prompt cache's time left on the footer as a pie, an opt-in keepalive that keeps an idle cache warm, costs in dollars or tokens, and a time on every message. |
-| [`auditor`](mods/auditor/README.md) | A persistent reviewer subagent that audits each worker turn and hands its corrections back to the worker, like the navigator in a pair. |
-| [`human-plugin`](mods/human-plugin/README.md) | A to-do list for you, kept by the agent: each ask the agent has of the human is pinned above the prompt until you mark it done. |
+| [`cachier`](mods/cachier/README.md) | Ca-ching! Let’s see if keeping your cache warm knocks a few tokens off the bill. |
+| [`auditor`](mods/auditor/README.md) | Supreme judge, billing at Haiku rates. Live reviews for your orchestrator. |
+| [`human-plugin`](mods/human-plugin/README.md) | Congrats human, you are now a claude code plugin. It changes how you interact with Claude agents. |
 
 ## Install
 
-From a terminal session, with `<owner>/<repo>` the GitHub repository that holds this marketplace:
+From a Claude Code terminal session:
 
 ```
-/plugin install cachier --marketplace <owner>/<repo>
-/plugin install auditor --marketplace <owner>/<repo>
-/plugin install human-plugin --marketplace <owner>/<repo>
+/plugin marketplace add Lotonoro/cc-plugins-suite
+/plugin install cachier@lotonoro-cc-plugins-suite
+/plugin install auditor@lotonoro-cc-plugins-suite
+/plugin install human-plugin@lotonoro-cc-plugins-suite
 ```
 
 From a local clone, add the folder as a marketplace, then install by name:
 
 ```
 claude plugin marketplace add <path-to-clone>
-claude plugin install cachier@flea-market
+claude plugin install cachier@lotonoro-cc-plugins-suite
 ```
 
 A mod's folder is read in place when the marketplace is a folder, so an edit is picked up by `/reload-plugins`.

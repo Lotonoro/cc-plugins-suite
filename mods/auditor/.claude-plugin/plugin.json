@@ -4,7 +4,7 @@
     "name": "Lotonoro"
   },
   "version": "0.0.1",
-  "description": "Persistent reviewer subagent that audits each worker turn and hands its corrections back to the worker. Runs on the latest Haiku at high effort.",
+  "description": "Persistent reviewer subagent that audits each worker turn and hands its corrections back to the worker. Runs at high effort on the latest Haiku, or on the model a session sets with /auditor model.",
   "userConfig": {
     "log": {
       "type": "boolean",

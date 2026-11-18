@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'claude-code/testing'
-import { answerOf, buttonOf, labelOf, rowsOf } from './button'
+import { answerOf, buttonOf, labelOf, modelAnswerOf, modelFiguresOf, rowsOf } from './button'
 import type { Figures } from './button'
+import { choicesOf } from './models'
 
 // 14:32 in the host's local time, built from local parts so the tests hold in any time zone.
 const AT = new Date(2026, 10, 9, 14, 32).getTime()
@@ -182,5 +183,55 @@ describe('buttonOf', () => {
     const box: any = buttonOf(table, 'k', figures(), () => { pressed++ })
     box.props.children[0].props.onPress()
     expect(pressed).toBe(1)
+  })
+})
+
+describe('modelFiguresOf', () => {
+  const marked = (current: string, catalog: string[] | undefined, ids: Record<string, string> = {}) => modelFiguresOf(current, choicesOf(catalog, undefined), ids).choices
+
+  test('every choice is shown, the current one, the default and each Fable marked', () => {
+    const choices = marked('sonnet', ['claude-fable-5-2'])
+    expect(choices.map(c => c.name)).toEqual(['haiku', 'sonnet', 'opus', 'fable', 'claude-fable-5-2'])
+    expect(choices.filter(c => c.isCurrent).map(c => c.name)).toEqual(['sonnet'])
+    expect(choices.filter(c => c.isDefault).map(c => c.name)).toEqual(['haiku'])
+    expect(choices.filter(c => c.isFable).map(c => c.name)).toEqual(['fable', 'claude-fable-5-2'])
+  })
+
+  test('an alias with no id yet is not marked, so the default never warns in a fresh install', () => {
+    expect(marked('haiku', undefined).filter(c => c.costUnknown)).toEqual([])
+  })
+
+  test('a choice is checked at the id the chain gives it: a priced id is not marked, one outside the table is', () => {
+    const choices = marked('haiku', ['claude-nosuch-9-9', 'claude-haiku-5-5'], { haiku: 'claude-haiku-5-5-20261001', sonnet: 'claude-nosuch-1-1' })
+    expect(choices.filter(c => c.costUnknown).map(c => c.name)).toEqual(['sonnet', 'claude-nosuch-9-9'])
+  })
+
+  test('a current model the list does not offer is marked on no row', () => {
+    expect(marked('claude-gone-1-1', undefined).filter(c => c.isCurrent)).toEqual([])
+  })
+})
+
+describe('modelAnswerOf', () => {
+  // The ids are ones the price table never covers, so the answer reads the same as the table grows.
+  const figuresOfAnswer = modelFiguresOf('haiku', choicesOf(['claude-fable-9-9', 'claude-nosuch-9-9'], undefined), {})
+
+  test('names the model the reviewer runs on, then every choice with its marks, then how to set one', () => {
+    expect(modelAnswerOf(figuresOfAnswer)).toBe(
+      [
+        'Reviewer model: haiku',
+        'Choices:',
+        '  haiku (current, default)',
+        '  sonnet',
+        '  opus',
+        '  fable (Fable)',
+        '  claude-fable-9-9 (Fable, cost unknown)',
+        '  claude-nosuch-9-9 (cost unknown)',
+        'Set one with /auditor model <name>.',
+      ].join('\n'),
+    )
+  })
+
+  test('a note on what the command did comes first', () => {
+    expect(modelAnswerOf(figuresOfAnswer, 'Set: the next review runs on haiku.').split('\n')[0]).toBe('Set: the next review runs on haiku.')
   })
 })
