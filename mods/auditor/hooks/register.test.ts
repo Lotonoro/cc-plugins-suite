@@ -2,7 +2,6 @@ import { describe, expect, test } from 'claude-code/testing'
 import { LOOKUP_TIMEOUT_MS, lineCommand, searchCommand } from './transcript'
 import { MEMORY, MEMORY_ACTION, MEMORY_FIELD, REVIEW_ENDED, printMemory, renderMemory } from './memory'
 import { followUpText } from './notes'
-import { PRICED_MODEL } from './pricing'
 import { learn } from './reviewer'
 import type { MemoryEntry } from '../types/index'
 import { REVIEWER_PROMPT } from './prompt'
@@ -553,11 +552,12 @@ describe('auditor', () => {
     expect(seen.spawns.map(typeOf)).toEqual(['auditor:reviewer'])
   })
 
-  test('the reviewer registers on claude-haiku-5-5 at high effort', ON, async ($, on) => {
+  test('the reviewer registers on the alias haiku at high effort, at every session start', ON, async ($, on) => {
     const seen = engine(on)
     await $.session.start({ cwd: '/', surface: null, isInteractive: true })
-    expect(seen.registered.length).toBe(1)
-    expect(seen.registered[0]).toMatchObject({ name: 'reviewer', model: 'claude-haiku-5-5', effort: 'high' })
+    await $.session.start({ cwd: '/', surface: null, isInteractive: true })
+    expect(seen.registered.length).toBe(2)
+    for (const definition of seen.registered) expect(definition).toMatchObject({ name: 'reviewer', model: 'haiku', effort: 'high' })
   })
 
   test('the reviewer is told to read the edited regions and search large references, and still to read every fresh edit', () => {
@@ -1746,7 +1746,7 @@ describe('auditor', () => {
       number: 1,
       reason: null,
       record_entries: 1,
-      model_configured: 'claude-haiku-5-5',
+      model_configured: 'haiku',
       model_resolved: 'm',
       usage: { input_tokens: 10, output_tokens: 5, model: 'm' },
       note: 'a.ts:4 swallows it.',
@@ -6614,12 +6614,6 @@ describe('the auditor\'s cost', () => {
   const run = async ($: any, args = ''): Promise<string | undefined> => (await $.command.run({ command: 'auditor', args })).text
   const ONE_MESSAGE = [{ role: 'user' as const, text: 'fix the parser', toolUses: [] }]
   const compacting = (agentId: string) => ({ trigger: 'auto' as const, messages: ONE_MESSAGE, agentId }) as any
-
-  test('the reviewer\'s model is the one pricing.ts has rates for', ON, async ($, on) => {
-    const seen = engine(on)
-    await $.session.start({ cwd: '/', surface: null, isInteractive: true })
-    expect(seen.registered[0].model).toBe(PRICED_MODEL)
-  })
 
   test('each reviewer response adds its price to the tally, output included, and the label shows the dollars and the share of the ledger', ON, async ($, on) => {
     const seen = engine(on, { spawn: PINNED, ledger: 100 })

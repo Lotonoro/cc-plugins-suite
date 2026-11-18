@@ -69,6 +69,12 @@ describe('withCompaction', () => {
     expect(closeTo(withCompaction(conversation(), counts).spent, priceOf(counts))).toBe(true)
   })
 
+  test('a stored reviewer adopted before its spawn result landed holds an empty model, and its compaction is priced at Haiku 5.5\'s rates', () => {
+    const after = withCompaction(conversation({ reviewer: { id: 'ag1', model: '' } }), counts)
+    expect(after.unpriced).toBe(null)
+    expect(closeTo(after.spent, priceOf(counts))).toBe(true)
+  })
+
   test('a reviewer resolved to a model that is not priced leaves the cost unknown', () => {
     expect(withCompaction(conversation({ reviewer: { id: 'ag1', model: 'm' } }), counts)).toMatchObject({ spent: 0, unpriced: 'm' })
   })
