@@ -35,5 +35,5 @@ export const never = <T>(): Promise<T> => new Promise<T>(() => undefined)
 
 // Lets what is waiting on already-settled promises run.
 export const settled = async (): Promise<void> => {
-  for (let turn = 0; turn < 10; turn++) await Promise.resolve()
+  for (let turn = 0; turn < 50; turn++) await Promise.resolve()
 }
