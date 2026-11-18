@@ -5,7 +5,7 @@ import { followUpText } from './notes'
 import { learn } from './reviewer'
 import type { MemoryEntry } from '../types/index'
 import { REVIEWER_PROMPT } from './prompt'
-import { catalogFile, fakeEngine } from './fakes'
+import { CATALOG_IDS, catalogFile, fakeEngine } from './fakes'
 import * as register from './register'
 
 const ON = { options: { log: true } }
@@ -9006,6 +9006,144 @@ describe('the reviewer model each conversation chooses', () => {
       await turn($, 'again')
       expect(spawnedModels(seen)).toEqual(['haiku', 'haiku'])
       expect(seen.catalogLists).toEqual([CATALOG_DIR])
+    })
+  })
+
+  describe('a stored reviewer on another model than the choice', () => {
+    const SONNET = 'claude-sonnet-5-5'
+    const LOG_3 = `${DIR}/0003.json`
+    const stopped = (seen: any): string[] => seen.stops.map((s: any) => s.task_id)
+    // A conversation whose review 1 is done, its reviewer ag1 stored and idle, spawned for `spawnedFor` while the conversation's choice is now `choice`.
+    const switched = (choice: string | undefined, spawnedFor: string | undefined = 'haiku') => ({
+      dispatches: 1,
+      ...(choice === undefined ? {} : { choice }),
+      reviewer: { id: 'ag1', model: HAIKU, ...(spawnedFor === undefined ? {} : { choice: spawnedFor }) },
+      reviewerIds: ['ag1'],
+    })
+    const OPEN = { number: 1, record: ['[1] USER: fix\n\n'], dispatchedAt: 1000, nothingWakes: false }
+
+    test('a reviewer spawned for another name than the choice takes no brief: it is let go as model switch and stopped, and the brief goes to a spawn on the choice', ON, async ($, on) => {
+      const seen = engine(on, { stateSeed: switched('sonnet'), spawnModels: [SONNET], reviewerIds: ['ag2'] })
+      await workerTurn($)
+      await drained()
+      expect(stopped(seen)).toEqual(['ag1'])
+      await turnEnded($, 'ag2', 'Nothing to note.')
+      expect(spawnedModels(seen)).toEqual(['sonnet'])
+      expect(seen.conversation.reviewer).toMatchObject({ id: 'ag2', choice: 'sonnet' })
+      expect(logOf(seen, LOG_2)).toMatchObject({ brief_to: 'spawn: model switch', model_configured: 'sonnet', model_resolved: SONNET })
+    })
+
+    test('a review in progress at the switch finishes on its old model, and the next dispatch lets that reviewer go, stops it and spawns on the new model', ON, async ($, on) => {
+      const seen = engine(on, { stateSeed: { ...switched('sonnet'), review: OPEN }, spawnModels: [SONNET], reviewerIds: ['ag2'] })
+      await turnEnded($, 'ag1', 'Nothing to note.')
+      expect(logOf(seen, LOG_1)).toMatchObject({ status: 'complete', model_configured: 'haiku', model_resolved: HAIKU })
+      expect(stopped(seen)).toEqual([])
+      await workerTurn($, 'Second.')
+      await drained()
+      expect(stopped(seen)).toEqual(['ag1'])
+      await turnEnded($, 'ag2', 'Nothing to note.')
+      expect(spawnedModels(seen)).toEqual(['sonnet'])
+      expect(logOf(seen, LOG_2)).toMatchObject({ brief_to: 'spawn: model switch', model_configured: 'sonnet' })
+    })
+
+    test('the stop is checked against the agent list and issued once more, as other stops are', ON, async ($, on) => {
+      const listed = [{ id: 'ag1', name: 'auditor-reviewer', type: 'auditor:reviewer', status: 'idle', spawnedBy: 'auditor' }]
+      const seen = engine(on, { stateSeed: switched('sonnet'), reviewerIds: ['ag2'], agentsAfterStops: stops => (stops >= 2 ? [] : listed) })
+      await workerTurn($)
+      await drained()
+      expect(stopped(seen)).toEqual(['ag1', 'ag1'])
+    })
+
+    test('a dispatch that plans no brief lets nothing go: the reviewer is judged only where a brief is planned', ON, async ($, on) => {
+      const seen = engine(on, { stateSeed: switched('sonnet') })
+      await $.classic.Stop(stop)
+      await drained()
+      expect(stopped(seen)).toEqual([])
+      expect(seen.conversation.reviewer).toMatchObject({ id: 'ag1', choice: 'haiku' })
+    })
+
+    test('with no switch a stored reviewer takes every brief across several dispatches, a context-suffixed full id included, whatever form its resolved model takes', ON, async ($, on) => {
+      const SUFFIXED = 'claude-opus-4-6[1m]'
+      const seen = engine(on, { store: { lastModel: SUFFIXED }, catalog: { 'a-cc.json': catalogFile({ modelIds: [...CATALOG_IDS, SUFFIXED] }) }, spawnModels: ['claude-opus-4-6'] })
+      await workerTurn($)
+      await turnEnded($, 'ag1', 'Nothing to note.')
+      await workerTurn($, 'Second.')
+      await turnEnded($, 'ag1', 'Nothing to note.')
+      await workerTurn($, 'Third.')
+      await turnEnded($, 'ag1', 'Nothing to note.')
+      await drained()
+      expect(spawnedModels(seen)).toEqual([SUFFIXED])
+      expect(stopped(seen)).toEqual([])
+      expect(logOf(seen, LOG_2)).toMatchObject({ brief_to: 'stored', model_configured: SUFFIXED, model_resolved: 'claude-opus-4-6' })
+      expect(logOf(seen, LOG_3)).toMatchObject({ brief_to: 'stored', model_configured: SUFFIXED })
+      expect(seen.storeReads.filter(key => key === 'modelIds')).toEqual([])
+    })
+
+    test('with no switch the dispatch reads no stored ids, whatever the reviewer\'s alias resolved to', ON, async ($, on) => {
+      const seen = engine(on, { spawnModels: [HAIKU] })
+      await workerTurn($)
+      await turnEnded($, 'ag1', 'Nothing to note.')
+      const reads = seen.storeReads.length
+      await workerTurn($, 'Second.')
+      await turnEnded($, 'ag1', 'Nothing to note.')
+      expect(seen.storeReads.length).toBe(reads)
+      expect(logOf(seen, LOG_2)).toMatchObject({ brief_to: 'stored' })
+    })
+
+    test('two names whose stored ids are equal run one model: the reviewer takes the brief, and the route does not change', ON, async ($, on) => {
+      const seen = engine(on, { stateSeed: switched(HAIKU), store: { modelIds: { haiku: HAIKU } } })
+      await workerTurn($)
+      await turnEnded($, 'ag1', 'Nothing to note.')
+      await drained()
+      expect(stopped(seen)).toEqual([])
+      expect(spawnedModels(seen)).toEqual([])
+      expect(logOf(seen, LOG_2)).toMatchObject({ brief_to: 'stored', model_configured: 'haiku' })
+    })
+
+    test('with the id of the reviewer\'s name unknown, another name lets the reviewer go', ON, async ($, on) => {
+      const seen = engine(on, { stateSeed: switched(HAIKU), reviewerIds: ['ag2'] })
+      await workerTurn($)
+      await drained()
+      expect(stopped(seen)).toEqual(['ag1'])
+      expect(spawnedModels(seen)).toEqual([HAIKU])
+    })
+
+    test('with the id of the choice\'s name unknown, the reviewer is let go', ON, async ($, on) => {
+      const seen = engine(on, { stateSeed: switched('sonnet'), store: { modelIds: { haiku: HAIKU } }, reviewerIds: ['ag2'] })
+      await workerTurn($)
+      await drained()
+      expect(stopped(seen)).toEqual(['ag1'])
+    })
+
+    test('stored ids that cannot be read leave the names to decide, and the failure is recorded', ON, async ($, on) => {
+      const seen = engine(on, { stateSeed: switched(HAIKU), store: { modelIds: { haiku: HAIKU } }, storeReadFails: true, reviewerIds: ['ag2'] })
+      await workerTurn($)
+      await drained()
+      expect(stopped(seen)).toEqual(['ag1'])
+      expect(debugLines(seen, 'store read of the model ids failed').length).toBe(1)
+    })
+
+    test('a conversation with no choice yet has switched nothing', ON, async ($, on) => {
+      const seen = engine(on, { stateSeed: switched(undefined, 'sonnet') })
+      await workerTurn($)
+      await turnEnded($, 'ag1', 'Nothing to note.')
+      expect(stopped(seen)).toEqual([])
+      expect(logOf(seen, LOG_2)).toMatchObject({ brief_to: 'stored' })
+    })
+
+    test('a reviewer stored before choices existed ran the default: it takes a brief for haiku', ON, async ($, on) => {
+      const kept = engine(on, { stateSeed: switched('haiku', undefined) })
+      await workerTurn($)
+      await drained()
+      expect(stopped(kept)).toEqual([])
+      expect(kept.conversation.reviewer).toMatchObject({ id: 'ag1' })
+    })
+
+    test('a reviewer stored before choices existed is let go for another model', ON, async ($, on) => {
+      const seen = engine(on, { stateSeed: switched('sonnet', undefined), reviewerIds: ['ag2'] })
+      await workerTurn($)
+      await drained()
+      expect(stopped(seen)).toEqual(['ag1'])
     })
   })
 

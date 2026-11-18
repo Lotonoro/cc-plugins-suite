@@ -203,8 +203,21 @@ export const reapIdle = (c: Conversation, timer: IdleTimer): Release => {
 // The conversation with the stored reviewer `id`'s latest turn end noted at `at`, which the idle timer counts from; unchanged where `id` is not the stored reviewer.
 export const withTurnEnd = (c: Conversation, id: string, at: number): Conversation => (c.reviewer?.id === id ? { ...c, reviewer: { ...c.reviewer, endedAt: at } } : c)
 
-// Whether the stored reviewer may take the next brief: it runs the model the conversation's choice names. A reviewer spawned for the choice the conversation holds is always kept, so an unchanged choice never lets one go whatever its ids say; one spawned for another name is kept when both names' ids are known and equal (`sameModel`), and otherwise let go. A conversation with no choice has switched nothing. A reviewer that holds no choice, stored before choices existed, ran the definition's default.
-export const keeps = (c: Conversation, ids: ModelIds): boolean => c.choice === undefined || c.reviewer === undefined || sameModel(c.reviewer.choice ?? DEFAULT_MODEL, c.choice, ids)
+// The two names a switch compares: the one the stored reviewer was spawned for, and the one the conversation holds now. A reviewer that holds no choice, stored before choices existed, ran the definition's default. Undefined where there is no reviewer, or the conversation has switched nothing (no choice yet).
+const namesOf = (c: Conversation): { spawned: string; chosen: string } | undefined =>
+  c.reviewer === undefined || c.choice === undefined ? undefined : { spawned: c.reviewer.choice ?? DEFAULT_MODEL, chosen: c.choice }
+
+// Whether the stored reviewer may take the next brief: it runs the model the conversation's choice names. A reviewer spawned for the choice the conversation holds is always kept, so an unchanged choice never lets one go whatever its ids say; one spawned for another name is kept when both names' ids are known and equal (`sameModel`), and otherwise let go.
+export const keeps = (c: Conversation, ids: ModelIds): boolean => {
+  const names = namesOf(c)
+  return names === undefined || sameModel(names.spawned, names.chosen, ids)
+}
+
+// Whether judging the stored reviewer needs the stored ids: only where its name differs from the choice's, since the same name is kept whatever the ids say. A caller reads them before its change, whose callback is synchronous, and only then.
+export const needsIds = (c: Conversation): boolean => {
+  const names = namesOf(c)
+  return names !== undefined && names.spawned !== names.chosen
+}
 
 // The dispatch's half of a model switch: the stored reviewer let go (`model switch`) when it is not kept. It covers what the switch itself could not: a reviewer that was mid-review at the switch and has settled since, and a spawn in flight at the switch that landed on the old model.
 export const letGoSwitched = (c: Conversation, ids: ModelIds): Release => (c.reviewer === undefined || keeps(c, ids) ? { next: c, released: undefined } : letGo(c, 'model switch', c.reviewer.id))

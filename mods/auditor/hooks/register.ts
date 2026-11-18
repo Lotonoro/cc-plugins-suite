@@ -12,8 +12,8 @@ import type { Decided, Outcome, Refusal, Sent, Verdict } from './notes'
 import { REVIEWER_PROMPT } from './prompt'
 import { clip, editedLines, entryBlock, pageOf, renumberBlock, toolLine } from './record'
 import { DEFAULT_MODEL, FALLBACK_CHOICES, isFullId, takeChoice } from './models'
-import type { Choices } from './models'
-import { adopt, compactionModel, idleTimerOf, isEndNotice, isHandBack, isNotice, isReviewerEntry, land, lapseOf, learn, learnName, letGo, markers, nameKnown, nameListed, originOf, reapIdle, reviewModels, reviewerNameOf, spawnChoice, spawnName, spawning, standingOf, stopMissed, sweepable, WORKING, withTurnEnd } from './reviewer'
+import type { Choices, ModelIds } from './models'
+import { adopt, compactionModel, idleTimerOf, isEndNotice, isHandBack, isNotice, isReviewerEntry, land, lapseOf, learn, learnName, letGo, letGoSwitched, markers, nameKnown, nameListed, needsIds, originOf, reapIdle, reviewModels, reviewerNameOf, spawnChoice, spawnName, spawning, standingOf, stopMissed, sweepable, WORKING, withTurnEnd } from './reviewer'
 import type { Identity, IdleTimer, Release, ReviewModels } from './reviewer'
 import { readLastModel, readModelIds, storeModelId } from './store'
 import { purged, withCompaction, withNoteGiven, withResponse, withReviewDone } from './tally'
@@ -707,6 +707,12 @@ const briefCalled = (c: Conversation, tool: string, input: Record<string, unknow
   return typeof text === 'string' && c.briefsInFlight.includes(text) ? text : undefined
 }
 
+// The stored ids the switch check may need (`keeps`), read before the change that judges the stored reviewer, whose callback is synchronous: only where the reviewer was spawned for another name than the choice (`needsIds`). A read that fails leaves them unknown, and the names decide.
+const idsForSwitch = async ($: Pick<Scope, 'state' | 'store' | 'clock' | 'ui'>): Promise<ModelIds> => {
+  const c = await readConversation($)
+  return needsIds(c) ? await readModelIds($) : {}
+}
+
 // A review given up at a dispatch: the review, its cause and logged reason, the models its log names, and the reviewer let go with it, if any.
 type Lapsed = { review: OpenReview; cause: Extract<FailCause, 'no start' | 'no finish'>; reason: string; models: ReviewModels; released: string | undefined }
 
@@ -716,12 +722,15 @@ const dispatchIdle = async ($: Scope, log: boolean): Promise<void> => {
   const now = await $.clock.now()
   // Read before the review opens, so a failed read leaves none open that no brief went out for; and before the brief goes out, so a /clear while it is in flight leaves a failed review's log in the session it was dispatched in.
   const sessionId = await $.session.id()
+  // The stored ids the model-switch check may need, read before the change, whose callback is synchronous.
+  const ids = await idsForSwitch($)
   // Set by the change's last run alone: a compare-and-set retry plans again from the state it read.
-  const planned: { plan?: Plan; lapsed?: Lapsed; bound?: { aged: number; evicted: number } } = {}
+  const planned: { plan?: Plan; lapsed?: Lapsed; bound?: { aged: number; evicted: number }; switched?: string } = {}
   await change($, c => {
     planned.plan = undefined
     planned.bound = undefined
     planned.lapsed = undefined
+    planned.switched = undefined
     // The one place an open review is given up, its entries put back: one still open with no reviewer stored SPAWN_TIMEOUT_MS after its dispatch has no spawn left that will stand one in; one whose stored reviewer has not ended its turn REVIEW_TIMEOUT_MS after it never will, so that reviewer is let go (the caller stops it), and its late turn end, sends and tool calls match no open review.
     const open = c.review
     const cause = lapseOf(c, now, { start: SPAWN_TIMEOUT_MS, finish: REVIEW_TIMEOUT_MS })
@@ -732,6 +741,10 @@ const dispatchIdle = async ($: Scope, log: boolean): Promise<void> => {
       d = { ...gone.next, review: undefined, failing: cause, record: withEntriesFirst(open.record, c.record) }
     }
     if (!eligible(d)) return d
+    // A stored reviewer takes the brief only while it runs the model the conversation's choice names: one that does not is let go in this change, and the brief goes to a spawn (`letGoSwitched`). It covers what the switch itself could not let go: a reviewer that was mid-review at the switch, and a spawn in flight at the switch that landed on the old model.
+    const switched = letGoSwitched(d, ids)
+    planned.switched = switched.released
+    d = switched.next
     const number = d.dispatches + 1
     const { blocks } = d.record
     // The memory is bounded in the dispatch's own change, before the brief is built, so the brief carries it as it stands after the bound.
@@ -751,6 +764,7 @@ const dispatchIdle = async ($: Scope, log: boolean): Promise<void> => {
     }
   }
   if (plan === undefined) return
+  await stopReviewer($, planned.switched, true)
   if (bound !== undefined && bound.aged + bound.evicted > 0) $.ui.log(`${PLUGIN}: review ${plan.number}'s dispatch aged out ${bound.aged} and evicted ${bound.evicted} memory entries`, { to: 'debug' })
   try {
     if (await deliverBrief($, plan)) await giveBack($, sessionId, log, plan)

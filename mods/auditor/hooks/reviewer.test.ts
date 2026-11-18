@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'claude-code/testing'
 import type { AgentInfo } from 'claude-code'
 import type { Conversation } from '../types/index'
-import { adopt, compactionModel, idleTimerOf, isEndNotice, isHandBack, isNotice, isReviewerEntry, keeps, land, lapseOf, learn, learnName, letGo, letGoSwitched, letGoSwitchedIdle, markers, nameKnown, nameListed, originOf, reapIdle, reviewModels, reviewerNameOf, spawnChoice, spawnName, spawning, standingOf, stopMissed, sweepable, withTurnEnd } from './reviewer'
+import { adopt, compactionModel, idleTimerOf, isEndNotice, isHandBack, isNotice, isReviewerEntry, keeps, land, lapseOf, learn, learnName, letGo, letGoSwitched, letGoSwitchedIdle, markers, nameKnown, nameListed, needsIds, originOf, reapIdle, reviewModels, reviewerNameOf, spawnChoice, spawnName, spawning, standingOf, stopMissed, sweepable, withTurnEnd } from './reviewer'
 import type { Identity } from './reviewer'
 
 const ID: Identity = { plugin: 'auditor', name: 'auditor-reviewer', description: 'auditor review' }
@@ -399,6 +399,15 @@ describe('whether a stored reviewer is kept at a switch', () => {
     expect(keeps(held(undefined, 'sonnet'), {})).toBe(true)
     expect(keeps(held('haiku', undefined), {})).toBe(true)
     expect(keeps(held('sonnet', undefined), {})).toBe(false)
+  })
+
+  test('the stored ids are needed only where the reviewer\'s name differs from the choice\'s', () => {
+    expect(needsIds(held('sonnet', 'haiku'))).toBe(true)
+    expect(needsIds(held('sonnet', undefined))).toBe(true)
+    expect(needsIds(held('haiku', 'haiku'))).toBe(false)
+    expect(needsIds(held('haiku', undefined))).toBe(false)
+    expect(needsIds(held(undefined, 'sonnet'))).toBe(false)
+    expect(needsIds(conversation({ choice: 'sonnet' }))).toBe(false)
   })
 
   test('letting a switched reviewer go clears it like a rotation and notes the reason, and keeps its marks', () => {
