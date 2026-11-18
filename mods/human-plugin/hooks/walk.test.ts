@@ -432,6 +432,22 @@ test('a result that carries afkTimeoutMs writes nothing and ends with the auto-c
   expect(debug).toEqual(['human-plugin: walk record for #1: afkTimeoutMs present', 'human-plugin: walk ask #1: label "Done"; record matched; not written'])
 })
 
+test('a rejected dialog whose record carries afkTimeoutMs writes nothing and ends with the rejection text, not the auto-continue text; its message is logged', async () => {
+  fresh()
+  const message = 'no answer (No response after 20s — the user may be away from keyboard.)'
+  const asking = (question: string): unknown => ({ questions: [{ question }] })
+  const { env, values, debug } = walkEnv([made(1), made(2)], [{ gives: { rejects: message }, observed: { call: asking, result: { result: { afkTimeoutMs: 20000 } } } }])
+  const text = await walk(env, WINDOW)
+  expect(values.list.items.map(it => it.state)).toEqual(['open', 'open'])
+  expect(text).toBe(
+    [
+      '  It ended when the question on #1 was closed, timed out or refused; nothing was sent for it. /asks 1 shows it, and /asks 1 <form> answers it.',
+      '  The walk sent nothing; 2 items are still open. /asks answer asks about them again.',
+    ].join('\n'),
+  )
+  expect(debug).toEqual(['human-plugin: walk record for #1: afkTimeoutMs present', `human-plugin: walk ask #1: rejected: ${message}; record matched; not written`])
+})
+
 test('an answer the observer saw no result for, or only a result for another question, writes nothing, ends as one that cannot be confirmed, and logs a line', async () => {
   for (const [seen, state] of [['none', 'missing'], ['other', 'other question']] as const) {
     fresh()
@@ -503,6 +519,25 @@ test('a throw after an answer was written ends with the error reason, counts the
   expect(shown.join('\n')).toContain('list unreadable')
 })
 
+test('a throw from the read of the list for the end text, after an answer was written, ends with the error reason and the sent count, logs the error, and leaves the answer written', async () => {
+  fresh()
+  const { env, values, shown, breakGet } = walkEnv([made(1)], [{ gives: 'Done' }])
+  // Two reads of the list follow the answer: the loop's, which finds nothing left to ask about, and the end text's, which throws.
+  let reads = 0
+  breakGet.when = list => list.items.some(it => it.state === 'done-waiting') && ++reads === 2
+  const text = await walk(env, WINDOW)
+  expect(text).toBe(
+    [
+      '  answered #1 with done',
+      '  It stopped on an error, which was logged.',
+      '  The walk sent 1 answer; /asks shows what is still open.',
+    ].join('\n'),
+  )
+  expect(itemOf(values, 1).state).toBe('done-waiting')
+  expect(shown.filter(line => line.startsWith('human-plugin: the walk stopped on an error: '))).toHaveLength(1)
+  expect(shown.join('\n')).toContain('list unreadable')
+})
+
 test('a walk whose session ended writes and asks nothing more, whatever its open dialog returns, and says so', async () => {
   for (const gives of ['Done', { rejects: 'The user dismissed the question' }, 'Stop'] as const) {
     fresh()
@@ -521,6 +556,31 @@ test('a walk whose session ended writes and asks nothing more, whatever its open
     expect(lines(text)[0]).toBe('  It ended with its session; nothing more was asked or sent.')
     expect(walkLines(debug).pop()?.endsWith('; session ended')).toBe(true)
   }
+})
+
+test('a session that ends after the dialog returns and before the list update runs writes nothing, leaves the list as it was, and ends the walk with its session\'s reason line', async () => {
+  fresh()
+  const items = [made(1), made(2)]
+  let armed = false
+  const { env, values, timers, submitted, debug, breakGet } = walkEnv(items, [{ gives: 'Done', during: () => void (armed = true) }])
+  // The first read of the list once the dialog has returned is the guarded write's own update, which the walk reaches after its last check of its session.
+  breakGet.when = () => {
+    if (!armed) return false
+    armed = false
+    endWalk()
+    return false
+  }
+  const text = await walk(env, WINDOW)
+  expect(values.list).toEqual({ items, next: 3, term: null })
+  expect(timers).toEqual([])
+  expect(submitted).toEqual([])
+  expect(text).toBe(
+    [
+      '  It ended with its session; nothing more was asked or sent.',
+      '  The walk sent nothing; 2 items are still open. /asks answer asks about them again.',
+    ].join('\n'),
+  )
+  expect(debug).toContain('human-plugin: walk ask #1: label "Done"; record matched; session ended')
 })
 
 test('a walk started after a session ended keeps its flag when the old walk settles, so a third walk is told one is asking', async () => {

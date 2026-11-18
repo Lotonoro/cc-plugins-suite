@@ -1,7 +1,7 @@
 import type { EngineInterface } from 'claude-code'
 import type { Item, Store } from '../types'
 import { send } from './deliver'
-import { answerOf, answerShown, expire, isNumbered, press, reply, type AnswerOutcome, type Form, type ShownOutcome } from './done'
+import { answerOf, answerShown, expire, isNumbered, press, reply, type AnswerOutcome, type Form, type GuardedOutcome } from './done'
 import { followSent } from './pane'
 import { pushBlocking } from './push'
 import { inBackground, readList, updateList } from './shared'
@@ -104,10 +104,11 @@ export function pressAnswer($: EngineInterface, digits: string, form: Form, wind
 }
 
 // A walk's answer to the item it showed: the guarded write (answerShown), and the undo window an applied one leaves, which is `pressAnswer`'s: it counts from
-// one window back, so the first tick after the write ends it and sends the notice. A walk's writes carry their own source in the debug line.
-export function pressShown($: EngineInterface, shown: Item, form: Form, windowMs: number): Promise<ShownOutcome> {
+// one window back, so the first tick after the write ends it and sends the notice. A walk's writes carry their own source in the debug line. `owns` is the walk's
+// test that it still owns its session, which the guard calls inside the list update.
+export function pressShown($: EngineInterface, shown: Item, form: Form, windowMs: number, owns: () => boolean): Promise<GuardedOutcome> {
   return openWindow($, windowMs, String(shown.id), { source: '/asks answer', back: windowMs, endsAtOnce: false }, (store, token) =>
-    answerShown(store, shown, form, token),
+    answerShown(store, shown, form, token, owns),
   )
 }
 

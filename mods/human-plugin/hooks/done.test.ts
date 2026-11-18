@@ -431,9 +431,11 @@ test('a refused form leaves an unread item unread, and a number no item has leav
   expect(answerOf(unread, '9', { kind: 'done' }, TOKEN).store).toEqual(unread)
 })
 
-// A walk's guarded answer: the item as the walk showed it (`item`), and the list as it stands when the answer is written.
+// A walk's guarded answer: the item as the walk showed it (`item`), and the list as it stands when the answer is written. The walk owns its session, unless
+// a test says it does not.
 const listOf = (shown: Item): Store => ({ items: [shown], next: 4, term: null })
-const answeredAs = (now: Item, shown: Item, form: Form) => answerShown(listOf(now), shown, form, TOKEN)
+const owned = (): boolean => true
+const answeredAs = (now: Item, shown: Item, form: Form) => answerShown(listOf(now), shown, form, TOKEN, owned)
 const decisionItem: Item = { ...item, options: DECISION }
 
 test('an unchanged item takes a walk\'s answer as the same form of /asks <n> <form> takes it: the same list, the same outcome', () => {
@@ -482,9 +484,9 @@ test('an item changed since it was shown takes no answer: the list is left as it
 })
 
 test('an item that has left the list takes no answer and the outcome is missing', () => {
-  const out = answerShown({ items: [], next: 4, term: null }, item, { kind: 'done' }, TOKEN)
+  const out = answerShown({ items: [], next: 4, term: null }, item, { kind: 'done' }, TOKEN, owned)
   expect(out).toEqual({ store: { items: [], next: 4, term: null }, outcome: { kind: 'missing' } })
-  const other = answerShown({ items: [{ ...item, id: 4 }], next: 5, term: null }, item, { kind: 'done' }, TOKEN)
+  const other = answerShown({ items: [{ ...item, id: 4 }], next: 5, term: null }, item, { kind: 'done' }, TOKEN, owned)
   expect(other.outcome).toEqual({ kind: 'missing' })
   expect(other.store.items[0]).toMatchObject({ id: 4, state: 'open' })
 })
@@ -492,4 +494,19 @@ test('an item that has left the list takes no answer and the outcome is missing'
 test('the guard reads the options in the pane\'s order: the same labels in another stored order are the same item', () => {
   const reordered: Item = { ...decisionItem, options: [DECISION[1]!, DECISION[0]!] }
   expect(answeredAs(reordered, decisionItem, { kind: 'option', n: 1 }).outcome.kind).toBe('applied')
+})
+
+test('a walk that no longer owns its session takes no answer, whatever the item now is: the list is left as it is and the outcome is session', () => {
+  const thread: Turn[] = [{ speaker: 'human', words: 'Use sqlite' }]
+  const lists: [string, Store][] = [
+    ['the item as shown', listOf(item)],
+    ['a changed item', listOf({ ...item, title: 'Pick a cache' })],
+    ['an item answered elsewhere', listOf({ ...item, thread })],
+    ['an item that has left the list', { items: [], next: 4, term: null }],
+  ]
+  for (const [name, list] of lists) {
+    const out = answerShown(list, item, { kind: 'done' }, TOKEN, () => false)
+    expect([name, out.outcome]).toEqual([name, { kind: 'session' }])
+    expect([name, out.store]).toEqual([name, list])
+  }
 })

@@ -52,6 +52,10 @@ export function endWalk(): void {
   asking = null
 }
 
+// Whether the walk `me` still owns its session: its flag is its own until the session ends (endWalk). It is the one test a walk makes of that: before each
+// question, after each dialog, and, handed to the guarded write, inside the list update that carries its answer.
+const owns = (me: symbol): boolean => walking === me
+
 // How far a walk has got: the items it has asked about (an item is asked at most once per walk), the answers it has written, and the outcome line of the last
 // item that no question has shown yet.
 type Progress = { asked: Set<number>; sent: number; pending: string | null }
@@ -86,8 +90,9 @@ async function clearMark($: EngineInterface, item: Item): Promise<void> {
 
 // One question: the dialog is asked, and what it gave back is read in this order. A walk that lost its session ends, and a rejected dialog ends the walk. An answer
 // the observer saw no result for, or only one for another question, ends it as one that cannot be confirmed as the person's, and so does one whose result carries
-// `afkTimeoutMs`. Only then is the answer read against the item: Stop ends the walk, Skip goes on, and any other answer is written through the guarded write. Every
-// ask leaves its line in the debug log, a throw included. Returns the reason the walk ended, or null to go on with the next item.
+// `afkTimeoutMs`. Only then is the answer read against the item: Stop ends the walk, Skip goes on, and any other answer is written through the guarded write, which
+// is handed the walk's test of its session and writes nothing once it fails, so a session that ends after the test above and before the write's list update ends
+// the walk the same way. Every ask leaves its line in the debug log, a throw included. Returns the reason the walk ended, or null to go on with the next item.
 async function askOne($: EngineInterface, windowMs: number, me: symbol, progress: Progress, item: Item, dialog: Dialog): Promise<Reason | null> {
   const slot: Asking = { id: item.id, question: dialog.question, seen: null }
   asking = slot
@@ -101,11 +106,13 @@ async function askOne($: EngineInterface, windowMs: number, me: symbol, progress
   }
   const state = recordState(slot)
   let outcome: Outcome = 'not written'
+  // The walk lost its session: nothing more is asked or written, and the ask line says so.
+  const sessionEnded = (): Reason => {
+    outcome = 'session ended'
+    return { kind: 'session' }
+  }
   try {
-    if (walking !== me) {
-      outcome = 'session ended'
-      return { kind: 'session' }
-    }
+    if (!owns(me)) return sessionEnded()
     if (returned.kind === 'rejected') return { kind: 'closed', id: item.id }
     if (state !== 'matched') return { kind: 'unconfirmed', id: item.id }
     if (slot.seen?.afk === true) return { kind: 'auto', id: item.id }
@@ -119,7 +126,8 @@ async function askOne($: EngineInterface, windowMs: number, me: symbol, progress
       progress.pending = skippedLine(item)
       return null
     }
-    const written = await pressShown($, item, reading.form, windowMs)
+    const written = await pressShown($, item, reading.form, windowMs, () => owns(me))
+    if (written.kind === 'session') return sessionEnded()
     progress.pending = outcomeLine(item, written)
     if (written.kind === 'applied') progress.sent++
     outcome = written.kind === 'applied' ? 'written' : written.kind === 'changed' ? 'refused as changed' : 'left the list'
@@ -135,7 +143,7 @@ async function askOne($: EngineInterface, windowMs: number, me: symbol, progress
 async function askEach($: EngineInterface, windowMs: number, me: symbol, progress: Progress): Promise<Reason | null> {
   for (;;) {
     const { items } = await readList($)
-    if (walking !== me) return { kind: 'session' }
+    if (!owns(me)) return { kind: 'session' }
     const open = openOf(items)
     const rest = open.filter(it => !progress.asked.has(it.id))
     const item = rest[0]
@@ -145,15 +153,21 @@ async function askEach($: EngineInterface, windowMs: number, me: symbol, progres
     const dialog = walkDialog(item, progress.asked.size, progress.asked.size + rest.length - 1, lead)
     progress.pending = null
     await clearMark($, item)
-    if (walking !== me) return { kind: 'session' }
+    if (!owns(me)) return { kind: 'session' }
     const ended = await askOne($, windowMs, me, progress, item, dialog)
     if (ended !== null) return ended
   }
 }
 
+// A throw inside the walk, logged with its stack.
+function logWalkError($: EngineInterface, err: unknown): void {
+  $.ui.log(`human-plugin: the walk stopped on an error: ${messageOf(err)}`)
+}
+
 // `/asks answer`: the command's output. A walk already asking, or nothing open, ends it at once and asks nothing. Otherwise the walk asks about each open item
 // and returns its end text: the outcome no question showed, why it ended, and what it sent and what is still open. A throw ends it with the error reason and the
-// same counts, and the error is logged with its stack; the answers already written stay written, whatever ends the walk.
+// same counts, and the error is logged with its stack. So does a throw from the read of the list for those counts, which leaves the end text the count of what was
+// sent alone, since what is still open is unknown. The answers already written stay written, whatever ends the walk.
 export async function walk($: EngineInterface, windowMs: number): Promise<string> {
   if (walking !== null) return ALREADY_ASKING
   const me = Symbol('walk')
@@ -164,13 +178,19 @@ export async function walk($: EngineInterface, windowMs: number): Promise<string
     try {
       reason = await askEach($, windowMs, me, progress)
     } catch (err) {
-      $.ui.log(`human-plugin: the walk stopped on an error: ${messageOf(err)}`)
+      logWalkError($, err)
       reason = { kind: 'error' }
     }
     if (reason === null) return NOTHING_OPEN
-    const open = openOf((await readList($)).items).length
+    let open: number | null = null
+    try {
+      open = openOf((await readList($)).items).length
+    } catch (err) {
+      logWalkError($, err)
+      reason = { kind: 'error' }
+    }
     return walkEnd(progress.pending, reason, progress.sent, open)
   } finally {
-    if (walking === me) walking = null
+    if (owns(me)) walking = null
   }
 }

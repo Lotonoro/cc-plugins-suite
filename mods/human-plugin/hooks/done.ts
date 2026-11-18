@@ -153,8 +153,12 @@ export type AnswerOutcome =
   | { kind: 'undoing'; item: Item }
   | { kind: 'takes'; item: Item }
 
-// What a walk's guarded answer did: the applied answer, the item gone from the list, or the item not as the walk showed it (nothing is written then).
+// What a walk's guarded answer did to the item it showed: the applied answer, the item gone from the list, or the item not as the walk showed it (nothing is
+// written then).
 export type ShownOutcome = Extract<AnswerOutcome, { kind: 'applied' | 'missing' }> | { kind: 'changed' }
+
+// What the guarded write answers: what became of the item, or that the walk no longer owns its session (nothing is written then either).
+export type GuardedOutcome = ShownOutcome | { kind: 'session' }
 
 // The answer a press of a form carries, for a form that is not a reply: a to-do's label as it stands, `yes` or `no`, or the option's label in the
 // order the pane draws the options.
@@ -202,10 +206,13 @@ const sameAsShown = (now: Item, shown: Item): boolean =>
   sameLabels(orderedOptions(now), orderedOptions(shown)) &&
   sameThread(now.thread, shown.thread)
 
-// A walk's answer to the item it showed: the resolver's write (answerOf) for `form`, unless the item is no longer as shown (sameAsShown), which writes
-// nothing and answers `changed`, or has left the list, which answers `missing`. The guard sits in the same update as the write, so nothing can change
-// the item between the two. What the guard lets through cannot be refused by the resolver, so a refusal of it is read as a change as well.
-export const answerShown = (store: Store, shown: Item, form: Form, token: number): { store: Store; outcome: ShownOutcome } => {
+// A walk's answer to the item it showed: the resolver's write (answerOf) for `form`, unless the walk no longer owns its session, which writes nothing and answers
+// `session`, or the item is no longer as shown (sameAsShown), which writes nothing and answers `changed`, or has left the list, which answers `missing`. The guard
+// sits in the same update as the write, so nothing can change the item between the two, and `owns`, the walk's own test of its session, is called here for the
+// same reason: a session that ends after the walk's last test and before this update cannot be followed by a write. The session is checked first, since the list
+// may by then be another session's. What the guard lets through cannot be refused by the resolver, so a refusal of it is read as a change as well.
+export const answerShown = (store: Store, shown: Item, form: Form, token: number, owns: () => boolean): { store: Store; outcome: GuardedOutcome } => {
+  if (!owns()) return { store, outcome: { kind: 'session' } }
   const now = store.items.find(it => it.id === shown.id)
   if (now === undefined) return { store, outcome: { kind: 'missing' } }
   if (!sameAsShown(now, shown)) return { store, outcome: { kind: 'changed' } }

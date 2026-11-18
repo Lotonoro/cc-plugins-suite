@@ -1128,6 +1128,16 @@ test('the end text is the outcome line no question showed, why the walk ended, a
   expect(lines(null, { kind: 'every' }, 0, 4)[1]).toBe('  The walk sent nothing; 4 items are still open. /asks answer asks about them again.')
 })
 
+test('when the open items cannot be counted the count line keeps the sent count and points to /asks, in the singular for one answer', () => {
+  expect(lineList(walkEnd('answered #2 with sqlite', { kind: 'error' }, 2, null))).toEqual([
+    '  answered #2 with sqlite',
+    '  It stopped on an error, which was logged.',
+    '  The walk sent 2 answers; /asks shows what is still open.',
+  ])
+  expect(lastLine(walkEnd(null, { kind: 'error' }, 1, null))).toBe('  The walk sent 1 answer; /asks shows what is still open.')
+  expect(lastLine(walkEnd(null, { kind: 'error' }, 0, null))).toBe('  The walk sent nothing; /asks shows what is still open.')
+})
+
 test('each reason has its line: closed names the item and how to answer it, auto and unconfirmed name the item, session says nothing more was asked', () => {
   const reasonOf = (reason: Reason): string => lineList(walkEnd(null, reason, 0, 0))[0] ?? ''
   expect(reasonOf({ kind: 'every' })).toBe('  It asked about every open item.')

@@ -491,17 +491,20 @@ const reasonLine = (reason: Reason): string => {
   }
 }
 
-// How many answers the walk sent and how many items are still open, in the singular for a count of one. With nothing left open there is no pointer.
-const countLine = (sent: number, open: number): string => {
+// How many answers the walk sent and how many items are still open, in the singular for a count of one. With nothing left open there is no pointer. When the
+// list could not be read for the count (`open` is null) the line gives what was sent and points to `/asks`, which shows what is open.
+const countLine = (sent: number, open: number | null): string => {
   const sentWords = sent === 0 ? 'nothing' : `${sent} ${sent === 1 ? 'answer' : 'answers'}`
   const openWords =
-    open === 0
-      ? 'nothing is left open.'
-      : `${open} ${open === 1 ? 'item is' : 'items are'} still open. ${WALK_POINTER} asks about ${open === 1 ? 'it' : 'them'} again.`
+    open === null
+      ? `/${COMMAND} shows what is still open.`
+      : open === 0
+        ? 'nothing is left open.'
+        : `${open} ${open === 1 ? 'item is' : 'items are'} still open. ${WALK_POINTER} asks about ${open === 1 ? 'it' : 'them'} again.`
   return `The walk sent ${sentWords}; ${openWords}`
 }
 
 // The command's output when the walk has ended, each line indented as the command's other prints are: the outcome line no question showed (`pending`, the
-// last item's, when it has one), why the walk ended, and the count of what it sent and what is still open.
-export const walkEnd = (pending: string | null, reason: Reason, sent: number, open: number): string =>
+// last item's, when it has one), why the walk ended, and the count of what it sent and what is still open (`open`, null when the list could not be read).
+export const walkEnd = (pending: string | null, reason: Reason, sent: number, open: number | null): string =>
   [...(pending === null ? [] : [pending]), reasonLine(reason), countLine(sent, open)].map(line => `${INDENT}${line}`).join('\n')
