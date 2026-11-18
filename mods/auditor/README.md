@@ -1,6 +1,6 @@
 # auditor
 
-A second Claude reviews your session as you work. When the agent finishes a turn, a reviewer subagent on the latest Haiku (the alias `haiku`)
+A second Claude reviews your session as you work. When the agent finishes a turn, a reviewer subagent on Haiku 5.5
 at high effort reads what the agent did and checks it against the rules the agent is bound by: your instructions, the
 plan, skills and CLAUDE.md, and the correctness of the code it touched. When it finds a deviation, it sends the agent
 one note as a message: an idle agent takes it at once, in a turn of its own, and a busy agent reads it once its turn
