@@ -5,21 +5,24 @@ import { PLUGIN, recordFailed, within } from './boundary'
 import { readChoices } from './catalog'
 import { MEMORY, MEMORY_ACTION, MEMORY_FIELD, MEMORY_LOG_CHARS, REVIEW_ENDED, WHY_CHARS, bounded, changeMemory, printMemory, renderMemory, withNote } from './memory'
 import type { MemoryChange } from './memory'
-import { answerOf, buttonOf } from './button'
+import { answerOf, buttonOf, modelAnswerOf, modelFiguresOf } from './button'
 import type { Figures } from './button'
 import { MAIN, admitSend, decideRefusal, followUpText, frameNote, isStoppedRefusal, marksOf, readSend, settleOutcome } from './notes'
 import type { Decided, Outcome, Refusal, Sent, Verdict } from './notes'
 import { REVIEWER_PROMPT } from './prompt'
 import { clip, editedLines, entryBlock, pageOf, renumberBlock, toolLine } from './record'
-import { DEFAULT_MODEL, FALLBACK_CHOICES, isFullId, takeChoice } from './models'
+import { DEFAULT_MODEL, FALLBACK_CHOICES, isFullId, offered, takeChoice } from './models'
 import type { Choices, ModelIds } from './models'
-import { adopt, compactionModel, idleTimerOf, isEndNotice, isHandBack, isNotice, isReviewerEntry, land, lapseOf, learn, learnName, letGo, letGoSwitched, markers, nameKnown, nameListed, needsIds, originOf, reapIdle, reviewModels, reviewerNameOf, spawnChoice, spawnName, spawning, standingOf, stopMissed, sweepable, WORKING, withTurnEnd } from './reviewer'
+import { adopt, compactionModel, idleTimerOf, isEndNotice, isHandBack, isNotice, isReviewerEntry, land, lapseOf, learn, learnName, letGo, letGoSwitched, letGoSwitchedIdle, markers, nameKnown, nameListed, needsIds, originOf, reapIdle, reviewModels, reviewerNameOf, spawnChoice, spawnName, spawning, standingOf, stopMissed, sweepable, WORKING, withTurnEnd } from './reviewer'
 import type { Identity, IdleTimer, Release, ReviewModels } from './reviewer'
-import { readLastModel, readModelIds, storeModelId } from './store'
+import { readLastModel, readModelIds, storeModelId, writeLastModel } from './store'
 import { purged, withCompaction, withNoteGiven, withResponse, withReviewDone } from './tally'
 import { DIGEST_CHARS, LOOKUP_TIMEOUT_MS, SEARCH_TERM_CHARS, digestBlocks, digestOf, lineCommand, lookupOf, parseSearch, renderSearch, searchCommand } from './transcript'
 
 const REVIEWER = 'auditor-reviewer'
+// What `/auditor` takes: the command's argument hint, and the usage line it answers an argument it does not take with.
+const ARGUMENTS = '[on|off|memory|model [name]]'
+const USAGE = `Usage: /auditor ${ARGUMENTS}`
 const REVIEWER_TYPE = `${PLUGIN}:reviewer`
 // What the spawn is described as, which the engine's task notification for the reviewer names.
 const REVIEW_DESCRIPTION = 'auditor review'
@@ -1008,6 +1011,26 @@ const failReview = async ($: Scope, sessionId: string, log: boolean, plan: Plan,
   }
 }
 
+// Sets the conversation's choice to `name`, a name the choices offer, and lets go the stored reviewer at once when it is idle and runs another model (`letGoSwitchedIdle`, judged by the stored `ids`), in the one change, so a set that names the model the reviewer runs stops nothing. A reviewer that is busy finishes its review on its old model, and the next dispatch lets it go (`dispatchIdle`).
+const setChoice = async ($: Scope, name: string, ids: ModelIds): Promise<void> => {
+  await release($, c => letGoSwitchedIdle({ ...c, choice: name }, ids), true)
+}
+
+// `/auditor model` and `/auditor model <name>`; `name` is empty for the bare read. The choices are what `/model` offers (`readChoices`). A bare read is a need: a conversation with no choice takes one there, as it would at its first spawn (`takeChoice`) and keeps it, so what the answer shows is what the next spawn runs on. A name is matched against the choices case-insensitively and set in the list's spelling, as the conversation's choice (`setChoice`) and as the last model set, which new sessions follow; a failed store write is recorded and leaves the choice set. A name the list does not offer sets nothing, and takes nothing: the answer shows the model the conversation holds, or would take.
+const modelCommand = async ($: Scope, name: string): Promise<string> => {
+  const [choices, ids, held] = await Promise.all([readChoices($), readModelIds($), readConversation($).then(c => c.choice)])
+  const taken = takeChoice(held, held === undefined ? await readLastModel($) : undefined, choices)
+  if (name === '') {
+    const after = held === undefined ? await change($, c => ({ ...c, choice: c.choice ?? taken })) : undefined
+    return modelAnswerOf(modelFiguresOf(after?.choice ?? taken, choices, ids))
+  }
+  const wanted = offered(choices.list, name)
+  if (wanted === undefined) return modelAnswerOf(modelFiguresOf(taken, choices, ids), `No model is named ${name}: nothing was set.`)
+  await setChoice($, wanted, ids)
+  await writeLastModel($, wanted)
+  return modelAnswerOf(modelFiguresOf(wanted, choices, ids), `Set: the next review runs on ${wanted}.`)
+}
+
 // Switches the auditor (`switched`) and returns the state after. A switch to off releases the reviewer it lets go, so a review under way ends now, and logs that review as incomplete.
 const toggle = async ($: Scope, log: boolean, off: (c: Conversation) => boolean): Promise<Conversation> => {
   // Read before the switch, so a /clear in between leaves the review's log in the session it was dispatched in. A failed read costs only that log: the switch still lands.
@@ -1103,7 +1126,7 @@ export const register: Register = (on, options) => {
 
   on('session.start', async ($, e, next) => {
     // The footer button's twin for every surface: a phone draws no footer, but its typed commands run here and their answer shows there.
-    await $.command.register({ name: 'auditor', description: 'Turn the auditor reviewer on or off for this session, say which it is and what it has cost, or print its memory of the notes delivered', argumentHint: '[on|off|memory]', immediate: true })
+    await $.command.register({ name: 'auditor', description: 'Turn the auditor reviewer on or off for this session, say which it is and what it has cost, print its memory of the notes delivered, or show and set the model it runs on', argumentHint: ARGUMENTS, immediate: true })
     await $.tool.register({
       name: 'entries',
       description: "Returns the calling auditor reviewer's record for its open review, or the entries the worker recorded after that review's dispatch, as they are at the call, one page at a time from entry `from`.",
@@ -1193,7 +1216,10 @@ export const register: Register = (on, options) => {
     const wanted = e.args.trim().toLowerCase()
     // Read-only: the memory is printed as stored, on or off.
     if (wanted === 'memory') return { text: printMemory((await readConversation($)).memory) }
-    if (wanted !== '' && wanted !== 'on' && wanted !== 'off') return { text: 'Usage: /auditor [on|off|memory]' }
+    // The model, read or set, on or off: the choice is the conversation's, whatever the toggle says.
+    const model = /^model(?:\s+([\s\S]*))?$/i.exec(e.args.trim())
+    if (model !== null) return { text: await modelCommand($, (model[1] ?? '').trim()) }
+    if (wanted !== '' && wanted !== 'on' && wanted !== 'off') return { text: USAGE }
     const after = wanted === '' ? await readConversation($) : await toggle($, log, () => wanted === 'off')
     return { text: answerOf(await figuresOf($, after)) }
   })
