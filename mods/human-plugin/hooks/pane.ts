@@ -233,7 +233,7 @@ function showBacklog($: EngineInterface): Promise<unknown> {
 // Both are normalized (normalizeItem), so their keys come in one order and the JSON compares the content.
 const sameContent = (now: Item, printed: Item): boolean => JSON.stringify({ ...now, unread: false }) === JSON.stringify({ ...printed, unread: false })
 
-// Marks one item read: an item the pane switches to is shown, so its unread mark goes. `/asks <n>` passes the item as it printed it, and the mark
+// Marks one item read: an item the pane switches to is shown, so its unread mark goes. `/todo <n>` passes the item as it printed it, and the mark
 // goes only while the item is still that one: a change made since the print is not in the text, so the mark it raised stays.
 export function markRead($: EngineInterface, id: number, printed?: Item): Promise<unknown> {
   return updateList($, store => ({

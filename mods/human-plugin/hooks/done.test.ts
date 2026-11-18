@@ -438,7 +438,7 @@ const owned = (): boolean => true
 const answeredAs = (now: Item, shown: Item, form: Form) => answerShown(listOf(now), shown, form, TOKEN, owned)
 const decisionItem: Item = { ...item, options: DECISION }
 
-test('an unchanged item takes a walk\'s answer as the same form of /asks <n> <form> takes it: the same list, the same outcome', () => {
+test('an unchanged item takes a walk\'s answer as the same form of /todo <n> <form> takes it: the same list, the same outcome', () => {
   const forms: [Item, Form][] = [
     [item, { kind: 'done' }],
     [{ ...item, doneLabel: 'Ship it' }, { kind: 'done' }],

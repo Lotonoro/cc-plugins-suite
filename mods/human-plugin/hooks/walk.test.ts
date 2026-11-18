@@ -171,7 +171,7 @@ test('the questions come blocking first and then by id, each opening with the pr
     [
       '  skipped #2',
       '  It asked about every open item.',
-      '  The walk sent nothing; 3 items are still open. /asks answer asks about them again.',
+      '  The walk sent nothing; 3 items are still open. /todo answer asks about them again.',
     ].join('\n'),
   )
 })
@@ -235,7 +235,7 @@ test('an item whose write was refused is not asked a second time in the same wal
   )
   const text = await walk(env, WINDOW)
   expect(asked.map(a => a.header)).toEqual(['#1', '#2'])
-  expect(lines(asked[1]?.question ?? '')[0]).toBe('#1 changed while it was shown, so nothing was sent; /asks answer asks it again.')
+  expect(lines(asked[1]?.question ?? '')[0]).toBe('#1 changed while it was shown, so nothing was sent; /todo answer asks it again.')
   expect(text).toContain('The walk sent nothing; 2 items are still open.')
   expect(itemOf(values, 1)).toMatchObject({ state: 'open', title: 'Retitled' })
   steps.push({ gives: 'Skip' }, { gives: 'Skip' })
@@ -263,7 +263,7 @@ test('an item the agent reopens after the walk answered it is not asked a second
   expect(text).toContain('The walk sent 1 answer; 2 items are still open.')
 })
 
-test('each answer label writes its form through the path /asks <n> <form> takes: the same list and, a tick later, the same notice', async () => {
+test('each answer label writes its form through the path /todo <n> <form> takes: the same list and, a tick later, the same notice', async () => {
   const cases: [string, Item, Form, string][] = [
     ['an option', pick(3), { kind: 'option', n: 2 }, 'Use sqlite'],
     ['the recommended option', pick(3), { kind: 'option', n: 1 }, 'Use postgres'],
@@ -335,7 +335,7 @@ test('Stop ends the walk with its reason and the count of what was sent; the ans
   const { env, values, debug, asked } = walkEnv([pick(1, { blocking: true }), made(2), made(3)], [{ gives: 'Use sqlite' }, { gives: 'Skip' }, { gives: 'Stop' }])
   const text = await walk(env, WINDOW)
   expect(asked).toHaveLength(3)
-  expect(text).toBe(['  It ended on Stop.', '  The walk sent 1 answer; 2 items are still open. /asks answer asks about them again.'].join('\n'))
+  expect(text).toBe(['  It ended on Stop.', '  The walk sent 1 answer; 2 items are still open. /todo answer asks about them again.'].join('\n'))
   expect(itemOf(values, 1)).toMatchObject({ state: 'done-waiting', answer: 'Use sqlite' })
   expect(values.list.items.slice(1).map(it => it.state)).toEqual(['open', 'open'])
   expect(lines(asked[1]?.question ?? '')[0]).toBe('answered #1 with Use sqlite')
@@ -375,7 +375,7 @@ test('an item changed while its question was up takes no answer: nothing is writ
     const { env, values, asked, debug } = walkEnv([item, made(2)], [{ gives: label, during }, { gives: 'Stop' }])
     const text = await walk(env, WINDOW)
     expect([name, asked.map(a => a.header)]).toEqual([name, ['#1', '#2']])
-    expect([name, lines(asked[1]?.question ?? '')[0]]).toEqual([name, '#1 changed while it was shown, so nothing was sent; /asks answer asks it again.'])
+    expect([name, lines(asked[1]?.question ?? '')[0]]).toEqual([name, '#1 changed while it was shown, so nothing was sent; /todo answer asks it again.'])
     expect([name, values.list.items.some(it => it.state === 'done-waiting')]).toEqual([name, false])
     expect([name, text.includes('The walk sent nothing;')]).toEqual([name, true])
     expect(debug).toContain(`human-plugin: walk ask #1: label "${label}"; record matched; refused as changed`)
@@ -411,8 +411,8 @@ test('a rejected dialog (closed, expired or refused) writes nothing for its item
   expect(values.list.items.map(it => it.state)).toEqual(['done-waiting', 'open', 'open'])
   expect(text).toBe(
     [
-      '  It ended when the question on #2 was closed, timed out or refused; nothing was sent for it. /asks 2 shows it, and /asks 2 <form> answers it.',
-      '  The walk sent 1 answer; 2 items are still open. /asks answer asks about them again.',
+      '  It ended when the question on #2 was closed, timed out or refused; nothing was sent for it. /todo 2 shows it, and /todo 2 <form> answers it.',
+      '  The walk sent 1 answer; 2 items are still open. /todo answer asks about them again.',
     ].join('\n'),
   )
   expect(debug).toContain('human-plugin: walk ask #2: rejected: The user dismissed the question; record matched; not written')
@@ -426,7 +426,7 @@ test('a result that carries afkTimeoutMs writes nothing and ends with the auto-c
   expect(text).toBe(
     [
       '  It ended when the question auto-continued while you were away; nothing was sent for #1.',
-      '  The walk sent nothing; 2 items are still open. /asks answer asks about them again.',
+      '  The walk sent nothing; 2 items are still open. /todo answer asks about them again.',
     ].join('\n'),
   )
   expect(debug).toEqual(['human-plugin: walk record for #1: afkTimeoutMs present', 'human-plugin: walk ask #1: label "Done"; record matched; not written'])
@@ -441,8 +441,8 @@ test('a rejected dialog whose record carries afkTimeoutMs writes nothing and end
   expect(values.list.items.map(it => it.state)).toEqual(['open', 'open'])
   expect(text).toBe(
     [
-      '  It ended when the question on #1 was closed, timed out or refused; nothing was sent for it. /asks 1 shows it, and /asks 1 <form> answers it.',
-      '  The walk sent nothing; 2 items are still open. /asks answer asks about them again.',
+      '  It ended when the question on #1 was closed, timed out or refused; nothing was sent for it. /todo 1 shows it, and /todo 1 <form> answers it.',
+      '  The walk sent nothing; 2 items are still open. /todo answer asks about them again.',
     ].join('\n'),
   )
   expect(debug).toEqual(['human-plugin: walk record for #1: afkTimeoutMs present', `human-plugin: walk ask #1: rejected: ${message}; record matched; not written`])
@@ -457,7 +457,7 @@ test('an answer the observer saw no result for, or only a result for another que
     expect(text).toBe(
       [
         '  It ended because the answer to #1 could not be confirmed as yours; nothing was sent, and this was logged.',
-        '  The walk sent nothing; 2 items are still open. /asks answer asks about them again.',
+        '  The walk sent nothing; 2 items are still open. /todo answer asks about them again.',
       ].join('\n'),
     )
     expect(debug).toContain(`human-plugin: walk ask #1: label "Done"; record ${state}; not written`)
@@ -511,7 +511,7 @@ test('a throw after an answer was written ends with the error reason, counts the
     [
       '  answered #1 with done',
       '  It stopped on an error, which was logged.',
-      '  The walk sent 1 answer; 1 item is still open. /asks answer asks about it again.',
+      '  The walk sent 1 answer; 1 item is still open. /todo answer asks about it again.',
     ].join('\n'),
   )
   expect(itemOf(values, 1).state).toBe('done-waiting')
@@ -530,7 +530,7 @@ test('a throw from the read of the list for the end text, after an answer was wr
     [
       '  answered #1 with done',
       '  It stopped on an error, which was logged.',
-      '  The walk sent 1 answer; /asks shows what is still open.',
+      '  The walk sent 1 answer; /todo shows what is still open.',
     ].join('\n'),
   )
   expect(itemOf(values, 1).state).toBe('done-waiting')
@@ -577,7 +577,7 @@ test('a session that ends after the dialog returns and before the list update ru
   expect(text).toBe(
     [
       '  It ended with its session; nothing more was asked or sent.',
-      '  The walk sent nothing; 2 items are still open. /asks answer asks about them again.',
+      '  The walk sent nothing; 2 items are still open. /todo answer asks about them again.',
     ].join('\n'),
   )
   expect(debug).toContain('human-plugin: walk ask #1: label "Done"; record matched; session ended')
@@ -604,7 +604,7 @@ test('a write the guard refuses because the session ended starts no ticker: an e
   expect(text).toBe(
     [
       '  It ended with its session; nothing more was asked or sent.',
-      '  The walk sent 1 answer; 1 item is still open. /asks answer asks about it again.',
+      '  The walk sent 1 answer; 1 item is still open. /todo answer asks about it again.',
     ].join('\n'),
   )
   expect(debug).toContain('human-plugin: walk ask #2: label "Done"; record matched; session ended')

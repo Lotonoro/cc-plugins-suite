@@ -173,11 +173,11 @@ const answer = async ($: EngineInterface, e: unknown) => {
   return { result: out.reply }
 }
 
-// The `/asks` command's answer: the list, one item whole, the confirmation of an answer form, or the walk's end text (`/asks answer`, walk.ts, which asks
+// The `/todo` command's answer: the list, one item whole, the confirmation of an answer form, or the walk's end text (`/todo answer`, walk.ts, which asks
 // about each open item before it returns). It waits for a rebuild in progress as the tool does, and clears the unread mark of the one item it shows, if that
 // item is still the one it printed (markRead); an answer form clears its item's mark in its own write (pressAnswer). The wording and the parse are
 // commands.ts's. A mark that cannot be cleared is logged, and the text is still returned: the item is what the person asked for.
-const asks = async ($: EngineInterface, args: string, windowMs: number): Promise<string> => {
+const todoCommand = async ($: EngineInterface, args: string, windowMs: number): Promise<string> => {
   const ask = parseAsk(args)
   if (ask.kind === 'usage') return USAGE
   if (!(await restored($))) return REBUILDING
@@ -286,7 +286,7 @@ export const wireHooks = (on: On, windowMs: number): void => {
     return { sections: [...composed.sections, STEERING] }
   })
 
-  // The walk's own dialogs (`$.ui.ask`, raised from the `/asks` hook) reach this hook as AskUserQuestion calls, and it sees each result before the dialog
+  // The walk's own dialogs (`$.ui.ask`, raised from the `/todo` hook) reach this hook as AskUserQuestion calls, and it sees each result before the dialog
   // returns. Every call passes through unchanged: the model's and other plugins' as well as the walk's. A call this plugin made is also handed, with its
   // result, to the walk, which records it (walk.ts); a throw there is logged and leaves the result as it was. The hook has no `.catch`: one that passed the
   // call on again would raise a dismissed dialog a second time. The matcher spells the tool's name out, as the others do.
@@ -316,7 +316,7 @@ export const wireHooks = (on: On, windowMs: number): void => {
   )
 
   // The matcher spells the name out, as the tool's do. A throw is logged and answers one error line; the list is left as it was.
-  on('command.run', { command: 'asks' }, ($, e) => asks($, e.args, windowMs).then(text => ({ text }))).catch(($, _e, next) => {
+  on('command.run', { command: 'todo' }, ($, e) => todoCommand($, e.args, windowMs).then(text => ({ text }))).catch(($, _e, next) => {
     failed($, 'command.run', next.error)
     return { text: FAILED }
   })
@@ -357,7 +357,7 @@ export const wireHooks = (on: On, windowMs: number): void => {
   // The human's own prompt carries the notices an interrupt held, as context beside it: once, and only when it enters. A
   // held notice whose item the agent has removed since is dropped, the list being read here as at the turn's end. A prompt
   // from the phone also carries the open items (commands.ts's phoneBlock), as context the person does not see: it waits for a
-  // rebuild in progress, as /asks does, and when the wait runs out it carries the rebuilding line instead. The block is in the
+  // rebuild in progress, as /todo does, and when the wait runs out it carries the rebuilding line instead. The block is in the
   // one call that passes the prompt on, ahead of the held notices. The wait comes before the read, so the read sees what a rebuild filled
   // in. A failed wait has its own try: it is logged, and the prompt goes through with its held notices, filtered as above, and no block.
   // The read sits outside that try, so an unreadable list still reaches the catch.

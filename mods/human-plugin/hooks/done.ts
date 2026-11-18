@@ -53,13 +53,13 @@ export const humanTurn = (item: Item): Turn => ({ speaker: 'human', words: item.
 
 // The item's exchange as it reads: its thread, then the human's answer while its undo window runs or once it is sent and awaits the agent (the
 // newest human turn), then the agent's turns its window took (none once sent, since the window's end reopens the item with them: expire). The
-// list, the pane and `/asks` read it here.
+// list, the pane and `/todo` read it here.
 export const turnsOf = (item: Item): Turn[] => [...item.thread, ...(item.state === 'open' ? [] : [humanTurn(item)]), ...item.windowTurns]
 
 // The label a turn is listed and drawn under: who spoke.
 export const labelOf = (turn: Turn): string => (turn.speaker === 'human' ? 'you' : 'agent')
 
-// A decision's options in the order the pane draws them and `/asks` numbers them: the recommended one first, the rest in their own order.
+// A decision's options in the order the pane draws them and `/todo` numbers them: the recommended one first, the rest in their own order.
 export const orderedOptions = (item: Item): ItemOption[] => [...item.options].sort((a, b) => Number(b.recommended) - Number(a.recommended))
 
 // Whether the human has answered the item, so an agent addition is a turn and not a change to the brief: a human turn is in the thread, or an
@@ -127,19 +127,19 @@ export const expire = (store: Store, id: number, token: number): { store: Store;
   return { store: mapItem(store, id, () => (reopened ? archive(sent) : sent)), sent, reopened }
 }
 
-// A form an answer takes, as `/asks <n> <form>` names it (commands.ts parses it): done, yes or no, a decision's option by its number, or a
+// A form an answer takes, as `/todo <n> <form>` names it (commands.ts parses it): done, yes or no, a decision's option by its number, or a
 // reply with its text.
 export type Form = { kind: 'done' } | { kind: 'yes' } | { kind: 'no' } | { kind: 'option'; n: number } | { kind: 'reply'; text: string }
 export type FormKind = Form['kind']
 
 // The forms an item takes, by its kind, classified as the pane draws it: a decision's options first, then a yes/no's yes and no, else a to-do's
-// done. Every item takes a reply. The foot of `/asks <n>` lists these and answerOf takes only these, so the two cannot differ.
+// done. Every item takes a reply. The foot of `/todo <n>` lists these and answerOf takes only these, so the two cannot differ.
 export const formsOf = (item: Item): FormKind[] => (item.options.length > 0 ? ['option', 'reply'] : item.yesno ? ['yes', 'no', 'reply'] : ['done', 'reply'])
 
 // Whether an item is the one a number names: its id as text is the digits, which carry no leading zero.
 export const isNumbered = (item: Item, digits: string): boolean => String(item.id) === digits
 
-// A reply's text as the pane's reply field sends it: trimmed as JavaScript trims, or null when nothing is left. The pane and `/asks <n> reply` both take it.
+// A reply's text as the pane's reply field sends it: trimmed as JavaScript trims, or null when nothing is left. The pane and `/todo <n> reply` both take it.
 export const replyText = (text: string): string | null => {
   const trimmed = text.trim()
   return trimmed === '' ? null : trimmed

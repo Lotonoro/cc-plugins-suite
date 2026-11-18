@@ -6,12 +6,12 @@ import { markRead } from './pane'
 import { readList } from './shared'
 import { pressShown } from './windows'
 
-// The walk behind `/asks answer`: it asks about each open item in one dialog, writes each answer the person gives through the path `/asks <n> <form>` takes (a
+// The walk behind `/todo answer`: it asks about each open item in one dialog, writes each answer the person gives through the path `/todo <n> <form>` takes (a
 // guarded write, windows.ts), and ends with the text the command returns (commands.ts words every line). It runs inside the command's hook, so the plugin's own
 // `tool.call` hook sees each dialog's result before the dialog returns, which is how a walk tells an answer a person gave from one the engine made for them. The
 // state is the module's, and none of it is in `$.state`: a reload drops a walk (an accepted cost).
 
-// The walk that is asking, if one is. A walk takes the flag in the step it starts, before it awaits anything, so two `/asks answer` cannot both start. The flag
+// The walk that is asking, if one is. A walk takes the flag in the step it starts, before it awaits anything, so two `/todo answer` cannot both start. The flag
 // is also the walk's tie to its session: a walk whose flag is no longer its own has lost its session (endWalk), and asks and writes nothing more. Only the walk
 // that took the flag clears it, so a walk that settles late leaves a newer walk's flag in place.
 let walking: symbol | null = null
@@ -78,7 +78,7 @@ const returnedText = (returned: Returned, labels: readonly string[]): string => 
   return returned.text.trim() === '' ? 'blank' : `text of ${returned.text.length} characters`
 }
 
-// An item that is shown is read: its unread mark goes, as `/asks <n>` clears it, and only while the item is still the one shown. A mark that cannot be cleared is
+// An item that is shown is read: its unread mark goes, as `/todo <n>` clears it, and only while the item is still the one shown. A mark that cannot be cleared is
 // logged, and the walk goes on: the question is what the person asked for.
 async function clearMark($: EngineInterface, item: Item): Promise<void> {
   try {
@@ -164,7 +164,7 @@ function logWalkError($: EngineInterface, err: unknown): void {
   $.ui.log(`human-plugin: the walk stopped on an error: ${messageOf(err)}`)
 }
 
-// `/asks answer`: the command's output. A walk already asking, or nothing open, ends it at once and asks nothing. Otherwise the walk asks about each open item
+// `/todo answer`: the command's output. A walk already asking, or nothing open, ends it at once and asks nothing. Otherwise the walk asks about each open item
 // and returns its end text: the outcome no question showed, why it ended, and what it sent and what is still open. A throw ends it with the error reason and the
 // same counts, and the error is logged with its stack. So does a throw from the read of the list for those counts, which leaves the end text the count of what was
 // sent alone, since what is still open is unknown. The answers already written stay written, whatever ends the walk.

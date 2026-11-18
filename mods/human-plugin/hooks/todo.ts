@@ -14,7 +14,7 @@ type WrittenState = (typeof STATES)[number]
 const isState = (raw: unknown): raw is WrittenState => STATES.some(state => state === raw)
 const STATE_LIST = `${STATES.slice(0, -1).join(', ')} or ${STATES[STATES.length - 1]}`
 
-// The longest title, in UTF-16 units: the unit the length of a JavaScript string is, and the one /asks's bounds are counted in.
+// The longest title, in UTF-16 units: the unit the length of a JavaScript string is, and the one /todo's bounds are counted in.
 export const TITLE_MAX = 80
 
 // The longest ETA, in UTF-16 units, and the text an entry holds when it is given none. An ETA is never refused: etaOf stores what it can.

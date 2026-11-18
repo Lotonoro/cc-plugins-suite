@@ -5,35 +5,35 @@ import { LINE_BREAK } from './items'
 import { bandOrder } from './layout'
 import { GLYPH, HEADING, countsText, etaTail, inDisplayOrder } from './todo'
 
-// The bounds the answers keep, in UTF-16 units. `cap` is the most `/asks <n>` prints, the cut line included, and the most a walk's question holds;
+// The bounds the answers keep, in UTF-16 units. `cap` is the most `/todo <n>` prints, the cut line included, and the most a walk's question holds;
 // `floor` is the least its cut newest turn keeps, as printed, less the bound cutText states where its cut would split a run; `title` and `label` cut
-// those fields in `/asks <n>` and in a walk's question; `dialogLabel` is the longest label the walk's dialog shows an item's answer by (the length the
+// those fields in `/todo <n>` and in a walk's question; `dialogLabel` is the longest label the walk's dialog shows an item's answer by (the length the
 // phone showed whole); `listLine` cuts a list line's title and its answer, and the answer an answer form echoes; `listItems` is how many items the list
-// names before the rest fold into a line of numbers; `foot` is the most the foot of `/asks <n>` prints, which its fixed wording keeps it to. The foot is
+// names before the rest fold into a line of numbers; `foot` is the most the foot of `/todo <n>` prints, which its fixed wording keeps it to. The foot is
 // never cut.
 export const LIMITS = { cap: 4000, floor: 1000, title: 300, label: 200, dialogLabel: 80, listLine: 80, listItems: 20, foot: 500 } as const
 // The phone block (phoneBlock) names at most PHONE_ITEMS open items, each title cut to PHONE_TITLE UTF-16 units, its ellipsis counted.
 export const PHONE_ITEMS = 10
 export const PHONE_TITLE = 60
 
-export const COMMAND = 'asks'
-// The sub-word that starts the walk, `/asks answer`, and the pointer to it every place that names it takes from here: the command's own texts, the phone
+export const COMMAND = 'todo'
+// The sub-word that starts the walk, `/todo answer`, and the pointer to it every place that names it takes from here: the command's own texts, the phone
 // block, the push (PUSH_POINTER, whose title is cut to leave room for it) and the walk's end text.
 export const WALK_WORD = 'answer'
 export const WALK_POINTER = `/${COMMAND} ${WALK_WORD}`
 export const PUSH_POINTER = ` · ${WALK_POINTER}`
-// The answer forms `/asks <n> <form>` takes, as the wording names them: the description, the usage and the phone block name them alike.
+// The answer forms `/todo <n> <form>` takes, as the wording names them: the description, the usage and the phone block name them alike.
 const FORMS = 'done, yes, no, <option number>, or reply <text>'
-export const DESCRIPTION = `Print the to-do list, or one item by number; answer an item with /asks <n> ${FORMS}, or every open item in turn with ${WALK_POINTER}.`
+export const DESCRIPTION = `Print the to-do list, or one item by number; answer an item with /${COMMAND} <n> ${FORMS}, or every open item in turn with ${WALK_POINTER}.`
 // The argument as the command's registration shows it: the number, then the form, or the walk's word.
 export const ARG_HINT = `[n [done | yes | no | option | reply text] | ${WALK_WORD}]`
 
 // Every line the command prints starts with this indent. It also keeps an item's text from reading as a marker to the rebuild: replay.ts reads
 // `#<n> is done:` only at the start of a line.
 const INDENT = '  '
-export const USAGE = `${INDENT}Usage: /asks, or /asks <n> for one item.\n${INDENT}Answer an item: /asks <n> ${FORMS}.\n${INDENT}Answer every open item, one at a time: ${WALK_POINTER}.`
-export const REBUILDING = `${INDENT}The list is still being rebuilt from the transcript; run /asks again in a moment.`
-export const FAILED = `${INDENT}/asks failed: the error was logged.`
+export const USAGE = `${INDENT}Usage: /${COMMAND}, or /${COMMAND} <n> for one item.\n${INDENT}Answer an item: /${COMMAND} <n> ${FORMS}.\n${INDENT}Answer every open item, one at a time: ${WALK_POINTER}.`
+export const REBUILDING = `${INDENT}The list is still being rebuilt from the transcript; run /${COMMAND} again in a moment.`
+export const FAILED = `${INDENT}/${COMMAND} failed: the error was logged.`
 export const CLAUDE_COMMAND = 'claude-todo'
 export const CLAUDE_DESCRIPTION = 'Print the Claude TODO list: the steps the agent is on and those queued after them.'
 export const CLAUDE_USAGE = `${INDENT}Usage: /${CLAUDE_COMMAND} takes no argument.`
@@ -50,7 +50,7 @@ const ON_PHONE = 'The user is on their phone and cannot see the list.'
 const indented = (lines: readonly string[]): string => lines.map(line => `${INDENT}${line}`).join('\n')
 export const PHONE_REBUILDING = indented([ON_PHONE, `The list is still being rebuilt from the transcript; /${COMMAND} lists it once the rebuild is done.`])
 
-// The open items in the band's order, which `/asks`, the phone block and the walk all take.
+// The open items in the band's order, which `/todo`, the phone block and the walk all take.
 export const openOf = (items: readonly Item[]): Item[] => items.filter(it => it.state === 'open').sort(bandOrder)
 
 // The block for the agent: the open items on one line, `#<n> <title>` each, in the band's order. The first PHONE_ITEMS are named, each title on
@@ -136,7 +136,7 @@ export const answerTo = (items: readonly Item[], ask: ListAsk): { text: string; 
   return item === undefined ? { text: NO_SUCH, shown: null } : { text: answerItem(item), shown: item.id }
 }
 
-// The confirmation of an applied answer, before any indent: the answer it gave cut to one line as a list line's answer is. `/asks <n> <form>` prints it,
+// The confirmation of an applied answer, before any indent: the answer it gave cut to one line as a list line's answer is. `/todo <n> <form>` prints it,
 // and a walk's outcome line is the same words.
 const answeredText = (id: number, answer: string): string => `answered #${id} with ${cutLine(answer, LIMITS.listLine)}`
 
@@ -191,7 +191,7 @@ const rangesOf = (ids: readonly number[]): string => {
   return runs.map(([from, to]) => (from === to ? `${from}` : `${from}-${to}`)).join(', ')
 }
 
-// `/asks <n>`: the item's title, its note, its brief, its thread (every turn, oldest first, a sent answer as the newest), a decision's options
+// `/todo <n>`: the item's title, its note, its brief, its thread (every turn, oldest first, a sent answer as the newest), a decision's options
 // numbered in the pane's order, then the foot. Each part is printed whole unless the cap forces a cut (fit).
 const answerItem = (item: Item): string =>
   fit({
@@ -205,12 +205,12 @@ const answerItem = (item: Item): string =>
     foot: footOf(item),
   })
 
-// The foot: the forms an open item takes, each named as a `/asks <n> <form>` line. A decision's options are one line, their number range. A reply
+// The foot: the forms an open item takes, each named as a `/todo <n> <form>` line. A decision's options are one line, their number range. A reply
 // names its text as `<text>`: a bare `reply` is the usage. An item in its undo window, or sent, takes no answer, so it prints no foot.
 const footOf = (item: Item): string[] =>
   item.state !== 'open'
     ? []
-    : formsOf(item).map(kind => `${INDENT}/asks ${item.id} ${kind === 'option' ? numbersOf(item) : kind === 'reply' ? 'reply <text>' : kind}`)
+    : formsOf(item).map(kind => `${INDENT}/${COMMAND} ${item.id} ${kind === 'option' ? numbersOf(item) : kind === 'reply' ? 'reply <text>' : kind}`)
 
 // A decision's option numbers as one range, `1-<k>`, or `1` alone for one option.
 const numbersOf = (item: Item): string => (item.options.length === 1 ? '1' : `1-${item.options.length}`)
@@ -299,7 +299,7 @@ const cutPrinted = (text: string, max: number): string => {
   return best
 }
 
-// ---- the walk: `/asks answer` ----
+// ---- the walk: `/todo answer` ----
 
 // What the command prints when the walk does not start: a walk is asking already, or no item is open.
 export const ALREADY_ASKING = `${INDENT}A walk is already asking; answer or close its question first.`
@@ -399,7 +399,7 @@ const fitWalk = (parts: WalkParts): string => {
 // One question of the walk, as `$.ui.ask` takes it: its header, its text and its labels (the item's answers, then the controls). `lead` opens the head:
 // the summary on the first question, the previous item's outcome line on every later one. `k` counts the questions asked so far, this one included, and `n`
 // is `k` plus the open items not yet asked about. The body is the note, the agent's newest turn when it is the thread's newest, and the raw brief, each under
-// the heading `/asks <n>` gives it. The tail is a decision's numbered options, the line that says what Other takes, and the closing line.
+// the heading `/todo <n>` gives it. The tail is a decision's numbered options, the line that says what Other takes, and the closing line.
 export type Dialog = { header: string; question: string; options: string[] }
 
 export const walkDialog = (item: Item, k: number, n: number, lead: readonly string[]): Dialog => {
@@ -492,7 +492,7 @@ const reasonLine = (reason: Reason): string => {
 }
 
 // How many answers the walk sent and how many items are still open, in the singular for a count of one. With nothing left open there is no pointer. When the
-// list could not be read for the count (`open` is null) the line gives what was sent and points to `/asks`, which shows what is open.
+// list could not be read for the count (`open` is null) the line gives what was sent and points to `/todo`, which shows what is open.
 const countLine = (sent: number, open: number | null): string => {
   const sentWords = sent === 0 ? 'nothing' : `${sent} ${sent === 1 ? 'answer' : 'answers'}`
   const openWords =

@@ -5,7 +5,7 @@ import { etaTail, inDisplayOrder } from './todo'
 
 export type BandRow = { kind: 'item'; item: Item } | { kind: 'more'; blocking: number; more: number; first: Item }
 
-// The band's order: the blocking items first, then the rest, each group in id order. `/asks` orders its groups by it too.
+// The band's order: the blocking items first, then the rest, each group in id order. `/todo` orders its groups by it too.
 export const bandOrder = (a: Item, b: Item): number => Number(b.blocking) - Number(a.blocking) || a.id - b.id
 
 const summaryOf = (folded: readonly Item[]): BandRow => {

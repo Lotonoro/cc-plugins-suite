@@ -1,5 +1,6 @@
 import type { EngineInterface } from 'claude-code'
 import type { Item, Store } from '../types'
+import { COMMAND, WALK_POINTER } from './commands'
 import { send } from './deliver'
 import { answerOf, answerShown, expire, isNumbered, press, reply, type AnswerOutcome, type Form, type GuardedOutcome } from './done'
 import { followSent } from './pane'
@@ -47,7 +48,7 @@ async function tick($: EngineInterface, windowMs: number): Promise<void> {
 const stateNamed = (store: Store, digits: string): Item['state'] | 'missing' => store.items.find(it => isNumbered(it, digits))?.state ?? 'missing'
 
 // The one write a press or a command makes on the list, and the undo window it leaves, which the ticker ends once its time has run out. `digits`
-// names the item as `/asks <n>` does (a press passes its id). The write's time is the clock's less `back`: a press counts from when it was made,
+// names the item as `/todo <n>` does (a press passes its id). The write's time is the clock's less `back`: a press counts from when it was made,
 // a command from one window earlier, so its window is due at once and the first tick ends it. A zero window that a press opens ends inside the
 // write (`endsAtOnce`); a command's never does, since its notice is the ticker's to send. Each write leaves a debug line with its time and the
 // state change it made. A write whose outcome says the session's end refused it (`lostSession`) leaves no window to wait for, so it starts no ticker and
@@ -100,10 +101,10 @@ export function pressReply($: EngineInterface, id: number, text: string, windowM
   }))
 }
 
-// A `/asks <n> <form>`: the resolver's write (answerOf), and the undo window an applied form leaves. The window counts from one window back, so the
+// A `/todo <n> <form>`: the resolver's write (answerOf), and the undo window an applied form leaves. The window counts from one window back, so the
 // first tick after the write ends it; the notice is sent from the ticker's callback, never from the command's hook.
 export function pressAnswer($: EngineInterface, digits: string, form: Form, windowMs: number): Promise<AnswerOutcome> {
-  return openWindow($, windowMs, digits, { source: '/asks', back: windowMs, endsAtOnce: false }, (store, token) => answerOf(store, digits, form, token))
+  return openWindow($, windowMs, digits, { source: `/${COMMAND}`, back: windowMs, endsAtOnce: false }, (store, token) => answerOf(store, digits, form, token))
 }
 
 // A walk's answer to the item it showed: the guarded write (answerShown), and the undo window an applied one leaves, which is `pressAnswer`'s: it counts from
@@ -114,7 +115,7 @@ export function pressShown($: EngineInterface, shown: Item, form: Form, windowMs
     $,
     windowMs,
     String(shown.id),
-    { source: '/asks answer', back: windowMs, endsAtOnce: false, lostSession: (outcome: GuardedOutcome) => outcome.kind === 'session' },
+    { source: WALK_POINTER, back: windowMs, endsAtOnce: false, lostSession: (outcome: GuardedOutcome) => outcome.kind === 'session' },
     (store, token) => answerShown(store, shown, form, token, owns),
   )
 }
