@@ -82,7 +82,10 @@ from the repository root.
 - **Control refreshes.** Click the pie to toggle keepalive for this session. Run
   `/keepalive on <lead_s> [count]` to choose how early to refresh and optionally
   pin a refresh count. Use `/keepalive off` to stop it or
-  `/keepalive default on|off` to set the default for future sessions.
+  `/keepalive default on|off` to set the default for future sessions. When a
+  pause uses up its refresh budget, keepalive waits for your next prompt. If a
+  refresh fails, keepalive stops, the status line says why, and your next
+  prompt restarts it.
 
 ## Settings and limits
 
@@ -90,10 +93,13 @@ from the repository root.
   Code’s settings and start a new session to use the recommended lifetime.
 - **Cost display.** Run `/keepalive unit dollars|tokens` to switch units.
   Dollar estimates use API list prices or the rates you supply in
-  `~/.claude/cachier/prices.json`.
-- **Daily rest.** When keepalive is on, Cachier can pause refreshes during your
-  learned rest window and compact long conversations. Set the plugin’s
-  `overnight` option to `off` to disable both.
+  `~/.claude/cachier/prices.json`. A model with no price shows in tokens.
+- **Daily rest.** When keepalive is on, Cachier learns your daily rest from your
+  pauses. During that rest, once a day, after 30 minutes with no prompt in any
+  session, it stops refreshes until your next prompt. It also compacts a
+  conversation of 60,000 tokens or more, as `/compact` does, and your next
+  prompt doesn’t undo that. On a one-hour cache it stops only when that saves
+  money. Set the plugin’s `overnight` option to `off` to disable both.
 - **Surfaces.** The footer and pane are designed for the terminal. With Remote
   Control, keepalive continues in the host session.
 
