@@ -8959,7 +8959,7 @@ describe('the reviewer model each conversation chooses', () => {
     })
 
     test('a stored last model set that the current catalog no longer lists is not taken, and the conversation takes haiku', ON, async ($, on) => {
-      const seen = engine(on, { store: { lastModel: OPUS }, catalog: { 'a-cc.json': catalogFile({ modelIds: ['claude-sonnet-5-5'] }) } })
+      const seen = engine(on, { store: { lastModel: OPUS }, catalog: { 'a-cc.json': catalogFile(['claude-sonnet-5-5']) } })
       await turn($)
       expect(spawnedModels(seen)).toEqual(['haiku'])
       expect(seen.conversation.choice).toBe('haiku')
@@ -9064,7 +9064,7 @@ describe('the reviewer model each conversation chooses', () => {
 
     test('with no switch a stored reviewer takes every brief across several dispatches, a context-suffixed full id included, whatever form its resolved model takes', ON, async ($, on) => {
       const SUFFIXED = 'claude-opus-4-6[1m]'
-      const seen = engine(on, { store: { lastModel: SUFFIXED }, catalog: { 'a-cc.json': catalogFile({ modelIds: [...CATALOG_IDS, SUFFIXED] }) }, spawnModels: ['claude-opus-4-6'] })
+      const seen = engine(on, { store: { lastModel: SUFFIXED }, catalog: { 'a-cc.json': catalogFile([...CATALOG_IDS, SUFFIXED]) }, spawnModels: ['claude-opus-4-6'] })
       await workerTurn($)
       await turnEnded($, 'ag1', 'Nothing to note.')
       await workerTurn($, 'Second.')
@@ -9169,7 +9169,7 @@ describe('the reviewer model each conversation chooses', () => {
 
     // The ids here are ones the price table never covers, so the test holds as the table grows.
     test('a choice whose id is outside the price table is marked cost unknown, and one the table prices is not', ON, async ($, on) => {
-      engine(on, { catalog: { 'a-cc.json': catalogFile({ modelIds: ['claude-haiku-5-5', 'claude-unpriced-1-1'] }) }, store: { modelIds: { haiku: HAIKU, sonnet: 'claude-unpriced-2-2' } } })
+      engine(on, { catalog: { 'a-cc.json': catalogFile(['claude-haiku-5-5', 'claude-unpriced-1-1']) }, store: { modelIds: { haiku: HAIKU, sonnet: 'claude-unpriced-2-2' } } })
       const text = await run($, 'model')
       expect(lines(text)).toContain('  haiku (current, default)')
       expect(lines(text)).toContain('  sonnet (cost unknown)')

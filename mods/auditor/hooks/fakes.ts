@@ -1,4 +1,4 @@
-// A hand-made engine for the tests of the modules that take `$` as an argument (`boundary.ts`, `store.ts`, `catalog.ts`): the nouns a test gives, the debug log and the timers its calls leave. The test engine cannot make a hook's call reject or hang, so these tests call the module with this object. The model catalog fixture at the end is shared with the register tests.
+// A hand-made engine for the tests of the modules that take `$` as an argument (`boundary.ts`, `store.ts`, `catalog.ts`): the nouns a test gives, the debug log and the timers its calls leave. The test engine cannot make a hook's call reject or hang, so these tests call the module with this object. The model catalog fixture at the end is shared with the register tests, and `catalogfile.ts` holds the engine's own catalog file.
 
 export type FakeTimer = { ms: number; fire: () => void; cancelled: boolean }
 export type Fake = { $: any; logs: string[]; timers: FakeTimer[] }
@@ -38,6 +38,15 @@ export const settled = async (): Promise<void> => {
   for (let turn = 0; turn < 50; turn++) await Promise.resolve()
 }
 
-// The engine's model catalog cache as it was read once: 13 ids in the picker's order, and the file around them, whose alias targets are present and never read.
+// The ids of the engine's model catalog cache as it was read once: 13, in the picker's order, which are the `id` of each model of `catalog.config.models` in the file `catalogfile.ts` holds.
 export const CATALOG_IDS: readonly string[] = ['claude-opus-5-5', 'claude-fable-5-2', 'claude-sonnet-5-5', 'claude-haiku-5-5', 'claude-fable-5-1', 'claude-haiku-4-5-20251001', 'claude-sonnet-5', 'claude-opus-5', 'claude-fable-5', 'claude-opus-4-8', 'claude-opus-4-7', 'claude-opus-4-6', 'claude-sonnet-4-6']
-export const catalogFile = (over: Record<string, unknown> = {}): string => JSON.stringify({ aliasTargets: { fable: { default: 'claude-fable-5-2' }, haiku: { default: 'claude-haiku-5-5' } }, modelIds: CATALOG_IDS, fetchedAt: 1_794_728_996_752, staleAt: 1_794_731_126_951, ...over })
+
+// A catalog file in the engine's shape, with a model for each of `ids`, each holding its id alone, and the alias targets, which are present and never read. `over` sets keys at the top of the file, and a key set to undefined leaves it out of the text: `{ fetchedAt: undefined }` is a file that does not say when it was fetched.
+export const catalogFile = (ids: readonly string[] = CATALOG_IDS, over: Record<string, unknown> = {}): string =>
+  JSON.stringify({
+    version: 2,
+    fetchedAt: 1_794_728_996_752,
+    staleAt: 1_794_731_126_951,
+    catalog: { surface: 'cc', config: { id: 'cc', models: ids.map(id => ({ id })), provider_alias_targets: { fable: { default: 'claude-fable-5-2' }, haiku: { default: 'claude-haiku-5-5' } } } },
+    ...over,
+  })

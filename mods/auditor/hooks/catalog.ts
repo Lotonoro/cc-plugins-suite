@@ -3,7 +3,7 @@ import { recordFailed, within } from './boundary'
 import { canonicalOf, choicesOf, isNames } from './models'
 import type { Choices } from './models'
 
-// The one adapter for what the engine's `/model` offers: the model catalog it caches under its config home, and the `availableModels` setting that filters the picker. The plugin only reads both, so they sit apart from `store.ts`, which owns the keys the plugin writes; the cache is an engine internal that changes for the engine's reasons, so a release that moves or reshapes it touches this module and its test alone. Every failure answers "no catalog" or "no filter", recorded, and the caller falls back to the four aliases; every call is bounded (`within`). It takes `$` as an argument, so its tests use a fake, and its `$`-taking helpers are function declarations.
+// The one adapter for what the engine's `/model` offers: the model catalog it caches under its config home, and the `availableModels` setting that filters the picker. The plugin only reads both, so they sit apart from `store.ts`, which owns the keys the plugin writes; the cache is an engine internal that changes for the engine's reasons, so a release that moves or reshapes it touches this module, its test and the catalog fixtures (`fakes.ts`, `catalogfile.ts`) alone. Every failure answers "no catalog" or "no filter", recorded, and the caller falls back to the four aliases; every call is bounded (`within`). It takes `$` as an argument, so its tests use a fake, and its `$`-taking helpers are function declarations.
 
 type Scope = Pick<CoreEngineInterface, 'env' | 'fs' | 'settings' | 'clock' | 'ui'>
 
@@ -21,11 +21,13 @@ type Catalog = { ids: string[]; fetchedAt: number }
 
 const fieldsOf = (value: unknown): Record<string, unknown> => (typeof value === 'object' && value !== null && !Array.isArray(value) ? (value as Record<string, unknown>) : {})
 
-// The catalog a file's text holds; throws the reason it holds none. Its ids are the entries of `modelIds` that are full ids, an entry repeated in canonical form once, in the file's order. The file's alias targets are never read: they named a Fable the engine did not run.
+// The catalog a file's text holds; throws the reason it holds none. The file holds `catalog.config.models`, a list of records, each with the `id` of a model: the catalog's ids are those that are full ids, one repeated in canonical form once, in the file's order. The file's alias targets (`catalog.config.provider_alias_targets`) are never read: they named a Fable the engine did not run.
 const catalogOf = (text: string): Catalog => {
   const file = fieldsOf(JSON.parse(text))
-  const listed = file['modelIds']
-  if (!isNames(listed)) throw new Error('the file holds no list of model ids')
+  const models = fieldsOf(fieldsOf(file['catalog'])['config'])['models']
+  if (!Array.isArray(models)) throw new Error('the file holds no list of models at catalog.config.models')
+  const listed = models.map(model => fieldsOf(model)['id'])
+  if (!isNames(listed)) throw new Error('a model in catalog.config.models has no id')
   const kept = new Set<string>()
   const ids: string[] = []
   for (const id of listed) {

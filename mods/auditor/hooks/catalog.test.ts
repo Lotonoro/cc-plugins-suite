@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'claude-code/testing'
 import { BOUND_MS } from './boundary'
 import { readAvailable, readCatalog, readChoices } from './catalog'
+import { ENGINE_CATALOG_FILE } from './catalogfile'
 import { CATALOG_IDS, catalogFile, fakeEngine, never, settled } from './fakes'
 import type { FakeTimer } from './fakes'
 
@@ -53,6 +54,22 @@ describe('readCatalog', () => {
     expect(logs).toEqual([])
   })
 
+  test('a copy of the file the engine wrote, less its per-user state block, gives its 13 ids in their order, with nothing recorded', async () => {
+    expect(JSON.parse(ENGINE_CATALOG_FILE).catalog.state).toBeUndefined()
+    const { $, logs } = home({ 'a-cc.json': ENGINE_CATALOG_FILE })
+    const ids = await readCatalog($)
+    expect(ids).toHaveLength(13)
+    expect(ids).toEqual(CATALOG_IDS)
+    expect(logs).toEqual([])
+  })
+
+  test('the ids are the models of catalog.config alone: a list of ids at the top of the file, where the engine does not keep one, gives no catalog, recorded', async () => {
+    const { $, logs } = home({ 'a-cc.json': JSON.stringify({ modelIds: CATALOG_IDS, fetchedAt: 1 }) })
+    expect(await readCatalog($)).toBeUndefined()
+    expect(logs).toHaveLength(1)
+    expect(logs[0]).toContain('model catalog file a-cc.json failed')
+  })
+
   test('with CLAUDE_CONFIG_DIR set the cache is looked for under it', async () => {
     const { $, logs, reads } = home({ 'a-cc.json': catalogFile() }, { env: { HOME: '/home/test', CLAUDE_CONFIG_DIR: '/elsewhere/claude' }, dir: '/elsewhere/claude/cache/model-catalog' })
     expect(await readCatalog($)).toEqual(CATALOG_IDS)
@@ -98,7 +115,7 @@ describe('readCatalog', () => {
   })
 
   test('only files whose names end in -cc.json are read', async () => {
-    const { $, reads } = home({ 'a-cc.json': catalogFile(), 'b.json': catalogFile({ modelIds: ['claude-opus-4-6'] }), 'c-cc.json.tmp': catalogFile({ modelIds: ['claude-opus-4-6'] }) })
+    const { $, reads } = home({ 'a-cc.json': catalogFile(), 'b.json': catalogFile(['claude-opus-4-6']), 'c-cc.json.tmp': catalogFile(['claude-opus-4-6']) })
     expect(await readCatalog($)).toEqual(CATALOG_IDS)
     expect(reads).toEqual([`${DIR}/a-cc.json`])
   })
@@ -150,8 +167,25 @@ describe('readCatalog', () => {
     expect(reads).toHaveLength(1)
   })
 
-  test('a file that does not parse, one with no id list, one whose list holds a non-string and one whose entries are all dropped each give no catalog, recorded', async () => {
-    const texts = ['{ not json', 'null', '[]', '"modelIds"', JSON.stringify({}), JSON.stringify({ modelIds: 'claude-opus-4-6' }), JSON.stringify({ modelIds: ['claude-opus-4-6', 7] }), JSON.stringify({ modelIds: [] }), JSON.stringify({ modelIds: ['haiku', 'sonnet', 'default'] })]
+  test('a file that does not parse, one with no list of models, one whose list holds an entry that is no model with an id and one whose entries are all dropped each give no catalog, recorded', async () => {
+    const models = (list: unknown): string => JSON.stringify({ catalog: { config: { models: list } } })
+    const texts = [
+      '{ not json',
+      'null',
+      '[]',
+      '"catalog"',
+      JSON.stringify({}),
+      JSON.stringify({ catalog: 'models' }),
+      JSON.stringify({ catalog: { config: {} } }),
+      models('claude-opus-4-6'),
+      models({ id: 'claude-opus-4-6' }),
+      models([{ id: 'claude-opus-4-6' }, 'claude-opus-5-5']),
+      models([{ id: 'claude-opus-4-6' }, null]),
+      models([{ id: 'claude-opus-4-6' }, { name: 'Opus 5.5' }]),
+      models([{ id: 'claude-opus-4-6' }, { id: 7 }]),
+      catalogFile([]),
+      catalogFile(['haiku', 'sonnet', 'default']),
+    ]
     for (const text of texts) {
       const { $, logs } = home({ 'a-cc.json': text })
       expect(await readCatalog($)).toBeUndefined()
@@ -162,27 +196,27 @@ describe('readCatalog', () => {
 
   test('an entry that is not a full id is dropped, a repeated id is kept once in its first spelling, and the others keep their order', async () => {
     const ids = ['haiku', 'claude-opus-4-6', 'claude-haiku-5-5', 'opusplan', 'claude-opus-4-6', 'claude-haiku-5-5-20261001', 'claude-opus-4-6[1m]', 'Claude-Sonnet-5-5']
-    const { $, logs } = home({ 'a-cc.json': catalogFile({ modelIds: ids }) })
+    const { $, logs } = home({ 'a-cc.json': catalogFile(ids) })
     expect(await readCatalog($)).toEqual(['claude-opus-4-6', 'claude-haiku-5-5', 'claude-opus-4-6[1m]'])
     expect(logs).toEqual([])
   })
 
   test('no more than 50 ids are taken, in the file\'s order', async () => {
     const ids = Array.from({ length: 70 }, (_, n) => `claude-model-${n + 1}`)
-    const { $ } = home({ 'a-cc.json': catalogFile({ modelIds: ids }) })
+    const { $ } = home({ 'a-cc.json': catalogFile(ids) })
     expect(await readCatalog($)).toEqual(ids.slice(0, 50))
   })
 
   test('of two valid files the one with the later fetch time is taken, whatever the order of the listing', async () => {
-    const older = catalogFile({ modelIds: ['claude-opus-4-6'], fetchedAt: 100 })
-    const newer = catalogFile({ modelIds: ['claude-opus-5-5'], fetchedAt: 200 })
+    const older = catalogFile(['claude-opus-4-6'], { fetchedAt: 100 })
+    const newer = catalogFile(['claude-opus-5-5'], { fetchedAt: 200 })
     expect(await readCatalog(home({ 'a-cc.json': older, 'b-cc.json': newer }).$)).toEqual(['claude-opus-5-5'])
     expect(await readCatalog(home({ 'a-cc.json': newer, 'b-cc.json': older }).$)).toEqual(['claude-opus-5-5'])
   })
 
   test('a valid file with no fetch time loses to one with, and a file that is not valid does not count', async () => {
-    const dated = catalogFile({ modelIds: ['claude-opus-4-6'], fetchedAt: 5 })
-    const undated = JSON.stringify({ modelIds: ['claude-opus-5-5'] })
+    const dated = catalogFile(['claude-opus-4-6'], { fetchedAt: 5 })
+    const undated = catalogFile(['claude-opus-5-5'], { fetchedAt: undefined })
     const { $, logs } = home({ 'a-cc.json': undated, 'b-cc.json': dated, 'c-cc.json': '{ broken' })
     expect(await readCatalog($)).toEqual(['claude-opus-4-6'])
     expect(logs).toHaveLength(1)
@@ -190,7 +224,7 @@ describe('readCatalog', () => {
   })
 
   test('a file that cannot be read is skipped, recorded, and the others still count', async () => {
-    const good = catalogFile({ modelIds: ['claude-opus-4-6'], fetchedAt: 1 })
+    const good = catalogFile(['claude-opus-4-6'], { fetchedAt: 1 })
     const { $, logs } = home({}, {
       nouns: {
         fs: {
@@ -212,7 +246,7 @@ describe('readCatalog', () => {
     const files: Record<string, string> = {}
     const mtimes: Record<string, number> = {}
     for (let n = 0; n < 12; n++) {
-      files[`f${n}-cc.json`] = catalogFile({ modelIds: ['claude-opus-4-6'], fetchedAt: 1 })
+      files[`f${n}-cc.json`] = catalogFile(['claude-opus-4-6'], { fetchedAt: 1 })
       mtimes[`f${n}-cc.json`] = n
     }
     const { $, reads } = home(files, { mtimes })
@@ -243,7 +277,7 @@ describe('readCatalog', () => {
   })
 
   test('a file read that never answers leaves the others to count', async () => {
-    const good = catalogFile({ modelIds: ['claude-opus-4-6'] })
+    const good = catalogFile(['claude-opus-4-6'])
     const { $, logs, timers } = home({}, {
       nouns: {
         fs: {
