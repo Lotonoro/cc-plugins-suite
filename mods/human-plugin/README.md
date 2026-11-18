@@ -14,7 +14,8 @@ The agent still uses `AskUserQuestion` when a quick answer is needed before
 any work can continue. Approvals, actions outside chat, and decisions that
 can wait go on the list. The agent carries on with independent work while
 your answer is pending. If one workstream becomes blocked, the agent can
-mark the item so it rises to the top.
+mark the item so it rises to the top. The list’s header reads `<name> TODO`,
+using the name the agent has for you, and **Human TODO** until it has one.
 
 A decision comes with the context, the agent’s recommendation, and the options
 with their trade-offs. You can read it and respond when you’re ready. A reply
@@ -29,9 +30,11 @@ turn.
 Claude Code stopped offering its built-in task tools by default on many newer
 models. [Claude Code release notes](https://code.claude.com/docs/en/changelog#2-1-233)
 
-**Claude TODO** puts the agent’s active and queued work beside your requests,
+**Agent TODO** puts the agent’s active and queued work beside your requests,
 with ETAs when the agent can estimate them. You can see what’s coming up at a
-glance and decide whether to move work between sessions.
+glance and decide whether to move work between sessions. The header reads
+**Agent TODO** until the agent names the session, and then `<name> TODO`; a long
+name is cut before the counts are.
 
 ## Get started
 
@@ -49,19 +52,20 @@ from the repository root.
 - **Open an ask.** Click its title above the prompt to see its details, answers,
   and conversation. Items blocking the agent appear first. Buttons and typed
   replies give you a short undo window before they’re sent.
-- **Answer from the prompt or phone.** Run `/asks` to list requests and
-  `/asks <n>` to see one item and its valid responses. For example, run
-  `/asks 4 done` or `/asks 4 reply Use the existing API`.
-- **See what Claude is doing.** Look for **Claude TODO** beside your requests on a
+- **Answer from the prompt or phone.** Run `/todo` to list requests and
+  `/todo <n>` to see one item and its valid responses. For example, run
+  `/todo 4 done` or `/todo 4 reply Use the existing API`. `/todo answer` asks
+  about each open request in turn, blocking first.
+- **See what Claude is doing.** Look for **Agent TODO** beside your requests on a
   wide terminal, or run `/claude-todo` to read the same list as text.
 
 ## What to expect
 
-Both lists rebuild from the transcript when you resume a session. `/clear`
-empties them, and a rewind during a running session can leave the displayed
-lists out of sync until the agent updates them or you resume. On a Remote
-Control phone, use the slash commands to view and answer requests. Blocking
-items can also send a push notification.
+Both lists and their headers rebuild from the transcript when you resume a
+session. `/clear` empties them and resets both headers, and a rewind during a
+running session can leave the displayed lists out of sync until the agent
+updates them or you resume. On a Remote Control phone, use the slash commands
+to view and answer requests. Blocking items can also send a push notification.
 
 For implementation details, see [agent instructions](hooks/steering.ts),
 [request delivery](hooks/deliver.ts), and [slash commands](hooks/commands.ts).
