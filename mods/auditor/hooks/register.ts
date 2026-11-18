@@ -21,8 +21,8 @@ const REVIEWER_TYPE = `${PLUGIN}:reviewer`
 const REVIEW_DESCRIPTION = 'auditor review'
 // The literals `reviewer.ts` tests against; the plugin's identity stays with this file.
 const IDENTITY: Identity = { plugin: PLUGIN, name: REVIEWER, description: REVIEW_DESCRIPTION }
-// The model pricing.ts has rates for (`PRICED_MODEL`); a test holds the two together.
-const REVIEWER_MODEL = 'claude-haiku-5-5'
+// An alias for the latest Haiku, so a new one is used without a plugin update. A spawn names no model, so this is the model each reviewer runs on.
+const REVIEWER_MODEL = 'haiku'
 const REVIEWER_EFFORT = 'high'
 const CONV = { plugin: 'auditor', key: 'conversation' } as const
 const TOGGLE = 'auditor-toggle'
