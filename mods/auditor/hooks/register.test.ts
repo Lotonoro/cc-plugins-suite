@@ -37,6 +37,8 @@ type Opts = {
   // The reviewer spawn throws this message after its hook learned the agent's id: the spawn hook's write is staged by applying `learn` to the first conversation read after the throw, since the test's hooks sit beneath the plugin's and cannot throw above it.
   spawnThrowsAfterLearning?: string
   spawnNoId?: boolean
+  // The model each reviewer spawn resolves to, in the order the reviewers are spawned (1-based): 'm' for one not listed.
+  spawnModels?: string[]
   reviewerIds?: string[]
   agents?: { id: string; name?: string; type?: string; status?: string; description?: string; teammateId?: string; spawnedBy?: string }[]
   listFails?: boolean
@@ -112,6 +114,14 @@ type Opts = {
   ledger?: number | 'absent' | 'nan'
   // The `usage` the bottom of every compaction reports, as core does when it made a summarizing request.
   compactUsage?: { input_tokens: number; output_tokens: number; cache_read_input_tokens: number; cache_creation_input_tokens: number }
+  // What the plugin's own store holds when the test starts, by key (the last model set, the stored ids).
+  store?: Record<string, unknown>
+  // Every store read, or every store write, rejects; or every store call never answers.
+  storeReadFails?: boolean
+  storeWriteFails?: boolean
+  storeHangs?: boolean
+  // A call the plugin bounds at one second has passed its bound as soon as its timer is set: one that has not answered by then is late.
+  boundsPass?: boolean
 }
 
 // The hold that covers the reviewer spawn numbered `n` (1-based), when one does.
@@ -149,6 +159,11 @@ const engine = (on: any, opts: Opts = {}) => {
     stateWritesFailAt: undefined as number | undefined,
     // The cost ledger reads made so far.
     ledgerReads: 0,
+    // The plugin's own store: what it holds, the keys read, and the writes made, in order.
+    store: { ...opts.store } as Record<string, unknown>,
+    storeReads: [] as string[],
+    storeWrites: [] as { key: string; value: unknown }[],
+    storeHold: gate(),
   }
   current.seen = seen
   current.seed = opts.stateSeed
@@ -164,6 +179,20 @@ const engine = (on: any, opts: Opts = {}) => {
   on('session.end', (_$: any, e: any) => ({ sessionId: e.sessionId }))
   on('session.version', () => ({ value: { version: '2.1.293', base: '2.1.293', builtAt: '2026-10-01T00:00:00Z' } }))
   on('env.get', (_$: any, e: any) => ({ value: env[e.name] }))
+  // The plugin's own store, in memory as the engine keeps one: a value reads back as JSON. A failed call is a denial: a hook that throws is skipped, and the call would reach the engine's own store. A call held (`storeHangs`) waits for the test to let its store go, which a test does before it ends.
+  on('store.get', async (_$: any, e: any) => {
+    seen.storeReads.push(e.key)
+    if (opts.storeHangs === true) await seen.storeHold.until
+    if (opts.storeReadFails === true) return { deny: 'store unreadable' }
+    return { value: seen.store[e.key] }
+  })
+  on('store.set', async (_$: any, e: any) => {
+    if (opts.storeHangs === true) await seen.storeHold.until
+    if (opts.storeWriteFails === true) return { deny: 'store full' }
+    seen.storeWrites.push({ key: e.key, value: structuredClone(e.value) })
+    seen.store[e.key] = structuredClone(e.value)
+    return { value: undefined }
+  })
   on('clock.now', async () => {
     if (opts.clockFails === true) throw new Error('clock unavailable')
     seen.clockCalls++
@@ -296,7 +325,7 @@ const engine = (on: any, opts: Opts = {}) => {
         await hold.until
         if (hold.result !== undefined) return hold.result
       }
-      return opts.spawn ?? (opts.spawnNoId === true ? { model: 'm' } : { model: 'm', agentId: reviewerId() })
+      return opts.spawn ?? (opts.spawnNoId === true ? { model: 'm' } : { model: opts.spawnModels?.[reviewersSpawned - 1] ?? 'm', agentId: reviewerId() })
     }
     return { model: 'm', agentId: 'sub1' }
   })
@@ -341,6 +370,7 @@ const engine = (on: any, opts: Opts = {}) => {
   on('clock.after', async (_$: any, e: any) => {
     const fired = gate()
     seen.timers.push({ ms: e.ms, fire: fired.open })
+    if (opts.boundsPass === true && e.ms === 1000) fired.open()
     await fired.until
     return { value: undefined }
   })
@@ -8718,5 +8748,260 @@ describe('the stored reviewer\'s idle reap is re-armed at load', () => {
     expect(stopped(seen)).toEqual([])
     expect(seen.conversation.reviewer).toMatchObject({ id: 'ag1' })
     expect(seen.conversation.review).toMatchObject({ number: 2 })
+  })
+})
+
+describe('the reviewer model each conversation chooses', () => {
+  const HAIKU = 'claude-haiku-5-5'
+  const started = ($: any) => $.session.start({ cwd: '/', surface: null, isInteractive: true })
+  const run = async ($: any, args = ''): Promise<string | undefined> => (await $.command.run({ command: 'auditor', args })).text
+  // A worker turn the user starts and ends: its Stop dispatches a review.
+  const turn = async ($: any, ask = 'fix the parser') => {
+    await $.prompt.submit(COMPOSER(ask))
+    await $.classic.Stop(stop)
+  }
+  // The model each reviewer spawn asked for, in order.
+  const spawnedModels = (seen: any): unknown[] => seen.spawns.filter((s: any) => typeOf(s) === 'auditor:reviewer').map((s: any) => s.model)
+  const ONE_MESSAGE = [{ role: 'user' as const, text: 'fix the parser', toolUses: [] }]
+  const compacting = (agentId: string) => ({ trigger: 'auto' as const, messages: ONE_MESSAGE, agentId }) as any
+  const COMPACT_USAGE = { input_tokens: 100_000, output_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 }
+
+  describe('the take', () => {
+    test('with no last model set a conversation spawns its reviewer on haiku, and its review log reads model_configured haiku', ON, async ($, on) => {
+      const seen = engine(on, { spawnModels: [HAIKU] })
+      await turn($)
+      expect(spawnedModels(seen)).toEqual(['haiku'])
+      expect(seen.conversation.choice).toBe('haiku')
+      await reviewed($, HANDBACK('Nothing to note.'), 'ag1')
+      await mainTurnEnd($)
+      expect(logOf(seen, LOG_1)).toMatchObject({ model_configured: 'haiku', model_resolved: HAIKU })
+    })
+
+    test('the agent definition carries only the default, haiku', ON, async ($, on) => {
+      const seen = engine(on)
+      await started($)
+      expect(seen.registered.map((a: any) => [a.name, a.model])).toEqual([['reviewer', 'haiku']])
+    })
+
+    test('an offered model stored as the last model set is taken at the first spawn', ON, async ($, on) => {
+      const taken = engine(on, { store: { lastModel: 'sonnet' } })
+      await turn($)
+      expect(spawnedModels(taken)).toEqual(['sonnet'])
+      expect(taken.conversation.choice).toBe('sonnet')
+    })
+
+    test('a conversation that had taken a choice keeps it when the last model set moves on', ON, async ($, on) => {
+      const seen = engine(on, { reviewerIds: ['ag1', 'ag2'] })
+      await turn($)
+      expect(seen.conversation.choice).toBe('haiku')
+      seen.store['lastModel'] = 'opus'
+      await turnFailed($, 'ag1')
+      await turn($, 'again')
+      expect(spawnedModels(seen)).toEqual(['haiku', 'haiku'])
+      expect(seen.conversation.choice).toBe('haiku')
+    })
+
+    test('a name the list does not offer, stored as the last model set, is not taken: the conversation takes haiku', ON, async ($, on) => {
+      const seen = engine(on, { store: { lastModel: 'claude-gone-1-1' } })
+      await turn($)
+      expect(spawnedModels(seen)).toEqual(['haiku'])
+      expect(seen.conversation.choice).toBe('haiku')
+    })
+
+    test('a value of the wrong shape stored as the last model set reads as none, and is recorded', ON, async ($, on) => {
+      const seen = engine(on, { store: { lastModel: 42 } })
+      await turn($)
+      expect(spawnedModels(seen)).toEqual(['haiku'])
+      expect(debugLines(seen, 'store read of the last model set failed').length).toBe(1)
+    })
+
+    test('a second session start, a reload, leaves the conversation\'s choice as it was', ON, async ($, on) => {
+      const seen = engine(on, { store: { lastModel: 'sonnet' } })
+      await started($)
+      await turn($)
+      seen.store['lastModel'] = 'opus'
+      await started($)
+      expect(seen.conversation.choice).toBe('sonnet')
+    })
+
+    test('a session end with reason clear drops the choice, and the next need takes the last model set', ON, async ($, on) => {
+      const seen = engine(on, { store: { lastModel: 'sonnet' }, reviewerIds: ['ag1', 'ag2'] })
+      await turn($)
+      expect(seen.conversation.choice).toBe('sonnet')
+      seen.store['lastModel'] = 'opus'
+      await $.session.end({ reason: 'clear', sessionId: 's1' } as any)
+      expect(seen.conversation.choice).toBeUndefined()
+      await turn($, 'after the clear')
+      expect(spawnedModels(seen)).toEqual(['sonnet', 'opus'])
+      expect(seen.conversation.choice).toBe('opus')
+    })
+
+    test('a store that fails to read leaves the first spawn on haiku, and the failure is recorded', ON, async ($, on) => {
+      const seen = engine(on, { storeReadFails: true })
+      await turn($)
+      expect(spawnedModels(seen)).toEqual(['haiku'])
+      expect(debugLines(seen, 'store read of the last model set failed').filter(line => line.includes('store unreadable')).length).toBe(1)
+    })
+
+    test('a store whose every call never answers does not hold the session start, and the first spawn runs on haiku once the bound has passed', ON, async ($, on) => {
+      const seen = engine(on, { storeHangs: true, boundsPass: true })
+      await started($)
+      await turn($)
+      expect(spawnedModels(seen)).toEqual(['haiku'])
+      expect(seen.conversation.choice).toBe('haiku')
+      expect(debugLines(seen, 'store read of the last model set failed: Error: no answer within 1000 ms').length).toBe(1)
+      seen.storeHold.open()
+    })
+  })
+
+  describe('the stored ids', () => {
+    test('a spawn result naming a full id for haiku stores that pair', ON, async ($, on) => {
+      const seen = engine(on, { spawnModels: [HAIKU] })
+      await turn($)
+      expect(seen.store['modelIds']).toEqual({ haiku: HAIKU })
+    })
+
+    test('a result naming an alias, or a model that is no full id, leaves the store as it was', ON, async ($, on) => {
+      const seen = engine(on, { spawnModels: ['haiku'], store: { modelIds: { sonnet: 'claude-sonnet-5-5' } } })
+      await turn($)
+      expect(seen.storeWrites).toEqual([])
+      expect(seen.store['modelIds']).toEqual({ sonnet: 'claude-sonnet-5-5' })
+    })
+
+    test('a pair already stored is not written again', ON, async ($, on) => {
+      const same = engine(on, { spawnModels: [HAIKU], store: { modelIds: { haiku: HAIKU } } })
+      await turn($)
+      expect(same.storeWrites).toEqual([])
+    })
+
+    test('a store that fails to write is recorded, and the review goes on', ON, async ($, on) => {
+      const seen = engine(on, { spawnModels: [HAIKU], storeWriteFails: true })
+      await turn($)
+      await reviewed($, HANDBACK('Nothing to note.'), 'ag1')
+      expect(debugLines(seen, 'store write of the model ids failed').filter(line => line.includes('store full')).length).toBe(1)
+      expect(seen.conversation.reviewer).toMatchObject({ id: 'ag1', model: HAIKU, choice: 'haiku' })
+    })
+  })
+
+  describe('the compaction\'s price', () => {
+    test('a reviewer is priced at its own resolved model when it compacts, after the conversation has spawned on another choice and for a former reviewer from before a /clear', ON, async ($, on) => {
+      const seen = engine(on, { spawnModels: [HAIKU, 'claude-opus-4-6'], reviewerIds: ['ag1', 'ag2'], compactUsage: COMPACT_USAGE })
+      await turn($)
+      await $.session.end({ reason: 'clear', sessionId: 's1' } as any)
+      seen.store['lastModel'] = 'opus'
+      await turn($, 'after the clear')
+      expect(seen.conversation.reviewerModels).toEqual({ ag1: HAIKU, ag2: 'claude-opus-4-6' })
+      expect(seen.conversation.reviewer).toMatchObject({ id: 'ag2', choice: 'opus' })
+      await $.session.compact(compacting('ag1'))
+      expect(seen.conversation.unpriced).toBeNull()
+      expect(closeTo(seen.conversation.spent, 0.01)).toBe(true)
+    })
+
+    test('a compaction by a reviewer whose resolved model is outside the price table makes the cost read unknown for that model', ON, async ($, on) => {
+      const seen = engine(on, { spawnModels: ['claude-sonnet-4-6'], compactUsage: COMPACT_USAGE })
+      await turn($)
+      await $.session.compact(compacting('ag1'))
+      expect(seen.conversation).toMatchObject({ spent: 0, unpriced: 'claude-sonnet-4-6' })
+    })
+
+    test('a reviewer with no recorded model and no choice makes the cost read unknown for a named model, not a blank', ON, async ($, on) => {
+      const seen = engine(on, { stateSeed: { reviewer: { id: 'ag1', model: '' }, reviewerIds: ['ag1'] }, compactUsage: COMPACT_USAGE })
+      await $.session.compact(compacting('ag1'))
+      expect(seen.conversation.unpriced).toBe('an unknown model')
+    })
+
+    test('a reviewer adopted before its result landed takes the id its choice gets from the stored ids', ON, async ($, on) => {
+      const seen = engine(on, { stateSeed: { reviewer: { id: 'ag1', model: '', choice: 'haiku' }, reviewerIds: ['ag1'] }, store: { modelIds: { haiku: HAIKU } }, compactUsage: COMPACT_USAGE })
+      await $.session.compact(compacting('ag1'))
+      expect(seen.conversation.unpriced).toBeNull()
+      expect(closeTo(seen.conversation.spent, 0.01)).toBe(true)
+    })
+
+    test('a store that cannot be read leaves such a reviewer\'s compaction unknown, and is recorded', ON, async ($, on) => {
+      const seen = engine(on, { stateSeed: { reviewer: { id: 'ag1', model: '', choice: 'haiku' }, reviewerIds: ['ag1'] }, storeReadFails: true, compactUsage: COMPACT_USAGE })
+      await $.session.compact(compacting('ag1'))
+      expect(seen.conversation.unpriced).toBe('an unknown model')
+      expect(debugLines(seen, 'store read of the model ids failed').length).toBe(1)
+    })
+
+    test('a reviewer whose model is recorded reads no store at all', ON, async ($, on) => {
+      const seen = engine(on, { spawnModels: [HAIKU], compactUsage: COMPACT_USAGE })
+      await turn($)
+      const reads = seen.storeReads.length
+      await $.session.compact(compacting('ag1'))
+      expect(seen.storeReads.length).toBe(reads)
+    })
+  })
+
+  describe('the choice a review\'s log names', () => {
+    test('a review that lapses with no start logs the choice of the spawn in flight', ON, async ($, on) => {
+      const held = heldSpawn()
+      const seen = engine(on, { store: { lastModel: 'sonnet' }, spawnHold: { ...held.hold, to: 1 }, reviewerIds: ['ag1', 'ag2'] })
+      await $.prompt.submit(COMPOSER('fix'))
+      const stopping = $.classic.Stop(stop)
+      await held.reached
+      seen.clock += TEN_MINUTES + 1
+      await $.prompt.submit(HELPER)
+      await $.classic.Stop(stop)
+      expect(logOf(seen, LOG_1)).toMatchObject({ status: 'incomplete', reason: 'reviewer spawn did not settle in 10 minutes', model_configured: 'sonnet', model_resolved: null })
+      held.land()
+      await stopping
+      await drained()
+    })
+
+    test('a review that lapses with its reviewer logs the reviewer\'s choice and model', ON, async ($, on) => {
+      const seen = engine(on, { store: { lastModel: 'sonnet' }, spawnModels: ['claude-sonnet-5-5'], reviewerIds: ['ag1', 'ag2'] })
+      await turn($)
+      await mainTurnEnd($)
+      seen.clock += TEN_MINUTES + 1
+      await $.prompt.submit(HELPER)
+      await $.classic.Stop(stop)
+      await drained()
+      expect(logOf(seen, LOG_1)).toMatchObject({ status: 'incomplete', reason: 'reviewer did not finish in 10 minutes', model_configured: 'sonnet', model_resolved: 'claude-sonnet-5-5' })
+    })
+
+    test('a review given back to a stopped session logs its reviewer\'s choice', ON, async ($, on) => {
+      const refused = engine(on, { store: { lastModel: 'sonnet' }, sendFails: 'ag1', refusal: 'The main conversation was not messaged: the session was stopped and nobody has sent input since.' })
+      await workerTurn($)
+      await $.turn.complete(TURN_END('ag1', 'Nothing to note.'))
+      await $.prompt.submit(COMPOSER('more'))
+      await step($, 'working')
+      await $.classic.Stop(stop)
+      expect(logOf(refused, LOG_2)).toMatchObject({ status: 'incomplete', reason: 'given back: the session was stopped', model_configured: 'sonnet' })
+    })
+
+    test('a review given back because its spawn was refused logs the conversation\'s choice', ON, async ($, on) => {
+      const seen = engine(on, { store: { lastModel: 'opus' }, spawnDeniesFrom: 1, spawnDenyReason: 'Agent "auditor-reviewer" was not spawned: the session was stopped and nobody has sent input since.' })
+      await turn($, 'first')
+      expect(logOf(seen, LOG_1)).toMatchObject({ status: 'incomplete', reason: 'given back: the session was stopped', model_configured: 'opus', model_resolved: null })
+    })
+
+    test('a review dropped by the toggle logs its reviewer\'s choice', ON, async ($, on) => {
+      const toggled = engine(on, { store: { lastModel: 'sonnet' } })
+      await turn($)
+      await run($, 'off')
+      expect(logOf(toggled, LOG_1)).toMatchObject({ status: 'incomplete', model_configured: 'sonnet' })
+    })
+
+    test('a review dropped at a session end logs its reviewer\'s choice', ON, async ($, on) => {
+      const seen = engine(on, { store: { lastModel: 'opus' } })
+      await turn($)
+      await $.session.end({ reason: 'clear', sessionId: 's1' } as any)
+      expect(logOf(seen, LOG_1)).toMatchObject({ status: 'incomplete', model_configured: 'opus' })
+    })
+
+    test('a review with no reviewer, no spawn and no choice logs model_configured null', ON, async ($, on) => {
+      const held = gate()
+      const reached = gate()
+      const seen = engine(on, { getHold: { when: (c: any) => c?.review !== undefined, until: held.until, reached: reached.open } })
+      await $.prompt.submit(COMPOSER('fix'))
+      const stopping = $.classic.Stop(stop)
+      await reached.until
+      await run($, 'off')
+      expect(logOf(seen, LOG_1)).toMatchObject({ status: 'incomplete', model_configured: null, model_resolved: null })
+      held.open()
+      await stopping
+      expect(seen.spawns.filter((s: any) => typeOf(s) === 'auditor:reviewer')).toEqual([])
+    })
   })
 })

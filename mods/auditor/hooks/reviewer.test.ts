@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'claude-code/testing'
 import type { AgentInfo } from 'claude-code'
 import type { Conversation } from '../types/index'
-import { adopt, idleTimerOf, isEndNotice, isHandBack, isNotice, isReviewerEntry, land, lapseOf, learn, learnName, letGo, markers, nameKnown, nameListed, originOf, reapIdle, reviewerNameOf, spawnName, spawning, standingOf, stopMissed, sweepable, withTurnEnd } from './reviewer'
+import { adopt, compactionModel, idleTimerOf, isEndNotice, isHandBack, isNotice, isReviewerEntry, keeps, land, lapseOf, learn, learnName, letGo, letGoSwitched, letGoSwitchedIdle, markers, nameKnown, nameListed, originOf, reapIdle, reviewModels, reviewerNameOf, spawnName, spawning, standingOf, stopMissed, sweepable, withTurnEnd } from './reviewer'
 import type { Identity } from './reviewer'
 
 const ID: Identity = { plugin: 'auditor', name: 'auditor-reviewer', description: 'auditor review' }
@@ -9,7 +9,7 @@ const TIMEOUT = 600_000
 
 // A conversation holding only what the reviewer's identity reads; review 4 is open at epoch 2.
 const conversation = (over: Partial<Conversation> = {}): Conversation =>
-  ({ off: false, epoch: 2, reviewerContext: 0, reviewerIds: [], reviewerNames: [], spawnsInFlight: [], review: { number: 4, record: [], dispatchedAt: 1, nothingWakes: false }, ...over }) as unknown as Conversation
+  ({ off: false, epoch: 2, reviewerContext: 0, reviewerIds: [], reviewerNames: [], reviewerModels: {}, spawnsInFlight: [], review: { number: 4, record: [], dispatchedAt: 1, nothingWakes: false }, ...over }) as unknown as Conversation
 // A list entry; `spawnedBy` is set only when given.
 const listed = (id: string, over: Partial<AgentInfo> = {}): AgentInfo => ({ id, type: 'general-purpose', status: 'running', description: 'd', ...over }) as AgentInfo
 const spawn = (over: Partial<Conversation['spawnsInFlight'][number]> = {}): Conversation['spawnsInFlight'][number] => ({ brief: 'b', epoch: 2, number: 4, startedAt: 1000, ...over })
@@ -322,9 +322,148 @@ describe('spawning, landing and ending a reviewer', () => {
     expect(landing.next.reviewer).toEqual({ id: 'ag1', model: 'haiku' })
   })
 
-  test('the markers a /clear keeps are the ids and the names', () => {
-    const c = conversation({ reviewer: { id: 'ag1', model: 'm' }, reviewerIds: ['ag1'], reviewerNames: ['n'], reviewerContext: 7 })
-    expect(markers(c)).toEqual({ reviewerIds: ['ag1'], reviewerNames: ['n'] })
+  test('the markers a /clear keeps are the ids, the names and the models the reviewers ran on', () => {
+    const c = conversation({ reviewer: { id: 'ag1', model: 'm' }, reviewerIds: ['ag1'], reviewerNames: ['n'], reviewerModels: { ag1: 'm' }, reviewerContext: 7 })
+    expect(markers(c)).toEqual({ reviewerIds: ['ag1'], reviewerNames: ['n'], reviewerModels: { ag1: 'm' } })
+  })
+})
+
+describe('the choice a reviewer is spawned for', () => {
+  const entry = (over: Partial<Conversation['spawnsInFlight'][number]> = {}) => spawn({ choice: 'sonnet', ...over })
+
+  test('a spawn that stands in carries the choice its entry was spawned for, and its model is recorded for its id', () => {
+    const next = learn(conversation({ spawnsInFlight: [entry()] }), 'b', 'ag1', 'claude-sonnet-5-5', 'n')
+    expect(next.reviewer).toEqual({ id: 'ag1', model: 'claude-sonnet-5-5', choice: 'sonnet' })
+    expect(next.reviewerModels).toEqual({ ag1: 'claude-sonnet-5-5' })
+    expect(next.spawnsInFlight).toEqual([entry({ id: 'ag1', model: 'claude-sonnet-5-5' })])
+  })
+
+  test('a spawn that is not stood in still has its model recorded for its id, and a blank model records none', () => {
+    expect(learn(conversation({ spawnsInFlight: [entry({ epoch: 1 })] }), 'b', 'ag1', 'claude-sonnet-5-5', 'n').reviewerModels).toEqual({ ag1: 'claude-sonnet-5-5' })
+    expect(learn(conversation({ spawnsInFlight: [entry()] }), 'b', 'ag1', '', 'n').reviewerModels).toEqual({})
+  })
+
+  test('an entry without a choice stands in a reviewer without one', () => {
+    expect(learn(conversation({ spawnsInFlight: [spawn()] }), 'b', 'ag1', 'm', 'n').reviewer).toEqual({ id: 'ag1', model: 'm' })
+  })
+
+  test('landing stands the spawn in with its entry\'s choice and records its model, a stale landing\'s included', () => {
+    const landing = land(conversation({ spawnsInFlight: [entry()] }), 'b', 4, 2, { agentId: 'ag1', model: 'claude-sonnet-5-5' })
+    expect(landing.next.reviewer).toEqual({ id: 'ag1', model: 'claude-sonnet-5-5', choice: 'sonnet' })
+    expect(landing.next.reviewerModels).toEqual({ ag1: 'claude-sonnet-5-5' })
+    const stale = land(conversation({ spawnsInFlight: [entry()] }), 'b', 4, 1, { agentId: 'ag1', model: 'claude-sonnet-5-5' })
+    expect(stale.next.reviewerModels).toEqual({ ag1: 'claude-sonnet-5-5' })
+  })
+
+  test('a landing whose entry is gone keeps the choice of the reviewer already stored under its id', () => {
+    const c = conversation({ review: undefined, reviewer: { id: 'ag1', model: '', choice: 'opus' }, reviewerIds: ['ag1'] })
+    expect(land(c, 'b', 4, 2, { agentId: 'ag1', model: 'claude-opus-5-5' }).next.reviewer).toEqual({ id: 'ag1', model: 'claude-opus-5-5', choice: 'opus' })
+  })
+
+  test('adoption takes the choice of the current epoch\'s newest spawn in flight, else the conversation\'s', () => {
+    const adopted = (over: Partial<Conversation>) => adopt(conversation({ reviewerIds: ['ag0'], ...over }), 'ag1', 'auditor-reviewer', 1500, TIMEOUT).reviewer
+    expect(adopted({ choice: 'haiku', spawnsInFlight: [entry({ choice: 'opus', brief: 'a' }), entry({ choice: 'sonnet', brief: 'b' })] })).toEqual({ id: 'ag1', model: '', choice: 'sonnet' })
+    expect(adopted({ choice: 'haiku', spawnsInFlight: [entry({ choice: 'opus', epoch: 1, id: 'ag9' })] })).toEqual({ id: 'ag1', model: '', choice: 'haiku' })
+    expect(adopted({ choice: 'haiku' })).toEqual({ id: 'ag1', model: '', choice: 'haiku' })
+    expect(adopted({})).toEqual({ id: 'ag1', model: '' })
+  })
+})
+
+describe('whether a stored reviewer is kept at a switch', () => {
+  const held = (choice: string | undefined, spawnedFor: string | undefined, over: Partial<Conversation> = {}): Conversation =>
+    conversation({ review: undefined, reviewerIds: ['ag1'], ...(choice === undefined ? {} : { choice }), reviewer: { id: 'ag1', model: 'm', ...(spawnedFor === undefined ? {} : { choice: spawnedFor }) }, ...over })
+
+  test('a reviewer spawned for the conversation\'s choice is kept, whatever the ids say', () => {
+    expect(keeps(held('haiku', 'haiku'), {})).toBe(true)
+    expect(keeps(held('claude-opus-4-6[1m]', 'claude-opus-4-6[1m]'), { 'claude-opus-4-6[1m]': 'claude-sonnet-5' })).toBe(true)
+  })
+
+  test('a reviewer spawned for another name is kept when both ids are known and equal, and let go otherwise', () => {
+    expect(keeps(held('claude-haiku-5-5', 'haiku'), { haiku: 'claude-haiku-5-5-20261001' })).toBe(true)
+    expect(keeps(held('sonnet', 'haiku'), { haiku: 'claude-haiku-5-5', sonnet: 'claude-haiku-5-5' })).toBe(true)
+    expect(keeps(held('sonnet', 'haiku'), { haiku: 'claude-haiku-5-5' })).toBe(false)
+    expect(keeps(held('sonnet', 'haiku'), {})).toBe(false)
+    expect(keeps(held('opus', 'claude-opus-4-6'), { opus: 'claude-opus-5-5' })).toBe(false)
+  })
+
+  test('a conversation with no choice has switched nothing, and a reviewer with none ran the default', () => {
+    expect(keeps(held(undefined, 'sonnet'), {})).toBe(true)
+    expect(keeps(held('haiku', undefined), {})).toBe(true)
+    expect(keeps(held('sonnet', undefined), {})).toBe(false)
+  })
+
+  test('letting a switched reviewer go clears it like a rotation and notes the reason, and keeps its marks', () => {
+    const { next, released } = letGoSwitched(held('sonnet', 'haiku', { reviewerContext: 9 }), {})
+    expect(released).toBe('ag1')
+    expect(next).toMatchObject({ reviewer: undefined, reviewerContext: 0, lastLetGo: 'model switch', reviewerIds: ['ag1'] })
+  })
+
+  test('a reviewer that is kept, or none stored, lets nothing go', () => {
+    const kept = held('haiku', 'haiku')
+    expect(letGoSwitched(kept, {})).toEqual({ next: kept, released: undefined })
+    const none = conversation({ choice: 'sonnet' })
+    expect(letGoSwitched(none, {})).toEqual({ next: none, released: undefined })
+  })
+
+  test('the switch\'s own let-go takes an idle reviewer only: no review open, no spawn in flight', () => {
+    expect(letGoSwitchedIdle(held('sonnet', 'haiku'), {}).released).toBe('ag1')
+    const reviewing = held('sonnet', 'haiku', { review: { number: 4, record: [], dispatchedAt: 1, nothingWakes: false } })
+    expect(letGoSwitchedIdle(reviewing, {})).toEqual({ next: reviewing, released: undefined })
+    const spawning = held('sonnet', 'haiku', { spawnsInFlight: [spawn()] })
+    expect(letGoSwitchedIdle(spawning, {})).toEqual({ next: spawning, released: undefined })
+    const same = held('haiku', 'haiku')
+    expect(letGoSwitchedIdle(same, {})).toEqual({ next: same, released: undefined })
+  })
+})
+
+describe('the models a review\'s log names', () => {
+  test('the reviewer that held the review names them: the choice it was spawned for and the model it resolved to', () => {
+    const c = conversation({ choice: 'opus', reviewer: { id: 'ag1', model: 'claude-haiku-5-5', choice: 'haiku' } })
+    expect(reviewModels(c, 4)).toEqual({ configured: 'haiku', resolved: 'claude-haiku-5-5' })
+  })
+
+  test('a reviewer whose result has not landed has no resolved model, unless the record of its id has one', () => {
+    const adopted = conversation({ reviewer: { id: 'ag1', model: '', choice: 'haiku' } })
+    expect(reviewModels(adopted, 4)).toEqual({ configured: 'haiku', resolved: null })
+    expect(reviewModels({ ...adopted, reviewerModels: { ag1: 'claude-haiku-5-5' } }, 4)).toEqual({ configured: 'haiku', resolved: 'claude-haiku-5-5' })
+  })
+
+  test('with no reviewer the spawn in flight for the review\'s number names the choice', () => {
+    const c = conversation({ choice: 'opus', spawnsInFlight: [spawn({ number: 3, choice: 'fable' }), spawn({ number: 4, choice: 'sonnet', brief: 'x' })] })
+    expect(reviewModels(c, 4)).toEqual({ configured: 'sonnet', resolved: null })
+  })
+
+  test('with neither it is the conversation\'s choice, and with no choice yet, null', () => {
+    expect(reviewModels(conversation({ choice: 'opus' }), 4)).toEqual({ configured: 'opus', resolved: null })
+    expect(reviewModels(conversation(), 4)).toEqual({ configured: null, resolved: null })
+  })
+
+  test('a reviewer with no choice of its own falls to the spawn in flight, then to the conversation\'s choice', () => {
+    expect(reviewModels(conversation({ choice: 'opus', reviewer: { id: 'ag1', model: 'm' } }), 4)).toEqual({ configured: 'opus', resolved: 'm' })
+  })
+})
+
+describe('the model a compaction is priced at', () => {
+  test('the model recorded for the compacting reviewer\'s id, whichever reviewer is stored since', () => {
+    const c = conversation({ reviewer: { id: 'ag2', model: 'claude-sonnet-5-5', choice: 'sonnet' }, reviewerModels: { ag1: 'claude-haiku-5-5', ag2: 'claude-sonnet-5-5' } })
+    expect(compactionModel(c, 'ag1', {})).toBe('claude-haiku-5-5')
+    expect(compactionModel(c, 'ag2', {})).toBe('claude-sonnet-5-5')
+  })
+
+  test('the stored reviewer\'s own model, for a state that kept none per id', () => {
+    expect(compactionModel(conversation({ reviewer: { id: 'ag1', model: 'claude-haiku-5-5' } }), 'ag1', {})).toBe('claude-haiku-5-5')
+  })
+
+  test('a stored reviewer adopted before its result landed takes the id its choice gets from the chain', () => {
+    const c = conversation({ reviewer: { id: 'ag1', model: '', choice: 'haiku' } })
+    expect(compactionModel(c, 'ag1', { haiku: 'claude-haiku-5-5-20261001' })).toBe('claude-haiku-5-5')
+    expect(compactionModel(conversation({ reviewer: { id: 'ag1', model: '', choice: 'claude-opus-4-6' } }), 'ag1', {})).toBe('claude-opus-4-6')
+  })
+
+  test('with no model recorded and no chain to an id it is unknown, a former reviewer kept only by its id included', () => {
+    expect(compactionModel(conversation({ reviewer: { id: 'ag1', model: '', choice: 'haiku' } }), 'ag1', {})).toBeUndefined()
+    expect(compactionModel(conversation({ reviewer: { id: 'ag1', model: '' } }), 'ag1', {})).toBeUndefined()
+    expect(compactionModel(conversation({ reviewerIds: ['ag0'] }), 'ag0', { haiku: 'claude-haiku-5-5' })).toBeUndefined()
   })
 })
 

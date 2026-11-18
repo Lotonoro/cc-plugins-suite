@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'claude-code/testing'
 import type { Conversation } from '../types/index'
 import { PRICED_MODEL, priceOf } from './pricing'
-import { purged, withNoteGiven, withReviewDone, withCompaction, withResponse } from './tally'
+import { UNKNOWN_MODEL, purged, withNoteGiven, withReviewDone, withCompaction, withResponse } from './tally'
 
 // A conversation holding only what the tally reads.
 const conversation = (over: Partial<Conversation> = {}): Conversation => ({ off: false, spent: 0, unpriced: null, reviews: 0, notes: 0, ...over }) as unknown as Conversation
@@ -60,33 +60,35 @@ describe('withResponse', () => {
 describe('withCompaction', () => {
   const counts = { input_tokens: 1000, output_tokens: 800, cache_read_input_tokens: 30_000, cache_creation_input_tokens: 2_000 }
 
-  test('a compaction with usage adds it, priced at the reviewer\'s model', () => {
-    const c = conversation({ reviewer: { id: 'ag1', model: PRICED_MODEL } })
-    expect(closeTo(withCompaction(c, counts).spent, priceOf(counts))).toBe(true)
+  test('a compaction with usage adds it, priced at the model its caller names', () => {
+    expect(closeTo(withCompaction(conversation(), counts, PRICED_MODEL).spent, priceOf(counts))).toBe(true)
   })
 
-  test('with no reviewer resolved, the pinned model prices it', () => {
-    expect(closeTo(withCompaction(conversation(), counts).spent, priceOf(counts))).toBe(true)
+  test('the model is the caller\'s, whatever the conversation\'s reviewer is', () => {
+    const c = conversation({ reviewer: { id: 'ag1', model: 'm' } })
+    expect(withCompaction(c, counts, PRICED_MODEL).unpriced).toBe(null)
   })
 
-  test('a stored reviewer adopted before its spawn result landed holds an empty model, and its compaction is priced at Haiku 5.5\'s rates', () => {
-    const after = withCompaction(conversation({ reviewer: { id: 'ag1', model: '' } }), counts)
-    expect(after.unpriced).toBe(null)
-    expect(closeTo(after.spent, priceOf(counts))).toBe(true)
+  test('a model that is not priced leaves the cost unknown, naming it', () => {
+    expect(withCompaction(conversation(), counts, 'claude-opus-4-6')).toMatchObject({ spent: 0, unpriced: 'claude-opus-4-6' })
   })
 
-  test('a reviewer resolved to a model that is not priced leaves the cost unknown', () => {
-    expect(withCompaction(conversation({ reviewer: { id: 'ag1', model: 'm' } }), counts)).toMatchObject({ spent: 0, unpriced: 'm' })
+  test('no model at all leaves the cost unknown for a named model, not a blank', () => {
+    for (const none of [undefined, '']) {
+      const after = withCompaction(conversation(), counts, none)
+      expect(after).toMatchObject({ spent: 0, unpriced: UNKNOWN_MODEL })
+      expect(UNKNOWN_MODEL).not.toBe('')
+    }
   })
 
   test('a compaction without usage leaves the conversation unchanged', () => {
     const c = conversation({ spent: 0.25 })
-    expect(withCompaction(c, undefined)).toBe(c)
+    expect(withCompaction(c, undefined, PRICED_MODEL)).toBe(c)
   })
 
   test('a compaction landing while the auditor is off adds nothing', () => {
     const off = conversation({ off: true })
-    expect(withCompaction(off, counts)).toBe(off)
+    expect(withCompaction(off, counts, PRICED_MODEL)).toBe(off)
   })
 })
 
