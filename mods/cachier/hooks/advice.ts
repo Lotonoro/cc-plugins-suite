@@ -43,7 +43,7 @@ export type Near = { setup: Setup; savedUsd: number }
 // current setup's saving against its baseline is above zero. `even`: no change is worth making, and the baseline cost no more, so no figure
 // is stated; `baselineSavedUsd` is what the baseline would have saved over the current setup, zero or more, which says whether it cost
 // about the same or a little less. Every kind names the pauses it priced (`of`, `source`). `near` is the cheapest setup when it is cheaper
-// than the current one but under the threshold, else null: a block that names it never calls the current setup the cheapest. A change's
+// than the current one but under the threshold, else null: a block that names it never calls the current setup optimal. A change's
 // `startsOn` is whether keepalive is on where `to` would start: this session at the same TTL, the new session a switch starts (`fresh.on`)
 // at the other.
 export type Result =
@@ -138,8 +138,8 @@ const pausesOf = (of: number, source: Source): string => {
 const NO_PAUSE_LEAD_MS = 0
 const otherSetup = (setup: Setup): string => spanOf(setupToken(setup, NO_PAUSE_LEAD_MS))
 
-// The row that opens a block: the setup you are on, at this session's lead, and `(cheapest)` where nothing would have cost less.
-const setupRow = (current: Setup, leadMs: number, cheapest = false): Line => labelled('setup:', ` ${spanOf(setupToken(current, leadMs))}${cheapest ? ' (cheapest)' : ''}`)
+// The row that opens a block: the setup you are on, at this session's lead, and `(optimal)` where nothing would have cost less.
+const setupRow = (current: Setup, leadMs: number, optimal = false): Line => labelled('setup:', ` ${spanOf(setupToken(current, leadMs))}${optimal ? ' (optimal)' : ''}`)
 
 // The row that says how to make a change.
 const doRow = (step: string): Line => labelled('do:', ` ${step}`)

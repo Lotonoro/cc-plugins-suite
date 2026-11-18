@@ -9406,8 +9406,8 @@ describe('the best setup: one sentence, in the pane and in the bare command, pri
     await clock.advance(1000)
     await commandText($, 'on 300')
     await clock.advance(1000)
-    // A run that sends nothing costs what keepalive off does, so the paused setup is the cheapest and the block states the baseline.
-    expect(sectionLines(await commandText($, ''), 'Advice')).toEqual(['setup: 5m/paused (lead 300s ≥ 300s TTL) (cheapest)', '5m/off ≈ same cost (10 recent pauses)'])
+    // A run that sends nothing costs what keepalive off does, so the paused setup is optimal and the block states the baseline.
+    expect(sectionLines(await commandText($, ''), 'Advice')).toEqual(['setup: 5m/paused (lead 300s ≥ 300s TTL) (optimal)', '5m/off ≈ same cost (10 recent pauses)'])
   })
 
   test('the details pane carries the block, each row whole, in its Advice section', async ($, on) => {
@@ -9453,7 +9453,7 @@ describe('the best setup: one sentence, in the pane and in the bare command, pri
     const text = (await commandText($, '')).replace(/\n\s*/g, ' ')
     // The count capped at 1 cannot hold the pauses at 1 h, so no row names 1h/on (the change test below, without the cap, draws it).
     expect(text).not.toContain('1h/on')
-    expect(sectionLines(await commandText($, ''), 'Advice')).toEqual(['setup: 5m/off (cheapest)', 'saves ~$3.00 vs 1h/off (10 recent pauses)'])
+    expect(sectionLines(await commandText($, ''), 'Advice')).toEqual(['setup: 5m/off (optimal)', 'saves ~$3.00 vs 1h/off (10 recent pauses)'])
   })
 
   test('every session\'s pauses are read with at most eight store reads running, and all of them are priced', async ($, on) => {

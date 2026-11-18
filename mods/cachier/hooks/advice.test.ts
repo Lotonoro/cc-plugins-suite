@@ -243,37 +243,37 @@ describe('adviceLine and adviceOf: the best-setup block of label rows, in the un
 
   test('the on-best block with keepalive on says what keepalive saves against having it off', () => {
     expect(printed(adviceOf(inputs({ history: pauses(10, 10 * MIN, 1000000) }), 'dollars'))).toEqual([
-      'setup: 5m/on (cheapest)',
+      'setup: 5m/on (optimal)',
       'saves ~$4.40 vs 5m/off (10 recent pauses)',
     ])
   })
 
   test('the on-best block with keepalive off says what the current TTL saves against the other', () => {
     expect(printed(adviceOf(inputs({ current: { ttl: '1h', keepalive: false }, history: pauses(10, 20 * MIN, 2000) }), 'dollars'))).toEqual([
-      'setup: 1h/off (cheapest)',
+      'setup: 1h/off (optimal)',
       'saves ~$4.74 vs 5m/off (10 recent pauses)',
     ])
   })
 
   test('a saving under a tenth of a cent is shown as "<$0.001", with no "~" before it', () => {
     expect(printed(adviceLine({ kind: 'best', setup: { ttl: '5m', keepalive: true }, savedUsd: 0.0001, of: 10, source: 'recent', near: null }, 'dollars', 15 * S))).toEqual([
-      'setup: 5m/on (cheapest)',
+      'setup: 5m/on (optimal)',
       'saves <$0.001 vs 5m/off (10 recent pauses)',
     ])
   })
 
-  test('about even, with no cheaper setup, says the cheapest and the other TTL or keepalive off cost about the same, with no figure', () => {
+  test('about even, with no cheaper setup, says the optimal setup and the other TTL or keepalive off cost about the same, with no figure', () => {
     expect(printed(adviceOf(inputs({ current: { ttl: '1h', keepalive: false }, history: pauses(10, 2 * MIN) }), 'dollars'))).toEqual([
-      'setup: 1h/off (cheapest)',
+      'setup: 1h/off (optimal)',
       '5m/off ≈ same cost (10 recent pauses)',
     ])
     expect(printed(adviceOf(inputs({ history: pauses(10, 2 * MIN) }), 'dollars'))).toEqual([
-      'setup: 5m/on (cheapest)',
+      'setup: 5m/on (optimal)',
       '5m/off ≈ same cost (10 recent pauses)',
     ])
   })
 
-  test('a cheaper setup under the change threshold, with a saving over the current one: the next-best row names it and its saving, and the setup is never called cheapest', () => {
+  test('a cheaper setup under the change threshold, with a saving over the current one: the next-best row names it and its saving, and the setup is never called optimal', () => {
     // 6-minute pauses at 5 m on with one ping pinned: 1 h off costs $0.048 a pause and 5 m on $0.050, a 4 % saving, so no change.
     const near = inputs({ rates: OPUS, pinned: 1, history: pauses(10, 6 * MIN, 6000) })
     const result = bestSetupOf(near)
@@ -285,7 +285,7 @@ describe('adviceLine and adviceOf: the best-setup block of label rows, in the un
       'saves ~$4.60 vs 5m/off (10 recent pauses)',
       'next best: 1h/off · would have saved $0.02, too little to change',
     ])
-    expect(rows.join(' ')).not.toContain('(cheapest)')
+    expect(rows.join(' ')).not.toContain('(optimal)')
   })
 
   test('a cheaper setup under the change threshold that is the baseline: the next-best row names it, its saving and the pauses, and no row repeats or contradicts it', () => {
@@ -349,7 +349,7 @@ describe('adviceLine and adviceOf: the best-setup block of label rows, in the un
     ])
     const best = printed(adviceOf(inputs({ history: pauses(10, 10 * MIN, 1000000) }), 'tokens'))
     expect(best.join(' ')).not.toMatch(DOLLAR_FIGURE)
-    expect(best).toEqual(['setup: 5m/on (cheapest)', 'saves money vs 5m/off (10 recent pauses; $ only, /keepalive unit dollars)'])
+    expect(best).toEqual(['setup: 5m/on (optimal)', 'saves money vs 5m/off (10 recent pauses; $ only, /keepalive unit dollars)'])
   })
 
   test('the pointer to the dollar unit stands once in a block, on the first row that states money, and nowhere in a block that states none', () => {
@@ -435,8 +435,8 @@ describe('adviceOf: the block names the setup you are on, paused where keepalive
             }
             points++
             expect(rows.slice(1).join(' ')).not.toContain('/paused')
-            // The setup row names the current setup, with its "(cheapest)" where the block says so, paused exactly where its run sends nothing.
-            expect(rows[0]!.replace(/ \(cheapest\)$/, '')).toBe(`setup: ${tokenOf(current, leadMs)}`)
+            // The setup row names the current setup, with its "(optimal)" where the block says so, paused exactly where its run sends nothing.
+            expect(rows[0]!.replace(/ \(optimal\)$/, '')).toBe(`setup: ${tokenOf(current, leadMs)}`)
             const paused = current.keepalive && leadMs >= TTL_MS[current.ttl]
             expect(rows[0]!.includes('/paused')).toBe(paused)
             if (paused) pausedPoints++
@@ -459,9 +459,9 @@ describe('adviceOf: a current setup paused at a lead not below its TTL', () => {
     ])
   })
 
-  test('the cheapest-setup block names it paused, and states the baseline in full', () => {
+  test('the optimal-setup block names it paused, and states the baseline in full', () => {
     expect(printed(adviceOf(inputs({ leadMs: 300 * S, current: { ttl: '5m', keepalive: true }, history: pauses(10, 2 * MIN) }), 'dollars'))).toEqual([
-      'setup: 5m/paused (lead 300s ≥ 300s TTL) (cheapest)',
+      'setup: 5m/paused (lead 300s ≥ 300s TTL) (optimal)',
       '5m/off ≈ same cost (10 recent pauses)',
     ])
   })
@@ -772,9 +772,9 @@ describe('the labels of the Advice rows: each is the first, dim piece of its row
     ])
   })
 
-  test('saves is the colon-less label of the on-best row, and (cheapest) is part of the setup row\'s rest', () => {
+  test('saves is the colon-less label of the on-best row, and (optimal) is part of the setup row\'s rest', () => {
     expect(adviceOfRaw(inputs({ history: pauses(10, 10 * MIN, 1000000) }), 'dollars').map(printedPieces)).toEqual([
-      pieces('setup:', ' 5m/on (cheapest)'),
+      pieces('setup:', ' 5m/on (optimal)'),
       pieces('saves', ' ~$4.40 vs 5m/off (10 recent pauses)'),
     ])
   })
@@ -789,7 +789,7 @@ describe('the labels of the Advice rows: each is the first, dim piece of its row
 
   test('the tail rows that open with a setup have no label: they are plain text', () => {
     const tail = adviceLineRaw({ kind: 'even', setup: { ttl: '5m', keepalive: true }, near: null, baselineSavedUsd: 0.004, of: 10, source: 'recent' }, 'dollars', 15 * S)
-    expect(tail.map((row) => (typeof row === 'string' ? row : printedPieces(row)))).toEqual([pieces('setup:', ' 5m/on (cheapest)'), '5m/off ≈ same cost (10 recent pauses)'])
+    expect(tail.map((row) => (typeof row === 'string' ? row : printedPieces(row)))).toEqual([pieces('setup:', ' 5m/on (optimal)'), '5m/off ≈ same cost (10 recent pauses)'])
     const cheaper = adviceLineRaw({ kind: 'even', setup: { ttl: '5m', keepalive: true }, near: null, baselineSavedUsd: 0.005, of: 10, source: 'recent' }, 'dollars', 15 * S)
     expect(cheaper.at(-1)).toBe('5m/off a little cheaper (10 recent pauses), too little to change')
   })
