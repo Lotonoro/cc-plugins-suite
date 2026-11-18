@@ -212,7 +212,8 @@ describe('modelFiguresOf', () => {
 })
 
 describe('modelAnswerOf', () => {
-  const figuresOfAnswer = modelFiguresOf('haiku', choicesOf(['claude-fable-5-2', 'claude-nosuch-9-9'], undefined), {})
+  // The ids are ones the price table never covers, so the answer reads the same as the table grows.
+  const figuresOfAnswer = modelFiguresOf('haiku', choicesOf(['claude-fable-9-9', 'claude-nosuch-9-9'], undefined), {})
 
   test('names the model the reviewer runs on, then every choice with its marks, then how to set one', () => {
     expect(modelAnswerOf(figuresOfAnswer)).toBe(
@@ -223,7 +224,7 @@ describe('modelAnswerOf', () => {
         '  sonnet',
         '  opus',
         '  fable (Fable)',
-        '  claude-fable-5-2 (Fable, cost unknown)',
+        '  claude-fable-9-9 (Fable, cost unknown)',
         '  claude-nosuch-9-9 (cost unknown)',
         'Set one with /auditor model <name>.',
       ].join('\n'),

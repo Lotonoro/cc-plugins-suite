@@ -9157,7 +9157,7 @@ describe('the reviewer model each conversation chooses', () => {
       expect(lines(text)[1]).toBe('Choices:')
       expect(lines(text)).toContain('  haiku (current, default)')
       expect(lines(text)).toContain('  fable (Fable)')
-      expect(lines(text)).toContain('  claude-fable-5-2 (Fable, cost unknown)')
+      expect(lines(text).some(line => line.startsWith('  claude-fable-5-2 (Fable'))).toBe(true)
       for (const id of CATALOG_IDS) expect(lines(text).some(line => line.startsWith(`  ${id}`))).toBe(true)
       expect(lines(text).slice(-1)).toEqual(['Set one with /auditor model <name>.'])
     })
@@ -9167,8 +9167,9 @@ describe('the reviewer model each conversation chooses', () => {
       expect(lines(await run($, 'model')).slice(2, 6)).toEqual(['  haiku (current, default)', '  sonnet', '  opus', '  fable (Fable)'])
     })
 
+    // The ids here are ones the price table never covers, so the test holds as the table grows.
     test('a choice whose id is outside the price table is marked cost unknown, and one the table prices is not', ON, async ($, on) => {
-      engine(on, { catalog: { 'a-cc.json': catalogFile({ modelIds: ['claude-haiku-5-5', 'claude-unpriced-1-1'] }) }, store: { modelIds: { haiku: HAIKU, sonnet: 'claude-sonnet-4-6' } } })
+      engine(on, { catalog: { 'a-cc.json': catalogFile({ modelIds: ['claude-haiku-5-5', 'claude-unpriced-1-1'] }) }, store: { modelIds: { haiku: HAIKU, sonnet: 'claude-unpriced-2-2' } } })
       const text = await run($, 'model')
       expect(lines(text)).toContain('  haiku (current, default)')
       expect(lines(text)).toContain('  sonnet (cost unknown)')
@@ -9243,7 +9244,7 @@ describe('the reviewer model each conversation chooses', () => {
 
     test('a Fable id the catalog lists is set and stored as the last model set like the alias, and a new session then spawns on it through the hook', ON, async ($, on) => {
       const seen = engine(on, { spawnModels: ['claude-fable-5-2'] })
-      expect(lines(await run($, 'model claude-fable-5-2'))).toContain('  claude-fable-5-2 (current, Fable, cost unknown)')
+      expect(lines(await run($, 'model claude-fable-5-2')).some(line => line.startsWith('  claude-fable-5-2 (current, Fable'))).toBe(true)
       expect(seen.store['lastModel']).toBe('claude-fable-5-2')
       await $.session.end({ reason: 'clear', sessionId: 's1' } as any)
       await workerTurn($)
@@ -9304,7 +9305,10 @@ describe('the reviewer model each conversation chooses', () => {
 
     test('availableModels filters the choices, and moves the default, and so the model a bare read takes, off haiku', ON, async ($, on) => {
       const seen = engine(on, { available: ['opus', 'claude-opus-4-6'] })
-      expect(lines(await run($, 'model'))).toEqual(['Reviewer model: opus', 'Choices:', '  opus (current, default)', '  claude-opus-4-6 (cost unknown)', 'Set one with /auditor model <name>.'])
+      const rows = lines(await run($, 'model'))
+      expect(rows.slice(0, 3)).toEqual(['Reviewer model: opus', 'Choices:', '  opus (current, default)'])
+      expect(rows[3]).toMatch(/^ {2}claude-opus-4-6( \(|$)/)
+      expect(rows.slice(4)).toEqual(['Set one with /auditor model <name>.'])
       expect(seen.conversation.choice).toBe('opus')
     })
 
