@@ -1508,6 +1508,47 @@ test('with the pane on the Claude list, a write that adds items asks again for t
   expect([...shown]).toEqual([])
 })
 
+test('a call that only names the list redraws the band and the pane with no other event, and asks the pane again with the new title; a blank name takes the heading back', async ($, on) => {
+  mock.clock(on)
+  mock.store(on)
+  const { opens } = backlogRecord(on)
+  await $.tool.call({ tool: TOOL, action: 'add', title: 'Pick a db' })
+  await $.tool.call({ tool: TODO_TOOL, entries: [{ title: 'Build it', state: 'in_flight' }, { title: 'Test it', state: 'queued' }] })
+  const band = await $.ui.mount({ plugin: 'human-plugin', surface: 'terminal', component: 'AbovePrompt', props: { ...BAND_PROPS, bodyColumns: 120 } })
+  expect(shownOf((await band.drawn()) as El)).toContain('Agent TODO 1 active, 1 queued')
+  await band.press({ key: 'claude-header' })
+  const pane = await $.ui.mount({ plugin: 'human-plugin', surface: 'terminal', component: 'Pane', requestId: 'human-items', props: CLAUDE_PANE })
+  const header = async (): Promise<string> => shownOf(((await pane.drawn()) as El).children?.[0] as El)
+  expect(await header()).toBe('Agent TODO 1 in flight, 1 queued')
+  expect(opens.map(o => o.title)).toEqual(['Agent TODO'])
+  // The call writes no entry and starts no count over: the views and the title take the name from it alone.
+  const named = await $.tool.call({ tool: TODO_TOOL, name: 'Ada' })
+  expect(String(named.result).split('\n')[0]).toBe('Ada TODO: 1 in flight, 1 queued')
+  expect(shownOf((await band.drawn()) as El)).toContain('Ada TODO 1 active, 1 queued')
+  expect(await header()).toBe('Ada TODO 1 in flight, 1 queued')
+  expect(opens.map(o => [o.title, o.rows])).toEqual([['Agent TODO', 3], ['Ada TODO', 3]])
+  await $.tool.call({ tool: TODO_TOOL, name: '  ' })
+  expect(shownOf((await band.drawn()) as El)).toContain('Agent TODO 1 active, 1 queued')
+  expect(await header()).toBe('Agent TODO 1 in flight, 1 queued')
+  expect(opens.map(o => o.title)).toEqual(['Agent TODO', 'Ada TODO', 'Agent TODO'])
+})
+
+test('a name of 60 columns heads the Claude column cut to the 7 columns its words and counts leave it at a band of 96, the counts whole and pressable, and the pane\'s header line cut the same way in its body', async ($, on) => {
+  mock.clock(on)
+  mock.store(on)
+  const { opens } = backlogRecord(on)
+  await $.tool.call({ tool: TOOL, action: 'add', title: 'Pick a db' })
+  await $.tool.call({ tool: TODO_TOOL, name: 'x'.repeat(60), entries: [{ title: 'Build it', state: 'in_flight' }, { title: 'Test it', state: 'queued' }, { title: 'Ship it', state: 'queued' }] })
+  const band = await $.ui.mount({ plugin: 'human-plugin', surface: 'terminal', component: 'AbovePrompt', props: { ...BAND_PROPS, bodyColumns: 96 } })
+  const head = boxes(await band.drawn()).column?.children?.[0]
+  expect(shownOf(head as El)).toBe('xxxxxx… TODO 1 active, 2 queued')
+  expect(elementsOf(head as El, 'Button').map(button => [button.props?.key, button.props?.label])).toEqual([['claude-header', '1 active, 2 queued']])
+  await band.press({ key: 'claude-header' })
+  expect(opens).toEqual([{ id: 'human-items', title: `${'x'.repeat(60)} TODO`, rows: 4, focus: true }])
+  const pane = await $.ui.mount({ plugin: 'human-plugin', surface: 'terminal', component: 'Pane', requestId: 'human-items', props: { ...CLAUDE_PANE, title: `${'x'.repeat(60)} TODO` } })
+  expect(shownOf((((await pane.drawn()) as El).children ?? [])[0] as El)).toBe(`${'x'.repeat(20)}… TODO 1 in flight, 2 queued`)
+})
+
 // Every line of a human list drawn alone at 1 to 25 columns and at 27, 28 and 40, in the band's tree: each to-do row is one row of cells whose prefix, title and control add up to the width at most, a row
 // too narrow for its control draws none and its title's label fits its room, and the header is one row of the chip and the count from the chip's width plus one and the chip and the
 // count on rows of their own below it. The presses are made at 120 columns, where every control is drawn, and the rows drawn again narrow. The ids of four digits are built once

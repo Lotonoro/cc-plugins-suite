@@ -1,5 +1,5 @@
 import { expect, test } from 'claude-code/testing'
-import { backlogTail, bandDraws, bandRows, bandWidths, claudeRows, columnHeader, cutTitle, cutToColumns, foldCount, headerLines, humanFoldRows, isChipShort, isSqueezed, rowLayout, squeezedFold, wrapText, type BandWidths, type ClaudeRow, type Control, type RowTexts } from './layout'
+import { backlogTail, bandDraws, bandRows, bandWidths, claudeRows, columnHeader, cutTitle, cutToColumns, foldCount, headerLines, humanFoldRows, isChipShort, isSqueezed, nameFirstHeader, rowLayout, squeezedFold, wrapText, type BandWidths, type ClaudeRow, type Control, type RowTexts } from './layout'
 import { displayColumns, unitsOf } from './columns'
 import { endsJoining } from './joining-oracle'
 import { SEQUENCES } from './sequences'
@@ -671,6 +671,71 @@ test('whatever the counts and the width, the two parts joined are the line cut a
       else if (width >= 1) expect(parts.heading.endsWith('…'), where).toBe(true)
     }
   }
+})
+
+// The header of a column whose agent has stated a name: the name, the fixed words after it and the counts. The name is the part that gives way first.
+const TAIL = ' TODO'
+
+test('a stated name is whole with its words and the counts from the width the line takes: `Ada TODO 1 active, 2 queued` is 27 columns, whole from 27 and cut by the counts first below', () => {
+  expect(displayColumns(`Ada${TAIL} ${COUNTS}`)).toBe(27)
+  for (const width of [27, 28, 80]) expect(nameFirstHeader('Ada', TAIL, COUNTS, width), `${width}`).toEqual({ heading: 'Ada TODO ', counts: COUNTS })
+  // The name is whole while its columns fit, and the counts are cut only once the name is down to its ellipsis: at 26 the name loses a column to `A…`, the counts whole.
+  expect(nameFirstHeader('Ada', TAIL, COUNTS, 26)).toEqual({ heading: 'A… TODO ', counts: COUNTS })
+  expect(nameFirstHeader('Ada', TAIL, COUNTS, 25)).toEqual({ heading: '… TODO ', counts: COUNTS })
+})
+
+test('a name of 60 columns at a layout width of 31 is cut to the 7 the words and the counts leave it, `xxxxxx…`, and the counts stay whole and pressable', () => {
+  const header = nameFirstHeader('x'.repeat(60), TAIL, COUNTS, 31)
+  expect(header).toEqual({ heading: 'xxxxxx… TODO ', counts: COUNTS })
+  expect(displayColumns(`${header.heading}${header.counts}`)).toBe(31)
+})
+
+test('once the name is down to its ellipsis the line is `… TODO ` and the counts, cut as the default heading\'s are: `1 active, 2 queu…` at 24, `1…` at 9 and a bare `…` at 8, and at 7 and 6 the line cut as one text with no counts part', () => {
+  const name = 'x'.repeat(60)
+  expect(nameFirstHeader(name, TAIL, COUNTS, 25)).toEqual({ heading: '… TODO ', counts: COUNTS })
+  expect(nameFirstHeader(name, TAIL, COUNTS, 24)).toEqual({ heading: '… TODO ', counts: '1 active, 2 queu…' })
+  expect(nameFirstHeader(name, TAIL, COUNTS, 9)).toEqual({ heading: '… TODO ', counts: '1…' })
+  expect(nameFirstHeader(name, TAIL, COUNTS, 8)).toEqual({ heading: '… TODO ', counts: '…' })
+  expect(nameFirstHeader(name, TAIL, COUNTS, 7)).toEqual({ heading: '… TODO…', counts: '' })
+  expect(nameFirstHeader(name, TAIL, COUNTS, 6)).toEqual({ heading: '… TOD…', counts: '' })
+  expect(nameFirstHeader(name, TAIL, COUNTS, 1)).toEqual({ heading: '…', counts: '' })
+  expect(nameFirstHeader(name, TAIL, COUNTS, 0)).toEqual({ heading: '', counts: '' })
+})
+
+test('whatever the name and the width from 0 to 60, the header is never wider than the width, is the whole line where that fits, keeps the counts whole while the cut name keeps a character before its ellipsis, and has counts to press exactly from 8 columns', () => {
+  const NAMES = ['x'.repeat(60), '漢'.repeat(30), FAMILY.repeat(8), `a${FAMILY}b`.repeat(6), `${HEART}${KEYCAP_ONE}`.repeat(8), 'Ada', 'Ada: backend', '日本語のタイトル and some words']
+  for (const name of NAMES) {
+    const units = unitsOf(name).map(unit => unit.text)
+    const boundaries = endsOf(units)
+    for (let width = 0; width <= 60; width++) {
+      const where = `${JSON.stringify(name)} in ${width}`
+      const parts = nameFirstHeader(name, TAIL, COUNTS, width)
+      const line = `${parts.heading}${parts.counts}`
+      expect(displayColumns(line), where).toBeLessThanOrEqual(width)
+      expect(parts.counts !== '', where).toBe(width >= 8)
+      if (displayColumns(`${name}${TAIL} ${COUNTS}`) <= width) {
+        expect(parts, where).toEqual({ heading: `${name}${TAIL} `, counts: COUNTS })
+        continue
+      }
+      // Cut: the line is the kept start of the name, an ellipsis and the words, or, with the name down to its ellipsis, the line `… TODO <counts>` cut at the width.
+      const kept = parts.heading.endsWith(`…${TAIL} `) ? parts.heading.slice(0, -`…${TAIL} `.length) : null
+      if (kept === null) {
+        expect(line, where).toBe(cutToColumns(`…${TAIL} ${COUNTS}`, width))
+        continue
+      }
+      // The start the name keeps ends between units, never inside a joined sequence or on a joiner.
+      expect(kept === '' || boundaries.has(kept), where).toBe(true)
+      expect(endsJoining(kept), where).toBe(false)
+      if (kept !== '') expect(parts.counts, where).toBe(COUNTS)
+      else expect(line, where).toBe(cutToColumns(`…${TAIL} ${COUNTS}`, width))
+    }
+  }
+})
+
+test('the name gives way before the counts, where the default rule given the same heading cuts the counts first: a name of 20 columns at 31 keeps 7 columns and the counts whole, where the counts would be cut to 5', () => {
+  const name = 'n'.repeat(20)
+  expect(nameFirstHeader(name, TAIL, COUNTS, 31)).toEqual({ heading: 'nnnnnn… TODO ', counts: COUNTS })
+  expect(columnHeader(`${name}${TAIL}`, COUNTS, 31)).toEqual({ heading: `${name}${TAIL} `, counts: '1 ac…' })
 })
 
 // --- a row's ladder

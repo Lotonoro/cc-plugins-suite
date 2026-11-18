@@ -640,6 +640,28 @@ test('an empty list prints the one empty line', () => {
   expect(claudeTodoText([])).toBe('  The Agent TODO list is empty.')
 })
 
+test('with a name stated the counting line and the empty line carry it: `Ada TODO: 2 in flight, 3 queued` and `The Ada TODO list is empty.`, and the rest of the print is as before', () => {
+  const items = [step('q1', 'queued'), step('f1', 'in_flight'), step('q2', 'queued'), step('f2', 'in_flight'), step('q3', 'queued')]
+  const plain = claudeTodoText(items).split('\n')
+  const named = claudeTodoText(items, 'Ada').split('\n')
+  expect(named[0]).toBe('  Ada TODO: 2 in flight, 3 queued')
+  expect(named.slice(1)).toEqual(plain.slice(1))
+  expect(claudeTodoText([], 'Ada')).toBe('  The Ada TODO list is empty.')
+  expect(claudeTodoText([], 'Ada: backend')).toBe('  The Ada: backend TODO list is empty.')
+  expect(claudeTodoText(items, 'Ada: backend').split('\n')[0]).toBe('  Ada: backend TODO: 2 in flight, 3 queued')
+})
+
+test('a blank name is no name: the print is the one with Agent TODO', () => {
+  expect(claudeTodoText([step('q1', 'queued')], '')).toBe(claudeTodoText([step('q1', 'queued')]))
+  expect(claudeTodoText([], '')).toBe('  The Agent TODO list is empty.')
+})
+
+test('a name of 200 columns is printed whole and uncut, on its one line', () => {
+  const long = 'x'.repeat(200)
+  expect(claudeTodoText([step('q1', 'queued')], long).split('\n')[0]).toBe(`  ${long} TODO: 0 in flight, 1 queued`)
+  expect(claudeTodoText([], long)).toBe(`  The ${long} TODO list is empty.`)
+})
+
 test('five in flight and twenty queued name the five and fifteen queued, and end on a line counting the five queued left out', () => {
   const text = claudeTodoText([...steps(20, 'queued'), ...steps(5, 'in_flight')])
   const lines = text.split('\n')

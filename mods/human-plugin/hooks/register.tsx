@@ -4,7 +4,7 @@ import type { OwedNotices, Store } from '../types'
 import { PLUGIN, TOOL, act, carryNext, clearAll, parseInput, type Outcome } from './items'
 import { STEERING, TODO_SPEC, TOOL_SPEC } from './steering'
 import { countBatch } from './reminder'
-import { SUBAGENT_REFUSAL, TODO_NAME, TODO_TOOL, emptyTodo, parseTodo, readTodo, todoLine, todoReply, writeTodo } from './todo'
+import { SUBAGENT_REFUSAL, TODO_NAME, TODO_TOOL, emptyTodo, parseTodo, readName, readTodo, todoLine, todoReply, writeName, writeTodo } from './todo'
 import { oneLine } from './cut'
 import { messageOf, stateOf } from './done'
 import {
@@ -196,21 +196,32 @@ const todoCommand = async ($: EngineInterface, args: string, windowMs: number): 
   return text
 }
 
-// The `/claude-todo` command's answer: the Claude TODO list, once a rebuild in progress has ended, as the print commands.ts words. It takes no argument.
+// The `/claude-todo` command's answer: the Claude TODO list under the name the agent stated for it, once a rebuild in progress has ended, as the print commands.ts words. It takes no argument.
 const claudeTodo = async ($: EngineInterface, args: string): Promise<string> => {
   if (hasArgument(args)) return CLAUDE_USAGE
   if (!(await restored($))) return CLAUDE_REBUILDING
-  return claudeTodoText(await readTodo($))
+  return claudeTodoText(await readTodo($), await readName($))
 }
 
 // The Claude list tool's calls, in the order they arrived. The engine does not promise to finish parallel calls in the order it started them,
 // and a resume replays the transcript's order, so each call waits for the one before it: the list left live is the list a resume rebuilds.
 let todoTurn: Promise<void> = Promise.resolve()
 
-// The Claude list tool's answer: a write replaces the list whole, a call with no list reads it. Only the main agent keeps the list, so a
-// subagent's call is refused. Like the human tool's, a call waits for a rebuild in progress, so it never reads or replaces a list the rebuild
-// has not filled in. A refused call changes nothing and takes no turn. A write is followed up before the call answers, inside its place in the call order (todoTurn),
-// so the pane that shows the list follows each write in order.
+// The name a call states, stored after the list it may carry. A name that cannot be stored is logged and not thrown: the list is written by then, so the call is answered, and its
+// answer is headed by the name as stored.
+const storeName = async ($: EngineInterface, name: string): Promise<void> => {
+  try {
+    await writeName($, name)
+  } catch (err) {
+    $.ui.log(`human-plugin: the agent list's name was not stored: ${String(err)}`)
+  }
+}
+
+// The Claude list tool's answer: a write replaces the list whole, a call with no list reads it, and a call that states a name sets it, a blank one clearing it. Only the main agent keeps
+// the list, so a subagent's call is refused. Like the human tool's, a call waits for a rebuild in progress, so it never reads or replaces a list the rebuild has not filled in. A refused
+// call changes nothing and takes no turn. The list is written before the name, so a list write that fails fails the call before the name changes. A call that writes either is followed up
+// once, after both writes and before the call answers, inside its place in the call order (todoTurn), so the pane that shows the list follows each call in order. A call that states a
+// name and no list writes no list, and is a read in every other way.
 const todoAnswer = async ($: EngineInterface, e: unknown) => {
   const parsed = parseTodo(e)
   if (!parsed.ok) return { deny: `${TODO_NAME}: ${parsed.reason}` }
@@ -221,11 +232,10 @@ const todoAnswer = async ($: EngineInterface, e: unknown) => {
   try {
     await before
     if (!(await restored($))) return { deny: `${TODO_NAME}: the list is still being rebuilt from the transcript; call again in a moment` }
-    if (parsed.value !== null) {
-      await writeTodo($, parsed.value)
-      await followTodo($, parsed.value)
-    }
-    return { result: todoReply(parsed.value ?? (await readTodo($))) }
+    if (parsed.value !== null) await writeTodo($, parsed.value)
+    if (parsed.name !== null) await storeName($, parsed.name)
+    if (parsed.value !== null || parsed.name !== null) await followTodo($)
+    return { result: todoReply(parsed.value ?? (await readTodo($)), await readName($)) }
   } finally {
     turn.done()
   }
@@ -464,12 +474,13 @@ export const wireHooks = (on: On, windowMs: number): void => {
     const store = await readList($)
     setDrawn(store.items)
     const todo = await readTodo($)
-    setDrawnTodo(todo)
+    const name = await readName($)
+    setDrawnTodo(todo, name)
     if (!bandDraws(store.items.length, todo)) return next(e)
     // Read for the record it keeps (pane.ts, lastRead): the stored selection a press decides on after a reload with the pane open, before any press or move has set one. The band draws
     // no row as the shown one, so it uses nothing the read returns.
     await shownSelection($)
-    const view: View = { maxRows: e.props.maxRows, now: await $.clock.now(), windowMs, claude: { items: todo, columns: e.props.bodyColumns, isDocked: paneDocked(e.surface) } }
+    const view: View = { maxRows: e.props.maxRows, now: await $.clock.now(), windowMs, claude: { items: todo, columns: e.props.bodyColumns, isDocked: paneDocked(e.surface), name } }
     return band($.ui.resolve(e), handlers($, windowMs), store, view)
   })
 
@@ -480,8 +491,9 @@ export const wireHooks = (on: On, windowMs: number): void => {
     // The pane shows the Claude list or a human item, by what the selection says.
     if (selected === CLAUDE_VIEW) {
       const todo = await readTodo($)
-      setDrawnTodo(todo)
-      return backlogPane($.ui.resolve(e), todo, e.props.bodyColumns)
+      const name = await readName($)
+      setDrawnTodo(todo, name)
+      return backlogPane($.ui.resolve(e), todo, e.props.bodyColumns, name)
     }
     const view: View = { maxRows: 0, now: await $.clock.now(), windowMs, selected }
     const store = await readList($)

@@ -191,6 +191,15 @@ export const columnHeader = (heading: string, counts: string, width: number): Co
   return room >= 1 ? { heading: lead, counts: cutToColumns(counts, room) } : { heading: cutToColumns(`${lead}${counts}`, width), counts: '' }
 }
 
+// The same header for a heading made of a name the agent stated and the fixed words after it (`tail`), cut at `width` with the name giving way first: the words say what the list is
+// and the counts are what the column presses. The name is whole while the line `name tail counts` fits; past that it is cut (cutToColumns) to the room the tail, the space and the
+// whole counts leave it, down to the ellipsis alone. Once the name is that ellipsis, the header is columnHeader's with `…tail` for its heading, which cuts the counts and, past them,
+// the line. The parts are columnHeader's, so the counts are pressed exactly where it presses them.
+export const nameFirstHeader = (name: string, tail: string, counts: string, width: number): ColumnHeader => {
+  const room = width - displayColumns(tail) - 1 - displayColumns(counts)
+  return room >= 1 ? { heading: `${cutToColumns(name, room)}${tail} `, counts } : columnHeader(`${ELLIPSIS}${tail}`, counts, width)
+}
+
 // One state of a row's control as three fixed parts around an answer's text, which is the only part that varies and can be cut: `[✓ `, a label and `]` for an open
 // labelled to-do; the mark, the answer and the undo button after a space for a pressed control. `answer` is empty for a control with none.
 export type Control = { before: string; answer: string; after: string }

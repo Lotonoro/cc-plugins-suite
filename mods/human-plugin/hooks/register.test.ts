@@ -342,7 +342,8 @@ test('a session.end whose carry throws still empties the list, with the id count
   const e = { reason: 'clear' }
   const answered = await (catches['session.end'] as Handler)(broken(logs, [], stored, writes) as never, e as never, next(false) as never)
   expect(answered).toEqual({ passed: e })
-  expect(writes).toEqual([{ items: [], next: 7, term: null }, [], 0])
+  // The human list emptied with the counter the store holds, then the Claude list, the reminder's count and the name the agent stated for the Claude list.
+  expect(writes).toEqual([{ items: [], next: 7, term: null }, [], 0, ''])
   expect(logs).toEqual(['human-plugin: the session.end hook throw: list unreadable'])
 })
 
@@ -2893,6 +2894,165 @@ test('a write to the Claude list leaves the human list as it was, and a human to
   expect(values.todo).toEqual([entry('Build', 'in_flight')])
 })
 
+// The `$` with the key of each state write recorded in `keys`, in the order the writes are made.
+const recording = (env: ReturnType<typeof memEnv>['env']) => {
+  const keys: string[] = []
+  const set = env.state.set
+  const state = {
+    ...env.state,
+    set: async (ref: { key: string }, value: unknown) => {
+      keys.push(ref.key)
+      return set(ref, value)
+    },
+  }
+  return { $: { ...env, state }, keys }
+}
+// The `$` whose write under `key` throws, every other write going through, and whose log lines are kept in `logs`.
+const unwritable = <E extends { state: { set: (ref: { key: string }, value: unknown) => Promise<unknown> }; ui: object }>(env: E, key: string, logs: string[] = []) => ({
+  ...env,
+  state: {
+    ...env.state,
+    set: async (ref: { key: string }, value: unknown) => {
+      if (ref.key === key) throw new Error(`${key} unwritable`)
+      return env.state.set(ref, value)
+    },
+  },
+  ui: { ...env.ui, log: (text: string) => void logs.push(text) },
+})
+// The first line of the tool's answer, which names the list by its heading and counts it.
+const firstLine = (answer: unknown): string => String((answer as { result: string }).result).split('\n')[0] ?? ''
+
+test('a call with a name and entries writes the list and sets the name, and its answer opens with the name and TODO; a name with a colon is kept whole', async () => {
+  reset()
+  const { hooks } = wire()
+  const { env, values } = memEnv([], [], null)
+  const entries = [entry('Build', 'in_flight'), entry('Ship', 'queued')]
+  expect(await runTodo(hooks, env, { name: 'Cachier', entries })).toEqual({
+    result: ['Cachier TODO: 1 in flight, 1 queued', '- in_flight: Build (ETA: no ETA)', '- queued: Ship (ETA: no ETA)'].join('\n'),
+  })
+  expect(values.todoName).toBe('Cachier')
+  expect(values.todo).toEqual(entries)
+  expect(firstLine(await runTodo(hooks, env, { name: 'Ada: backend', entries }))).toBe('Ada: backend TODO: 1 in flight, 1 queued')
+  expect(values.todoName).toBe('Ada: backend')
+})
+
+test('a name is stored on one line and trimmed, with the runs of spaces inside it kept, and one of 200 columns is stored and answered whole', async () => {
+  reset()
+  const { hooks } = wire()
+  const { env, values } = memEnv([], [], null)
+  expect(firstLine(await runTodo(hooks, env, { name: '  Ada\n Lovelace ' }))).toBe('Ada Lovelace TODO: 0 in flight, 0 queued')
+  expect(values.todoName).toBe('Ada Lovelace')
+  expect(firstLine(await runTodo(hooks, env, { name: 'Ada  Lovelace' }))).toBe('Ada  Lovelace TODO: 0 in flight, 0 queued')
+  expect(values.todoName).toBe('Ada  Lovelace')
+  const long = 'x'.repeat(200)
+  expect(firstLine(await runTodo(hooks, env, { name: long }))).toBe(`${long} TODO: 0 in flight, 0 queued`)
+  expect(values.todoName).toBe(long)
+})
+
+test('a call with a blank name clears it, and the next answer opens Agent TODO; a call with no name leaves the stored one, whether it writes or reads', async () => {
+  reset()
+  const { hooks } = wire()
+  const { env, values } = memEnv([], [], null)
+  expect(firstLine(await runTodo(hooks, env, { name: 'Ada' }))).toBe('Ada TODO: 0 in flight, 0 queued')
+  expect(firstLine(await runTodo(hooks, env, {}))).toBe('Ada TODO: 0 in flight, 0 queued')
+  expect(firstLine(await runTodo(hooks, env, { entries: [entry('Build', 'in_flight')] }))).toBe('Ada TODO: 1 in flight, 0 queued')
+  expect(firstLine(await runTodo(hooks, env, { entries: [] }))).toBe('Ada TODO: 0 in flight, 0 queued')
+  expect(values.todoName).toBe('Ada')
+  expect(firstLine(await runTodo(hooks, env, { name: ' \n ' }))).toBe('Agent TODO: 0 in flight, 0 queued')
+  expect(values.todoName).toBe('')
+  expect(firstLine(await runTodo(hooks, env, {}))).toBe('Agent TODO: 0 in flight, 0 queued')
+  expect(firstLine(await runTodo(hooks, env, { name: 'Grace', entries: [entry('Build', 'in_flight')] }))).toBe('Grace TODO: 1 in flight, 0 queued')
+  expect(firstLine(await runTodo(hooks, env, { name: '', entries: [entry('Build', 'in_flight')] }))).toBe('Agent TODO: 1 in flight, 0 queued')
+})
+
+test('a call with a name and no entries sets the name and is a read in every other way: the list and the reminder count are not written, and the answer lists the entries under the new name', async () => {
+  reset()
+  const { hooks } = wire()
+  const { env, values } = memEnv([], [], null)
+  const entries = [entry('Build', 'in_flight'), entry('Ship', 'queued')]
+  await runTodo(hooks, env, { entries })
+  values.reminder = 42
+  const { $, keys } = recording(env)
+  expect(await runTodo(hooks, $, { name: 'Ada' })).toEqual({
+    result: ['Ada TODO: 1 in flight, 1 queued', '- in_flight: Build (ETA: no ETA)', '- queued: Ship (ETA: no ETA)'].join('\n'),
+  })
+  expect(keys).toEqual(['todoName'])
+  expect(values.todo).toEqual(entries)
+  expect(values.reminder).toBe(42)
+})
+
+test('a call with a name and entries writes the list before the name, and starts the reminder count over once', async () => {
+  reset()
+  const { hooks } = wire()
+  const { env, values } = memEnv([], [], null)
+  values.reminder = 42
+  const { $, keys } = recording(env)
+  await runTodo(hooks, $, { name: 'Ada', entries: [entry('Build', 'in_flight')] })
+  expect(keys).toEqual(['todo', 'reminder', 'todoName'])
+  expect(values.reminder).toBe(0)
+})
+
+test('a call whose name is not text is refused naming the field and applies neither its name nor its entries, and a subagent\'s call with a name is refused and changes nothing', async () => {
+  reset()
+  const { hooks } = wire()
+  const { env, values } = memEnv([], [], null)
+  await runTodo(hooks, env, { name: 'Ada', entries: [entry('Keep me', 'in_flight')] })
+  const { $, keys } = recording(env)
+  for (const name of [null, 3, true, {}, ['Grace']]) {
+    expect(await runTodo(hooks, $, { name, entries: [entry('Would replace', 'queued')] }), JSON.stringify(name)).toEqual({ deny: 'claude_todo: name must be text' })
+  }
+  const refusal = { deny: 'claude_todo: only the main agent keeps the Claude TODO list' }
+  expect(await runTodo(hooks, $, { name: 'Sub', entries: [entry('Sub plan', 'queued')], agentId: 'sub-1' })).toEqual(refusal)
+  expect(await runTodo(hooks, $, { name: 'Sub', agentId: 'sub-1' })).toEqual(refusal)
+  expect(keys).toEqual([])
+  expect(values.todoName).toBe('Ada')
+  expect(values.todo).toEqual([entry('Keep me', 'in_flight')])
+})
+
+test('a call with a name and entries whose list write throws fails as a call, and neither the list nor the name changes; the next call is answered', async () => {
+  reset()
+  const { hooks } = wire()
+  const { env, values } = memEnv([], [], null)
+  await runTodo(hooks, env, { name: 'Old', entries: [entry('Keep me', 'in_flight')] })
+  let thrown: unknown = null
+  try {
+    await runTodo(hooks, unwritable(env, 'todo'), { name: 'New', entries: [entry('Would replace', 'queued')] })
+  } catch (err) {
+    thrown = err
+  }
+  expect(String(thrown)).toContain('todo unwritable')
+  expect(values.todo).toEqual([entry('Keep me', 'in_flight')])
+  expect(values.todoName).toBe('Old')
+  expect(await runTodo(hooks, env, {})).toEqual({ result: 'Old TODO: 1 in flight, 0 queued\n- in_flight: Keep me (ETA: no ETA)' })
+})
+
+test('a call with a name and entries whose name write throws logs it, leaves the list as the call wrote it, and is answered, not as a failure, with the list under the name stored before the call', async () => {
+  reset()
+  const { hooks } = wire()
+  const { env, values } = memEnv([], [], null)
+  await runTodo(hooks, env, { name: 'Old', entries: [entry('Keep me', 'in_flight')] })
+  const logs: string[] = []
+  const written = [entry('Build', 'in_flight'), entry('Ship', 'queued')]
+  expect(await runTodo(hooks, unwritable(env, 'todoName', logs), { name: 'New', entries: written })).toEqual({
+    result: ['Old TODO: 1 in flight, 1 queued', '- in_flight: Build (ETA: no ETA)', '- queued: Ship (ETA: no ETA)'].join('\n'),
+  })
+  expect(values.todo).toEqual(written)
+  expect(values.todoName).toBe('Old')
+  expect(logs).toEqual(["human-plugin: the agent list's name was not stored: Error: todoName unwritable"])
+  // A call that states only a name is answered the same way, with the list as it was.
+  logs.length = 0
+  expect(firstLine(await runTodo(hooks, unwritable(env, 'todoName', logs), { name: 'Newer' }))).toBe('Old TODO: 1 in flight, 1 queued')
+  expect(logs).toEqual(["human-plugin: the agent list's name was not stored: Error: todoName unwritable"])
+})
+
+test('a reload of the mod keeps the name: the hooks wired again over the same state answer under it', async () => {
+  reset()
+  const { env, values } = memEnv([], [], null)
+  await runTodo(wire().hooks, env, { name: 'Ada', entries: [entry('Build', 'in_flight')] })
+  expect(values.todoName).toBe('Ada')
+  expect(await runTodo(wire().hooks, env, {})).toEqual({ result: 'Ada TODO: 1 in flight, 0 queued\n- in_flight: Build (ETA: no ETA)' })
+})
+
 test('a throw in the Claude list\'s tool is answered with a refusal that changes nothing', async () => {
   const { catches } = wire()
   const answered = await (catches[`tool.call ${JSON.stringify({ tool: TODO_TOOL })}`] as Handler)({} as never, { tool: TODO_TOOL } as never, next(false) as never)
@@ -2909,8 +3069,12 @@ test('a call to the Claude list\'s tool is drawn as one line, its result row emp
   const line = (props: object) => callRow($ as never, { props } as never, next(false) as never)
   const dim = (text: string) => ({ type: 'Text', dimColor: true, wrap: 'truncate-end', children: [text] })
   const entries = [entry('Build', 'in_flight'), entry('Ship', 'queued')]
-  expect(await line({ tool: TODO_TOOL, input: { entries }, isRunning: true, isErrored: false })).toEqual(dim('human-plugin: writing the Agent TODO list…'))
-  expect(await line({ tool: TODO_TOOL, input: {}, isRunning: true, isErrored: false })).toEqual(dim('human-plugin: reading the Agent TODO list…'))
+  expect(await line({ tool: TODO_TOOL, input: { entries }, isRunning: true, isErrored: false })).toEqual(dim('human-plugin: writing the list…'))
+  expect(await line({ tool: TODO_TOOL, input: {}, isRunning: true, isErrored: false })).toEqual(dim('human-plugin: reading the list…'))
+  expect(await line({ tool: TODO_TOOL, input: { name: 'Ada' }, isRunning: true, isErrored: false })).toEqual(dim('human-plugin: reading the list…'))
+  expect(await line({ tool: TODO_TOOL, input: { name: 'Ada: backend', entries }, output: 'Ada: backend TODO: 1 in flight, 1 queued', isRunning: false, isErrored: false })).toEqual(
+    dim('human-plugin: Ada: backend TODO 1 in flight, 1 queued'),
+  )
   expect(await line({ tool: TODO_TOOL, input: { entries }, output: 'Claude TODO: 1 in flight, 1 queued', isRunning: false, isErrored: false })).toEqual(dim('human-plugin: Claude TODO 1 in flight, 1 queued'))
   expect(await line({ tool: TODO_TOOL, input: { entries: [entry('', 'queued')] }, output: 'x', isRunning: false, isErrored: true })).toEqual(dim('human-plugin: entry 1: the title is empty'))
   expect(await line({ tool: TODO_TOOL, input: { entries }, output: 'claude_todo: only the main agent keeps the Claude TODO list', isRunning: false, isErrored: true })).toEqual(dim('human-plugin: claude_todo: only the main agent keeps the Claude TODO list'))
@@ -2941,6 +3105,53 @@ test('a /clear whose session.end hook fails part-way still empties the Claude li
   const writes: unknown[] = []
   await (catches['session.end'] as Handler)(broken([], [], { next: 3 }, writes) as never, { reason: 'clear' } as never, next(false) as never)
   expect(writes).toContainEqual([])
+})
+
+test('a /clear clears the name: the next answer opens Agent TODO, a call that states a name after it sets it, and a session end that is not a /clear leaves the name', async () => {
+  reset()
+  const { hooks } = wire()
+  const { env, values } = memEnv([], [], null)
+  await runTodo(hooks, env, { name: 'Ada', entries: [entry('Build', 'in_flight')] })
+  await (hooks['session.end'] as Handler)(env as never, { reason: 'exit' } as never, next(false) as never)
+  expect(values.todoName).toBe('Ada')
+  await (hooks['session.end'] as Handler)(env as never, { reason: 'clear' } as never, next(false) as never)
+  expect(values.todoName).toBe('')
+  expect(await runTodo(hooks, env, {})).toEqual({ result: 'Agent TODO: 0 in flight, 0 queued' })
+  expect(await runTodo(hooks, env, { name: 'Ada' })).toEqual({ result: 'Ada TODO: 0 in flight, 0 queued' })
+  expect(values.todoName).toBe('Ada')
+})
+
+test('a /clear whose session.end hook fails part-way still clears the name', async () => {
+  reset()
+  const { catches } = wire()
+  const writes: unknown[] = []
+  await (catches['session.end'] as Handler)(broken([], [], { next: 3 }, writes) as never, { reason: 'clear' } as never, next(false) as never)
+  expect(writes).toContainEqual('')
+})
+
+test('a /clear clears the name whichever of the two emptyings throws, the human list\'s or the Claude list\'s, once the hook and its failure handler have run, and the failure handler alone clears it too', async () => {
+  for (const key of ['list', 'todo']) {
+    reset()
+    const { hooks, catches } = wire()
+    const { env, values } = memEnv([made(1, { detail: '' })], [], null)
+    values.todo = [entry('Build', 'in_flight')]
+    const failing = unwritable(env, key)
+    const attempt = async (run: () => unknown): Promise<void> => {
+      await Promise.resolve()
+        .then(run)
+        .catch(() => undefined)
+    }
+    const clear = { reason: 'clear' }
+    values.todoName = 'Ada'
+    await attempt(() => (hooks['session.end'] as Handler)(failing as never, clear as never, next(false) as never))
+    await attempt(() => (catches['session.end'] as Handler)(failing as never, clear as never, next(false) as never))
+    expect(values.todoName, `${key}, the hook and its failure handler`).toBe('')
+    expect(values.todo, `${key}, the Claude list`).toEqual(key === 'todo' ? [entry('Build', 'in_flight')] : [])
+    expect((values.list as { items: unknown[] }).items, `${key}, the human list`).toEqual(key === 'list' ? [made(1, { detail: '' })] : [])
+    values.todoName = 'Ada'
+    await attempt(() => (catches['session.end'] as Handler)(failing as never, clear as never, next(false) as never))
+    expect(values.todoName, `${key}, the failure handler alone`).toBe('')
+  }
 })
 
 test('two writes whose first one is slower apply in the order the calls arrived: the later call\'s list is the one left, and a read after them sees it', async () => {
@@ -2984,6 +3195,22 @@ test('/claude-todo prints the Claude list the tool keeps: the in-flight items, t
     text: '  Agent TODO: 1 in flight, 2 queued\n  in flight:\n    ◐ Running · no ETA\n  queued:\n    ○ Queued first · no ETA\n    ○ Queued last · no ETA',
   })
   await runTodo(hooks, env, { entries: [] })
+  expect(await claudeTodo(hooks, env)).toEqual({ text: '  The Agent TODO list is empty.' })
+})
+
+test('/claude-todo prints the name the agent stated in its counting line and in its empty line, and Agent TODO with none stated or after a blank one', async () => {
+  freshModule()
+  const { hooks } = wire()
+  const { env } = memEnv([], [], null)
+  await runTodo(hooks, env, { name: 'Ada', entries: [entry('Queued first', 'queued'), entry('Running', 'in_flight'), entry('Queued last', 'queued')] })
+  expect(await claudeTodo(hooks, env)).toEqual({
+    text: '  Ada TODO: 1 in flight, 2 queued\n  in flight:\n    ◐ Running · no ETA\n  queued:\n    ○ Queued first · no ETA\n    ○ Queued last · no ETA',
+  })
+  await runTodo(hooks, env, { entries: [] })
+  expect(await claudeTodo(hooks, env)).toEqual({ text: '  The Ada TODO list is empty.' })
+  await runTodo(hooks, env, { name: 'Ada: backend' })
+  expect(await claudeTodo(hooks, env)).toEqual({ text: '  The Ada: backend TODO list is empty.' })
+  await runTodo(hooks, env, { name: ' ' })
   expect(await claudeTodo(hooks, env)).toEqual({ text: '  The Agent TODO list is empty.' })
 })
 
@@ -4222,6 +4449,200 @@ test('two writes made back to back, the first held up in its follow-up, leave th
   await Promise.all([first, second])
   expect(opens.map(o => o.rows)).toEqual([3, 5, 7])
   expect(values.todo).toEqual(six)
+})
+
+// The headings a stored name gives: none stated and a name cleared (the empty text) both draw Agent TODO.
+const STATED_HEADINGS = [[undefined, 'Agent TODO'], ['', 'Agent TODO'], ['Ada', 'Ada TODO'], ['Ada: backend', 'Ada: backend TODO']] as const
+
+test('the column\'s header and the pane\'s header line read the name the agent stated as it is stored when they are drawn, and Agent TODO where none is stated or it was cleared', async () => {
+  reset()
+  const { hooks } = wire()
+  const { $, values } = backlogEnv([made(1), made(2)], [], 'claude-todo', [RUNNING, entry('Later', 'queued'), entry('Latest', 'queued')])
+  await endSession(hooks, $)
+  for (const [stated, heading] of STATED_HEADINGS) {
+    values.todoName = stated
+    const drawnBand = flat(await bandAt(hooks, $, 120))
+    expect(drawnBand, heading).toContain(`"children":["${heading} "]`)
+    expect(drawnBand, heading).toContain('"label":"1 active, 2 queued"')
+    expect(linesOf(await paneTree(hooks, $))[0], heading).toBe(`${heading} 1 in flight, 2 queued`)
+  }
+})
+
+test('the column and the pane cut the name first where the width does not hold the whole heading, the counts staying whole and pressable in the column', async () => {
+  reset()
+  const { hooks } = wire()
+  const { $, values } = backlogEnv([made(1), made(2)], [], 'claude-todo', [RUNNING, entry('Later', 'queued'), entry('Latest', 'queued')])
+  await endSession(hooks, $)
+  values.todoName = 'x'.repeat(60)
+  // The band's 96 columns give the Claude column 31 to lay out in.
+  const drawnBand = await bandAt(hooks, $, 96)
+  expect(flat(drawnBand)).toContain('"children":["xxxxxx… TODO "]')
+  expect(flat(drawnBand)).toContain('"label":"1 active, 2 queued"')
+  expect(findButton(drawnBand, 'claude-header')).not.toBeUndefined()
+  // The pane's header line is the whole 87 columns of the line in a body that holds them, and the name is cut to the 21 columns the words and counts leave it in a body of 48.
+  const header = async (bodyColumns: number): Promise<Tree | undefined> => {
+    const tree = (await drawn($, () => hooks['ui.render {"component":"Pane","requestId":"human-items"}']?.($ as never, { props: { bodyColumns } } as never, next(false) as never))) as Tree
+    return tree.children?.[0]
+  }
+  expect((await header(100))?.wrap).toBe('truncate-end')
+  expect(textOf(await header(100))).toBe(`${'x'.repeat(60)} TODO 1 in flight, 2 queued`)
+  expect(textOf(await header(48))).toBe(`${'x'.repeat(20)}… TODO 1 in flight, 2 queued`)
+})
+
+test('a press on the column\'s counts opens the pane titled with the heading the band drew last, with the rows of the list it drew, before the press awaits anything', async () => {
+  for (const [stated, heading] of STATED_HEADINGS) {
+    reset()
+    const { hooks } = wire()
+    const { $, values, opens } = backlogEnv([made(1), made(2)], [], null, THREE)
+    values.todoName = stated
+    await endSession(hooks, $)
+    pressKey(await bandAt(hooks, $, 120), 'claude-header')
+    expect(opens, heading).toEqual([{ id: 'human-items', title: heading, rows: 4, focus: true }])
+    await settle()
+    expect(opens, heading).toHaveLength(1)
+  }
+})
+
+test('a press on the Claude column opens the pane from the heading and the list the last draw of either the band or the pane\'s own Claude view read', async () => {
+  for (const drawer of ['pane', 'band'] as const) {
+    reset()
+    const { hooks } = wire()
+    const { $, values, opens } = backlogEnv([made(1), made(2)], [], 'claude-todo', THREE)
+    values.todoName = 'Old'
+    await endSession(hooks, $)
+    const tree = await bandAt(hooks, $, 120)
+    // The agent renames the list and gives it more steps, and one of the two views is drawn before the press, with the band's drawing in the tree the press is made on.
+    values.todoName = 'Ada'
+    values.todo = SIX
+    if (drawer === 'pane') await paneTree(hooks, $)
+    else await bandAt(hooks, $, 120)
+    pressKey(tree, 'claude-header')
+    expect(opens, drawer).toEqual([{ id: 'human-items', title: 'Ada TODO', rows: 7, focus: true }])
+    await settle()
+    expect(opens, drawer).toHaveLength(1)
+  }
+})
+
+test('with the pane on the Claude list, a call that only names the list asks the pane again with the new name as its title and the rows it had, and one that states the same name asks nothing', async () => {
+  reset()
+  const { hooks } = wire()
+  const { $, opens } = backlogEnv([made(1)], [], null, [RUNNING, entry('Next', 'queued')])
+  await endSession(hooks, $)
+  pressKey(await bandAt(hooks, $, 120), 'claude-header')
+  await settle()
+  expect(opens.map(o => o.title)).toEqual(['Agent TODO'])
+  await runTodo(hooks, $, { name: 'Ada' })
+  expect(opens).toEqual([
+    { id: 'human-items', title: 'Agent TODO', rows: 3, focus: true },
+    { id: 'human-items', title: 'Ada TODO', rows: 3, focus: true },
+  ])
+  expect(linesOf(await paneTree(hooks, $))[0]).toBe('Ada TODO 1 in flight, 1 queued')
+  // The same name, in another spelling of it, and a write that restates the list under it, ask nothing.
+  await runTodo(hooks, $, { name: 'Ada' })
+  await runTodo(hooks, $, { name: '  Ada ' })
+  await runTodo(hooks, $, { name: 'Ada', entries: [RUNNING, entry('Next', 'queued')] })
+  await runTodo(hooks, $, { entries: [RUNNING, entry('Next', 'queued')] })
+  await settle()
+  expect(opens).toHaveLength(2)
+  // A blank name clears it, and the title is the default again.
+  await runTodo(hooks, $, { name: ' ' })
+  expect(opens.map(o => o.title)).toEqual(['Agent TODO', 'Ada TODO', 'Agent TODO'])
+  expect(linesOf(await paneTree(hooks, $))[0]).toBe('Agent TODO 1 in flight, 1 queued')
+})
+
+test('with the pane on the Claude list, a call with entries and a new name asks the pane once, with the new name as its title, whether the call keeps the count or changes it', async () => {
+  reset()
+  const { hooks } = wire()
+  const { $, opens } = backlogEnv([made(1)], [], null, [RUNNING, entry('Next', 'queued')])
+  await endSession(hooks, $)
+  pressKey(await bandAt(hooks, $, 120), 'claude-header')
+  await settle()
+  await runTodo(hooks, $, { name: 'Ada', entries: [RUNNING, entry('Other', 'queued')] })
+  expect(opens.map(o => [o.title, o.rows])).toEqual([['Agent TODO', 3], ['Ada TODO', 3]])
+  await runTodo(hooks, $, { name: 'Grace', entries: [RUNNING, entry('Other', 'queued'), entry('More', 'queued')] })
+  expect(opens.map(o => [o.title, o.rows])).toEqual([['Agent TODO', 3], ['Ada TODO', 3], ['Grace TODO', 4]])
+  await settle()
+  expect(opens).toHaveLength(3)
+  // A write that keeps the name and changes the count asks once, as it did before names.
+  await runTodo(hooks, $, { entries: [RUNNING] })
+  expect(opens.map(o => [o.title, o.rows])).toEqual([['Agent TODO', 3], ['Ada TODO', 3], ['Grace TODO', 4], ['Grace TODO', 2]])
+})
+
+test('a call whose name write throws makes its follow with the name as stored: a changed count asks once under the stored name, and a kept count asks nothing', async () => {
+  reset()
+  const { hooks } = wire()
+  const { $, values, opens } = backlogEnv([made(1)], [], null, [RUNNING, entry('Next', 'queued')])
+  values.todoName = 'Old'
+  await endSession(hooks, $)
+  pressKey(await bandAt(hooks, $, 120), 'claude-header')
+  await settle()
+  expect(opens.map(o => o.title)).toEqual(['Old TODO'])
+  const logs: string[] = []
+  const failing = unwritable($, 'todoName', logs)
+  await runTodo(hooks, failing, { name: 'New', entries: [RUNNING, entry('Other', 'queued')] })
+  expect(opens).toHaveLength(1)
+  await runTodo(hooks, failing, { name: 'New', entries: [RUNNING, entry('A', 'queued'), entry('B', 'queued')] })
+  expect(opens.map(o => [o.title, o.rows])).toEqual([['Old TODO', 3], ['Old TODO', 4]])
+  expect(values.todoName).toBe('Old')
+  expect(logs).toHaveLength(2)
+})
+
+test('a plain read makes no follow: a name stored by another path is asked of the pane by the next call that writes the list or the name, and not before', async () => {
+  reset()
+  const { hooks } = wire()
+  const { $, values, opens } = backlogEnv([made(1)], [], null, [RUNNING, entry('Next', 'queued')])
+  await endSession(hooks, $)
+  pressKey(await bandAt(hooks, $, 120), 'claude-header')
+  await settle()
+  values.todoName = 'Rebuilt'
+  await runTodo(hooks, $, {})
+  await settle()
+  expect(opens).toHaveLength(1)
+  await runTodo(hooks, $, { entries: [RUNNING, entry('Next', 'queued')] })
+  expect(opens.map(o => o.title)).toEqual(['Agent TODO', 'Rebuilt TODO'])
+})
+
+test('a call that names the list while the pane shows a human item, or is shut, asks the pane for nothing', async () => {
+  reset()
+  const { hooks } = wire()
+  const { $, opens, closes } = backlogEnv([made(1)], [], null, [RUNNING, entry('Next', 'queued')])
+  await endSession(hooks, $)
+  await runTodo(hooks, $, { name: 'Ada' })
+  await settle()
+  expect(opens).toEqual([])
+  pressKey(await bandAt(hooks, $, 120), 'title-1')
+  await settle()
+  await runTodo(hooks, $, { name: 'Grace' })
+  await runTodo(hooks, $, { name: 'Grace', entries: [RUNNING] })
+  await settle()
+  expect(opens.map(o => o.title)).toEqual(['Items for you'])
+  expect(closes).toEqual([])
+})
+
+test('after an open the pane refuses, the next call that keeps the count and the name asks again, and a rename whose ask is refused is asked again by it', async () => {
+  reset()
+  const { hooks } = wire()
+  const { env, $: engine, opens } = backlogEnv([made(1)], [], null, [RUNNING, entry('Next', 'queued')])
+  const logs: string[] = []
+  const $ = { ...engine, ui: { ...engine.ui, log: (text: string) => void logs.push(text) } }
+  await endSession(hooks, $)
+  pressKey(await bandAt(hooks, $, 120), 'claude-header')
+  await settle()
+  const taken = env.ui.open
+  env.ui.open = async () => {
+    throw new Error('open refused')
+  }
+  await runTodo(hooks, $, { name: 'Ada' })
+  await settle()
+  expect(opens.map(o => o.title)).toEqual(['Agent TODO', 'Ada TODO'])
+  expect(logs.some(line => line.includes('open refused'))).toBe(true)
+  env.ui.open = taken
+  await runTodo(hooks, $, { name: 'Ada' })
+  await settle()
+  expect(opens.map(o => o.title)).toEqual(['Agent TODO', 'Ada TODO', 'Ada TODO'])
+  await runTodo(hooks, $, { name: 'Ada' })
+  await settle()
+  expect(opens).toHaveLength(3)
 })
 
 test('a write to the Claude list while the pane shows a human item, or is shut, asks the pane for nothing; one that empties the list leaves the item\'s pane open', async () => {

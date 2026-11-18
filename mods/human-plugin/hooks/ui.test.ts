@@ -860,7 +860,7 @@ const mk = (state: TodoItem['state'], n: number, prefix = state === 'queued' ? '
 const flight = (n: number): TodoItem[] => mk('in_flight', n)
 const queue = (n: number): TodoItem[] => mk('queued', n)
 const humans = (n: number, blocking = false): Store => ({ items: Array.from({ length: n }, (_, k) => at(k + 1, blocking && k === 0)), next: n + 1, term: null })
-const drawn = (store: Store, todo: TodoItem[], columns: number, maxRows = 50, isDocked = false): Node => band(table, handlers, store, { ...view(), maxRows, claude: { items: todo, columns, isDocked } }) as Node
+const drawn = (store: Store, todo: TodoItem[], columns: number, maxRows = 50, isDocked = false, name = ''): Node => band(table, handlers, store, { ...view(), maxRows, claude: { items: todo, columns, isDocked, name } }) as Node
 // Trees are compared as JSON: a press handler is a fresh closure on every draw.
 const sameTree = (a: unknown, b: unknown, name?: string): void => expect(JSON.stringify(a), name).toBe(JSON.stringify(b))
 const columnsOf = (tree: Node): Node[] => (tree.children ?? []) as Node[]
@@ -995,6 +995,59 @@ test('every drawn column with a queued step has a press at every band width, +N 
       if (columns <= 11) expect(keys(todo), `${columns}, ${todo.length} steps`).toEqual(['claude-queued'])
     }
     expect(keys(flight(2)), `${columns}, in flight only`).toEqual(columns <= 11 ? [] : ['claude-header'])
+  }
+})
+
+// The column under a name the agent has stated: its heading is the name and TODO, and the name gives way first.
+test('with a name stated the header is the name and TODO as text, then the counts as a button, and the rows beneath are the ones a column with no name draws', () => {
+  const todo = [...flight(2), ...queue(3)]
+  const named = columnsOf(drawn(humans(2), todo, 120, 50, false, 'Ada'))[1] as Node
+  const [heading, counts] = (named.children?.[0] as Node).children as [Node, Node]
+  expect([heading.type, heading.children, counts.type, counts.key, counts.plain, counts.label]).toEqual(['Text', ['Ada TODO '], 'Button', 'claude-header', true, '2 active, 3 queued'])
+  expect(lineTexts(named)[0]).toBe('Ada TODO 2 active, 3 queued')
+  expect(JSON.stringify(named)).not.toContain('Agent TODO')
+  sameTree((named.children as Node[]).slice(1), ((columnsOf(drawn(humans(2), todo, 120))[1] as Node).children as Node[]).slice(1))
+  // The same column drawn alone, and under another name.
+  expect(lineTexts(columnsOf(drawn(humans(0), todo, 120, 50, false, 'Cachier'))[0] as Node)[0]).toBe('Cachier TODO 2 active, 3 queued')
+  expect(lineTexts(columnsOf(drawn(humans(2), todo, 120, 50, false, 'Ada: backend'))[1] as Node)[0]).toBe('Ada: backend TODO 2 active, 3 queued')
+})
+
+test('a name of 60 columns is cut and the counts are kept whole in the 31 columns beside the human list: `xxxxxx… TODO ` and `1 active, 2 queued`, the counts a button', () => {
+  const right = columnsOf(drawn(humans(2), [...flight(1), ...queue(2)], 96, 50, false, 'x'.repeat(60)))[1] as Node
+  const [heading, counts] = (right.children?.[0] as Node).children as [Node, Node]
+  expect([heading.children, counts.type, counts.key, counts.label]).toEqual([['xxxxxx… TODO '], 'Button', 'claude-header', '1 active, 2 queued'])
+  expect(displayColumns(lineTexts(right)[0] ?? '')).toBe(31)
+  // Two-digit counts are 20 columns, so the name keeps 5: `xxxx…`.
+  const twoDigits = columnsOf(drawn(humans(2), [...flight(12), ...queue(13)], 96, 50, false, 'x'.repeat(60)))[1] as Node
+  expect(lineTexts(twoDigits)[0]).toBe('xxxx… TODO 12 active, 13 queued')
+})
+
+test('a name cut to its ellipsis keeps the counts a button down to a layout width of 8 and is plain text below: `… TODO 1…` at 9, `… TODO …` at 8, `… TODO…` at 7 and `… TOD…` at 6, +N queued the one press at 7 or less', () => {
+  const todo = [...flight(1), ...queue(2)]
+  for (const [columns, heading, counts] of [
+    [25, '… TODO ', '1 active, 2 queued'],
+    [24, '… TODO ', '1 active, 2 queu…'],
+    [9, '… TODO ', '1…'],
+    [8, '… TODO ', '…'],
+    [7, '… TODO…', ''],
+    [6, '… TOD…', ''],
+  ] as const) {
+    const column = columnsOf(drawn(humans(0), todo, columns, 50, false, 'x'.repeat(60)))[0] as Node
+    const [head, ...rest] = (column.children as Node[])[0]?.children as Node[]
+    const where = `${columns}`
+    expect([head?.type, shown(head), rest.map(part => [part.type, part.key, part.label])], where).toEqual(['Text', heading, counts === '' ? [] : [['Button', 'claude-header', counts]]])
+    expect(nodes(column, 'Button').map(button => button.key), where).toEqual(counts === '' ? ['claude-queued'] : ['claude-header', 'claude-queued'])
+    expect(displayColumns(lineTexts(column)[0] ?? ''), where).toBeLessThanOrEqual(columns)
+  }
+})
+
+test('a header with a name stated is never wider than the layout width, at every width from 1 to 60, for a name of narrow, wide and joined characters', () => {
+  const family = String.fromCodePoint(0x1f468, 0x200d, 0x1f469, 0x200d, 0x1f467, 0x200d, 0x1f466)
+  for (const name of ['x'.repeat(60), '漢'.repeat(30), family.repeat(8), 'Ada']) {
+    for (let columns = 1; columns <= 60; columns++) {
+      const column = claudeColumn(table, handlers, [...flight(1), ...queue(2)], { box: columns, layout: columns }, 20, name) as Node
+      expect(displayColumns(lineTexts(column)[0] ?? ''), `${JSON.stringify(name)} in ${columns}`).toBeLessThanOrEqual(columns)
+    }
   }
 })
 
@@ -2102,6 +2155,41 @@ test('the backlog view drawn from an empty list is its header line alone, and as
   const tree = backlogPane(table, [], 120) as Node
   expect((tree.children as Node[]).map(line => [line.type, line.wrap, shown(line)])).toEqual([['Text', 'truncate-end', 'Agent TODO 0 in flight, 0 queued']])
   expect(backlogRows([])).toBe(1)
+})
+
+test('the backlog view\'s header line is the heading of the name stated and the counts in the long form, set to cut at its end, and its rows are the ones it draws with no name', () => {
+  const todo = [...flight(2), ...queue(2)]
+  const tree = backlogPane(table, todo, 120, 'Ada') as Node
+  expect((tree.children as Node[])[0]).toStrictEqual({ type: 'Text', wrap: 'truncate-end', children: ['Ada TODO 2 in flight, 2 queued'] })
+  sameTree((tree.children as Node[]).slice(1), ((backlogPane(table, todo, 120) as Node).children as Node[]).slice(1))
+  expect(shown((backlogPane(table, [], 120, 'Ada: backend') as Node).children?.[0])).toBe('Ada: backend TODO 0 in flight, 0 queued')
+  expect(backlogRows(todo)).toBe(5)
+})
+
+test('the backlog view cuts the name first at its body width: a name of 60 columns is `xxxxxxxxxxxxxxxxxxxx…` in 48 with the counts whole, and once it is an ellipsis the line is `… TODO <counts>` cut at the width, never wider than it', () => {
+  const todo = [...flight(2), ...queue(2)]
+  const name = 'x'.repeat(60)
+  const header = (body: number): string => shown((backlogPane(table, todo, body, name) as Node).children?.[0])
+  expect(header(48)).toBe(`${'x'.repeat(20)}… TODO 2 in flight, 2 queued`)
+  expect(header(28)).toBe('… TODO 2 in flight, 2 queued')
+  expect(header(27)).toBe('… TODO 2 in flight, 2 queu…')
+  expect(header(7)).toBe('… TODO…')
+  expect(header(1)).toBe('…')
+  // Whole where the 87 columns of the line fit.
+  for (const body of [87, 100, 120]) expect(header(body), `${body}`).toBe(`${name} TODO 2 in flight, 2 queued`)
+  for (let body = 1; body <= 120; body++) expect(displayColumns(header(body)), `${body}`).toBeLessThanOrEqual(body)
+})
+
+test('with the name stated the backlog view\'s header line is cut to the width a wide or a joined name leaves, whole sequences only', () => {
+  const todo = [...flight(2), ...queue(2)]
+  const family = String.fromCodePoint(0x1f468, 0x200d, 0x1f469, 0x200d, 0x1f467, 0x200d, 0x1f466)
+  for (const name of ['漢'.repeat(30), family.repeat(8)]) {
+    for (let body = 1; body <= 80; body++) {
+      const line = shown((backlogPane(table, todo, body, name) as Node).children?.[0])
+      expect(displayColumns(line), `${JSON.stringify(name)} in ${body}`).toBeLessThanOrEqual(body)
+      expect(line.includes('\u{200d}…') || line.includes('\u{200d} '), `${JSON.stringify(name)} in ${body}`).toBe(false)
+    }
+  }
 })
 
 test('the backlog view draws no control: no button, field or markdown that could change the Claude list', () => {

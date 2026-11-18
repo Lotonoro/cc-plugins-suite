@@ -67,7 +67,8 @@ export type Selection = number | 'claude-todo' | null
 declare module 'claude-code' {
   interface PluginState {
     // `todo` is null until the Claude list is first written in a session, so a rebuild can tell a list not written yet from an emptied one.
+    // `todoName` is the name the agent states for that list (todo.ts): null until a call states one in a session, and the empty text once a call clears it.
     // `reminder` counts the main agent's tool calls since the Claude list was last stored (reminder.ts).
-    'human-plugin': { list: Store; selection: Selection; corrected: number[]; notices: OwedNotices; todo: TodoItem[] | null; reminder: number }
+    'human-plugin': { list: Store; selection: Selection; corrected: number[]; notices: OwedNotices; todo: TodoItem[] | null; todoName: string | null; reminder: number }
   }
 }

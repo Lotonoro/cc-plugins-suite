@@ -158,6 +158,14 @@ test('the Claude TODO schema offers exactly the states the check accepts, and it
   expect(TODO_SPEC.inputSchema.properties.entries.type).toBe('array')
 })
 
+test('the Claude TODO schema has a name, a string and not a required field, whose description is the one text the field is given', () => {
+  const schema: { properties: Record<string, { type?: string; description?: string }>; required?: readonly string[] } = TODO_SPEC.inputSchema
+  expect(schema.properties.name?.type).toBe('string')
+  expect(schema.properties.name?.description).toBe("The name this session goes by, shown on this list's heading. A blank name clears it.")
+  expect(schema.required ?? []).not.toContain('name')
+  expect(Object.keys(schema.properties)).toEqual(['entries', 'name'])
+})
+
 test('the Claude TODO tool description carries the steering\'s rules in short', () => {
   for (const rule of ['the whole list', 'done', 'main agent', 'when a step starts or finishes', 'few words', 'never go here']) {
     expect(TODO_SPEC.description).toContain(rule)

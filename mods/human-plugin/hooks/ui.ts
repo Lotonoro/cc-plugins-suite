@@ -17,6 +17,7 @@ import {
   humanFoldRows,
   isChipShort,
   isSqueezed,
+  nameFirstHeader,
   rowLayout,
   squeezedFold,
   type Answer,
@@ -26,7 +27,7 @@ import {
   type RowTexts,
 } from './layout'
 import { tablesAsLists } from './tables'
-import { GLYPH, HEADING, bandCountsText, countsText, etaTail, inDisplayOrder } from './todo'
+import { GLYPH, HEADING, HEADING_TAIL, bandCountsText, countsText, etaTail, inDisplayOrder } from './todo'
 
 // The elements the band and the pane are built from, as the surface's table hands them out. The constructors take the
 // props with `children`, as JSX would pass them; the mod has no JSX factory in an imported module.
@@ -60,8 +61,9 @@ export type Handlers = {
 // What the band draws with: the rows the surface has, the time now, and the undo window's length. `selected`: what the pane shows, if anything (an item, the Claude list, or
 // none, which counts the first item as shown), which the pane's draw alone reads. `claude`: the Claude list and the columns the band is laid out in, which the Claude column is drawn from. It also gives the human
 // list its width, which its rows are laid out and cut in; without it the band has no width to fit its rows to, and draws each whole, nothing cut.
-// `isDocked`: whether this plugin's pane is docked on the band's surface (pane.ts), which narrows the width the two lists need.
-export type View = { maxRows: number; now: number; windowMs: number; selected?: Selection; claude?: { items: readonly TodoItem[]; columns: number; isDocked?: boolean } }
+// `isDocked`: whether this plugin's pane is docked on the band's surface (pane.ts), which narrows the width the two lists need. `name`: the name the agent stated for the Claude list, which heads its column;
+// left out, or the empty text, where it stated none or cleared it.
+export type View = { maxRows: number; now: number; windowMs: number; selected?: Selection; claude?: { items: readonly TodoItem[]; columns: number; isDocked?: boolean; name?: string } }
 
 const CHECK = { color: 'green' }
 
@@ -359,9 +361,10 @@ const stepRow = (t: Table, item: TodoItem, room: number): RenderElement => {
 // `+N queued`, the only press left. In a row a button is sized to its text, where the column's stretch would give it the whole line, blank tail included; and under the pointer a plain
 // button inverts, so those two reverse their colours and nothing else in the column does. The item rows (stepRow) are a glyph Text, a title Text and, for every step, a tail Text wherever the room keeps a character of it,
 // side by side, with no address, press or hover: no pane shows one Claude item alone, so a row offers nothing to press. Text and button alike wrap their text rather than cutting it, so
-// each is handed its text cut already.
-export const claudeColumn = (t: Table, h: Handlers, todo: readonly TodoItem[], width: ListWidth, height: number): RenderElement => {
-  const header = columnHeader(HEADING, bandCountsText(todo), width.layout)
+// each is handed its text cut already. The heading is the default one with no `name`, cut as columnHeader cuts it; a name the agent stated is the heading's cuttable part, which gives way first (nameFirstHeader).
+export const claudeColumn = (t: Table, h: Handlers, todo: readonly TodoItem[], width: ListWidth, height: number, name = ''): RenderElement => {
+  const counts = bandCountsText(todo)
+  const header = name === '' ? columnHeader(HEADING, counts, width.layout) : nameFirstHeader(name, HEADING_TAIL, counts, width.layout)
   const hasPress = header.counts !== ''
   const button = (key: string, label: string, isDim: boolean): RenderElement => t.Button({ key, plain: true, ...(isDim ? { dimColor: true } : {}), label, onPress: () => h.backlog() })
   return t.Box({
@@ -449,7 +452,7 @@ export const band = (t: Table, h: Handlers, store: Store, view: View): RenderEle
     flexDirection: 'row',
     justifyContent: 'flex-end',
     width: view.claude.columns,
-    children: [...humanList, claudeColumn(t, h, todo, widths.claude, widths.human === null ? 0 : top + rows.length)],
+    children: [...humanList, claudeColumn(t, h, todo, widths.claude, widths.human === null ? 0 : top + rows.length, view.claude.name)],
   })
 }
 
@@ -520,14 +523,23 @@ const backlogItem = (t: Table, item: TodoItem, body: number): RenderElement => {
   })
 }
 
-// The backlog: the whole Claude list, read-only, in the pane that shows a human item otherwise. A header line with the counts in the long form, then the in-flight items and the
+// The backlog's header line: the heading and the counts in the long form. The default heading's line is left whole for the engine to cut at its end; a name the agent stated is cut
+// first here, at the body's width, as the column cuts it (nameFirstHeader), so the counts are the last of the line to go. The pane has no press in its header, so the two parts are one line.
+const backlogHeader = (todo: readonly TodoItem[], body: number, name: string): string => {
+  const counts = countsText(todo)
+  if (name === '') return `${HEADING} ${counts}`
+  const header = nameFirstHeader(name, HEADING_TAIL, counts, body)
+  return `${header.heading}${header.counts}`
+}
+
+// The backlog: the whole Claude list, read-only, in the pane that shows a human item otherwise. A header line with the counts in the long form (backlogHeader), then the in-flight items and the
 // queued ones, each in the agent's written order and each one row (backlogItem) in a `body`-column pane. The header is set to cut at its end and the engine cuts it, at the body's
 // edge by the measure it draws by, so it never wraps. It presses nothing: the human never changes this list.
-export const backlogPane = (t: Table, todo: readonly TodoItem[], body: number): RenderElement =>
+export const backlogPane = (t: Table, todo: readonly TodoItem[], body: number, name = ''): RenderElement =>
   t.Box({
     flexDirection: 'column',
     children: [
-      t.Text({ wrap: 'truncate-end', children: [`${HEADING} ${countsText(todo)}`] }),
+      t.Text({ wrap: 'truncate-end', children: [backlogHeader(todo, body, name)] }),
       ...inDisplayOrder(todo).map(item => backlogItem(t, item, body)),
     ],
   })

@@ -3,7 +3,7 @@ import { cutLine, cutText } from './cut'
 import { formsOf, humanTurn, isNumbered, labelOf, orderedOptions, replyText, turnsOf, type AnswerOutcome, type Form, type ShownOutcome } from './done'
 import { LINE_BREAK } from './items'
 import { bandOrder } from './layout'
-import { GLYPH, HEADING, countsText, etaTail, inDisplayOrder } from './todo'
+import { GLYPH, countsText, etaTail, headingOf, inDisplayOrder } from './todo'
 
 // The bounds the answers keep, in UTF-16 units. `cap` is the most `/todo <n>` prints, the cut line included, and the most a walk's question holds;
 // `floor` is the least its cut newest turn keeps, as printed, less the bound cutText states where its cut would split a run; `title` and `label` cut
@@ -39,7 +39,6 @@ export const CLAUDE_DESCRIPTION = 'Print the Claude TODO list: the steps the age
 export const CLAUDE_USAGE = `${INDENT}Usage: /${CLAUDE_COMMAND} takes no argument.`
 export const CLAUDE_REBUILDING = `${INDENT}The list is still being rebuilt from the transcript; run /${CLAUDE_COMMAND} again in a moment.`
 export const CLAUDE_FAILED = `${INDENT}/${CLAUDE_COMMAND} failed: the error was logged.`
-const CLAUDE_EMPTY = `${INDENT}The ${HEADING} list is empty.`
 const NOTHING = `${INDENT}Nothing is on the list.`
 const NO_SUCH = `${INDENT}There is no such item.`
 const CUT = `${INDENT}The rest was cut.`
@@ -80,11 +79,12 @@ export const hasArgument = (args: string): boolean => trimmed(args) !== ''
 // The Claude TODO list as `/claude-todo` prints it: a line that counts it, then the in-flight entries and the queued ones, each group in written
 // order under a heading of its own, an entry as its state's glyph, its title cut to the list's width and its ETA whole. At most LIMITS.listItems entries are
 // named, in-flight first, and a last line counts what is left out of each group that lost any. The entry lines are indented twice, so no line
-// of the print starts short of the indent.
-export const claudeTodoText = (items: readonly TodoItem[]): string => {
-  if (items.length === 0) return CLAUDE_EMPTY
+// of the print starts short of the indent. The heading is the list's (headingOf `name`): the name the agent stated, printed whole, or Agent TODO where it stated none.
+export const claudeTodoText = (items: readonly TodoItem[], name = ''): string => {
+  const listHeading = headingOf(name)
+  if (items.length === 0) return `${INDENT}The ${listHeading} list is empty.`
   const named = inDisplayOrder(items).slice(0, LIMITS.listItems)
-  const lines = [`${INDENT}${HEADING}: ${countsText(items)}`]
+  const lines = [`${INDENT}${listHeading}: ${countsText(items)}`]
   const left: string[] = []
   for (const [state, heading] of [['in_flight', 'in flight'], ['queued', 'queued']] as const) {
     const group = named.filter(it => it.state === state)

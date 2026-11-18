@@ -1,5 +1,5 @@
 import { expect, test } from 'claude-code/testing'
-import { ETA_MAX, GLYPH, HEADING, NO_ETA, STATES, TITLE_MAX, TODO_NAME, TODO_TOOL, bandCountsText, countsText, etaTail, inDisplayOrder, normalizeTodo, parseTodo, todoLine, todoReply } from './todo'
+import { ETA_MAX, GLYPH, HEADING, HEADING_TAIL, NO_ETA, STATES, TITLE_MAX, TODO_NAME, TODO_TOOL, bandCountsText, countsText, etaTail, headingOf, inDisplayOrder, normalizeTodo, parseTodo, todoLine, todoReply } from './todo'
 import type { TodoItem } from '../types'
 
 const write = (entries: unknown): TodoItem[] | null => {
@@ -51,8 +51,8 @@ test('a write keeps the queued and in-flight entries in the order given, and dro
 
 test('an empty array is a write of the empty list, and an input with no array is a read', () => {
   expect(write([])).toEqual([])
-  expect(parseTodo({})).toEqual({ ok: true, value: null })
-  expect(parseTodo({ tool: TODO_TOOL, agentId: 'sub-1' })).toEqual({ ok: true, value: null })
+  expect(parseTodo({})).toEqual({ ok: true, value: null, name: null })
+  expect(parseTodo({ tool: TODO_TOOL, agentId: 'sub-1' })).toEqual({ ok: true, value: null, name: null })
 })
 
 test('a title is trimmed, and a title of exactly 80 UTF-16 units is accepted', () => {
@@ -86,6 +86,55 @@ test('a title that is not text, an entry that is not an object and entries that 
   expect(refusal({ entries: null })).toBe('entries must be a list of entries, each with a title and a state')
   expect(refusal(null)).toBe('the input must be an object')
   expect(refusal('x')).toBe('the input must be an object')
+})
+
+// The name a call states, as the check reads it: null when the call states none.
+const named = (name: unknown): string | null => {
+  const parsed = parseTodo({ name })
+  if (!parsed.ok) throw new Error(parsed.reason)
+  return parsed.name
+}
+
+test('a call that gives no name states none, whether it carries entries or not', () => {
+  expect(parseTodo({ entries: [] })).toEqual({ ok: true, value: [], name: null })
+  expect(parseTodo({ entries: [{ title: 'Build', state: 'queued' }] })).toEqual({ ok: true, value: [{ title: 'Build', state: 'queued', eta: NO_ETA }], name: null })
+})
+
+test('a name is read on one line as an ETA is: a line break and the blanks around it become one space, it is trimmed, and runs of spaces inside it stay', () => {
+  expect(named('  Ada\n Lovelace ')).toBe('Ada Lovelace')
+  expect(named('Ada  Lovelace')).toBe('Ada  Lovelace')
+  for (const raw of ['Ada\r\nLovelace', 'Ada\rLovelace', 'Ada\u{2028}Lovelace', 'Ada\u{2029}Lovelace', 'Ada \n\n Lovelace', '\n Ada Lovelace \n']) {
+    expect(named(raw), JSON.stringify(raw)).toBe('Ada Lovelace')
+  }
+})
+
+test('a name is trimmed as an ETA is, so what the one reading keeps of an ETA it keeps of a name', () => {
+  for (const raw of ['  ~10 min ', 'after\ntests', 'a\r\nb', '  x  y  ']) {
+    expect(named(raw), JSON.stringify(raw)).toBe(stored(raw))
+  }
+})
+
+test('a blank name is a name stated as cleared: the empty text, not none', () => {
+  for (const raw of ['', '   ', '\n \t', '\r\n']) expect(named(raw), JSON.stringify(raw)).toBe('')
+})
+
+test('a name has no bound: one of 200 columns, one of wide characters and one of joined sequences are kept whole', () => {
+  for (const raw of ['x'.repeat(200), '漢'.repeat(100), family.repeat(10), 'Ada: backend']) expect(named(raw)).toBe(raw)
+})
+
+test('a name that is not text is refused, naming the field, with its entries: neither applies', () => {
+  for (const raw of [null, 3, true, {}, ['Ada']]) {
+    expect(refusal({ name: raw }), JSON.stringify(raw)).toBe('name must be text')
+    expect(refusal({ name: raw, entries: [{ title: 'Build', state: 'queued' }] }), JSON.stringify(raw)).toBe('name must be text')
+  }
+})
+
+test('the heading is the name and the fixed words after it, and Agent TODO where the agent stated no name or cleared it', () => {
+  expect(HEADING_TAIL).toBe(' TODO')
+  expect(headingOf('')).toBe(HEADING)
+  expect(headingOf('Ada')).toBe('Ada TODO')
+  expect(headingOf('Ada: backend')).toBe('Ada: backend TODO')
+  expect(headingOf('x'.repeat(200))).toBe(`${'x'.repeat(200)} TODO`)
 })
 
 test('a stored list keeps an entry whose title is text and whose state is known, in order, and does not re-check the title', () => {
@@ -128,6 +177,20 @@ test('a write and a read answer the counting line, then each entry in written or
     ['Agent TODO: 1 in flight, 2 queued', '- queued: Write tests (ETA: after tests)', '- in_flight: Build (ETA: ~10 min)', '- queued: Ship (ETA: no ETA)'].join('\n'),
   )
   expect(todoReply([])).toBe('Agent TODO: 0 in flight, 0 queued')
+})
+
+test('the answer opens with the heading of the name it is given, and the entries follow as they do under Agent TODO; a blank name is no name', () => {
+  expect(todoReply(LIST, 'Cachier')).toBe(
+    ['Cachier TODO: 1 in flight, 2 queued', '- queued: Write tests (ETA: after tests)', '- in_flight: Build (ETA: ~10 min)', '- queued: Ship (ETA: no ETA)'].join('\n'),
+  )
+  expect(todoReply(LIST, 'Ada: backend').split('\n')[0]).toBe('Ada: backend TODO: 1 in flight, 2 queued')
+  expect(todoReply([], 'Ada')).toBe('Ada TODO: 0 in flight, 0 queued')
+  expect(todoReply(LIST, '')).toBe(todoReply(LIST))
+})
+
+test('the answer prints a name of 200 columns whole', () => {
+  const long = 'x'.repeat(200)
+  expect(todoReply([], long)).toBe(`${long} TODO: 0 in flight, 0 queued`)
 })
 
 test('the ETA is stored as written, trimmed', () => {
@@ -218,10 +281,16 @@ test('an entry\'s ETA tail, what follows its title where a person reads the list
 
 const call = (input: unknown, output: unknown, isRunning = false, isErrored = false) => todoLine({ input, output, isRunning, isErrored })
 
-test('the transcript line says the list is being written while a write runs, and being read while a read runs', () => {
-  expect(call({ entries: [{ title: 'Build', state: 'queued' }] }, undefined, true)).toBe('human-plugin: writing the Agent TODO list…')
-  expect(call({}, undefined, true)).toBe('human-plugin: reading the Agent TODO list…')
-  expect(call({ entries: [] }, undefined, true)).toBe('human-plugin: writing the Agent TODO list…')
+test('the transcript line says the list is being written while a write runs, and being read while a read runs, and names no heading', () => {
+  expect(call({ entries: [{ title: 'Build', state: 'queued' }] }, undefined, true)).toBe('human-plugin: writing the list…')
+  expect(call({}, undefined, true)).toBe('human-plugin: reading the list…')
+  expect(call({ entries: [] }, undefined, true)).toBe('human-plugin: writing the list…')
+})
+
+test('a running call that states a name is read by its entries alone: a name-only call is a read, a call with entries a write', () => {
+  expect(call({ name: 'Ada' }, undefined, true)).toBe('human-plugin: reading the list…')
+  expect(call({ name: '' }, undefined, true)).toBe('human-plugin: reading the list…')
+  expect(call({ name: 'Ada', entries: [{ title: 'Build', state: 'queued' }] }, undefined, true)).toBe('human-plugin: writing the list…')
 })
 
 test('the transcript line gives the counts once a call succeeds, for a write and for a read alike', () => {
@@ -233,6 +302,19 @@ test('the transcript line gives the counts once a call succeeds, for a write and
 test('the transcript line reads back the heading an answer was written under, with its counts: an answer headed Claude TODO: gives Claude TODO and its counts', () => {
   expect(call({ entries: LIST }, 'Claude TODO: 1 in flight, 2 queued')).toBe('human-plugin: Claude TODO 1 in flight, 2 queued')
   expect(call({ entries: [] }, 'Claude TODO: 1 in flight, 0 queued')).toBe('human-plugin: Claude TODO 1 in flight, 0 queued')
+})
+
+test('the transcript line of a finished call reads the heading its answer opened with, the name a call stated included: a name holding a colon reads whole, and a run of spaces in it is one', () => {
+  expect(call({ name: 'Ada', entries: LIST }, todoReply(LIST, 'Ada'))).toBe('human-plugin: Ada TODO 1 in flight, 2 queued')
+  expect(call({ name: 'Ada' }, todoReply(LIST, 'Ada'))).toBe('human-plugin: Ada TODO 1 in flight, 2 queued')
+  expect(call({ name: 'Ada: backend', entries: LIST }, todoReply(LIST, 'Ada: backend'))).toBe('human-plugin: Ada: backend TODO 1 in flight, 2 queued')
+  expect(call({ name: 'Ada  backend', entries: LIST }, todoReply(LIST, 'Ada  backend'))).toBe('human-plugin: Ada backend TODO 1 in flight, 2 queued')
+  expect(call({ name: '', entries: [] }, todoReply([], ''))).toBe('human-plugin: Agent TODO 0 in flight, 0 queued')
+})
+
+test('the transcript line gives the reason for a name that is not text, running or finished', () => {
+  expect(call({ name: 3 }, undefined, true)).toBe('human-plugin: name must be text')
+  expect(call({ name: 3 }, 'ignored', false, true)).toBe('human-plugin: name must be text')
 })
 
 test('the transcript line gives the check\'s reason for an input the check refuses, and the reply of an errored or refused call, or failed when it has none', () => {
