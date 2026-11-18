@@ -583,6 +583,37 @@ test('a session that ends after the dialog returns and before the list update ru
   expect(debug).toContain('human-plugin: walk ask #1: label "Done"; record matched; session ended')
 })
 
+test('a write the guard refuses because the session ended starts no ticker: an earlier answer left in its undo window is not ended afterwards, and no notice is sent', async () => {
+  fresh()
+  let armed = false
+  const { env, values, clock, timers, submitted, debug, breakGet } = walkEnv(
+    [made(1), made(2)],
+    [{ gives: 'Done' }, { gives: 'Done', during: () => void (armed = true) }],
+  )
+  clock.now = 1000
+  // The session ends as its end hook ends it, stopping the ticker and releasing the walk's flag, at the first read of the list once the second dialog has returned,
+  // which is the guarded write's own update. The first answer is by then in its undo window, and the first tick would end it.
+  breakGet.when = () => {
+    if (!armed) return false
+    armed = false
+    stopTicker()
+    endWalk()
+    return false
+  }
+  const text = await walk(env, WINDOW)
+  expect(text).toBe(
+    [
+      '  It ended with its session; nothing more was asked or sent.',
+      '  The walk sent 1 answer; 1 item is still open. /asks answer asks about it again.',
+    ].join('\n'),
+  )
+  expect(debug).toContain('human-plugin: walk ask #2: label "Done"; record matched; session ended')
+  expect(timers).toEqual([])
+  await tickAt(timers, clock, 1000)
+  expect(values.list.items.map(it => it.state)).toEqual(['done-waiting', 'open'])
+  expect(submitted).toEqual([])
+})
+
 test('a walk started after a session ended keeps its flag when the old walk settles, so a third walk is told one is asking', async () => {
   fresh()
   let releaseOld = (): void => {}

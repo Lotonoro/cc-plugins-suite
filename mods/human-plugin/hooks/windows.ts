@@ -50,12 +50,13 @@ const stateNamed = (store: Store, digits: string): Item['state'] | 'missing' => 
 // names the item as `/asks <n>` does (a press passes its id). The write's time is the clock's less `back`: a press counts from when it was made,
 // a command from one window earlier, so its window is due at once and the first tick ends it. A zero window that a press opens ends inside the
 // write (`endsAtOnce`); a command's never does, since its notice is the ticker's to send. Each write leaves a debug line with its time and the
-// state change it made. What fails after the write is logged, and the write stands.
+// state change it made. A write whose outcome says its session has ended (`lostSession`) goes no further than that line: the session's end stopped the
+// ticker, and one started now would end windows on a list that is no longer the session's. What fails after the write is logged, and the write stands.
 async function openWindow<T>(
   $: EngineInterface,
   windowMs: number,
   digits: string,
-  { source, back, endsAtOnce }: { source: string; back: number; endsAtOnce: boolean },
+  { source, back, endsAtOnce, lostSession }: { source: string; back: number; endsAtOnce: boolean; lostSession?: (outcome: T) => boolean },
   change: (store: Store, token: number) => { store: Store; outcome: T },
 ): Promise<T> {
   const token = (await $.clock.now()) - back
@@ -67,8 +68,10 @@ async function openWindow<T>(
     moved.outcome = next.outcome
     return next.store
   })
+  const outcome = moved.outcome as T
   try {
     $.ui.log(`human-plugin: ${source} #${digits} at ${token}: ${moved.from} -> ${moved.to}`, { to: 'debug' })
+    if (lostSession?.(outcome) === true) return outcome
     if (endsAtOnce && moved.from === 'open' && moved.to === 'done-waiting' && windowMs === 0) {
       // A zero window has no time to wait for, so it ends now rather than at the next tick. A press names its item by its id, so digits is the id.
       await expireWindow($, Number(digits), token, windowMs)
@@ -78,7 +81,7 @@ async function openWindow<T>(
   } catch (err) {
     $.ui.log(`human-plugin: ${source} #${digits} was written; a step after the write failed: ${String(err)}`)
   }
-  return moved.outcome as T
+  return outcome
 }
 
 // A done press on an open item opens its undo window; the same press again, inside the window, cancels it.
@@ -105,10 +108,14 @@ export function pressAnswer($: EngineInterface, digits: string, form: Form, wind
 
 // A walk's answer to the item it showed: the guarded write (answerShown), and the undo window an applied one leaves, which is `pressAnswer`'s: it counts from
 // one window back, so the first tick after the write ends it and sends the notice. A walk's writes carry their own source in the debug line. `owns` is the walk's
-// test that it still owns its session, which the guard calls inside the list update.
+// test that it still owns its session, which the guard calls inside the list update; a write the guard refused for that starts no ticker.
 export function pressShown($: EngineInterface, shown: Item, form: Form, windowMs: number, owns: () => boolean): Promise<GuardedOutcome> {
-  return openWindow($, windowMs, String(shown.id), { source: '/asks answer', back: windowMs, endsAtOnce: false }, (store, token) =>
-    answerShown(store, shown, form, token, owns),
+  return openWindow(
+    $,
+    windowMs,
+    String(shown.id),
+    { source: '/asks answer', back: windowMs, endsAtOnce: false, lostSession: (outcome: GuardedOutcome) => outcome.kind === 'session' },
+    (store, token) => answerShown(store, shown, form, token, owns),
   )
 }
 
