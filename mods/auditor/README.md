@@ -1,6 +1,6 @@
 # auditor
 
-**Supreme judge, billing at Haiku rates.**
+**Supreme judge, billing at Haiku rates by default.**
 
 Agentic workflows commonly validate a coder’s output with tests and code
 review. The costliest mistakes can happen upstream. One skipped check or a
@@ -12,7 +12,7 @@ does the work directly or coordinates other agents.
 ## How it works
 
 Auditor treats the session transcript as a work product in its own right.
-At the end of a turn, a persistent Haiku reviewer checks the main agent’s
+At the end of a turn, a persistent reviewer checks the main agent’s
 decisions, tool calls, and results against your instructions, standing rules,
 global processes, and the active plan. It can look up earlier turns or
 inspect files on disk for evidence.
@@ -39,10 +39,10 @@ sending notes. The main agent handles any edits.
 
 ## Token cost
 
-Auditor runs the reviewer on Haiku at high effort. Reviews under 100,000
-prompt tokens use the standard tier. On a warm review, reused context is
-priced as cache reads at one-tenth of Haiku’s standard input rate in
-Auditor’s pricing table.
+Auditor runs the reviewer at high effort, on Haiku unless you choose another
+model with `/auditor model`. On Haiku, reviews under 100,000 prompt tokens use
+the standard tier. On a warm review, reused context is priced as cache reads
+at one-tenth of Haiku’s standard input rate in Auditor’s pricing table.
 
 - **Read the new work.** A review starts with a short brief and fetches the
   activity since the previous review in pages. The reviewer looks up older
@@ -60,6 +60,11 @@ Auditor’s pricing table.
 The footer and `/auditor` show estimated review spend and its share of
 the session total. The estimate uses Haiku API list prices for new input,
 output, cache reads and writes, and reviewer compaction requests.
+
+Auditor’s pricing table covers one Haiku model. A review on any other model,
+a newer Haiku included, leaves the cost unknown: the footer drops its
+figures and `/auditor` says `cost unknown`, naming the model, until you
+switch Auditor off and on again or run `/clear`.
 
 ## Get started
 
@@ -83,8 +88,22 @@ from the repository root.
 - **Inspect findings.** Run `/auditor memory` to see the reviewer’s notes and
   which findings are still open or settled. Enable the plugin’s `log` option
   to write per-review JSON under `~/.claude/auditor/`, including timing, token
-  use, and notes. `/clear` starts a new transcript and resets the reviewer’s
-  memory.
+  use, the reviewer’s model, and notes. `/clear` starts a new transcript and
+  resets the reviewer’s memory.
+- **Choose the reviewer’s model.** Run `/auditor model` to list the choices,
+  and `/auditor model <name>` to set one; both work on a phone. The choices
+  are the aliases `haiku`, `sonnet`, `opus` and `fable`, plus the ids of the
+  models `/model` lists when Auditor can read them, narrowed by your
+  `availableModels` setting. The list marks the current choice, the default,
+  each Fable, and `cost unknown` beside a model Auditor has no price for (an
+  alias, once it has been used). Haiku is the default. If `availableModels`
+  rules it out, the default is the first model in the list that is not Fable,
+  and Fable only when nothing else is left.
+- **Switch mid-session.** A switch applies from the next review: an idle
+  reviewer is retired at once, and a review in progress finishes on its old
+  model. The choice belongs to the session and survives `/auditor off` and
+  `/auditor on`. A new session or `/clear` starts on the last model any session
+  set, or on the default when none was set or the list no longer offers it.
 
 For implementation details, see the [reviewer’s instructions](hooks/prompt.ts),
 [review dispatch](hooks/register.ts), [finding memory](hooks/memory.ts),
