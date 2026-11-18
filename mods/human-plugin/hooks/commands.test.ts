@@ -1,8 +1,10 @@
 import { expect, test } from 'claude-code/testing'
 import {
-  ARG_HINT, CLAUDE_COMMAND, CLAUDE_DESCRIPTION, CLAUDE_FAILED, CLAUDE_REBUILDING, CLAUDE_USAGE, DESCRIPTION, LIMITS, PHONE_ITEMS, PHONE_REBUILDING,
-  PHONE_TITLE, USAGE, answerLine, answerTo, claudeTodoText, hasArgument, parseAsk, phoneBlock,
+  ALREADY_ASKING, ARG_HINT, CLAUDE_COMMAND, CLAUDE_DESCRIPTION, CLAUDE_FAILED, CLAUDE_REBUILDING, CLAUDE_USAGE, DESCRIPTION, LIMITS, NOTHING_OPEN,
+  PHONE_ITEMS, PHONE_REBUILDING, PHONE_TITLE, PUSH_POINTER, USAGE, WALK_POINTER, WALK_WORD, answerLine, answerTo, claudeTodoText, hasArgument,
+  openOf, outcomeLine, parseAsk, phoneBlock, readAnswer, skippedLine, walkDialog, walkEnd, walkSummary, type Reason,
 } from './commands'
+import { restatedIds } from './restatement'
 import { TOOL } from './items'
 import { replay, rowsOf, type Source } from './replay'
 import { GLYPH, NO_ETA, etaTail } from './todo'
@@ -516,9 +518,9 @@ test('the phone block says the user cannot see the list, names the forms, and en
   expect(phoneBlock(items)).toBe(
     [
       '  The user is on their phone and cannot see the list.',
-      '  /asks lists the items, and /asks <n> <form> answers one, the form being done, yes, no, <option number>, or reply <text>.',
+      '  /asks lists the items, and /asks <n> <form> answers one, the form being done, yes, no, <option number>, or reply <text>; /asks answer asks about them one at a time.',
       '  End this reply with the line below, which lists the open items:',
-      '  #2 Approve PR, #1 Pick a db',
+      '  #2 Approve PR, #1 Pick a db; /asks answer asks them one by one',
     ].join('\n'),
   )
 })
@@ -527,8 +529,8 @@ test('thirty open items of 200-character titles: the block names ten, each title
   expect([PHONE_ITEMS, PHONE_TITLE]).toEqual([10, 60])
   const items = Array.from({ length: 30 }, (_, k) => made(k + 1, { title: 'x'.repeat(200) }))
   const line = lastLine(phoneBlock(items) ?? '')
-  expect(line.endsWith(', and 20 more are open')).toBe(true)
-  const named = line.slice('  '.length).replace(/, and 20 more are open$/, '').split(', ')
+  expect(line.endsWith(', and 20 more are open; /asks answer asks them one by one')).toBe(true)
+  const named = line.slice('  '.length).replace(/, and 20 more are open; \/asks answer asks them one by one$/, '').split(', ')
   expect(named).toHaveLength(PHONE_ITEMS)
   named.forEach((entry, k) => {
     expect(entry.slice(entry.indexOf(' ') + 1).length).toBeLessThanOrEqual(PHONE_TITLE)
@@ -541,7 +543,7 @@ test('every line of the block begins with two spaces, and a title with line brea
   const text = phoneBlock([made(1, { title: `Pick\r\na db${separator}now\nplease` }), made(2)]) ?? ''
   expect(lineList(text)).toHaveLength(4)
   for (const line of lineList(text)) expect(line.startsWith('  ')).toBe(true)
-  expect(lastLine(text)).toBe('  #1 Pick a db now please, #2 Item 2')
+  expect(lastLine(text)).toBe('  #1 Pick a db now please, #2 Item 2; /asks answer asks them one by one')
 })
 
 test('the block names /asks and each answer form, and no plan', () => {
@@ -560,8 +562,8 @@ test('no open item, or no item at all, gives no block; an open item gives one', 
 test('ten open items are all named, with no count; eleven name ten and say one more is open', () => {
   const ten = Array.from({ length: 10 }, (_, k) => made(k + 1))
   const names = ten.map(it => `#${it.id} Item ${it.id}`).join(', ')
-  expect(lastLine(phoneBlock(ten) ?? '')).toBe(`  ${names}`)
-  expect(lastLine(phoneBlock([...ten, made(11)]) ?? '')).toBe(`  ${names}, and 1 more is open`)
+  expect(lastLine(phoneBlock(ten) ?? '')).toBe(`  ${names}; /asks answer asks them one by one`)
+  expect(lastLine(phoneBlock([...ten, made(11)]) ?? '')).toBe(`  ${names}, and 1 more is open; /asks answer asks them one by one`)
 })
 
 test('the rebuilding block says the user cannot see the list, that the list is still being rebuilt and that /asks lists it, every line indented, and names no item', () => {
@@ -713,7 +715,7 @@ test('a cut that a joined emoji straddles keeps it whole or drops it: the phone 
   const family = '👨‍👩‍👧‍👦'
   for (let k = 40; k <= 60; k++) {
     const title = `${'a'.repeat(k)}${family.repeat(10)}`
-    const named = lastLine(phoneBlock([made(1, { title })]) ?? '').slice('  #1 '.length)
+    const named = lastLine(phoneBlock([made(1, { title })]) ?? '').slice('  #1 '.length, -'; /asks answer asks them one by one'.length)
     expect(named.length).toBeLessThanOrEqual(PHONE_TITLE)
     expect(onlyWhole(named, family)).toBe(true)
   }
@@ -742,4 +744,409 @@ test('/asks <n> keeps its newest turn at the floor and whole when it is joined e
       expect(onlyWhole(newest.replace(/\n {2,}/g, ''), unit)).toBe(true)
     }
   }
+})
+
+// ---- `/asks answer`: its parse, its pointers, its questions, its reader and its end text ----
+
+const optionsOf = (...labels: string[]): Item['options'] => labels.map(label => ({ label, description: '', recommended: false }))
+const decision = (id: number, labels: string[], extra: Partial<Item> = {}): Item => made(id, { options: optionsOf(...labels), ...extra })
+const SENTENCE =
+  'They are asked one at a time, blocking first, and each answer is written to the list as you give it and reaches the agent by your next prompt. Stop, or stop typed under Other, or closing the question ends this; what you have not answered stays on the list.'
+
+test('the word answer alone, in any case and with blanks around it, is the walk; anything after it or before it is the usage', () => {
+  expect(WALK_WORD).toBe('answer')
+  for (const text of ['answer', ' Answer ', 'ANSWER', '\tanswer\t']) expect(parseAsk(text)).toEqual({ kind: 'walk' })
+  for (const text of ['answer x', 'answer 3', '3 answer', 'answers', 'answer done', 'ans']) expect(parseAsk(text)).toEqual({ kind: 'usage' })
+})
+
+test('the description, the usage and the argument hint name answer, and the pointers are the command word, the sub-word and the push\'s form of them', () => {
+  expect(WALK_POINTER).toBe('/asks answer')
+  expect(PUSH_POINTER).toBe(' · /asks answer')
+  expect(DESCRIPTION).toContain('/asks answer')
+  expect(USAGE).toContain('/asks answer')
+  expect(ARG_HINT).toContain('answer')
+  for (const line of lineList(USAGE)) expect(line.startsWith('  ')).toBe(true)
+})
+
+test('the lines a walk that does not start prints are indented', () => {
+  expect(ALREADY_ASKING).toBe('  A walk is already asking; answer or close its question first.')
+  expect(NOTHING_OPEN).toBe('  Nothing is open to answer.')
+})
+
+test('the open items are those in the state open, blocking first and then by id', () => {
+  const items = [made(1), made(2, { blocking: true }), made(3, { state: 'done-pending', answer: 'yes' }), made(4, { blocking: true }), made(5, { state: 'done-waiting', answer: 'no' })]
+  expect(openOf(items).map(it => it.id)).toEqual([2, 4, 1])
+})
+
+test('the phone block\'s /asks line names /asks answer, the block keeps its four lines, and the line the agent ends its reply with ends with the pointer', () => {
+  const text = phoneBlock([made(1), made(2, { blocking: true })]) ?? ''
+  expect(lineList(text)).toHaveLength(4)
+  expect(lineList(text)[1]).toContain('the form being done, yes, no, <option number>, or reply <text>; /asks answer asks about them one at a time.')
+  expect(lastLine(text)).toBe('  #2 Item 2, #1 Item 1; /asks answer asks them one by one')
+})
+
+test('the line the agent ends its reply with, pointer and all, is no restatement of an item, even of one titled like the pointer', () => {
+  const items = [made(1, { title: 'Asks them' }), made(2, { title: 'Answer one' })]
+  expect(restatedIds(lastLine(phoneBlock(items) ?? '').trim(), items)).toEqual([])
+  // The pointer alone, with no number for the check to see, holds no phrase that addresses the reader.
+  expect(restatedIds('/asks answer asks them one by one', items)).toEqual([])
+})
+
+test('the summary counts the open items, a zero count left out and a lone item in the singular, then says what the walk does', () => {
+  const blocking = (count: number): Item[] => Array.from({ length: count }, (_, k) => made(k + 1, { blocking: true }))
+  const plain = (count: number): Item[] => Array.from({ length: count }, (_, k) => made(k + 10, { blocking: false }))
+  expect(walkSummary([...blocking(3), ...plain(5)])).toEqual(['3 blocking and 5 non-blocking items are open.', SENTENCE])
+  expect(walkSummary(blocking(1))).toEqual(['1 blocking item is open.', SENTENCE])
+  expect(walkSummary(plain(1))[0]).toBe('1 non-blocking item is open.')
+  expect(walkSummary(blocking(2))[0]).toBe('2 blocking items are open.')
+  expect(walkSummary(plain(4))[0]).toBe('4 non-blocking items are open.')
+  expect(walkSummary([...blocking(1), ...plain(1)])[0]).toBe('1 blocking and 1 non-blocking items are open.')
+})
+
+test('a to-do\'s question is its head, its brief under its heading, the line for Other and the closing line; its labels are Done, Stop and Skip', () => {
+  expect(walkDialog(made(3, { detail: 'Brief 3.' }), 1, 4, ['Lead.'])).toEqual({
+    header: '#3',
+    question: [
+      'Lead.',
+      '1 of 4 — #3 non-blocking: Item 3',
+      '  brief:',
+      '  Brief 3.',
+      'Under Other: type a reply, or skip to pass, or stop to end.',
+      'Done with #3?',
+    ].join('\n'),
+    options: ['Done', 'Stop', 'Skip'],
+  })
+})
+
+test('a decision\'s question holds the note, the brief, its options numbered in the pane\'s order with the mark and the descriptions, and asks which option', () => {
+  const item = made(4, {
+    blocking: true,
+    title: 'Pick a db',
+    note: 'A note.',
+    detail: 'Brief 4.',
+    options: [
+      { label: 'sqlite', description: '', recommended: false },
+      { label: 'postgres', description: 'Shared and heavier', recommended: true },
+    ],
+  })
+  expect(walkDialog(item, 2, 5, ['Lead.'])).toEqual({
+    header: '#4',
+    question: [
+      'Lead.',
+      '2 of 5 — #4 blocking: Pick a db',
+      '  note:',
+      '  A note.',
+      '  brief:',
+      '  Brief 4.',
+      '1. postgres (recommended) — Shared and heavier',
+      '2. sqlite',
+      "Under Other: type a reply, or skip to pass, or stop to end. An option's number picks it.",
+      'Which option for #4?',
+    ].join('\n'),
+    options: ['postgres', 'sqlite', 'Stop', 'Skip'],
+  })
+})
+
+test('the thread\'s newest turn is shown only when it is the agent\'s, between the note and the brief, under the heading /asks <n> gives it', () => {
+  const thread: Turn[] = [{ speaker: 'human', words: 'Use sqlite' }, { speaker: 'agent', words: 'Older.' }, { speaker: 'agent', words: 'Newest.' }]
+  const shown = lineList(walkDialog(made(5, { note: 'N.', detail: 'B.', thread }), 1, 1, []).question)
+  expect(shown.slice(1, 7)).toEqual(['  note:', '  N.', '  agent:', '  Newest.', '  brief:', '  B.'])
+  const humanLast = walkDialog(made(5, { thread: [{ speaker: 'agent', words: 'Older.' }, { speaker: 'human', words: 'Use sqlite' }] }), 1, 1, []).question
+  expect(humanLast).not.toMatch(/agent:|Older\.|Use sqlite/)
+})
+
+test('a yes/no offers Yes and No, then Stop and Skip, and asks yes or no', () => {
+  const dialog = walkDialog(made(6, { yesno: true }), 1, 1, [])
+  expect(dialog.options).toEqual(['Yes', 'No', 'Stop', 'Skip'])
+  expect(lastLine(dialog.question)).toBe('Yes or no on #6?')
+  expect(lineList(dialog.question)).toContain('Under Other: type a reply, or skip to pass, or stop to end.')
+})
+
+test('a to-do offers its done label when it fits the dialog and is no control\'s word, else Done, and the closing line follows what it shows', () => {
+  const shownFor = (doneLabel: string | null) => {
+    const dialog = walkDialog(made(7, { doneLabel }), 1, 1, [])
+    return { options: dialog.options, closing: lastLine(dialog.question) }
+  }
+  const eighty = 'l'.repeat(80)
+  expect(shownFor(null)).toEqual({ options: ['Done', 'Stop', 'Skip'], closing: 'Done with #7?' })
+  expect(shownFor('Ship it')).toEqual({ options: ['Ship it', 'Stop', 'Skip'], closing: '"Ship it" for #7?' })
+  expect(shownFor(eighty)).toEqual({ options: [eighty, 'Stop', 'Skip'], closing: `"${eighty}" for #7?` })
+  expect(shownFor('l'.repeat(81))).toEqual({ options: ['Done', 'Stop', 'Skip'], closing: 'Done with #7?' })
+  expect(shownFor('stop')).toEqual({ options: ['Done', 'Stop', 'Skip'], closing: 'Done with #7?' })
+  expect(shownFor('SKIP')).toEqual({ options: ['Done', 'Stop', 'Skip'], closing: 'Done with #7?' })
+})
+
+test('a decision shows its own labels whole, and the controls in the slots left of four: both for two options, Stop for three, none for four', () => {
+  const labelsOf = (...labels: string[]): string[] => walkDialog(decision(8, labels), 1, 1, []).options
+  expect(labelsOf('A', 'B')).toEqual(['A', 'B', 'Stop', 'Skip'])
+  expect(labelsOf('A', 'B', 'C')).toEqual(['A', 'B', 'C', 'Stop'])
+  expect(labelsOf('A', 'B', 'C', 'D')).toEqual(['A', 'B', 'C', 'D'])
+})
+
+test('a control that reads like an answer\'s own label, in any case, is left out, and the next control takes its slot', () => {
+  const labelsOf = (...labels: string[]): string[] => walkDialog(decision(8, labels), 1, 1, []).options
+  expect(labelsOf('A', 'stop', 'C')).toEqual(['A', 'stop', 'C', 'Skip'])
+  expect(labelsOf('A', 'B', 'SKIP')).toEqual(['A', 'B', 'SKIP', 'Stop'])
+  expect(labelsOf('Stop', 'Skip')).toEqual(['Stop', 'Skip'])
+  expect(labelsOf('Stop', 'B', 'C', 'D')).toEqual(['Stop', 'B', 'C', 'D'])
+})
+
+test('a decision with a label over 80 units, or two labels alike ignoring case, shows Option 1 to Option k; its list in the text keeps the own labels', () => {
+  const labelsOf = (...labels: string[]): string[] => walkDialog(decision(9, labels), 1, 1, []).options
+  const long = 'x'.repeat(81)
+  expect(labelsOf(long, 'B')).toEqual(['Option 1', 'Option 2', 'Stop', 'Skip'])
+  expect(labelsOf('Yes', 'yes', 'C')).toEqual(['Option 1', 'Option 2', 'Option 3', 'Stop'])
+  expect(labelsOf('x'.repeat(80), 'B')).toEqual(['x'.repeat(80), 'B', 'Stop', 'Skip'])
+  expect(walkDialog(decision(9, [long, 'B']), 1, 1, []).question).toContain(`1. ${long}\n2. B\n`)
+  // The control is compared with the option's own label, not with the label the dialog shows.
+  expect(labelsOf(long, 'STOP', 'C')).toEqual(['Option 1', 'Option 2', 'Option 3', 'Skip'])
+})
+
+test('every question has two to four labels, distinct ignoring case, each at most 80 units, and ends in a question mark under a header of at most 12 characters', () => {
+  const long = 'x'.repeat(200)
+  const kinds: Item[] = [
+    made(1),
+    made(1, { yesno: true }),
+    ...['Ship it', 'Stop', 'Skip', 'l'.repeat(80), 'l'.repeat(81), long].map(doneLabel => made(1, { doneLabel })),
+    ...[['A', 'B'], ['A', 'B', 'C'], ['A', 'B', 'C', 'D'], ['Stop', 'Skip'], ['Stop', 'B', 'C'], ['skip', 'B', 'C'], [long, 'B'], ['a', 'A'], [long, 'STOP', 'Skip', 'D']].map(labels => decision(1, labels)),
+  ]
+  for (const item of kinds) {
+    const { header, question, options } = walkDialog({ ...item, id: 12345678901 }, 1, 1, [])
+    expect(options.length).toBeGreaterThanOrEqual(2)
+    expect(options.length).toBeLessThanOrEqual(4)
+    expect(new Set(options.map(label => label.toLowerCase())).size).toBe(options.length)
+    for (const label of options) expect(label.length).toBeLessThanOrEqual(80)
+    expect(question.endsWith('?')).toBe(true)
+    expect(header).toBe('#12345678901')
+    expect(header.length).toBeLessThanOrEqual(12)
+  }
+})
+
+test('the position line cuts the title at 300 units on one line, and a label and a description in the options list are each cut at 200', () => {
+  const dialog = walkDialog(
+    made(2, { title: `${'t'.repeat(150)}\r\n${'u'.repeat(300)}`, options: [{ label: 'l'.repeat(300), description: 'd'.repeat(300), recommended: false }, ...optionsOf('B')] }),
+    1,
+    1,
+    [],
+  )
+  const [position, first] = lineList(dialog.question)
+  expect(position).toBe(`1 of 1 — #2 non-blocking: ${`${'t'.repeat(150)} ${'u'.repeat(300)}`.slice(0, 299)}…`)
+  expect(first).toBe(`1. ${'l'.repeat(199)}… — ${'d'.repeat(199)}…`)
+})
+
+// A question of the given item with a note, a newest agent turn and a brief of the given sizes (0 for none).
+const bodied = (item: Item, note: number, turn: number, brief: number): Item => ({
+  ...item,
+  note: note === 0 ? null : 'n'.repeat(note),
+  thread: turn === 0 ? [] : [{ speaker: 'agent', words: 't'.repeat(turn) }],
+  detail: 'b'.repeat(brief),
+})
+const MORE = (id: number): string => `The rest was cut; /asks ${id} prints more of it.`
+
+test('a question over 4,000 units is cut: the brief first, then the agent\'s turn down to 1,000, then the note; the cut line names the item and sits right before the tail', () => {
+  const to = made(1)
+  const briefOnly = lineList(walkDialog(bodied(to, 500, 500, 20000), 1, 1, []).question)
+  expect(briefOnly.join('\n').length).toBeLessThanOrEqual(LIMITS.cap)
+  expect(briefOnly).toContain(`  ${'n'.repeat(500)}`)
+  expect(briefOnly).toContain(`  ${'t'.repeat(500)}`)
+  const briefBody = briefOnly[briefOnly.indexOf('  brief:') + 1] ?? ''
+  expect(briefBody.startsWith('  bbb')).toBe(true)
+  expect(briefBody.endsWith('…')).toBe(true)
+  expect(briefBody.length).toBeLessThan(20000)
+  const at = briefOnly.indexOf(MORE(1))
+  expect(at).toBeGreaterThan(briefOnly.indexOf('  brief:'))
+  expect(briefOnly.slice(at + 1)).toEqual(['Under Other: type a reply, or skip to pass, or stop to end.', 'Done with #1?'])
+
+  // The brief goes whole, then the turn is cut: the note stays whole.
+  const turnCut = lineList(walkDialog(bodied(to, 500, 5000, 20000), 1, 1, []).question)
+  expect(turnCut).not.toContain('  brief:')
+  expect(turnCut).toContain(`  ${'n'.repeat(500)}`)
+  const turnBody = turnCut[turnCut.indexOf('  agent:') + 1] ?? ''
+  expect(turnBody.endsWith('…')).toBe(true)
+  expect(turnBody.length).toBeLessThan(5000)
+  expect(turnCut.join('\n').length).toBeLessThanOrEqual(LIMITS.cap)
+  expect(turnCut).toContain(MORE(1))
+
+  // The turn is cut to its floor, and the note gives way last.
+  const text = walkDialog(bodied(to, 5000, 5000, 20000), 1, 1, []).question
+  const noteCut = lineList(text)
+  expect(text.length).toBeLessThanOrEqual(LIMITS.cap)
+  expect(noteCut).not.toContain('  brief:')
+  const turnPrinted = text.slice(text.indexOf('  agent:'), text.indexOf(MORE(1))).trimEnd()
+  expect(turnPrinted.length).toBeGreaterThanOrEqual(LIMITS.floor)
+  expect(turnPrinted.length).toBeLessThan(LIMITS.floor + 50)
+  const noteBody = noteCut[noteCut.indexOf('  note:') + 1] ?? ''
+  expect(noteBody.endsWith('…')).toBe(true)
+  expect(noteBody.length).toBeLessThan(5000)
+  expect(noteCut.slice(noteCut.indexOf(MORE(1)) + 1)).toEqual(['Under Other: type a reply, or skip to pass, or stop to end.', 'Done with #1?'])
+})
+
+test('a question within 4,000 units is not cut and has no cut line', () => {
+  const text = walkDialog(bodied(made(1), 300, 300, 2000), 1, 1, []).question
+  expect(text).not.toContain('The rest was cut')
+  expect(text).toContain(`  ${'b'.repeat(2000)}`)
+})
+
+test('the text is at most 4,000 units for every mix of head, title, answers, done label, note, turn and brief, and its head and tail are whole', () => {
+  const crowd = Array.from({ length: 30 }, (_, k) => made(k + 1, { blocking: k % 2 === 0 }))
+  const heads = [walkSummary(crowd), [outcomeLine(made(1), { kind: 'changed' })]]
+  const long = (c: string): string => c.repeat(600)
+  const kinds: Item[] = [
+    made(1, { options: ['a', 'b', 'c', 'd'].map((c, k) => ({ label: long(c), description: long('z'), recommended: k === 2 })) }),
+    made(1, { doneLabel: 'l'.repeat(80) }),
+    made(1, { doneLabel: long('l') }),
+    made(1, { yesno: true }),
+  ]
+  const sizes = [0, 20000]
+  for (const head of heads) {
+    for (const title of ['t'.repeat(300), 't'.repeat(600)]) {
+      for (const kind of kinds) {
+        const bare = walkDialog({ ...kind, title }, 3, 9, head).question
+        const bareLines = lineList(bare)
+        const headCount = head.length + 1
+        for (const note of sizes) {
+          for (const turn of sizes) {
+            for (const brief of sizes) {
+              const question = walkDialog(bodied({ ...kind, title }, note, turn, brief), 3, 9, head).question
+              expect(question.length).toBeLessThanOrEqual(LIMITS.cap)
+              const lines = lineList(question)
+              expect(lines.slice(0, headCount)).toEqual(bareLines.slice(0, headCount))
+              expect(lines.slice(lines.length - (bareLines.length - headCount))).toEqual(bareLines.slice(headCount))
+            }
+          }
+        }
+      }
+    }
+  }
+})
+
+test('no cut splits a surrogate pair in a question: a brief of emoji over the cap ends whole', () => {
+  const text = walkDialog({ ...made(1), detail: pair.repeat(5000) }, 1, 1, []).question
+  expect(text.length).toBeLessThanOrEqual(LIMITS.cap)
+  expect(lone(text)).toBe(false)
+})
+
+// The form a dialog's return reads as, for readability of the table below.
+const form = (f: object) => ({ kind: 'form', form: f })
+const reply = (text: string) => form({ kind: 'reply', text })
+
+test('an answer\'s label as shown writes its form: a decision\'s option number in the pane\'s order, yes, no, done', () => {
+  const item = decision(1, ['sqlite', 'postgres'], { options: [{ label: 'sqlite', description: '', recommended: false }, { label: 'postgres', description: '', recommended: true }] })
+  expect(readAnswer(item, 'postgres')).toEqual(form({ kind: 'option', n: 1 }))
+  expect(readAnswer(item, 'sqlite')).toEqual(form({ kind: 'option', n: 2 }))
+  expect(readAnswer(made(1, { yesno: true }), 'Yes')).toEqual(form({ kind: 'yes' }))
+  expect(readAnswer(made(1, { yesno: true }), 'No')).toEqual(form({ kind: 'no' }))
+  expect(readAnswer(made(1), 'Done')).toEqual(form({ kind: 'done' }))
+  expect(readAnswer(made(1, { doneLabel: 'Ship it' }), 'Ship it')).toEqual(form({ kind: 'done' }))
+})
+
+test('text that matches exactly one answer\'s label ignoring case and the blanks around it writes that answer', () => {
+  const item = decision(1, ['sqlite', 'postgres'])
+  expect(readAnswer(item, ' POSTGRES ')).toEqual(form({ kind: 'option', n: 2 }))
+  expect(readAnswer(item, '\tSqlite\n')).toEqual(form({ kind: 'option', n: 1 }))
+  expect(readAnswer(made(1, { yesno: true }), 'yes')).toEqual(form({ kind: 'yes' }))
+  expect(readAnswer(made(1, { yesno: true }), '  NO ')).toEqual(form({ kind: 'no' }))
+  expect(readAnswer(made(1), 'done')).toEqual(form({ kind: 'done' }))
+  expect(readAnswer(made(1, { doneLabel: 'Ship it' }), ' ship IT ')).toEqual(form({ kind: 'done' }))
+})
+
+test('on a numbered decision, Option k and the option\'s own label both write that option; the own label long or short', () => {
+  const long = 'x'.repeat(81)
+  const item = decision(1, [long, 'B'])
+  expect(readAnswer(item, 'Option 2')).toEqual(form({ kind: 'option', n: 2 }))
+  expect(readAnswer(item, ' option 1 ')).toEqual(form({ kind: 'option', n: 1 }))
+  expect(readAnswer(item, long)).toEqual(form({ kind: 'option', n: 1 }))
+  expect(readAnswer(item, 'b')).toEqual(form({ kind: 'option', n: 2 }))
+})
+
+test('text that matches the labels of two answers ignoring case is not one of them: it is a reply', () => {
+  const item = decision(1, ['Yes', 'yes'])
+  expect(readAnswer(item, 'Yes')).toEqual(reply('Yes'))
+  expect(readAnswer(item, 'YES')).toEqual(reply('YES'))
+  expect(readAnswer(item, 'Option 2')).toEqual(form({ kind: 'option', n: 2 }))
+})
+
+test('digits alone name a decision\'s option in the pane\'s order from 1 to its count; out of range, or on another kind, they are a reply', () => {
+  const item = decision(1, ['sqlite', 'postgres'])
+  expect(readAnswer(item, '2')).toEqual(form({ kind: 'option', n: 2 }))
+  expect(readAnswer(item, ' 1 ')).toEqual(form({ kind: 'option', n: 1 }))
+  expect(readAnswer(item, '02')).toEqual(form({ kind: 'option', n: 2 }))
+  for (const text of ['0', '3', '99999999999999999999']) expect(readAnswer(item, text)).toEqual(reply(text))
+  expect(readAnswer(made(1), '1')).toEqual(reply('1'))
+  expect(readAnswer(made(1, { yesno: true }), '1')).toEqual(reply('1'))
+  expect(readAnswer(item, '2 please')).toEqual(reply('2 please'))
+})
+
+test('stop and skip, in any case and with blanks around them, end and skip; an answer\'s label of the same word beats the control', () => {
+  const item = decision(1, ['sqlite', 'postgres'])
+  expect(readAnswer(item, 'Stop')).toEqual({ kind: 'stop' })
+  expect(readAnswer(item, ' stop ')).toEqual({ kind: 'stop' })
+  expect(readAnswer(item, 'SKIP')).toEqual({ kind: 'skip' })
+  expect(readAnswer(item, 'Skip')).toEqual({ kind: 'skip' })
+  expect(readAnswer(item, 'stop it')).toEqual(reply('stop it'))
+  const stopping = decision(1, ['Stop', 'B'])
+  expect(readAnswer(stopping, 'Stop')).toEqual(form({ kind: 'option', n: 1 }))
+  expect(readAnswer(stopping, 'stop')).toEqual(form({ kind: 'option', n: 1 }))
+  expect(readAnswer(stopping, 'skip')).toEqual({ kind: 'skip' })
+})
+
+test('blank text skips; any other text is a reply, trimmed as the pane trims its field, with its inner blanks and line breaks kept', () => {
+  const item = made(1)
+  expect(readAnswer(item, '')).toEqual({ kind: 'skip' })
+  expect(readAnswer(item, ' \t\n  ')).toEqual({ kind: 'skip' })
+  expect(readAnswer(item, '  use it,  please  ')).toEqual(reply('use it,  please'))
+  expect(readAnswer(item, ' two\nlines ')).toEqual(reply('two\nlines'))
+  // A done label that is not shown is no answer's label: typing it is a reply.
+  expect(readAnswer(made(1, { doneLabel: 'l'.repeat(81) }), 'l'.repeat(81))).toEqual(reply('l'.repeat(81)))
+})
+
+test('an outcome line says what became of the item; an applied answer is the words /asks <n> <form> confirms with, before its indent', () => {
+  const item = made(5, { options: optionsOf('A', 'B') })
+  const applied = { kind: 'applied' as const, item, answer: 'Use postgres' }
+  expect(outcomeLine(item, applied)).toBe('answered #5 with Use postgres')
+  expect(`  ${outcomeLine(item, applied)}`).toBe(answerLine(applied))
+  expect(outcomeLine(item, { ...applied, answer: 'a'.repeat(200) })).toBe(`answered #5 with ${'a'.repeat(79)}…`)
+  expect(outcomeLine(item, { ...applied, answer: 'one\ntwo' })).toBe('answered #5 with one two')
+  expect(skippedLine(item)).toBe('skipped #5')
+  expect(outcomeLine(item, { kind: 'changed' })).toBe('#5 changed while it was shown, so nothing was sent; /asks answer asks it again.')
+  expect(outcomeLine(item, { kind: 'missing' })).toBe('#5 left the list while it was shown, so nothing was sent.')
+})
+
+test('the end text is the outcome line no question showed, why the walk ended, and the count, each line indented', () => {
+  const lines = (pending: string | null, reason: Reason, sent: number, open: number): string[] => lineList(walkEnd(pending, reason, sent, open))
+  expect(lines('answered #2 with sqlite', { kind: 'stop' }, 2, 5)).toEqual([
+    '  answered #2 with sqlite',
+    '  It ended on Stop.',
+    '  The walk sent 2 answers; 5 items are still open. /asks answer asks about them again.',
+  ])
+  expect(lines(null, { kind: 'every' }, 0, 0)).toEqual(['  It asked about every open item.', '  The walk sent nothing; nothing is left open.'])
+  expect(lines(null, { kind: 'error' }, 1, 1)).toEqual([
+    '  It stopped on an error, which was logged.',
+    '  The walk sent 1 answer; 1 item is still open. /asks answer asks about it again.',
+  ])
+  expect(lines(null, { kind: 'every' }, 3, 0)[1]).toBe('  The walk sent 3 answers; nothing is left open.')
+  expect(lines(null, { kind: 'every' }, 0, 4)[1]).toBe('  The walk sent nothing; 4 items are still open. /asks answer asks about them again.')
+})
+
+test('when the open items cannot be counted the count line keeps the sent count and points to /asks, in the singular for one answer', () => {
+  expect(lineList(walkEnd('answered #2 with sqlite', { kind: 'error' }, 2, null))).toEqual([
+    '  answered #2 with sqlite',
+    '  It stopped on an error, which was logged.',
+    '  The walk sent 2 answers; /asks shows what is still open.',
+  ])
+  expect(lastLine(walkEnd(null, { kind: 'error' }, 1, null))).toBe('  The walk sent 1 answer; /asks shows what is still open.')
+  expect(lastLine(walkEnd(null, { kind: 'error' }, 0, null))).toBe('  The walk sent nothing; /asks shows what is still open.')
+})
+
+test('each reason has its line: closed names the item and how to answer it, auto and unconfirmed name the item, session says nothing more was asked', () => {
+  const reasonOf = (reason: Reason): string => lineList(walkEnd(null, reason, 0, 0))[0] ?? ''
+  expect(reasonOf({ kind: 'every' })).toBe('  It asked about every open item.')
+  expect(reasonOf({ kind: 'stop' })).toBe('  It ended on Stop.')
+  expect(reasonOf({ kind: 'closed', id: 7 })).toBe(
+    '  It ended when the question on #7 was closed, timed out or refused; nothing was sent for it. /asks 7 shows it, and /asks 7 <form> answers it.',
+  )
+  expect(reasonOf({ kind: 'auto', id: 8 })).toBe('  It ended when the question auto-continued while you were away; nothing was sent for #8.')
+  expect(reasonOf({ kind: 'unconfirmed', id: 9 })).toBe('  It ended because the answer to #9 could not be confirmed as yours; nothing was sent, and this was logged.')
+  expect(reasonOf({ kind: 'error' })).toBe('  It stopped on an error, which was logged.')
+  expect(reasonOf({ kind: 'session' })).toBe('  It ended with its session; nothing more was asked or sent.')
 })

@@ -1,30 +1,37 @@
 import type { Item, TodoItem, Turn } from '../types'
 import { cutLine, cutText } from './cut'
-import { formsOf, humanTurn, isNumbered, labelOf, orderedOptions, replyText, turnsOf, type AnswerOutcome, type Form } from './done'
+import { formsOf, humanTurn, isNumbered, labelOf, orderedOptions, replyText, turnsOf, type AnswerOutcome, type Form, type ShownOutcome } from './done'
 import { LINE_BREAK } from './items'
 import { bandOrder } from './layout'
 import { GLYPH, HEADING, countsText, etaTail, inDisplayOrder } from './todo'
 
-// The bounds the answers keep, in UTF-16 units. `cap` is the most `/asks <n>` prints, the cut line included; `floor` is the least its cut newest
-// turn keeps, as printed, less the bound cutText states where its cut would split a run; `title` and `label` cut those fields in `/asks <n>`;
-// `listLine` cuts a list line's title and its answer, and the answer an answer form echoes; `listItems` is how many items the list names before the
-// rest fold into a line of numbers; `foot` is the most the foot of `/asks <n>` prints, which its fixed wording keeps it to. The foot is never cut.
-export const LIMITS = { cap: 4000, floor: 1000, title: 300, label: 200, listLine: 80, listItems: 20, foot: 500 } as const
+// The bounds the answers keep, in UTF-16 units. `cap` is the most `/asks <n>` prints, the cut line included, and the most a walk's question holds;
+// `floor` is the least its cut newest turn keeps, as printed, less the bound cutText states where its cut would split a run; `title` and `label` cut
+// those fields in `/asks <n>` and in a walk's question; `dialogLabel` is the longest label the walk's dialog shows an item's answer by (the length the
+// phone showed whole); `listLine` cuts a list line's title and its answer, and the answer an answer form echoes; `listItems` is how many items the list
+// names before the rest fold into a line of numbers; `foot` is the most the foot of `/asks <n>` prints, which its fixed wording keeps it to. The foot is
+// never cut.
+export const LIMITS = { cap: 4000, floor: 1000, title: 300, label: 200, dialogLabel: 80, listLine: 80, listItems: 20, foot: 500 } as const
 // The phone block (phoneBlock) names at most PHONE_ITEMS open items, each title cut to PHONE_TITLE UTF-16 units, its ellipsis counted.
 export const PHONE_ITEMS = 10
 export const PHONE_TITLE = 60
 
 export const COMMAND = 'asks'
+// The sub-word that starts the walk, `/asks answer`, and the pointer to it every place that names it takes from here: the command's own texts, the phone
+// block, the push (PUSH_POINTER, whose title is cut to leave room for it) and the walk's end text.
+export const WALK_WORD = 'answer'
+export const WALK_POINTER = `/${COMMAND} ${WALK_WORD}`
+export const PUSH_POINTER = ` · ${WALK_POINTER}`
 // The answer forms `/asks <n> <form>` takes, as the wording names them: the description, the usage and the phone block name them alike.
 const FORMS = 'done, yes, no, <option number>, or reply <text>'
-export const DESCRIPTION = `Print the to-do list, or one item by number; answer an item with /asks <n> ${FORMS}.`
-// The argument as the command's registration shows it: the number, then the form.
-export const ARG_HINT = '[n [done | yes | no | option | reply text]]'
+export const DESCRIPTION = `Print the to-do list, or one item by number; answer an item with /asks <n> ${FORMS}, or every open item in turn with ${WALK_POINTER}.`
+// The argument as the command's registration shows it: the number, then the form, or the walk's word.
+export const ARG_HINT = `[n [done | yes | no | option | reply text] | ${WALK_WORD}]`
 
 // Every line the command prints starts with this indent. It also keeps an item's text from reading as a marker to the rebuild: replay.ts reads
 // `#<n> is done:` only at the start of a line.
 const INDENT = '  '
-export const USAGE = `${INDENT}Usage: /asks, or /asks <n> for one item.\n${INDENT}Answer an item: /asks <n> ${FORMS}.`
+export const USAGE = `${INDENT}Usage: /asks, or /asks <n> for one item.\n${INDENT}Answer an item: /asks <n> ${FORMS}.\n${INDENT}Answer every open item, one at a time: ${WALK_POINTER}.`
 export const REBUILDING = `${INDENT}The list is still being rebuilt from the transcript; run /asks again in a moment.`
 export const FAILED = `${INDENT}/asks failed: the error was logged.`
 export const CLAUDE_COMMAND = 'claude-todo'
@@ -43,12 +50,13 @@ const ON_PHONE = 'The user is on their phone and cannot see the list.'
 const indented = (lines: readonly string[]): string => lines.map(line => `${INDENT}${line}`).join('\n')
 export const PHONE_REBUILDING = indented([ON_PHONE, `The list is still being rebuilt from the transcript; /${COMMAND} lists it once the rebuild is done.`])
 
-// The open items in the band's order, which `/asks` and the phone block both take.
-const openOf = (items: readonly Item[]): Item[] => items.filter(it => it.state === 'open').sort(bandOrder)
+// The open items in the band's order, which `/asks`, the phone block and the walk all take.
+export const openOf = (items: readonly Item[]): Item[] => items.filter(it => it.state === 'open').sort(bandOrder)
 
 // The block for the agent: the open items on one line, `#<n> <title>` each, in the band's order. The first PHONE_ITEMS are named, each title on
 // that line and cut to PHONE_TITLE, and the count of the rest follows. The agent ends its reply with that line, which names items by their
-// numbers, so the restatement check passes it. Null when no item is open.
+// numbers, so the restatement check passes it, and which ends with the walk's pointer, the one thing the person on the phone can type to answer
+// them. Null when no item is open.
 export const phoneBlock = (items: readonly Item[]): string | null => {
   const open = openOf(items)
   if (open.length === 0) return null
@@ -57,9 +65,9 @@ export const phoneBlock = (items: readonly Item[]): string | null => {
   const line = more > 0 ? `${named}, and ${more} more ${more === 1 ? 'is' : 'are'} open` : named
   return indented([
     ON_PHONE,
-    `/${COMMAND} lists the items, and /${COMMAND} <n> <form> answers one, the form being ${FORMS}.`,
+    `/${COMMAND} lists the items, and /${COMMAND} <n> <form> answers one, the form being ${FORMS}; ${WALK_POINTER} asks about them one at a time.`,
     'End this reply with the line below, which lists the open items:',
-    line,
+    `${line}; ${WALK_POINTER} asks them one by one`,
   ])
 }
 
@@ -88,15 +96,17 @@ export const claudeTodoText = (items: readonly TodoItem[]): string => {
   return lines.join('\n')
 }
 
-// What the argument asks for: the list (blank), one item by its number, an answer to an item by its number and a form, or nothing the command knows
-// (the usage). Blanks are the ASCII spaces and tabs around the argument and between the number and the form. A number is ASCII digits, read as a
-// decimal: its leading zeros do not count, and it is kept as digits, which an id is compared with as text, so a number of any length is no problem.
+// What the argument asks for: the list (blank), one item by its number, an answer to an item by its number and a form, the walk (the word `answer`
+// alone, in any case), or nothing the command knows (the usage). Blanks are the ASCII spaces and tabs around the argument and between the number and
+// the form. A number is ASCII digits, read as a decimal: its leading zeros do not count, and it is kept as digits, which an id is compared with as
+// text, so a number of any length is no problem.
 export type ListAsk = { kind: 'list' } | { kind: 'item'; digits: string }
-export type Ask = { kind: 'usage' } | ListAsk | { kind: 'answer'; digits: string; form: Form }
+export type Ask = { kind: 'usage' } | ListAsk | { kind: 'answer'; digits: string; form: Form } | { kind: 'walk' }
 
 export const parseAsk = (args: string): Ask => {
   const text = trimmed(args)
   if (text === '') return { kind: 'list' }
+  if (text.toLowerCase() === WALK_WORD) return { kind: 'walk' }
   const blank = text.search(/[ \t]/)
   const number = blank === -1 ? text : text.slice(0, blank)
   if (!/^[0-9]+$/.test(number)) return { kind: 'usage' }
@@ -126,12 +136,15 @@ export const answerTo = (items: readonly Item[], ask: ListAsk): { text: string; 
   return item === undefined ? { text: NO_SUCH, shown: null } : { text: answerItem(item), shown: item.id }
 }
 
-// The line an answer form prints: the confirmation of an applied one, with the answer it gave cut to one line as a list line's answer is; else
-// what refused it. A refused form names the forms the item takes, its foot.
+// The confirmation of an applied answer, before any indent: the answer it gave cut to one line as a list line's answer is. `/asks <n> <form>` prints it,
+// and a walk's outcome line is the same words.
+const answeredText = (id: number, answer: string): string => `answered #${id} with ${cutLine(answer, LIMITS.listLine)}`
+
+// The line an answer form prints: the confirmation of an applied one; else what refused it. A refused form names the forms the item takes, its foot.
 export const answerLine = (outcome: AnswerOutcome): string => {
   switch (outcome.kind) {
     case 'applied':
-      return `${INDENT}answered #${outcome.item.id} with ${cutLine(outcome.answer, LIMITS.listLine)}`
+      return `${INDENT}${answeredText(outcome.item.id, outcome.answer)}`
     case 'missing':
       return NO_SUCH
     case 'sent':
@@ -285,3 +298,213 @@ const cutPrinted = (text: string, max: number): string => {
   }
   return best
 }
+
+// ---- the walk: `/asks answer` ----
+
+// What the command prints when the walk does not start: a walk is asking already, or no item is open.
+export const ALREADY_ASKING = `${INDENT}A walk is already asking; answer or close its question first.`
+export const NOTHING_OPEN = `${INDENT}Nothing is open to answer.`
+
+// The controls a question offers beside the item's answers, in the order they take the slots that are left, and the label a to-do's one answer takes when
+// its own is not shown.
+const STOP = 'Stop'
+const SKIP = 'Skip'
+const CONTROLS = [STOP, SKIP] as const
+const DONE = 'Done'
+// The dialog takes at most this many labels.
+const SLOTS = 4
+
+// Two labels read alike when they differ only in case; a typed text reads like a label when they differ only in case and the blanks around the text.
+const keyOf = (text: string): string => text.trim().toLowerCase()
+const sameLabel = (a: string, b: string): boolean => a.toLowerCase() === b.toLowerCase()
+
+// One answer a question offers for its item: the label the dialog shows, the label the item itself gives it (which the numbered fallback hides), and the form
+// that writes it.
+type Choice = { shown: string; own: string; form: Form }
+
+// The answers the dialog shows for an item, by its kind. A decision shows its options' own labels, whole, in the pane's order, when each fits the dialog and
+// no two read alike; else it shows `Option 1` to `Option <k>`, which the numbered list in the question matches. A yes/no shows Yes and No. A to-do shows its
+// done label when it fits the dialog and is no control's word; else Done.
+const choicesOf = (item: Item): Choice[] => {
+  if (item.options.length > 0) {
+    const options = orderedOptions(item)
+    const own = options.map(option => option.label)
+    const whole = own.every(label => label.length <= LIMITS.dialogLabel) && new Set(own.map(label => label.toLowerCase())).size === own.length
+    return options.map((option, k): Choice => ({ shown: whole ? option.label : `Option ${k + 1}`, own: option.label, form: { kind: 'option', n: k + 1 } }))
+  }
+  if (item.yesno) {
+    return [
+      { shown: 'Yes', own: 'Yes', form: { kind: 'yes' } },
+      { shown: 'No', own: 'No', form: { kind: 'no' } },
+    ]
+  }
+  const label = item.doneLabel
+  const shown = label !== null && label.length <= LIMITS.dialogLabel && !CONTROLS.some(control => sameLabel(control, label)) ? label : DONE
+  return [{ shown, own: shown, form: { kind: 'done' } }]
+}
+
+// The controls the question offers: Stop, then Skip, in the slots the item's answers leave of four. A control is left out when it reads like an answer's own
+// label (on a numbered decision, the option's own label, not `Option <k>`); the next control then takes its slot.
+const controlsOf = (choices: readonly Choice[]): string[] =>
+  CONTROLS.filter(control => !choices.some(choice => sameLabel(choice.own, control))).slice(0, SLOTS - choices.length)
+
+// The question's last line, by the item's kind. A to-do whose done label the dialog shows asks by that label.
+const closingOf = (item: Item, choices: readonly Choice[]): string => {
+  if (item.options.length > 0) return `Which option for #${item.id}?`
+  if (item.yesno) return `Yes or no on #${item.id}?`
+  const shown = choices[0]?.shown
+  return item.doneLabel !== null && shown === item.doneLabel ? `"${shown}" for #${item.id}?` : `Done with #${item.id}?`
+}
+
+// The first question's opening: how many items are open, a zero count left out and a lone item in the singular, then what the walk does.
+export const walkSummary = (open: readonly Item[]): string[] => {
+  const blocking = open.filter(it => it.blocking).length
+  const rest = open.length - blocking
+  const counts = [...(blocking > 0 ? [`${blocking} blocking`] : []), ...(rest > 0 ? [`${rest} non-blocking`] : [])]
+  return [
+    `${counts.join(' and ')} ${open.length === 1 ? 'item is' : 'items are'} open.`,
+    'They are asked one at a time, blocking first, and each answer is written to the list as you give it and reaches the agent by your next prompt. Stop, or stop typed under Other, or closing the question ends this; what you have not answered stays on the list.',
+  ]
+}
+
+// The parts of a question's text. The head and the tail are never cut; the body gives way to the cap in fitWalk's order.
+type WalkParts = { id: number; head: string[]; note: Section | null; turn: Section | null; brief: Section | null; tail: string[] }
+
+// The parts as one text, each body section as it prints whole, and the cut line after the body when it is cut.
+const walkText = (p: WalkParts, isCut: boolean): string =>
+  [
+    ...p.head,
+    ...[p.note, p.turn, p.brief].flatMap(section => (section === null ? [] : linesOf(wholeOf(section)))),
+    ...(isCut ? [`The rest was cut; /${COMMAND} ${p.id} prints more of it.`] : []),
+    ...p.tail,
+  ].join('\n')
+
+// The text within LIMITS.cap, with the cut line before the tail when the body must be cut. The cut falls first on the brief's tail, then on the agent's turn
+// down to LIMITS.floor, and last on the note's tail, as `fit`'s cut falls on those; a section cut to nothing is dropped. The head and the tail stay under 2,600
+// units whatever the item holds (the title is cut at LIMITS.title, a label and a description at LIMITS.label), so these three steps always reach the cap.
+const fitWalk = (parts: WalkParts): string => {
+  const whole = walkText(parts, false)
+  if (whole.length <= LIMITS.cap) return whole
+  let p = parts
+  const excess = (): number => walkText(p, true).length - LIMITS.cap
+  if (excess() > 0 && p.brief !== null) p = { ...p, brief: shrink(p.brief, excess()) }
+  if (excess() > 0 && p.turn !== null) {
+    const keep = Math.max(LIMITS.floor, linesOf(wholeOf(p.turn)).join('\n').length - excess())
+    if (`${p.turn.heading}\n${p.turn.body}`.length > keep) p = { ...p, turn: cutTurn(p.turn, keep) }
+  }
+  if (excess() > 0 && p.note !== null) p = { ...p, note: shrink(p.note, excess()) }
+  return walkText(p, true)
+}
+
+// One question of the walk, as `$.ui.ask` takes it: its header, its text and its labels (the item's answers, then the controls). `lead` opens the head:
+// the summary on the first question, the previous item's outcome line on every later one. `k` counts the questions asked so far, this one included, and `n`
+// is `k` plus the open items not yet asked about. The body is the note, the agent's newest turn when it is the thread's newest, and the raw brief, each under
+// the heading `/asks <n>` gives it. The tail is a decision's numbered options, the line that says what Other takes, and the closing line.
+export type Dialog = { header: string; question: string; options: string[] }
+
+export const walkDialog = (item: Item, k: number, n: number, lead: readonly string[]): Dialog => {
+  const choices = choicesOf(item)
+  const turns = turnsOf(item)
+  const newest = turns[turns.length - 1]
+  const question = fitWalk({
+    id: item.id,
+    head: [...lead, `${k} of ${n} — #${item.id} ${blockingWord(item)}: ${cutLine(item.title, LIMITS.title)}`],
+    note: item.note === null ? null : sectionOf('note', item.note),
+    turn: newest === undefined || newest.speaker !== 'agent' ? null : turnOf(newest),
+    brief: item.detail.trim() === '' ? null : sectionOf('brief', item.detail),
+    tail: [
+      ...orderedOptions(item).map(
+        (option, at) =>
+          `${at + 1}. ${cutLine(option.label, LIMITS.label)}${option.recommended ? ' (recommended)' : ''}${option.description.trim() === '' ? '' : ` — ${cutLine(option.description, LIMITS.label)}`}`,
+      ),
+      `Under Other: type a reply, or skip to pass, or stop to end.${item.options.length > 0 ? " An option's number picks it." : ''}`,
+      closingOf(item, choices),
+    ],
+  })
+  return { header: `#${item.id}`, question, options: [...choices.map(choice => choice.shown), ...controlsOf(choices)] }
+}
+
+// What a dialog's return means for the item it showed: a form to write, a skip, or the end of the walk.
+export type Reading = { kind: 'form'; form: Form } | { kind: 'skip' } | { kind: 'stop' }
+
+// The return of the dialog, read against the item as it was shown. The rules apply in this order, and the first that fits decides: an answer's label as
+// shown; exactly one answer's label, ignoring case and the blanks around the text (on a numbered decision the option's own label counts too); on a decision,
+// digits alone naming one of its options, in the pane's order; a control's word, `stop` or `skip`; blank text, which skips; else a reply, trimmed as the
+// pane's field trims it. So an answer's label beats a control's word, and a reply that is exactly a label, a number in range or a control's word cannot be
+// sent from the walk.
+export const readAnswer = (item: Item, got: string): Reading => {
+  const choices = choicesOf(item)
+  const exact = choices.find(choice => choice.shown === got)
+  if (exact !== undefined) return { kind: 'form', form: exact.form }
+  const key = keyOf(got)
+  const alike = choices.filter(choice => keyOf(choice.shown) === key || keyOf(choice.own) === key)
+  const [only] = alike
+  if (only !== undefined && alike.length === 1) return { kind: 'form', form: only.form }
+  if (item.options.length > 0 && /^[0-9]+$/.test(key)) {
+    const n = Number(key)
+    if (n >= 1 && n <= item.options.length) return { kind: 'form', form: { kind: 'option', n } }
+  }
+  if (key === keyOf(STOP)) return { kind: 'stop' }
+  if (key === keyOf(SKIP)) return { kind: 'skip' }
+  const text = replyText(got)
+  return text === null ? { kind: 'skip' } : { kind: 'form', form: { kind: 'reply', text } }
+}
+
+// The line that says what became of an item, as the first line of the next question and, for the last item, in the end text. `item` is the item as it was shown.
+export const skippedLine = (item: Item): string => `skipped #${item.id}`
+
+export const outcomeLine = (item: Item, outcome: ShownOutcome): string => {
+  switch (outcome.kind) {
+    case 'applied':
+      return answeredText(outcome.item.id, outcome.answer)
+    case 'changed':
+      return `#${item.id} changed while it was shown, so nothing was sent; ${WALK_POINTER} asks it again.`
+    case 'missing':
+      return `#${item.id} left the list while it was shown, so nothing was sent.`
+  }
+}
+
+// Why the walk ended.
+export type Reason =
+  | { kind: 'every' }
+  | { kind: 'stop' }
+  | { kind: 'error' }
+  | { kind: 'session' }
+  | { kind: 'closed' | 'auto' | 'unconfirmed'; id: number }
+
+const reasonLine = (reason: Reason): string => {
+  switch (reason.kind) {
+    case 'every':
+      return 'It asked about every open item.'
+    case 'stop':
+      return 'It ended on Stop.'
+    case 'closed':
+      return `It ended when the question on #${reason.id} was closed, timed out or refused; nothing was sent for it. /${COMMAND} ${reason.id} shows it, and /${COMMAND} ${reason.id} <form> answers it.`
+    case 'auto':
+      return `It ended when the question auto-continued while you were away; nothing was sent for #${reason.id}.`
+    case 'unconfirmed':
+      return `It ended because the answer to #${reason.id} could not be confirmed as yours; nothing was sent, and this was logged.`
+    case 'error':
+      return 'It stopped on an error, which was logged.'
+    case 'session':
+      return 'It ended with its session; nothing more was asked or sent.'
+  }
+}
+
+// How many answers the walk sent and how many items are still open, in the singular for a count of one. With nothing left open there is no pointer. When the
+// list could not be read for the count (`open` is null) the line gives what was sent and points to `/asks`, which shows what is open.
+const countLine = (sent: number, open: number | null): string => {
+  const sentWords = sent === 0 ? 'nothing' : `${sent} ${sent === 1 ? 'answer' : 'answers'}`
+  const openWords =
+    open === null
+      ? `/${COMMAND} shows what is still open.`
+      : open === 0
+        ? 'nothing is left open.'
+        : `${open} ${open === 1 ? 'item is' : 'items are'} still open. ${WALK_POINTER} asks about ${open === 1 ? 'it' : 'them'} again.`
+  return `The walk sent ${sentWords}; ${openWords}`
+}
+
+// The command's output when the walk has ended, each line indented as the command's other prints are: the outcome line no question showed (`pending`, the
+// last item's, when it has one), why the walk ended, and the count of what it sent and what is still open (`open`, null when the list could not be read).
+export const walkEnd = (pending: string | null, reason: Reason, sent: number, open: number | null): string =>
+  [...(pending === null ? [] : [pending]), reasonLine(reason), countLine(sent, open)].map(line => `${INDENT}${line}`).join('\n')
