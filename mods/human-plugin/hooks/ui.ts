@@ -310,8 +310,8 @@ export const toolLine = (call: ToolCall): string => {
   return `human-plugin: ${text}`.replace(/\s+/g, ' ')
 }
 
-// The chip names the term the agent states for the human; it says "you" until one is stated, and again once the agent clears it (the term '').
-const chipText = (term: string | null): string => (term === null || term === '' ? 'To do for you' : `To do for ${term}`)
+// The chip names the term the agent states for the human, followed by TODO; it reads Human TODO until one is stated, and again once the agent clears it (the term '').
+const chipText = (term: string | null): string => (term === null || term === '' ? 'Human TODO' : `${term} TODO`)
 
 // The columns a list's box keeps empty inside its width: its box less its layout width (layout.ts).
 const marginOf = (width: ListWidth): number => width.box - width.layout

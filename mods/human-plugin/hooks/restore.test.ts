@@ -119,7 +119,7 @@ test('a resumed session draws the chip with the term the main agent last stated,
   await $.classic.SessionStart({ source: 'resume', transcript_path: MAIN })
   await titles($)
   const ui = await $.ui.mount({ plugin: 'human-plugin', surface: 'terminal', component: 'AbovePrompt', props: BAND_PROPS })
-  expect(JSON.stringify(await ui.drawn())).toContain('To do for owner')
+  expect(JSON.stringify(await ui.drawn())).toContain('owner TODO')
 })
 
 test('a rebuild keeps a term set live, where the transcript states another', async ($, on) => {
@@ -130,7 +130,7 @@ test('a rebuild keeps a term set live, where the transcript states another', asy
   await $.classic.SessionStart({ source: 'resume', transcript_path: MAIN })
   await titles($)
   const ui = await $.ui.mount({ plugin: 'human-plugin', surface: 'terminal', component: 'AbovePrompt', props: BAND_PROPS })
-  expect(JSON.stringify(await ui.drawn())).toContain('To do for mine')
+  expect(JSON.stringify(await ui.drawn())).toContain('mine TODO')
 })
 
 test('a rebuild keeps a term cleared live, where the transcript states another', async ($, on) => {
@@ -141,17 +141,17 @@ test('a rebuild keeps a term cleared live, where the transcript states another',
   await $.classic.SessionStart({ source: 'resume', transcript_path: MAIN })
   await titles($)
   const ui = await $.ui.mount({ plugin: 'human-plugin', surface: 'terminal', component: 'AbovePrompt', props: BAND_PROPS })
-  expect(JSON.stringify(await ui.drawn())).toContain('To do for you')
+  expect(JSON.stringify(await ui.drawn())).toContain('Human TODO')
 })
 
-test('a resumed session whose transcript ends on a clear draws To do for you, not the term before the clear', async ($, on) => {
+test('a resume whose transcript ends on a clear draws Human TODO, not the term before the clear', async ($, on) => {
   mock.clock(on)
   on('ui.panes', () => ({ value: [] }))
   host(on, { [MAIN]: CLEARED })
   await $.classic.SessionStart({ source: 'resume', transcript_path: MAIN })
   await titles($)
   const ui = await $.ui.mount({ plugin: 'human-plugin', surface: 'terminal', component: 'AbovePrompt', props: BAND_PROPS })
-  expect(JSON.stringify(await ui.drawn())).toContain('To do for you')
+  expect(JSON.stringify(await ui.drawn())).toContain('Human TODO')
 })
 
 test('a call waits for the rebuild only so long, and is refused rather than answered against the unfilled list', async ($, on) => {

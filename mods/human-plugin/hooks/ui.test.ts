@@ -239,7 +239,7 @@ test('a yes/no answer pressed yes draws a check in its undo window, and a no a c
 })
 
 test('the header is a chip filled in warning while a blocking item is open, and in permission otherwise; the count is plain', () => {
-  const chip = (tree: unknown) => nodes(tree, 'Text').find(n => texts(n).join('').includes('To do for you'))
+  const chip = (tree: unknown) => nodes(tree, 'Text').find(n => texts(n).join('').includes('Human TODO'))
   const quiet = band(table, handlers, { items: [at(1, false)], next: 2, term: null }, view())
   expect(chip(quiet)?.backgroundColor).toBe('permission')
   expect(chip(quiet)?.color).toBe('inverseText')
@@ -249,12 +249,12 @@ test('the header is a chip filled in warning while a blocking item is open, and 
   expect(count?.backgroundColor).toBeUndefined()
 })
 
-test('the chip reads To do for you until the agent states a term, and To do for the term once it does; a term the agent cleared reads To do for you', () => {
-  const chipText = (tree: unknown) => nodes(tree, 'Text').map(n => texts(n).join('')).find(text => text.includes('To do for'))
-  expect(chipText(band(table, handlers, store, view()))).toBe(' To do for you ')
-  expect(chipText(band(table, handlers, { ...store, term: 'owner' }, view()))).toBe(' To do for owner ')
-  expect(chipText(band(table, handlers, { ...store, term: 'Team lead' }, view()))).toBe(' To do for Team lead ')
-  expect(chipText(band(table, handlers, { ...store, term: '' }, view()))).toBe(' To do for you ')
+test('the chip reads Human TODO until the agent states a term, and the term then TODO once it does; a term the agent cleared reads Human TODO', () => {
+  const chipText = (tree: unknown) => nodes(tree, 'Text').map(n => texts(n).join('')).find(text => text.includes('TODO'))
+  expect(chipText(band(table, handlers, store, view()))).toBe(' Human TODO ')
+  expect(chipText(band(table, handlers, { ...store, term: 'owner' }, view()))).toBe(' owner TODO ')
+  expect(chipText(band(table, handlers, { ...store, term: 'Team lead' }, view()))).toBe(' Team lead TODO ')
+  expect(chipText(band(table, handlers, { ...store, term: '' }, view()))).toBe(' Human TODO ')
 })
 
 test('the pane draws no term: an empty list still reads Nothing to do for you, and an item\'s pane shows none', () => {
@@ -658,7 +658,7 @@ test('the header counts the open items, and the sent ones by their own count: an
 })
 
 test('the header is amber only while a blocking item is open: one already sent or in its undo window does not make the chip warning', () => {
-  const chip = (tree: unknown) => nodes(tree, 'Text').find(n => texts(n).join('').includes('To do for you'))
+  const chip = (tree: unknown) => nodes(tree, 'Text').find(n => texts(n).join('').includes('Human TODO'))
   const sent = band(table, handlers, { items: [{ ...at(1, true), state: 'done-pending' as const }], next: 2, term: null }, view())
   expect(chip(sent)?.backgroundColor).toBe('permission')
   const waiting = band(table, handlers, { items: [{ ...at(1, true), state: 'done-waiting' as const, pressedAt: 0, answer: null }], next: 2, term: null }, { ...view(), now: 1000 })
@@ -881,7 +881,7 @@ test('at 120 columns the band is two boxes, the human list 64 wide and the Claud
   expect(left).toMatchObject({ type: 'Box', flexDirection: 'column', width: 64, paddingRight: 1 })
   expect(right).toMatchObject({ type: 'Box', flexDirection: 'column', width: 56, paddingLeft: 1 })
   expect(columnsOf(tree).length).toBe(2)
-  expect(texts(left).join('')).toContain('To do for you')
+  expect(texts(left).join('')).toContain('Human TODO')
   expect(texts(left).join('')).not.toContain('Claude TODO')
   expect(lineTexts(right as Node)[0]).toBe('Claude TODO 0 active, 1 queued')
 })
@@ -1051,7 +1051,7 @@ test('with no human items and a step in the agent\'s list the column draws alone
   expect(rest).toEqual([])
   expect(only).toMatchObject({ type: 'Box', flexDirection: 'column', width: 56 })
   expect(lineTexts(only)).toEqual(['Claude TODO 2 active, 3 queued', '◐ f1 · eta f1', '◐ f2 · eta f2', '+3 queued'])
-  expect(JSON.stringify(tree)).not.toContain('To do for')
+  expect(JSON.stringify(tree)).not.toContain('Human TODO')
 })
 
 test('the column alone never hides on a narrow band, and keeps 32 columns', () => {
@@ -1080,7 +1080,7 @@ test('at a bodyColumns of 96, 120 and 155 with both lists drawn, the boxes keep 
 
 // The trees the band draws for a list alone, with no padding on any box: the human list of two plain to-dos whose rows fit their lines, each its prefix, its title in a
 // box that shrinks and a control cell of 17 columns (the reply's `✓ replied [↶ 5s]` and the space before it), and the Claude column alone at 120 and at 40.
-const TODAY_HUMAN = '{"type":"Box","flexDirection":"column","children":[{"type":"Box","children":[{"type":"Box","flexShrink":0,"children":[{"type":"Text","bold":true,"color":"inverseText","backgroundColor":"permission","children":[" To do for you "]}]},{"type":"Text","children":[" 2 open "]}]},{"type":"Box","key":"item-1","children":[{"type":"Box","flexShrink":0,"children":[{"type":"Text","bold":false,"dimColor":true,"children":["  #1 "]}]},{"type":"Box","flexShrink":1,"children":[{"type":"Button","key":"title-1","plain":true,"label":"Pick a db"}]},{"type":"Box","width":17,"flexShrink":0,"children":[{"type":"Text","children":[" "]},{"type":"Button","key":"done-1","plain":true,"label":"[✓]"}]}]},{"type":"Box","key":"item-2","children":[{"type":"Box","flexShrink":0,"children":[{"type":"Text","bold":false,"dimColor":true,"children":["  #2 "]}]},{"type":"Box","flexShrink":1,"children":[{"type":"Button","key":"title-2","plain":true,"label":"Pick a db"}]},{"type":"Box","width":17,"flexShrink":0,"children":[{"type":"Text","children":[" "]},{"type":"Button","key":"done-2","plain":true,"label":"[✓]"}]}]}]}'
+const TODAY_HUMAN = '{"type":"Box","flexDirection":"column","children":[{"type":"Box","children":[{"type":"Box","flexShrink":0,"children":[{"type":"Text","bold":true,"color":"inverseText","backgroundColor":"permission","children":[" Human TODO "]}]},{"type":"Text","children":[" 2 open "]}]},{"type":"Box","key":"item-1","children":[{"type":"Box","flexShrink":0,"children":[{"type":"Text","bold":false,"dimColor":true,"children":["  #1 "]}]},{"type":"Box","flexShrink":1,"children":[{"type":"Button","key":"title-1","plain":true,"label":"Pick a db"}]},{"type":"Box","width":17,"flexShrink":0,"children":[{"type":"Text","children":[" "]},{"type":"Button","key":"done-1","plain":true,"label":"[✓]"}]}]},{"type":"Box","key":"item-2","children":[{"type":"Box","flexShrink":0,"children":[{"type":"Text","bold":false,"dimColor":true,"children":["  #2 "]}]},{"type":"Box","flexShrink":1,"children":[{"type":"Button","key":"title-2","plain":true,"label":"Pick a db"}]},{"type":"Box","width":17,"flexShrink":0,"children":[{"type":"Text","children":[" "]},{"type":"Button","key":"done-2","plain":true,"label":"[✓]"}]}]}]}'
 const TODAY_CLAUDE_120 = '{"type":"Box","flexDirection":"row","justifyContent":"flex-end","width":120,"children":[{"type":"Box","flexDirection":"column","width":56,"children":[{"type":"Box","children":[{"type":"Text","children":["Claude TODO "]},{"type":"Button","key":"claude-header","plain":true,"label":"1 active, 0 queued"}]},{"type":"Box","children":[{"type":"Text","color":"suggestion","children":["◐"]},{"type":"Text","children":[" f1"]},{"type":"Text","dimColor":true,"children":[" · eta f1"]}]}]}]}'
 const TODAY_CLAUDE_40 = '{"type":"Box","flexDirection":"row","justifyContent":"flex-end","width":40,"children":[{"type":"Box","flexDirection":"column","width":32,"children":[{"type":"Box","children":[{"type":"Text","children":["Claude TODO "]},{"type":"Button","key":"claude-header","plain":true,"label":"1 active, 0 queued"}]},{"type":"Box","children":[{"type":"Text","color":"suggestion","children":["◐"]},{"type":"Text","children":[" f1"]},{"type":"Text","dimColor":true,"children":[" · eta f1"]}]}]}]}'
 
@@ -1116,7 +1116,7 @@ test('the state table: each row, at 120 columns and at 90', () => {
     const narrow = drawn(c.human, c.todo, 90, c.maxRows)
     if (c.wide === 'claude') {
       expect(columnsOf(wide).length, c.name).toBe(1)
-      expect(texts(wide).join(''), c.name).not.toContain('To do for')
+      expect(texts(wide).join(''), c.name).not.toContain('Human TODO')
     } else if (c.wide === 'human') {
       // The human list alone: one column of its header and rows, the width of the band and nothing of the Claude column.
       expect(wide, c.name).toMatchObject({ type: 'Box', flexDirection: 'column' })
@@ -1124,7 +1124,7 @@ test('the state table: each row, at 120 columns and at 90', () => {
       expect(shown(wide), c.name).not.toContain('Claude TODO')
     } else {
       const [left, right] = columnsOf(wide)
-      expect(texts(left).join(''), c.name).toContain('To do for you')
+      expect(texts(left).join(''), c.name).toContain('Human TODO')
       expect(shown(right), c.name).toContain('Claude TODO')
     }
     if (c.narrow === 'claude') expect(shown(narrow), c.name).toContain('Claude TODO')
@@ -1496,15 +1496,15 @@ test('the summary row is cut at the list\'s layout width with an ellipsis, on it
   expect(opened).toEqual([1, 1, 1, 1])
 })
 
-test('in a full-width list the header counts the lines the count wraps to beside the chip, and the fold takes them: 2 lines at 22 columns and 1 at 23, so maxRows 10 holds 7 rows and a summary at 22 and 9 whole at 23', () => {
+test('in a full-width list the header counts the lines the count wraps to beside the chip, and the fold takes them: 2 lines at 19 columns and 1 at 20, so maxRows 10 holds 7 rows and a summary at 19 and 9 whole at 20', () => {
   const store = humans(9)
-  for (const [columns, headerRows, rows, summary] of [[22, 2, 7, true], [23, 1, 9, false]] as const) {
+  for (const [columns, headerRows, rows, summary] of [[19, 2, 7, true], [20, 1, 9, false]] as const) {
     const tree = drawn(store, [], columns, 10)
     const kids = tree.children as Node[]
     expect(kids.filter(row => String(row.key).startsWith('item-')), `${columns}`).toHaveLength(rows)
     expect(nodes(kids[kids.length - 1], 'Button').some(b => b.key === 'band-more'), `${columns}`).toBe(summary)
-    // The header is the chip and the count as it always was, whose lines are counted: ` 9 open ` wraps to ` 9 open` and a space at 22, and fits at 23.
-    expect(wrapText(' 9 open ', columns - 15).length, `${columns}`).toBe(headerRows)
+    // The header is the chip and the count as it always was, whose lines are counted: ` 9 open ` wraps to ` 9 open` and a space at 19, and fits at 20.
+    expect(wrapText(' 9 open ', columns - 12).length, `${columns}`).toBe(headerRows)
     expect(kids.length - 1 + headerRows, `${columns}`).toBeLessThanOrEqual(10)
   }
 })
@@ -1651,7 +1651,7 @@ test('beside the dock with no human items an item in flight draws the Claude col
     expect(tree).toMatchObject({ type: 'Box', flexDirection: 'row', justifyContent: 'flex-end', width: columns })
     expect(columnsOf(tree)).toHaveLength(1)
     expect(columnsOf(tree)[0]).toMatchObject({ width: 32 })
-    expect(JSON.stringify(tree)).not.toContain('To do for')
+    expect(JSON.stringify(tree)).not.toContain('Human TODO')
   }
 })
 
@@ -1702,18 +1702,18 @@ test('every row of the Claude list\'s state table, drawn at a band of 52 and of 
   }
 })
 
-test('the squeezed header is two lines, the chip set to cut at its end and the count on the second line likewise: with the term `you` the chip and ` 8 open ` fit the 19 columns whole, and a 20-column term\'s chip is set to cut at its end', () => {
+test('the squeezed header is two lines, the chip set to cut at its end and the count on the second line likewise: with no term stated the chip and ` 8 open ` fit the 19 columns whole, and a 20-column term\'s chip is set to cut at its end', () => {
   const header = (store: Store): Node[] => ((columnsOf(docked(store, flight(1)))[0] as Node).children as Node[])[0]?.children as Node[]
   const lines = header(humans(8))
   expect(lines).toHaveLength(2)
   const [chip, count] = lines.map(line => nodes(line, 'Text')[0] as Node)
-  expect(chip).toMatchObject({ wrap: 'truncate-end', bold: true, backgroundColor: 'permission', children: [' To do for you '] })
+  expect(chip).toMatchObject({ wrap: 'truncate-end', bold: true, backgroundColor: 'permission', children: [' Human TODO '] })
   expect(count).toMatchObject({ wrap: 'truncate-end', children: [' 8 open '] })
-  expect(displayColumns(' To do for you ')).toBeLessThanOrEqual(19)
+  expect(displayColumns(' Human TODO ')).toBeLessThanOrEqual(19)
   expect(displayColumns(' 8 open ')).toBeLessThanOrEqual(19)
   const termed = header({ ...humans(8, true), term: 'x'.repeat(20) })
   expect(termed).toHaveLength(2)
-  expect(nodes(termed[0], 'Text')[0]).toMatchObject({ wrap: 'truncate-end', backgroundColor: 'warning', children: [` To do for ${'x'.repeat(20)} `] })
+  expect(nodes(termed[0], 'Text')[0]).toMatchObject({ wrap: 'truncate-end', backgroundColor: 'warning', children: [` ${'x'.repeat(20)} TODO `] })
   expect(nodes(termed[1], 'Text')[0]).toMatchObject({ wrap: 'truncate-end', children: [' 8 open '] })
   // A sent item adds its count after the open one.
   const sent: Store = { ...humans(3), items: humans(3).items.map(it => (it.id === 1 ? { ...it, state: 'done-pending' as const } : it)) }
@@ -1752,10 +1752,10 @@ test('beside the dock the header gives up its count line when the summary row wo
   }
 })
 
-test('a list drawn alone that is narrower than its chip folds as the squeezed list does: at 12 columns and maxRows 2 the header is the chip alone and the summary row takes the line that frees, and at maxRows 3 the header is two lines and the summary row', () => {
+test('a list drawn alone that is narrower than its chip folds as the squeezed list does: at 11 columns and maxRows 2 the header is the chip alone and the summary row takes the line that frees, and at maxRows 3 the header is two lines and the summary row', () => {
   const store: Store = { items: [at(1, false), at(2, false), at(3, false)], next: 4, term: null }
   for (const [maxRows, headerRows] of [[2, 1], [3, 2]] as const) {
-    const tree = band(table, handlers, store, { ...view(), maxRows, claude: { items: [], columns: 12 } })
+    const tree = band(table, handlers, store, { ...view(), maxRows, claude: { items: [], columns: 11 } })
     const kids = (tree as Node).children as Node[]
     expect(kids[0]?.children, `${maxRows}`).toHaveLength(headerRows)
     expect(kids.length, `${maxRows}`).toBe(2)

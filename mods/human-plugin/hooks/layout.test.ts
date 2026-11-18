@@ -363,8 +363,8 @@ test('a word wider than the line breaks across lines, starting on the line it fo
 
 test('the spaces stay where they fall: a full line sends the space after it to the next line, and a trailing space after an exact fit takes a line of its own', () => {
   expect(wrapText('aaaa bbbbb cc', 10)).toEqual(['aaaa bbbbb', ' cc'])
-  expect(wrapText(' To do for xxxxxxxxxxxxxxxxxxxx ', 20)).toEqual([' To do for ', 'xxxxxxxxxxxxxxxxxxxx', ' '])
-  expect(wrapText(' To do for xxxxxxxxxxxxxxxxxxxx ', 30)).toEqual([' To do for ', 'xxxxxxxxxxxxxxxxxxxx '])
+  expect(wrapText(' xxxxxxxxxxxxxxxxxxxx TODO ', 20)).toEqual([' ', 'xxxxxxxxxxxxxxxxxxxx', ' TODO '])
+  expect(wrapText(' xxxxxxxxxxxxxxxxxxxx TODO ', 26)).toEqual([' xxxxxxxxxxxxxxxxxxxx TODO', ' '])
 })
 
 test('a wide character counts two columns and is never split: the line breaks before one that does not fit', () => {
@@ -985,30 +985,30 @@ test('a row the unsqueezed ladder already takes to its third rung is laid out th
   expect(squeezedHere).toBeGreaterThan(0)
 })
 
-test('the header counts the count\'s wrapped lines in the columns the chip leaves, which never shrinks: ` To do for you ` and ` 8 open ` take 23 columns, so a list of 20 draws the count on two lines', () => {
-  // ` To do for you ` is 15 columns and ` 8 open ` 8: in the 5 that a list of 20 leaves they wrap to ` 8 ` and `open `.
-  expect(headerLines(' To do for you ', ' 8 open ', 23)).toBe(1)
-  expect(headerLines(' To do for you ', ' 8 open ', 120)).toBe(1)
-  expect(headerLines(' To do for you ', ' 8 open ', 22)).toBe(2)
-  expect(headerLines(' To do for you ', ' 8 open ', 20)).toBe(2)
-  expect(wrapText(' 8 open ', 5)).toEqual([' 8 ', 'open '])
+test('the header counts the count\'s wrapped lines in the columns the chip leaves, which never shrinks: ` Human TODO ` and ` 8 open ` take 20 columns, so a list of 19 draws the count on two lines', () => {
+  // ` Human TODO ` is 12 columns and ` 8 open ` 8: in the 7 that a list of 19 leaves they wrap to ` 8 open` and a space.
+  expect(headerLines(' Human TODO ', ' 8 open ', 23)).toBe(1)
+  expect(headerLines(' Human TODO ', ' 8 open ', 120)).toBe(1)
+  expect(headerLines(' Human TODO ', ' 8 open ', 20)).toBe(1)
+  expect(headerLines(' Human TODO ', ' 8 open ', 19)).toBe(2)
+  expect(wrapText(' 8 open ', 7)).toEqual([' 8 open', ' '])
 })
 
 test('a count wider than the columns the chip leaves wraps word by word there, and with no column left it takes a line per character', () => {
-  // The count ` 1234 open, 999999999999 sent ` is 30 columns: the 25 a list of 40 leaves beside the chip hold ` 1234 open, 999999999999` and `sent `.
+  // The count ` 1234 open, 999999999999 sent ` is 30 columns: the 28 a list of 40 leaves beside the chip hold ` 1234 open, 999999999999` and `sent `.
   const count = ` 1234 open, ${'9'.repeat(12)} sent `
   expect(displayColumns(count)).toBe(30)
-  expect(headerLines(' To do for you ', count, 40)).toBe(2)
-  expect(headerLines(' To do for you ', count, 45)).toBe(1)
-  // The chip never shrinks, and a 20-column term makes it 32 columns, as wide as a list of 32 and wider than one of 31 or 20, so the chip leaves the count
-  // -12, -1 and 0 columns there, and 1 at 33. The model wraps in at least one column, so ` 8 open `, its eight characters (a space, `8`, a space, `o`, `p`,
+  expect(headerLines(' Human TODO ', count, 40)).toBe(2)
+  expect(headerLines(' Human TODO ', count, 45)).toBe(1)
+  // The chip never shrinks, and a 20-column term makes it 27 columns, as wide as a list of 27 and wider than one of 26 or 20, so the chip leaves the count
+  // -7, -1 and 0 columns there, and 1 at 28. The model wraps in at least one column, so ` 8 open `, its eight characters (a space, `8`, a space, `o`, `p`,
   // `e`, `n`, a space), takes eight lines at all four widths. That is the model's count only: how the engine draws a count with no column left beside the
   // chip is unmeasured.
-  const chip = ` To do for ${'x'.repeat(20)} `
-  expect(displayColumns(chip)).toBe(32)
+  const chip = ` ${'x'.repeat(20)} TODO `
+  expect(displayColumns(chip)).toBe(27)
   expect(wrapText(' 8 open ', 1)).toEqual([' ', '8', ' ', 'o', 'p', 'e', 'n', ' '])
-  for (const width of [20, 31, 32, 33]) expect(headerLines(chip, ' 8 open ', width), `${width}`).toBe(8)
-  // With the 8 columns a list of 40 leaves, the count fits on one line.
+  for (const width of [20, 26, 27, 28]) expect(headerLines(chip, ' 8 open ', width), `${width}`).toBe(8)
+  // With the 13 columns a list of 40 leaves, the count fits on one line.
   expect(headerLines(chip, ' 8 open ', 40)).toBe(1)
 })
 
@@ -1093,9 +1093,9 @@ test('a backlog tail measures at most the room (body less the smaller of the hea
 })
 
 test('a list that is not squeezed takes the stacked header only when it is narrower than its chip and one column, for the chip of the default term and of a 20-column term', () => {
-  const chipOf = (term: string): string => ` To do for ${term} `
+  const chipOf = (term: string): string => ` ${term} TODO `
   const alone = (width: number): BandWidths => ({ human: { box: width, layout: width }, claude: null })
-  for (const [chip, columns] of [[chipOf('you'), 15], [chipOf('x'.repeat(20)), 32]] as const) {
+  for (const [chip, columns] of [[' Human TODO ', 12], [chipOf('x'.repeat(20)), 27]] as const) {
     expect(displayColumns(chip)).toBe(columns)
     for (let width = 1; width <= 120; width++) expect(isChipShort(alone(width), chip), `${columns}-column chip at ${width}`).toBe(width < columns + 1)
   }
@@ -1103,5 +1103,5 @@ test('a list that is not squeezed takes the stacked header only when it is narro
   const squeezed: BandWidths = { human: { box: 30, layout: 29 }, claude: { box: 32, layout: 31 } }
   expect(isSqueezed(squeezed)).toBe(true)
   expect(isChipShort(squeezed, chipOf('x'.repeat(20)))).toBe(false)
-  expect(isChipShort({ human: null, claude: { box: 32, layout: 32 } }, chipOf('you'))).toBe(false)
+  expect(isChipShort({ human: null, claude: { box: 32, layout: 32 } }, ' Human TODO ')).toBe(false)
 })

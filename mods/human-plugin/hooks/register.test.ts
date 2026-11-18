@@ -484,7 +484,7 @@ test('an empty list draws no band: the AbovePrompt render hands on, and an item 
   })
   const one = { id: 1, title: 'Pick a db', detail: '', blocking: true, createdAt: 0, state: 'open', pressedAt: null, note: null, agent: null, unread: false, options: [], answer: null }
   expect(await render($([]) as never, e as never, next(false) as never)).toEqual({ passed: e })
-  expect(JSON.stringify(await render($([one]) as never, e as never, next(false) as never))).toContain('To do for you')
+  expect(JSON.stringify(await render($([one]) as never, e as never, next(false) as never))).toContain('Human TODO')
 })
 
 test('a call to the mod\'s tool is drawn as one line, its result row empty; another tool\'s rows pass through', async () => {
@@ -1782,18 +1782,18 @@ test('an add from the main agent with a term draws the chip with it, and its rep
   const { hooks } = wire()
   const { env } = memEnv([], [], null)
   expect(await runTool(hooks, env, { action: 'add', title: 'Pick a db', term: 'owner' })).toEqual({ result: 'added #1 (term set to "owner")' })
-  expect(JSON.stringify(await band(hooks, env))).toContain('To do for owner')
+  expect(JSON.stringify(await band(hooks, env))).toContain('owner TODO')
 })
 
-test('a term is drawn as one line with single spaces; a blank one returns the chip to To do for you, and its add still lands', async () => {
+test('a term is drawn as one line with single spaces; a blank one returns the chip to Human TODO, and its add still lands', async () => {
   reset()
   const { hooks } = wire()
   const { env } = memEnv([], [], null)
   expect(await runTool(hooks, env, { action: 'add', title: 'Pick a db', term: 'Team\n   lead' })).toEqual({ result: 'added #1 (term set to "Team lead")' })
-  expect(JSON.stringify(await band(hooks, env))).toContain('To do for Team lead')
+  expect(JSON.stringify(await band(hooks, env))).toContain('Team lead TODO')
   expect(await runTool(hooks, env, { action: 'add', title: 'Second', term: '  ' })).toEqual({ result: 'added #2 (term cleared)' })
   const drawn = JSON.stringify(await band(hooks, env))
-  expect(drawn).toContain('To do for you')
+  expect(drawn).toContain('Human TODO')
   expect(drawn).toContain('2 open')
   expect(drawn).not.toContain('Team lead')
 })
@@ -1804,11 +1804,11 @@ test('a later term changes the chip; a call with no term leaves it, and a term-o
   const { env } = memEnv([], [], null)
   await runTool(hooks, env, { action: 'add', title: 'Pick a db', term: 'owner' })
   await runTool(hooks, env, { action: 'add', title: 'Second' })
-  expect(JSON.stringify(await band(hooks, env))).toContain('To do for owner')
+  expect(JSON.stringify(await band(hooks, env))).toContain('owner TODO')
   expect(await runTool(hooks, env, { action: 'update', id: 2, term: 'lead' })).toEqual({ result: 'no change to #2 (term set to "lead")' })
-  expect(JSON.stringify(await band(hooks, env))).toContain('To do for lead')
+  expect(JSON.stringify(await band(hooks, env))).toContain('lead TODO')
   await runTool(hooks, env, { action: 'update', id: 2, note: 'recheck' })
-  expect(JSON.stringify(await band(hooks, env))).toContain('To do for lead')
+  expect(JSON.stringify(await band(hooks, env))).toContain('lead TODO')
 })
 
 test('a subagent\'s term is not used: its add adds the item, and the chip keeps the term the main agent set', async () => {
@@ -1822,7 +1822,7 @@ test('a subagent\'s term is not used: its add adds the item, and the chip keeps 
   expect(await runTool(hooks, env, { action: 'add', title: 'Long ask', term: 'x'.repeat(21), agentId: 'sub-1' })).toEqual({
     result: 'added #3 (term not used: only the main agent sets it)',
   })
-  expect(JSON.stringify(await band(hooks, env))).toContain('To do for owner')
+  expect(JSON.stringify(await band(hooks, env))).toContain('owner TODO')
 })
 
 test('an over-long term refuses the add or the update: no item is added or changed, and the chip keeps its term', async () => {
@@ -1836,7 +1836,7 @@ test('an over-long term refuses the add or the update: no item is added or chang
   expect(await runTool(hooks, env, { action: 'update', id: 1, title: 'Renamed', term: tooLong })).toEqual({ deny: reason })
   expect(await runTool(hooks, env, { action: 'update', id: 1, term: tooLong })).toEqual({ deny: reason })
   expect(values.list).toMatchObject({ items: [{ id: 1, title: 'Pick a db' }], term: 'owner' })
-  expect(JSON.stringify(await band(hooks, env))).toContain('To do for owner')
+  expect(JSON.stringify(await band(hooks, env))).toContain('owner TODO')
 })
 
 test('a term-only update naming an item no one has is refused, and the chip keeps its term', async () => {
@@ -1845,10 +1845,10 @@ test('a term-only update naming an item no one has is refused, and the chip keep
   const { env } = memEnv([], [], null)
   await runTool(hooks, env, { action: 'add', title: 'Pick a db', term: 'owner' })
   expect(await runTool(hooks, env, { action: 'update', id: 9, term: 'lead' })).toEqual({ deny: 'no item #9' })
-  expect(JSON.stringify(await band(hooks, env))).toContain('To do for owner')
+  expect(JSON.stringify(await band(hooks, env))).toContain('owner TODO')
 })
 
-test('after a /clear the band reads To do for you until a term is stated again', async () => {
+test('after a /clear the band reads Human TODO until a term is stated again', async () => {
   reset()
   const { hooks } = wire()
   const { env, values } = memEnv([], [], null)
@@ -1857,7 +1857,7 @@ test('after a /clear the band reads To do for you until a term is stated again',
   expect(values.list).toEqual({ items: [], next: 2, term: null })
   expect(await runTool(hooks, env, { action: 'add', title: 'Next ask' })).toEqual({ result: 'added #2' })
   const drawn = JSON.stringify(await band(hooks, env))
-  expect(drawn).toContain('To do for you')
+  expect(drawn).toContain('Human TODO')
   expect(drawn).not.toContain('owner')
 })
 

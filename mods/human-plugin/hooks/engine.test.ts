@@ -1143,7 +1143,7 @@ test('the summary row drawn through the terminal\'s table is one line cut at the
     const where = `band of ${columns}`
     // The header takes the lines its count wraps to beside the chip, the summary one: the rest of the 6 rows are items, the blocking ones first.
     const shown = elementsOf(tree as El, 'Box').filter(box => String(box.props?.key).startsWith('item-')).length
-    expect(shown, where).toBe(6 - headerLines(' To do for you ', ' 11 open ', columns) - 1)
+    expect(shown, where).toBe(6 - headerLines(' Human TODO ', ' 11 open ', columns) - 1)
     expect(shown, where).toBeGreaterThanOrEqual(3)
     const more = elementsOf(tree as El, 'Button').find(button => button.props?.key === 'band-more')
     const summary = `+${8 - shown} blocking · +3 more […]`
@@ -1264,7 +1264,7 @@ test('beside the docked pane the band drawn through the terminal\'s table in ban
         if (squeezed) {
           expect(header?.props?.flexDirection, where).toBe('column')
           expect(header?.children, where).toHaveLength(2)
-          expect(shownOf(header?.children?.[0]), where).toBe(' To do for you ')
+          expect(shownOf(header?.children?.[0]), where).toBe(' Human TODO ')
           expect(shownOf(header?.children?.[1]), where).toMatch(/^ \d+ open/)
           for (const line of header?.children ?? []) expect(JSON.stringify(line), where).toContain('"wrap":"truncate-end"')
         } else {
@@ -1508,14 +1508,14 @@ test('with the pane on the Claude list, a write that adds items asks again for t
   expect([...shown]).toEqual([])
 })
 
-// Every line of a human list drawn alone at 1 to 25 columns and at 32, 33 and 40, in the band's tree: each item row is one row of cells whose prefix, title and control add up to the width at most, a row
+// Every line of a human list drawn alone at 1 to 25 columns and at 27, 28 and 40, in the band's tree: each to-do row is one row of cells whose prefix, title and control add up to the width at most, a row
 // too narrow for its control draws none and its title's label fits its room, and the header is one row of the chip and the count from the chip's width plus one and the chip and the
 // count on rows of their own below it. The presses are made at 120 columns, where every control is drawn, and the rows drawn again narrow. The ids of four digits are built once
 // (`skipIds` is slow) and both terms run off that build, the sweep's items added and removed again for each, so their ids stay four digits.
 const TERM_20 = 'abcdefghij'.repeat(2)
-const TERMS: [string, string | undefined, string][] = [['the default term', undefined, ' To do for you '], ['a 20-column term', TERM_20, ` To do for ${TERM_20} `]]
+const TERMS: [string, string | undefined, string][] = [['the default term', undefined, ' Human TODO '], ['a 20-column term', TERM_20, ` ${TERM_20} TODO `]]
 for (const [first, terms, digits] of [[2, [TERMS[0]], 'one digit'], [2, [TERMS[1]], 'one digit'], [1000, TERMS, 'four digits']] as [number, typeof TERMS, string][]) {
-  test(`the band drawn alone with ${terms.map(([name]) => name).join(' and with ')} at 1 to 25 columns and at 32, 33 and 40, open, pressed and sent, draws no row or header line wider than the list, at an id of ${digits}`, { timeoutMs: first === 2 ? 5000 : 60000 }, async ($, on) => {
+  test(`the band drawn alone with ${terms.map(([name]) => name).join(' and with ')} at 1 to 25 columns and at 27, 28 and 40, open, pressed and sent, draws no row or header line wider than the list, at an id of ${digits}`, { timeoutMs: first === 2 ? 5000 : 60000 }, async ($, on) => {
     on('prompt.submit', (_$, e) => ({ text: e.text }))
     const clock = mock.clock(on)
     mock.store(on)
@@ -1537,7 +1537,7 @@ for (const [first, terms, digits] of [[2, [TERMS[0]], 'one digit'], [2, [TERMS[1
       await $.tool.call({ tool: TOOL, action: 'add', title: SWEEP_TITLE, yesno: true })
       await $.tool.call({ tool: TOOL, action: 'add', title: SWEEP_BROKEN })
       const check = async (phase: Phase): Promise<void> => {
-        for (const columns of [...Array.from({ length: 25 }, (_, k) => k + 1), 32, 33, 40]) {
+        for (const columns of [...Array.from({ length: 25 }, (_, k) => k + 1), 27, 28, 40]) {
           await band.redraw({ ...tall, bodyColumns: columns })
           const tree = await band.drawn()
           const where = `${phase}, ids from ${base}, band of ${columns}`
