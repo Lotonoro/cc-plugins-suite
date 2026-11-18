@@ -38,7 +38,7 @@ glance and decide whether to move work between sessions.
 Run this at a Claude Code prompt, then start a new session.
 
 ```text
-/plugin install human-plugin --marketplace Lotonoro/claude-code-plugin
+/plugin install human-plugin --marketplace Lotonoro/cc-plugins-suite
 ```
 
 To try a local clone for one session, run `claude --plugin-dir mods/human-plugin`

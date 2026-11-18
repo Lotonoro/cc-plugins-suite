@@ -65,7 +65,7 @@ savings make it worth switching.
 Run this at a Claude Code prompt.
 
 ```text
-/plugin install cachier --marketplace Lotonoro/claude-code-plugin
+/plugin install cachier --marketplace Lotonoro/cc-plugins-suite
 ```
 
 To try a local clone for one session, run `claude --plugin-dir mods/cachier`
