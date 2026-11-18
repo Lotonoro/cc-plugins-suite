@@ -1007,12 +1007,12 @@ const stepRowOf = (state: 'in_flight' | 'queued', title: string, tail?: string) 
 const flyingRow = (title: string, tail?: string) => stepRowOf('in_flight', title, tail)
 const queuedRow = (title: string, tail?: string) => stepRowOf('queued', title, tail)
 
-test('a step with no ETA draws no tail: its row is a glyph text in the state\'s colour beside a title text on one line, in-flight first, the title alone handed its text cut at the column\'s layout width less the glyph\'s, with no address, press or hover', () => {
+test('a step with no ETA draws its tail as any other does: its row is a glyph text in the state\'s colour beside a title text and a tail text on one line, in-flight first, the title handed its text cut at the column\'s layout width less the glyph\'s and the tail\'s, with no address, press or hover', () => {
   const long = 'x'.repeat(80)
   const right = columnsOf(drawn(humans(6), [{ title: 'queued one', state: 'queued', eta: 'no ETA' }, { title: long, state: 'in_flight', eta: 'no ETA' }], 120))[1] as Node
   const rows = (right.children as Node[]).slice(1)
-  // The column is 56 wide and keeps one column empty: a title that does not fit the 54 left beside the glyph is cut to 53 columns and an ellipsis, its space among them.
-  expect(rows).toStrictEqual([flyingRow(` ${'x'.repeat(52)}…`), queuedRow(' queued one')])
+  // The column is 56 wide and keeps one column empty, so it is laid out in 55: beside the glyph and the ` · no ETA` tail, a title that does not fit is cut to 45 columns and an ellipsis, its space among them.
+  expect(rows).toStrictEqual([flyingRow(` ${'x'.repeat(43)}…`, ' · no ETA'), queuedRow(' queued one', ' · no ETA')])
 })
 
 test('beside one human item three queued items draw as the header and one +3 queued row, and no queued item', () => {
@@ -1927,7 +1927,7 @@ test('in a queued-only column drawn alone, at 120 and at 12, the +N queued butto
   }
 })
 
-test('in a column of 20 layout columns a row of 60 columns is a glyph text and a title text that end in an ellipsis within the 20, no wide character split; the header and +N queued are cut the same way, +N queued dim, and a row that fits is whole', () => {
+test('in a column of 20 layout columns a row of 60 columns is cut within the 20, its glyph whole, its title ending in an ellipsis and its ETA tail cut to the room left, no wide character split; the header and +N queued are cut the same way, +N queued dim, and a row that fits is whole', () => {
   expect(displayColumns('漢')).toBe(2)
   const todo: TodoItem[] = [
     { title: 'x'.repeat(58), state: 'in_flight', eta: 'no ETA' },
@@ -1939,9 +1939,9 @@ test('in a column of 20 layout columns a row of 60 columns is a glyph text and a
   const column = claudeColumn(table, handlers, todo, { box: 20, layout: 20 }, 6) as Node
   expect(lineTexts(column)).toEqual([
     'Claude TODO 3 activ…',
-    `◐ ${'x'.repeat(17)}…`,
-    `◐ ${'漢'.repeat(8)}…`,
-    '◐ short',
+    `◐ ${'x'.repeat(9)}… · no E…`,
+    `◐ ${'漢'.repeat(4)}… · no E…`,
+    '◐ short · no ETA',
     '○ q1 · eta q1',
     '+3 queued',
   ])
@@ -1954,46 +1954,30 @@ test('in a column of 20 layout columns a row of 60 columns is a glyph text and a
   expect(nodes(narrow, 'Button').map(button => [button.key, button.label, button.dimColor])).toEqual([['claude-queued', '+3 qu…', true]])
 })
 
-test('a step row\'s two texts joined are the one line cut at the layout width at every width from 2, so at 2 it reads the glyph and an ellipsis; at 1 the row is the glyph alone, never cut, in its colour', () => {
-  // The in-flight row and the first queued row, of a list with two queued steps: where the header has no press (a layout of 12 or less) the last queued line is `+N queued`, so a lone queued step would not be a row.
-  const rowsAt = (layout: number, todo: TodoItem[]): Node[] => claudeLines(claudeColumn(table, handlers, todo, { box: layout, layout }, 20) as Node).slice(1, 3)
-  const titles = ['f1', 'x'.repeat(80), '漢'.repeat(30), 'a漢b'.repeat(8), 'a'.repeat(5)]
-  for (const layout of Array.from({ length: 44 }, (_, k) => k + 2)) {
-    for (const title of titles) {
-      const rows = rowsAt(layout, [{ title, state: 'in_flight', eta: 'no ETA' }, { title, state: 'queued', eta: 'no ETA' }, ...queue(1)])
-      expect(rows.map(row => shown(row)), `${layout}, ${title}`).toEqual((['in_flight', 'queued'] as const).map(state => cutToColumns(`${GLYPH[state]} ${title}`, layout)))
-    }
-  }
-  expect(rowsAt(2, [...flight(1), ...queue(2)]).map(row => shown(row))).toEqual(['◐…', '○…'])
-  expect(rowsAt(1, [...flight(1), ...queue(2)])).toStrictEqual([{ type: 'Box', children: [glyphText('in_flight')] }, { type: 'Box', children: [glyphText('queued')] }])
-})
-
-test('at a layout width of 55 a step with an ETA is its glyph, its title and its ETA tail, in flight or queued; a 70-character title with `~10 min` is cut to 44 columns before its tail, and with no ETA to 54 and no tail', () => {
+test('at a layout width of 55 a step with an ETA is its glyph, its title and its ETA tail, in flight or queued; a 70-character title with `~10 min` is cut to 44 columns before its tail', () => {
   const long = 'x'.repeat(70)
   const todo: TodoItem[] = [
     { title: 'Run the tests', state: 'in_flight', eta: '~10 min' },
     { title: long, state: 'in_flight', eta: '~10 min' },
-    { title: long, state: 'in_flight', eta: 'no ETA' },
     { title: 'Write the README', state: 'queued', eta: 'after tests' },
   ]
-  // A band of 120 is a column of 56, laid out in 55 beside the human list. Its header and three in-flight rows leave room beside six human items for the queued row.
+  // A band of 120 is a column of 56, laid out in 55 beside the human list. Its header and two in-flight rows leave room beside six human items for the queued row.
   const right = columnsOf(drawn(humans(6), todo, 120))[1] as Node
   expect(Number(right.width) - Number(right.paddingLeft)).toBe(55)
-  // The glyph, the title's 44 columns (its space among them) and the tail's 10 are the 55; with no ETA the title takes the 54 beside the glyph.
+  // The glyph, the title's 44 columns (its space among them) and the tail's 10 are the 55.
   expect(claudeLines(right).slice(1)).toStrictEqual([
     flyingRow(' Run the tests', ' · ~10 min'),
     flyingRow(` ${'x'.repeat(42)}…`, ' · ~10 min'),
-    flyingRow(` ${'x'.repeat(52)}…`),
     queuedRow(' Write the README', ' · after tests'),
   ])
-  expect(lineTexts(right).slice(1)).toEqual(['◐ Run the tests · ~10 min', `◐ ${'x'.repeat(42)}… · ~10 min`, `◐ ${'x'.repeat(52)}…`, '○ Write the README · after tests'])
+  expect(lineTexts(right).slice(1)).toEqual(['◐ Run the tests · ~10 min', `◐ ${'x'.repeat(42)}… · ~10 min`, '○ Write the README · after tests'])
 })
 
 test('a step row with an ETA is never wider than the layout width, at every width from 1 to 60: the tail is the pane\'s tail rule for the head, the title is cut in the room the glyph and the tail leave, 11 columns or more wherever both are drawn and the title is cut, and where the tail keeps no character of the ETA the row is the glyph and the title cut at the width less the glyph\'s', () => {
   // The in-flight row and the first queued row, of a list with two queued steps: where the header has no press (a layout of 12 or less) the last queued line is `+N queued`, so a lone queued step would not be a row.
   const rowsAt = (layout: number, todo: TodoItem[]): Node[] => claudeLines(claudeColumn(table, handlers, todo, { box: layout, layout }, 20) as Node).slice(1, 3)
   const titles = ['f1', '漢', 'x'.repeat(80), '漢'.repeat(40), 'a漢b'.repeat(8)]
-  const etas = ['~10 min', 'z'.repeat(30), '漢'.repeat(30)]
+  const etas = ['~10 min', 'z'.repeat(30), '漢'.repeat(30), 'no ETA']
   for (let layout = 1; layout <= 60; layout++) {
     for (const title of titles) {
       for (const eta of etas) {
@@ -2019,18 +2003,8 @@ test('a step row with an ETA is never wider than the layout width, at every widt
       }
     }
   }
-})
-
-test('the ETA tail of a column row is a text of its own, dim with no colour in both states and with no key, press or hover; a step with no ETA has none, though one would fit', () => {
-  const todo: TodoItem[] = [
-    { title: 'Run', state: 'in_flight', eta: '~10 min' },
-    { title: 'Wait', state: 'in_flight', eta: 'no ETA' },
-    { title: 'Write', state: 'queued', eta: 'after tests' },
-    { title: 'Idle', state: 'queued', eta: 'no ETA' },
-  ]
-  const rows = claudeLines(claudeColumn(table, handlers, todo, { box: 55, layout: 55 }, 20) as Node).slice(1)
-  expect(rows).toStrictEqual([flyingRow(' Run', ' · ~10 min'), flyingRow(' Wait'), queuedRow(' Write', ' · after tests'), queuedRow(' Idle')])
-  expect(rows.map(row => shown(row))).toEqual(['◐ Run · ~10 min', '◐ Wait', '○ Write · after tests', '○ Idle'])
+  // At layout 2 the in-flight row `f1` and the first queued row read their glyph and an ellipsis.
+  expect(rowsAt(2, [...flight(1), ...queue(2)]).map(row => shown(row))).toEqual(['◐…', '○…'])
 })
 
 // The backlog pane: the Claude list whole, read-only. The header is one line the engine cuts at its end. Each item is one row of three parts: its glyph, which does not shrink, its title, which gives
@@ -2065,7 +2039,7 @@ const rowParts = (row: Node): { glyph: Node; title: Node; tail: Node | undefined
   return { glyph: glyph as Node, title: title as Node, tail }
 }
 
-test('the last part of each backlog row is its entry\'s ETA tail, dim in both states, and an item stored with no ETA draws no ETA after its title', () => {
+test('the last part of each backlog row is its entry\'s ETA tail, dim in both states, and an item stored with no ETA ends its row with ` · no ETA`', () => {
   const todo: TodoItem[] = [
     { title: 'Run the tests', state: 'in_flight', eta: '~10 min' },
     { title: 'Ship it', state: 'queued', eta: 'z'.repeat(30) },

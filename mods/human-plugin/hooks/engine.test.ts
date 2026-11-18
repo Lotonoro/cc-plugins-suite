@@ -1417,7 +1417,7 @@ test('with the pane open on the Claude list the Pane draws each ETA and the band
   expect(shownOf(column)).toContain('○ Test it · after tests')
 })
 
-test('the band\'s Claude column has a button for its counts and one for +N queued, and its rows are a glyph text and a title text with no address, so two rows with one title are two title texts; a long title is cut with an ellipsis within the column, and +N queued is dim', async ($, on) => {
+test('the band\'s Claude column has a button for its counts and one for +N queued, and its rows are a glyph text, a title text and a tail text with no address, so two rows with one title are two title texts; a long title is cut with an ellipsis within the column, and +N queued is dim', async ($, on) => {
   mock.clock(on)
   mock.store(on)
   backlogRecord(on)
@@ -1431,11 +1431,13 @@ test('the band\'s Claude column has a button for its counts and one for +N queue
   // The column is 32 wide with one column kept empty: 31 columns of text, the heading's 12 and the counts' 19.
   expect(buttons.map(button => button.props?.label)).toEqual(['3 active, 2 queued', '+2 queued'])
   expect(buttons.map(button => button.props?.dimColor)).toEqual([undefined, true])
-  // The glyphs and the titles are texts found by their text, each with no key, and no element answers at the address a row had. The title cut to the 30 columns beside the glyph is the one line cut to the 31.
+  // The glyphs, the titles and the tails are texts found by their text, each with no key, and no element answers at the address a row had. The long title's 21 columns are the 31 less the glyph's and the tail's.
   const glyphs = await band.findAll({ type: 'Text', text: '◐' })
   expect(glyphs.map(glyph => [glyph.key, glyph.text, glyph.props.color, glyph.props.dimColor])).toEqual(Array.from({ length: 3 }, () => [undefined, '◐', 'suggestion', undefined]))
   const titles = await band.findAll({ type: 'Text', text: /^ (Same title|x+…)$/ })
-  expect(titles.map(title => [title.key, title.text, title.props.color, title.props.dimColor])).toEqual([[undefined, ' Same title', undefined, undefined], [undefined, ' Same title', undefined, undefined], [undefined, ` ${'x'.repeat(28)}…`, undefined, undefined]])
+  expect(titles.map(title => [title.key, title.text, title.props.color, title.props.dimColor])).toEqual([[undefined, ' Same title', undefined, undefined], [undefined, ' Same title', undefined, undefined], [undefined, ` ${'x'.repeat(19)}…`, undefined, undefined]])
+  const tails = await band.findAll({ type: 'Text', text: ' · no ETA' })
+  expect(tails.map(tail => [tail.key, tail.text, tail.props.color, tail.props.dimColor])).toEqual(Array.from({ length: 3 }, () => [undefined, ' · no ETA', undefined, true]))
   expect(await band.find({ key: 'claude-row-0' })).toBeUndefined()
 })
 
