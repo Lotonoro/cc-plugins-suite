@@ -66,7 +66,7 @@ output, cache reads and writes, and reviewer compaction requests.
 Run this at a Claude Code prompt, then start a new session.
 
 ```text
-/plugin install auditor --marketplace Lotonoro/claude-code-plugin
+/plugin install auditor --marketplace Lotonoro/cc-plugins-suite
 ```
 
 To try a local clone for one session, run `claude --plugin-dir mods/auditor`

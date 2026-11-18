@@ -1,6 +1,6 @@
-# claude-code-plugin
+# cc-plugins-suite
 
-A Claude Code marketplace of mods, registered as `lotonoro-cc-plugins`.
+A Claude Code marketplace of mods, registered as `lotonoro-cc-plugins-suite`.
 
 | Mod | What it does |
 | --- | --- |
@@ -13,16 +13,17 @@ A Claude Code marketplace of mods, registered as `lotonoro-cc-plugins`.
 From a Claude Code terminal session:
 
 ```
-/plugin install cachier --marketplace Lotonoro/claude-code-plugin
-/plugin install auditor --marketplace Lotonoro/claude-code-plugin
-/plugin install human-plugin --marketplace Lotonoro/claude-code-plugin
+/plugin marketplace add Lotonoro/cc-plugins-suite
+/plugin install cachier@lotonoro-cc-plugins-suite
+/plugin install auditor@lotonoro-cc-plugins-suite
+/plugin install human-plugin@lotonoro-cc-plugins-suite
 ```
 
 From a local clone, add the folder as a marketplace, then install by name:
 
 ```
 claude plugin marketplace add <path-to-clone>
-claude plugin install cachier@lotonoro-cc-plugins
+claude plugin install cachier@lotonoro-cc-plugins-suite
 ```
 
 A mod's folder is read in place when the marketplace is a folder, so an edit is picked up by `/reload-plugins`.
