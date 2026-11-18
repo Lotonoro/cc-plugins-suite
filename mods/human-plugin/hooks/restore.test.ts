@@ -242,7 +242,7 @@ const TODO_SESSION = jsonl(
   reply('r6', 'a6', 13, 'w6', 'Claude TODO: 1 in flight, 0 queued'),
   prompt('p-new', 'r5', 14),
 )
-const LAST_LIST = 'Claude TODO: 1 in flight, 1 queued\n- in_flight: Plan three (ETA: no ETA)\n- queued: Plan four (ETA: no ETA)'
+const LAST_LIST = 'Agent TODO: 1 in flight, 1 queued\n- in_flight: Plan three (ETA: no ETA)\n- queued: Plan four (ETA: no ETA)'
 // The same session with a human ask added on the live branch after the last prompt.
 const BOTH = jsonl(...TODO_SESSION.trim().split('\n').map(line => JSON.parse(line) as Record<string, unknown>), call('h1', 'p-new', 15, 'h', { action: 'add', title: 'An ask' }), reply('hr', 'h1', 16, 'h', 'added #1'))
 const todoList = async ($: Engine) => String((await $.tool.call({ tool: TODO_TOOL })).result)
@@ -267,7 +267,7 @@ test('a rebuild over a stored split ETA restores it repaired', async ($, on) => 
     ),
   })
   await $.classic.SessionStart({ source: 'resume', transcript_path: MAIN })
-  expect(await todoList($)).toBe(`Claude TODO: 1 in flight, 0 queued\n- in_flight: Plan one (ETA: ${'a'.repeat(20)}…)`)
+  expect(await todoList($)).toBe(`Agent TODO: 1 in flight, 0 queued\n- in_flight: Plan one (ETA: ${'a'.repeat(20)}…)`)
 })
 
 test('a transcript with no Claude list write rebuilds an empty Claude list', async ($, on) => {
@@ -275,7 +275,7 @@ test('a transcript with no Claude list write rebuilds an empty Claude list', asy
   host(on, { [MAIN]: SESSION })
   await $.classic.SessionStart({ source: 'resume', transcript_path: MAIN })
   expect(await titles($)).toContain('#1 non-blocking, open: One')
-  expect(await todoList($)).toBe('Claude TODO: 0 in flight, 0 queued')
+  expect(await todoList($)).toBe('Agent TODO: 0 in flight, 0 queued')
 })
 
 test('a Claude list call made during the rebuild waits for it, and sees the rebuilt list once the wait ends', async ($, on) => {
@@ -307,7 +307,7 @@ test('a list written live before the rebuild stays as written, an emptied one in
   host(on, { [MAIN]: TODO_SESSION })
   await $.tool.call({ tool: TODO_TOOL, entries: entries(['Live', 'in_flight']) })
   await $.classic.SessionStart({ source: 'resume', transcript_path: MAIN })
-  expect(await todoList($)).toBe('Claude TODO: 1 in flight, 0 queued\n- in_flight: Live (ETA: no ETA)')
+  expect(await todoList($)).toBe('Agent TODO: 1 in flight, 0 queued\n- in_flight: Live (ETA: no ETA)')
 })
 
 test('a list emptied live before the rebuild stays empty', async ($, on) => {
@@ -315,7 +315,7 @@ test('a list emptied live before the rebuild stays empty', async ($, on) => {
   host(on, { [MAIN]: TODO_SESSION })
   await $.tool.call({ tool: TODO_TOOL, entries: [] })
   await $.classic.SessionStart({ source: 'resume', transcript_path: MAIN })
-  expect(await todoList($)).toBe('Claude TODO: 0 in flight, 0 queued')
+  expect(await todoList($)).toBe('Agent TODO: 0 in flight, 0 queued')
 })
 
 test('a forked session\'s Claude list is rebuilt once its transcript exists, at the same point as the human list\'s', async ($, on) => {
@@ -345,7 +345,7 @@ test('a fork whose first live write lands before its rebuild starts keeps that w
   files.appear(FORK)
   await $.turn.start({ text: 'go on', turnId: 't1' })
   await clock.settle()
-  expect(await todoList($)).toBe('Claude TODO: 1 in flight, 0 queued\n- in_flight: Newer than the transcript (ETA: no ETA)')
+  expect(await todoList($)).toBe('Agent TODO: 1 in flight, 0 queued\n- in_flight: Newer than the transcript (ETA: no ETA)')
 })
 
 // A write to one key of the state that never lands: the version it checks against is always stale, so the update gives up. The kit answers the
@@ -370,7 +370,7 @@ test('a rebuild whose Claude list write fails logs the failure, leaves that list
   await $.classic.SessionStart({ source: 'resume', transcript_path: MAIN })
   expect(await titles($)).toBe('#1 non-blocking, open: An ask')
   expect(shown.filter(line => line.includes('the Claude TODO list was not rebuilt')).length).toBeGreaterThan(0)
-  expect(await todoList($)).toBe('Claude TODO: 0 in flight, 0 queued')
+  expect(await todoList($)).toBe('Agent TODO: 0 in flight, 0 queued')
 })
 
 test('a rebuild whose human list write fails logs it and still rebuilds the Claude list', async ($, on) => {
@@ -404,5 +404,5 @@ test('a session that ends between the rebuild\'s two writes does not get the old
   await $.session.end({ reason: 'resume', sessionId: 's1', resume: { id: 's1' } })
   held.release()
   await clock.settle()
-  expect(await todoList($)).toBe('Claude TODO: 0 in flight, 0 queued')
+  expect(await todoList($)).toBe('Agent TODO: 0 in flight, 0 queued')
 })

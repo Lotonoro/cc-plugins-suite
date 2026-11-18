@@ -605,7 +605,7 @@ test('two in-flight and three queued items print the counting line, then each gr
   const items = [step('q1', 'queued'), step('f1', 'in_flight'), step('q2', 'queued'), step('f2', 'in_flight'), step('q3', 'queued')]
   expect(claudeTodoText(items)).toBe(
     [
-      '  Claude TODO: 2 in flight, 3 queued',
+      '  Agent TODO: 2 in flight, 3 queued',
       '  in flight:',
       `    ${FLIGHT} f1 · eta f1`,
       `    ${FLIGHT} f2 · eta f2`,
@@ -618,8 +618,8 @@ test('two in-flight and three queued items print the counting line, then each gr
 })
 
 test('a group with no items prints no heading', () => {
-  expect(claudeTodoText([step('q1', 'queued')])).toBe(['  Claude TODO: 0 in flight, 1 queued', '  queued:', `    ${QUEUED} q1 · eta q1`].join('\n'))
-  expect(claudeTodoText([step('f1', 'in_flight')])).toBe(['  Claude TODO: 1 in flight, 0 queued', '  in flight:', `    ${FLIGHT} f1 · eta f1`].join('\n'))
+  expect(claudeTodoText([step('q1', 'queued')])).toBe(['  Agent TODO: 0 in flight, 1 queued', '  queued:', `    ${QUEUED} q1 · eta q1`].join('\n'))
+  expect(claudeTodoText([step('f1', 'in_flight')])).toBe(['  Agent TODO: 1 in flight, 0 queued', '  in flight:', `    ${FLIGHT} f1 · eta f1`].join('\n'))
 })
 
 test('an entry prints its title cut to 80, then its ETA whole; an entry given none prints no ETA', () => {
@@ -637,13 +637,13 @@ test('each entry\'s line ends with that entry\'s ETA tail: a stored ETA, one aft
 })
 
 test('an empty list prints the one empty line', () => {
-  expect(claudeTodoText([])).toBe('  The Claude TODO list is empty.')
+  expect(claudeTodoText([])).toBe('  The Agent TODO list is empty.')
 })
 
 test('five in flight and twenty queued name the five and fifteen queued, and end on a line counting the five queued left out', () => {
   const text = claudeTodoText([...steps(20, 'queued'), ...steps(5, 'in_flight')])
   const lines = text.split('\n')
-  expect(lines[0]).toBe('  Claude TODO: 5 in flight, 20 queued')
+  expect(lines[0]).toBe('  Agent TODO: 5 in flight, 20 queued')
   expect(lines.filter(line => line.includes(FLIGHT))).toHaveLength(5)
   expect(lines.filter(line => line.includes(QUEUED))).toHaveLength(15)
   expect(lines[lines.length - 1]).toBe('  and 5 more queued')

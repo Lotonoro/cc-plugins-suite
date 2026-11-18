@@ -30,7 +30,7 @@ export const etaOf = (raw: unknown): string => {
   return eta === '' ? NO_ETA : eta
 }
 
-export const HEADING = 'Claude TODO'
+export const HEADING = 'Agent TODO'
 
 // The list lives in $.state under its own key (a hot reload keeps it), and is null until it is first written in a session: that tells a list
 // not written yet from an emptied one (fillTodo). The reference is declared here, with literal plugin and key, where the engine's scan of the
@@ -125,10 +125,13 @@ export const bandCountsText = (items: readonly TodoItem[]): string => `${countOf
 export const todoReply = (items: readonly TodoItem[]): string =>
   [`${HEADING}: ${countsText(items)}`, ...items.map(it => `- ${it.state}: ${it.title} (ETA: ${it.eta})`)].join('\n')
 
-// The counts a successful call's reply opens with, as the transcript row says them.
+// The counts a successful call's reply opens with, as the transcript row says them: the heading the reply was written under, then its counts. The split is at the
+// colon right before the counts, not the first colon, so a heading that holds a colon of its own stays whole.
+const COUNTED_HEAD = /^(.+): (\d+ in flight, \d+ queued)$/
 const countsOf = (reply: string): string => {
   const head = reply.split('\n')[0] ?? ''
-  return head.startsWith(`${HEADING}: `) ? `${HEADING} ${head.slice(HEADING.length + 2)}` : head
+  const counted = COUNTED_HEAD.exec(head)
+  return counted ? `${counted[1]} ${counted[2]}` : head
 }
 
 // The one line a call to the tool draws in the transcript, from its input and its reply, as toolLine does for the human list's tool.
@@ -145,4 +148,5 @@ export const todoLine = (call: ToolCall): string => {
   return `human-plugin: ${text}`.replace(/\s+/g, ' ')
 }
 
-export const SUBAGENT_REFUSAL = `only the main agent keeps the ${HEADING} list`
+// Said to an agent, so it names the list as the steering section does, not by the heading.
+export const SUBAGENT_REFUSAL = 'only the main agent keeps the Claude TODO list'

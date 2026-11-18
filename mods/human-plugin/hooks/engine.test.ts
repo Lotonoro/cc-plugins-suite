@@ -804,15 +804,15 @@ test('a band mounted at 120 columns draws the Claude column beside the human lis
   on('ui.panes', () => ({ value: [] }))
   await $.tool.call({ tool: TOOL, action: 'add', title: 'Pick a db' })
   const ui = await $.ui.mount({ plugin: 'human-plugin', surface: 'terminal', component: 'AbovePrompt', props: { ...BAND_PROPS, bodyColumns: 120 } })
-  expect(JSON.stringify(await ui.drawn())).not.toContain('Claude TODO')
+  expect(JSON.stringify(await ui.drawn())).not.toContain('Agent TODO')
   await $.tool.call({ tool: TODO_TOOL, entries: [{ title: 'Build it', state: 'in_flight' }, { title: 'Test it', state: 'queued' }] })
   const tree = await ui.drawn()
   const drawn = JSON.stringify(tree)
-  expect(shownOf(tree as El)).toContain('Claude TODO 1 active, 1 queued')
+  expect(shownOf(tree as El)).toContain('Agent TODO 1 active, 1 queued')
   expect(shownOf(tree as El)).toContain('◐ Build it')
   expect(drawn).toContain('"width":56')
   await $.tool.call({ tool: TODO_TOOL, entries: [] })
-  expect(JSON.stringify(await ui.drawn())).not.toContain('Claude TODO')
+  expect(JSON.stringify(await ui.drawn())).not.toContain('Agent TODO')
 })
 
 // A drawn tree, as `drawn()` gives it, and the boxes a band lays side by side: the human list's, then the Claude column's.
@@ -880,24 +880,24 @@ test('a band of 52 columns draws the human list 20 wide beside the Claude column
   await $.tool.call({ tool: TOOL, action: 'add', title: 'Ship' })
   await $.tool.call({ tool: TODO_TOOL, entries: [{ title: 'Build it', state: 'in_flight' }] })
   const band = await $.ui.mount({ plugin: 'human-plugin', surface: 'terminal', component: 'AbovePrompt', props: { ...BAND_PROPS, bodyColumns: 52 } })
-  expect(JSON.stringify(await band.drawn())).not.toContain('Claude TODO')
+  expect(JSON.stringify(await band.drawn())).not.toContain('Agent TODO')
   // The press opens the pane. Until its drawing says where it sits, the band has no dock.
   await band.press({ key: 'title-1' })
-  expect(JSON.stringify(await band.drawn())).not.toContain('Claude TODO')
+  expect(JSON.stringify(await band.drawn())).not.toContain('Agent TODO')
   const pane = await $.ui.mount({ plugin: 'human-plugin', surface: 'terminal', component: 'Pane', requestId: 'human-items', props: PANE_PROPS })
   const { human, column } = boxes(await band.drawn())
   expect(human?.props?.width).toBe(20)
   expect(within(human, 'Ship')).toBe(true)
-  expect(within(human, 'Claude TODO')).toBe(false)
+  expect(within(human, 'Agent TODO')).toBe(false)
   expect(column?.props?.width).toBe(32)
-  expect(shownOf(column)).toContain('Claude TODO 1 active, 0 queued')
+  expect(shownOf(column)).toContain('Agent TODO 1 active, 0 queued')
   // The pane seen as a dock stays one while it is open, drawn in another placement or not.
   await pane.redraw({ ...PANE_PROPS, placement: 'inline' })
-  expect(within(boxes(await band.drawn()).column, 'Claude TODO')).toBe(true)
+  expect(within(boxes(await band.drawn()).column, 'Agent TODO')).toBe(true)
   // The engine drops the pane with no close the mod hears, and the band is drawn again at the width that gives.
   shown.clear()
   await band.redraw()
-  expect(JSON.stringify(await band.drawn())).not.toContain('Claude TODO')
+  expect(JSON.stringify(await band.drawn())).not.toContain('Agent TODO')
 })
 
 test('a close another plugin refuses leaves the pane docked: a band drawn alone while the close was in flight draws both lists again, with no other event', async ($, on) => {
@@ -918,10 +918,10 @@ test('a close another plugin refuses leaves the pane docked: a band drawn alone 
   redraw = () => band.redraw()
   await band.press({ key: 'title-1' })
   await $.ui.mount({ plugin: 'human-plugin', surface: 'terminal', component: 'Pane', requestId: 'human-items', props: PANE_PROPS })
-  expect(within(boxes(await band.drawn()).column, 'Claude TODO')).toBe(true)
+  expect(within(boxes(await band.drawn()).column, 'Agent TODO')).toBe(true)
   // A second press, on the item the pane shows, asks to close it.
   await band.press({ key: 'title-1' })
-  expect(within(boxes(await band.drawn()).column, 'Claude TODO')).toBe(true)
+  expect(within(boxes(await band.drawn()).column, 'Agent TODO')).toBe(true)
 })
 
 // The band's rows as the terminal's element table gives them: nodes of `{ type, props, children }`, a Text's children its strings.
@@ -1342,7 +1342,7 @@ const backlogRecord = (on: On) => {
   on('ui.panes', () => ({ value: [...shown].map(id => ({ id, title: id, isShown: true, hasKeyboard: false, isFocused: false, isPlaced: true }) as UiPane) }))
   return { shown, opens, closes }
 }
-const CLAUDE_PANE = { ...PANE_PROPS, title: 'Claude TODO', bodyColumns: 48 }
+const CLAUDE_PANE = { ...PANE_PROPS, title: 'Agent TODO', bodyColumns: 48 }
 // A backlog item's row as the Pane draws it, part by part: whether the part shrinks, and its texts with their colour, wrap and dim. The glyph does not shrink and takes its state's colour; the title gives way, is set
 // to cut at its end and is dim when the item is queued; the ETA tail is dim and does not shrink.
 const partsOf = (row: El): unknown[] => (row.children as El[]).map(part => [part.props?.flexShrink, elementsOf(part, 'Text').map(text => [shownOf(text), text.props?.color, text.props?.wrap, text.props?.dimColor])])
@@ -1352,7 +1352,7 @@ const backlogRow = (state: 'in_flight' | 'queued', title: string, tail: string):
   [0, [[tail, undefined, undefined, true]]],
 ]
 
-test('a press on the band\'s Claude counts and on +N queued each opens the pane on the Claude list, titled Claude TODO, with a row for the header and one for each item, and the keyboard; the Pane drawn through the terminal\'s table is a header line and a row for each item, a glyph, a title set to cut at its end and its dim ETA tail, and no control', async ($, on) => {
+test('a press on the band\'s Claude counts and on +N queued each opens the pane on the Claude list, titled Agent TODO, with a row for the header and one for each item, and the keyboard; the Pane drawn through the terminal\'s table is a header line and a row for each item, a glyph, a title set to cut at its end and its dim ETA tail, and no control', async ($, on) => {
   mock.clock(on)
   mock.store(on)
   const { shown, opens } = backlogRecord(on)
@@ -1362,7 +1362,7 @@ test('a press on the band\'s Claude counts and on +N queued each opens the pane 
   const band = await $.ui.mount({ plugin: 'human-plugin', surface: 'terminal', component: 'AbovePrompt', props: { ...BAND_PROPS, bodyColumns: 120 } })
   for (const key of ['claude-header', 'claude-queued']) {
     await band.press({ key })
-    expect(opens, key).toEqual([{ id: 'human-items', title: 'Claude TODO', rows: 7, focus: true }])
+    expect(opens, key).toEqual([{ id: 'human-items', title: 'Agent TODO', rows: 7, focus: true }])
     // The engine drops the pane with no close the mod hears, and the band is drawn again: the next press opens it afresh.
     shown.clear()
     opens.length = 0
@@ -1372,7 +1372,7 @@ test('a press on the band\'s Claude counts and on +N queued each opens the pane 
   const pane = await $.ui.mount({ plugin: 'human-plugin', surface: 'terminal', component: 'Pane', requestId: 'human-items', props: CLAUDE_PANE })
   const tree = (await pane.drawn()) as El
   const [header, ...rows] = (tree.children ?? []) as El[]
-  expect([shownOf(header), header?.props?.wrap]).toEqual(['Claude TODO 1 in flight, 5 queued', 'truncate-end'])
+  expect([shownOf(header), header?.props?.wrap]).toEqual(['Agent TODO 1 in flight, 5 queued', 'truncate-end'])
   expect(rows.map(partsOf)).toEqual([backlogRow('in_flight', 'Build it', ' · ~10 min'), ...[1, 2, 3, 4, 5].map(k => backlogRow('queued', `Queued ${k}`, ' · no ETA'))])
   expect(elementsOf(tree, 'Button')).toEqual([])
   expect(elementsOf(tree, 'Input')).toEqual([])
@@ -1475,7 +1475,7 @@ test('one pane serves the human item and the Claude list: a press on the Claude 
   await band.press({ key: 'claude-header' })
   await band.press({ key: 'title-2' })
   await band.press({ key: 'claude-header' })
-  expect(opens.map(o => o.title)).toEqual(['Items for you', 'Claude TODO', 'Items for you', 'Claude TODO'])
+  expect(opens.map(o => o.title)).toEqual(['Items for you', 'Agent TODO', 'Items for you', 'Agent TODO'])
   expect(opens.map(o => o.id)).toEqual(['human-items', 'human-items', 'human-items', 'human-items'])
   expect([...shown]).toEqual(['human-items'])
   expect(closes).toEqual([])
@@ -1499,10 +1499,10 @@ test('with the pane on the Claude list, a write that adds items asks again for t
   expect(opens.map(o => o.rows)).toEqual([3])
   await $.tool.call({ tool: TODO_TOOL, entries: [{ title: 'Build it', state: 'in_flight', eta: '~10 min' }, { title: 'Test it', state: 'queued' }, { title: 'Ship it', state: 'queued' }, { title: 'Tell them', state: 'queued' }] })
   expect(opens.map(o => o.rows)).toEqual([3, 5])
-  expect(await lines()).toEqual(['Claude TODO 1 in flight, 3 queued', '◐ Build it · ~10 min', '○ Test it · no ETA', '○ Ship it · no ETA', '○ Tell them · no ETA'])
+  expect(await lines()).toEqual(['Agent TODO 1 in flight, 3 queued', '◐ Build it · ~10 min', '○ Test it · no ETA', '○ Ship it · no ETA', '○ Tell them · no ETA'])
   await $.tool.call({ tool: TODO_TOOL, entries: [{ title: 'Build it', state: 'in_flight', eta: '~10 min' }, { title: 'Test it', state: 'in_flight', eta: 'after tests' }, { title: 'Ship it', state: 'queued' }, { title: 'Tell them', state: 'queued' }] })
   expect(opens).toHaveLength(2)
-  expect(await lines()).toEqual(['Claude TODO 2 in flight, 2 queued', '◐ Build it · ~10 min', '◐ Test it · after tests', '○ Ship it · no ETA', '○ Tell them · no ETA'])
+  expect(await lines()).toEqual(['Agent TODO 2 in flight, 2 queued', '◐ Build it · ~10 min', '◐ Test it · after tests', '○ Ship it · no ETA', '○ Tell them · no ETA'])
   await $.tool.call({ tool: TODO_TOOL, entries: [] })
   expect(closes).toEqual(['human-items'])
   expect([...shown]).toEqual([])

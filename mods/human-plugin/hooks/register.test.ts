@@ -2835,7 +2835,7 @@ test('a write stores the queued and in-flight entries in the order given and non
   const { env, values } = memEnv([], [], null)
   const entries = [entry('Queued first', 'queued'), entry('Finished', 'done'), entry('Running', 'in_flight'), entry('Queued last', 'queued')]
   expect(await runTodo(hooks, env, { entries })).toEqual({
-    result: ['Claude TODO: 1 in flight, 2 queued', '- queued: Queued first (ETA: no ETA)', '- in_flight: Running (ETA: no ETA)', '- queued: Queued last (ETA: no ETA)'].join('\n'),
+    result: ['Agent TODO: 1 in flight, 2 queued', '- queued: Queued first (ETA: no ETA)', '- in_flight: Running (ETA: no ETA)', '- queued: Queued last (ETA: no ETA)'].join('\n'),
   })
   expect(values.todo).toEqual([entry('Queued first', 'queued'), entry('Running', 'in_flight'), entry('Queued last', 'queued')])
 })
@@ -2846,11 +2846,11 @@ test('a call with an empty array empties the list, and one with no array leaves 
   const { env, values } = memEnv([], [], null)
   await runTodo(hooks, env, { entries: [entry('Queued first', 'queued'), entry('Running', 'in_flight')] })
   const before = values.todo
-  expect(await runTodo(hooks, env, {})).toEqual({ result: 'Claude TODO: 1 in flight, 1 queued\n- queued: Queued first (ETA: no ETA)\n- in_flight: Running (ETA: no ETA)' })
+  expect(await runTodo(hooks, env, {})).toEqual({ result: 'Agent TODO: 1 in flight, 1 queued\n- queued: Queued first (ETA: no ETA)\n- in_flight: Running (ETA: no ETA)' })
   expect(values.todo).toEqual(before)
-  expect(await runTodo(hooks, env, { entries: [] })).toEqual({ result: 'Claude TODO: 0 in flight, 0 queued' })
+  expect(await runTodo(hooks, env, { entries: [] })).toEqual({ result: 'Agent TODO: 0 in flight, 0 queued' })
   expect(values.todo).toEqual([])
-  expect(await runTodo(hooks, env, {})).toEqual({ result: 'Claude TODO: 0 in flight, 0 queued' })
+  expect(await runTodo(hooks, env, {})).toEqual({ result: 'Agent TODO: 0 in flight, 0 queued' })
 })
 
 test('a title of 81 units, a title with a line break, an empty title and an unknown state are each refused with a reason, and the list is unchanged', async () => {
@@ -2909,8 +2909,8 @@ test('a call to the Claude list\'s tool is drawn as one line, its result row emp
   const line = (props: object) => callRow($ as never, { props } as never, next(false) as never)
   const dim = (text: string) => ({ type: 'Text', dimColor: true, wrap: 'truncate-end', children: [text] })
   const entries = [entry('Build', 'in_flight'), entry('Ship', 'queued')]
-  expect(await line({ tool: TODO_TOOL, input: { entries }, isRunning: true, isErrored: false })).toEqual(dim('human-plugin: writing the Claude TODO list…'))
-  expect(await line({ tool: TODO_TOOL, input: {}, isRunning: true, isErrored: false })).toEqual(dim('human-plugin: reading the Claude TODO list…'))
+  expect(await line({ tool: TODO_TOOL, input: { entries }, isRunning: true, isErrored: false })).toEqual(dim('human-plugin: writing the Agent TODO list…'))
+  expect(await line({ tool: TODO_TOOL, input: {}, isRunning: true, isErrored: false })).toEqual(dim('human-plugin: reading the Agent TODO list…'))
   expect(await line({ tool: TODO_TOOL, input: { entries }, output: 'Claude TODO: 1 in flight, 1 queued', isRunning: false, isErrored: false })).toEqual(dim('human-plugin: Claude TODO 1 in flight, 1 queued'))
   expect(await line({ tool: TODO_TOOL, input: { entries: [entry('', 'queued')] }, output: 'x', isRunning: false, isErrored: true })).toEqual(dim('human-plugin: entry 1: the title is empty'))
   expect(await line({ tool: TODO_TOOL, input: { entries }, output: 'claude_todo: only the main agent keeps the Claude TODO list', isRunning: false, isErrored: true })).toEqual(dim('human-plugin: claude_todo: only the main agent keeps the Claude TODO list'))
@@ -2932,7 +2932,7 @@ test('a /clear leaves the Claude list empty, and a session end that is not a /cl
   expect(values.todo).toEqual([entry('Build', 'in_flight')])
   await (hooks['session.end'] as Handler)(env as never, { reason: 'clear' } as never, next(false) as never)
   expect(values.todo).toEqual([])
-  expect(await runTodo(hooks, env, {})).toEqual({ result: 'Claude TODO: 0 in flight, 0 queued' })
+  expect(await runTodo(hooks, env, {})).toEqual({ result: 'Agent TODO: 0 in flight, 0 queued' })
 })
 
 test('a /clear whose session.end hook fails part-way still empties the Claude list', async () => {
@@ -2966,9 +2966,9 @@ test('two writes whose first one is slower apply in the order the calls arrived:
   const read = runTodo(hooks, slow, {})
   await settle()
   gate.release()
-  expect(await first).toEqual({ result: 'Claude TODO: 0 in flight, 1 queued\n- queued: First (ETA: no ETA)' })
-  expect(await second).toEqual({ result: 'Claude TODO: 1 in flight, 0 queued\n- in_flight: Second (ETA: no ETA)' })
-  expect(await read).toEqual({ result: 'Claude TODO: 1 in flight, 0 queued\n- in_flight: Second (ETA: no ETA)' })
+  expect(await first).toEqual({ result: 'Agent TODO: 0 in flight, 1 queued\n- queued: First (ETA: no ETA)' })
+  expect(await second).toEqual({ result: 'Agent TODO: 1 in flight, 0 queued\n- in_flight: Second (ETA: no ETA)' })
+  expect(await read).toEqual({ result: 'Agent TODO: 1 in flight, 0 queued\n- in_flight: Second (ETA: no ETA)' })
   expect(values.todo).toEqual([entry('Second', 'in_flight')])
 })
 
@@ -2981,10 +2981,10 @@ test('/claude-todo prints the Claude list the tool keeps: the in-flight items, t
   const { env } = memEnv([], [], null)
   await runTodo(hooks, env, { entries: [entry('Queued first', 'queued'), entry('Running', 'in_flight'), entry('Queued last', 'queued')] })
   expect(await claudeTodo(hooks, env)).toEqual({
-    text: '  Claude TODO: 1 in flight, 2 queued\n  in flight:\n    ◐ Running · no ETA\n  queued:\n    ○ Queued first · no ETA\n    ○ Queued last · no ETA',
+    text: '  Agent TODO: 1 in flight, 2 queued\n  in flight:\n    ◐ Running · no ETA\n  queued:\n    ○ Queued first · no ETA\n    ○ Queued last · no ETA',
   })
   await runTodo(hooks, env, { entries: [] })
-  expect(await claudeTodo(hooks, env)).toEqual({ text: '  The Claude TODO list is empty.' })
+  expect(await claudeTodo(hooks, env)).toEqual({ text: '  The Agent TODO list is empty.' })
 })
 
 test('/claude-todo with an argument prints its usage, reads no list and writes none', async () => {
@@ -3009,7 +3009,7 @@ const REBUILT_STEP = [
     message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'w', content: 'Claude TODO: 1 in flight, 0 queued' }] },
   },
 ]
-const REBUILT_TEXT = '  Claude TODO: 1 in flight, 0 queued\n  in flight:\n    ◐ Rebuilt step · no ETA'
+const REBUILT_TEXT = '  Agent TODO: 1 in flight, 0 queued\n  in flight:\n    ◐ Rebuilt step · no ETA'
 
 test('/claude-todo prints the rebuilt list once a rebuild has finished, and its rebuilding line while the rebuild runs past its wait', async () => {
   freshModule()
@@ -3122,8 +3122,8 @@ const asking = (env: ReturnType<typeof memEnv>['env']) => {
 // A band on `surface`: whether it draws the Claude column beside the human list. The width beside a docked pane is 52 columns and a pane docked at 110
 // columns leaves the band 56, so a band of each width is drawn, and they must agree.
 const columnDrawn = async (hooks: Record<string, Handler>, env: unknown, surface = 'terminal'): Promise<boolean> => {
-  const at52 = flat(await bandAt(hooks, env, 52, {}, surface)).includes('Claude TODO')
-  expect(flat(await bandAt(hooks, env, 56, {}, surface)).includes('Claude TODO'), `a band of 56 columns on ${surface} agrees with one of 52`).toBe(at52)
+  const at52 = flat(await bandAt(hooks, env, 52, {}, surface)).includes('Agent TODO')
+  expect(flat(await bandAt(hooks, env, 56, {}, surface)).includes('Agent TODO'), `a band of 56 columns on ${surface} agrees with one of 52`).toBe(at52)
   return at52
 }
 // The session's end that starts a test. The module keeps the pane's records from one test to the next, and a session's end closes a pane that shows the Claude list, so the last
@@ -3193,7 +3193,7 @@ test('at a band of 52 and one of 56 the mod\'s pane state and its surface\'s doc
   const { $, asked } = asking(env)
   values.todo = [entry('Running', 'in_flight')]
   await freshDock(hooks, $, open, asked)
-  const hasColumn = (tree: Tree): boolean => flat(tree).includes('Claude TODO')
+  const hasColumn = (tree: Tree): boolean => flat(tree).includes('Agent TODO')
   const check = async (expected: boolean, name: string): Promise<void> => {
     for (const columns of [52, 56]) {
       const without = await bandAt(hooks, $, columns)
@@ -3412,7 +3412,7 @@ test('a close another plugin refuses leaves the pane open and docked: the band d
   await settle()
   // The list lacked the pane when the band was drawn in the window, so that draw had no column; the refusal asks for the draw again.
   expect(inFlight).toBeDefined()
-  expect(flat(inFlight)).not.toContain('Claude TODO')
+  expect(flat(inFlight)).not.toContain('Agent TODO')
   expect(open).toEqual(['human-items'])
   expect(asked).toEqual(['ui.render'])
   expect(await columnDrawn(hooks, $)).toBe(true)
@@ -3505,15 +3505,15 @@ test('a list the agent writes through the tool is drawn: the column follows the 
   reset()
   const { hooks } = wire()
   const { env } = memEnv([made(1)], [], null)
-  expect(flat(await bandAt(hooks, env, 120))).not.toContain('Claude TODO')
+  expect(flat(await bandAt(hooks, env, 120))).not.toContain('Agent TODO')
   await runTodo(hooks, env, { entries: [entry('Build', 'in_flight'), entry('Test', 'queued')] })
   const wide = await bandAt(hooks, env, 120)
   // The header is the heading as text, then the counts as a button.
-  expect(flat(wide)).toContain('Claude TODO ')
+  expect(flat(wide)).toContain('Agent TODO ')
   expect(flat(wide)).toContain('1 active, 1 queued')
   expect(textOf(wide)).toContain('◐ Build')
   await runTodo(hooks, env, { entries: [] })
-  expect(flat(await bandAt(hooks, env, 120))).not.toContain('Claude TODO')
+  expect(flat(await bandAt(hooks, env, 120))).not.toContain('Agent TODO')
 })
 
 test('a write that is stored sets the reminder count to zero, and a refused write leaves it', async () => {
@@ -3545,7 +3545,7 @@ test('a reminder count that cannot be reset is logged, and the write is stored a
     },
     ui: { ...env.ui, log: (text: string) => void logs.push(text) },
   }
-  expect(await runTodo(hooks, failing, { entries: [entry('Build', 'in_flight')] })).toEqual({ result: 'Claude TODO: 1 in flight, 0 queued\n- in_flight: Build (ETA: no ETA)' })
+  expect(await runTodo(hooks, failing, { entries: [entry('Build', 'in_flight')] })).toEqual({ result: 'Agent TODO: 1 in flight, 0 queued\n- in_flight: Build (ETA: no ETA)' })
   expect(values.todo).toEqual([entry('Build', 'in_flight')])
   expect(logs.some(line => line.includes('count unwritable'))).toBe(true)
 })
@@ -3712,7 +3712,7 @@ const FLYING_SHAPE = [[0, 'suggestion', undefined, undefined], [1, undefined, 't
 const QUEUED_SHAPE = [[0, 'planMode', undefined, undefined], [1, undefined, 'truncate-end', true], [0, undefined, undefined, true]]
 const ITEM_ONE = '#1 non-blocking, open: Item 1'
 
-test('a press on the Claude counts and on +N queued each opens the pane on the Claude list within the press: one request, titled Claude TODO, with a row for the header and one for each item of the whole list, and the keyboard', async () => {
+test('a press on the Claude counts and on +N queued each opens the pane on the Claude list within the press: one request, titled Agent TODO, with a row for the header and one for each item of the whole list, and the keyboard', async () => {
   for (const key of ['claude-header', 'claude-queued']) {
     reset()
     const { hooks } = wire()
@@ -3720,7 +3720,7 @@ test('a press on the Claude counts and on +N queued each opens the pane on the C
     await endSession(hooks, $)
     pressKey(await bandAt(hooks, $, 120), key)
     // Before anything the press awaits: an open made after an await is not counted as asked.
-    expect(opens, key).toEqual([{ id: 'human-items', title: 'Claude TODO', rows: 7, focus: true }])
+    expect(opens, key).toEqual([{ id: 'human-items', title: 'Agent TODO', rows: 7, focus: true }])
     await settle()
     expect(open, key).toEqual(['human-items'])
     expect(values.selection, key).toBe('claude-todo')
@@ -3733,7 +3733,7 @@ test('the pane on the Claude list draws a header line with the counts in the lon
   const { $ } = backlogEnv([made(1)], [], 'claude-todo', [entry('Queued first', 'queued', 'after tests'), entry('Build', 'in_flight', '~10 min'), entry('Queued second', 'queued')])
   await endSession(hooks, $)
   const tree = await paneTree(hooks, $)
-  expect(linesOf(tree)).toEqual(['Claude TODO 1 in flight, 2 queued', '◐ Build · ~10 min', '○ Queued first · after tests', '○ Queued second · no ETA'])
+  expect(linesOf(tree)).toEqual(['Agent TODO 1 in flight, 2 queued', '◐ Build · ~10 min', '○ Queued first · after tests', '○ Queued second · no ETA'])
   const [header, ...rows] = (tree as Tree).children ?? []
   expect(header?.wrap).toBe('truncate-end')
   expect(rows.map(shapeOf)).toEqual([FLYING_SHAPE, QUEUED_SHAPE, QUEUED_SHAPE])
@@ -3760,7 +3760,7 @@ test('the tool\'s read of a Claude list stored with a split ETA answers the ETA 
   const { hooks } = wire()
   const { env, values } = memEnv([], [], null)
   values.todo = [entry('Build', 'queued', SPLIT_ETA)]
-  expect(await runTodo(hooks, env, {})).toEqual({ result: `Claude TODO: 0 in flight, 1 queued\n- queued: Build (ETA: ${REPAIRED_ETA})` })
+  expect(await runTodo(hooks, env, {})).toEqual({ result: `Agent TODO: 0 in flight, 1 queued\n- queued: Build (ETA: ${REPAIRED_ETA})` })
   expect(values.todo).toEqual([entry('Build', 'queued', SPLIT_ETA)])
 })
 
@@ -3768,7 +3768,7 @@ test('a write that gives a split ETA verbatim stores the ETA repaired and answer
   reset()
   const { hooks } = wire()
   const { env, values } = memEnv([], [], null)
-  expect(await runTodo(hooks, env, { entries: [entry('Build', 'queued', SPLIT_ETA)] })).toEqual({ result: `Claude TODO: 0 in flight, 1 queued\n- queued: Build (ETA: ${REPAIRED_ETA})` })
+  expect(await runTodo(hooks, env, { entries: [entry('Build', 'queued', SPLIT_ETA)] })).toEqual({ result: `Agent TODO: 0 in flight, 1 queued\n- queued: Build (ETA: ${REPAIRED_ETA})` })
   expect(values.todo).toEqual([entry('Build', 'queued', REPAIRED_ETA)])
 })
 
@@ -3777,7 +3777,7 @@ test('/claude-todo over a Claude list stored with a split ETA prints the ETA rep
   const { hooks } = wire()
   const { env, values } = memEnv([], [], null)
   values.todo = [entry('Build', 'queued', SPLIT_ETA)]
-  expect(await claudeTodo(hooks, env)).toEqual({ text: `  Claude TODO: 0 in flight, 1 queued\n  queued:\n    ○ Build · ${REPAIRED_ETA}` })
+  expect(await claudeTodo(hooks, env)).toEqual({ text: `  Agent TODO: 0 in flight, 1 queued\n  queued:\n    ○ Build · ${REPAIRED_ETA}` })
 })
 
 test('the pane on a Claude list stored with a split ETA draws the ETA repaired', async () => {
@@ -3785,7 +3785,7 @@ test('the pane on a Claude list stored with a split ETA draws the ETA repaired',
   const { hooks } = wire()
   const { $ } = backlogEnv([made(1)], [], 'claude-todo', [entry('Build', 'queued', SPLIT_ETA)])
   await endSession(hooks, $)
-  expect(linesOf(await paneTree(hooks, $))).toEqual(['Claude TODO 0 in flight, 1 queued', `○ Build · ${REPAIRED_ETA}`])
+  expect(linesOf(await paneTree(hooks, $))).toEqual(['Agent TODO 0 in flight, 1 queued', `○ Build · ${REPAIRED_ETA}`])
 })
 
 test('a rebuild over a Claude list stored with a split ETA stores that list with the ETA repaired, whatever the transcript gave', async () => {
@@ -3805,23 +3805,23 @@ test('with no human items the band draws the Claude column\'s header, its in-fli
   expect(flat(tree)).toContain('"label":"+2 queued"')
   pressKey(tree, 'claude-header')
   await settle()
-  expect(opens).toEqual([{ id: 'human-items', title: 'Claude TODO', rows: 4, focus: true }])
-  expect(linesOf(await paneTree(hooks, $))).toEqual(['Claude TODO 1 in flight, 2 queued', '◐ Build the pane · no ETA', '○ Later · no ETA', '○ Latest · no ETA'])
+  expect(opens).toEqual([{ id: 'human-items', title: 'Agent TODO', rows: 4, focus: true }])
+  expect(linesOf(await paneTree(hooks, $))).toEqual(['Agent TODO 1 in flight, 2 queued', '◐ Build the pane · no ETA', '○ Later · no ETA', '○ Latest · no ETA'])
   pressKey(await bandAt(hooks, $, 120), 'claude-header')
   await settle()
   expect(closes).toEqual(['human-items'])
   expect(open).toEqual([])
 })
 
-test('a press on +N queued in a column drawn alone opens the pane and a second press closes it, at 120 columns and at 12, where the header has no counts to press', async () => {
-  for (const columns of [120, 12]) {
+test('a press on +N queued in a column drawn alone opens the pane and a second press closes it, at 120 columns and at 11, where the header has no counts to press', async () => {
+  for (const columns of [120, 11]) {
     reset()
     const { hooks } = wire()
     const { $, opens, closes, open } = backlogEnv([], [], null, [entry('Next', 'queued'), entry('Then', 'queued'), entry('Last', 'queued')])
     await endSession(hooks, $)
     pressKey(await bandAt(hooks, $, columns), 'claude-queued')
     // Before anything the press awaits: an open made after an await is not counted as asked.
-    expect(opens, `${columns}`).toEqual([{ id: 'human-items', title: 'Claude TODO', rows: 4, focus: true }])
+    expect(opens, `${columns}`).toEqual([{ id: 'human-items', title: 'Agent TODO', rows: 4, focus: true }])
     await settle()
     expect(open, `${columns}`).toEqual(['human-items'])
     pressKey(await bandAt(hooks, $, columns), 'claude-queued')
@@ -3871,7 +3871,7 @@ test('from a pane on a human item, two presses on the Claude column before the b
   pressKey(tree, 'claude-header')
   pressKey(tree, 'claude-queued')
   await settle()
-  expect(opens.map(o => o.title)).toEqual(['Items for you', 'Claude TODO'])
+  expect(opens.map(o => o.title)).toEqual(['Items for you', 'Agent TODO'])
   expect(closes).toEqual(['human-items'])
   expect(open).toEqual([])
 })
@@ -3887,7 +3887,7 @@ test('with the pane on item 3, a press on the Claude column and then one on item
   pressKey(tree, 'claude-header')
   pressKey(tree, 'title-3')
   await settle()
-  expect(opens.map(o => o.title)).toEqual(['Items for you', 'Claude TODO', 'Items for you'])
+  expect(opens.map(o => o.title)).toEqual(['Items for you', 'Agent TODO', 'Items for you'])
   expect(closes).toEqual([])
   expect(open).toEqual(['human-items'])
   expect(values.selection).toBe(3)
@@ -3922,7 +3922,7 @@ test('the same press from a pane on a human item switches it within the press fr
   const tree = await bandAt(hooks, $, 120)
   await runTodo(hooks, $, { entries: SIX })
   pressKey(tree, 'claude-header')
-  expect(opens.map(o => o.title)).toEqual(['Items for you', 'Claude TODO'])
+  expect(opens.map(o => o.title)).toEqual(['Items for you', 'Agent TODO'])
   expect(opens.map(o => o.rows).slice(1)).toEqual([4])
   await settle()
   expect(opens.map(o => o.rows).slice(1)).toEqual([4, 7])
@@ -3972,9 +3972,9 @@ test('with the pane on a human item a press on the Claude column shows the Claud
     return [opens[opens.length - 1]?.title, values.selection, (await $.ui.panes()).map(pane => pane.id)]
   }
   expect(await press('title-1')).toEqual(['Items for you', 1, ['human-items']])
-  expect(await press('claude-header')).toEqual(['Claude TODO', 'claude-todo', ['human-items']])
+  expect(await press('claude-header')).toEqual(['Agent TODO', 'claude-todo', ['human-items']])
   expect(await press('title-2')).toEqual(['Items for you', 2, ['human-items']])
-  expect(await press('claude-header')).toEqual(['Claude TODO', 'claude-todo', ['human-items']])
+  expect(await press('claude-header')).toEqual(['Agent TODO', 'claude-todo', ['human-items']])
   // The band given four rows folds the items from the third on, and its summary row opens the first of them.
   expect(await press('band-more', { maxRows: 4 })).toEqual(['Items for you', 3, ['human-items']])
   expect(closes).toEqual([])
@@ -3984,7 +3984,7 @@ test('a stored selection that is an item number opens on that item, claude-todo 
   const cases: [unknown, string][] = [
     [2, '#2 non-blocking, open: Item 2'],
     [null, ITEM_ONE],
-    ['claude-todo', 'Claude TODO 1 in flight, 0 queued'],
+    ['claude-todo', 'Agent TODO 1 in flight, 0 queued'],
     ['claude-list', ITEM_ONE],
     ['2', ITEM_ONE],
     [true, ITEM_ONE],
@@ -4016,7 +4016,7 @@ test('a stored selection that is no item number and not claude-todo counts as no
 })
 
 test('with no selection stored the first human item counts as the shown one: with the pane open on it a press on its title closes the pane, and one on the Claude column switches it to the backlog', async () => {
-  for (const [key, title] of [['title-1', undefined], ['claude-header', 'Claude TODO']] as const) {
+  for (const [key, title] of [['title-1', undefined], ['claude-header', 'Agent TODO']] as const) {
     reset()
     const { hooks } = wire()
     const open = ['human-items']
@@ -4047,7 +4047,7 @@ test('after a reload with the backlog open and no press made since, a press on t
 })
 
 test('after a reload with the pane on item 2, a press on the Claude column switches it to the backlog and a press on item 2\'s title closes it', async () => {
-  for (const [key, title] of [['claude-header', 'Claude TODO'], ['title-2', undefined]] as const) {
+  for (const [key, title] of [['claude-header', 'Agent TODO'], ['title-2', undefined]] as const) {
     reset()
     const { hooks } = wire()
     const open = ['human-items']
@@ -4069,7 +4069,7 @@ test('with the pane on the Claude list no band row of the human list is the show
   await settle()
   pressKey(await bandAt(hooks, $, 120), 'title-1')
   await settle()
-  expect(opens.map(o => o.title)).toEqual(['Claude TODO', 'Items for you'])
+  expect(opens.map(o => o.title)).toEqual(['Agent TODO', 'Items for you'])
   expect(closes).toEqual([])
   expect(values.selection).toBe(1)
 })
@@ -4109,10 +4109,10 @@ test('a write that adds two items to the Claude list redraws the pane on it with
   expect(opens.map(o => o.rows)).toEqual([3])
   await runTodo(hooks, $, { entries: [RUNNING, entry('Next', 'queued'), entry('Then', 'queued'), entry('Last', 'queued')] })
   expect(opens).toEqual([
-    { id: 'human-items', title: 'Claude TODO', rows: 3, focus: true },
-    { id: 'human-items', title: 'Claude TODO', rows: 5, focus: true },
+    { id: 'human-items', title: 'Agent TODO', rows: 3, focus: true },
+    { id: 'human-items', title: 'Agent TODO', rows: 5, focus: true },
   ])
-  expect(linesOf(await paneTree(hooks, $))).toEqual(['Claude TODO 1 in flight, 3 queued', '◐ Build the pane · no ETA', '○ Next · no ETA', '○ Then · no ETA', '○ Last · no ETA'])
+  expect(linesOf(await paneTree(hooks, $))).toEqual(['Agent TODO 1 in flight, 3 queued', '◐ Build the pane · no ETA', '○ Next · no ETA', '○ Then · no ETA', '○ Last · no ETA'])
 })
 
 test('a write that changes an item\'s state and keeps the number of items makes no new open request, and the pane draws the new state', async () => {
@@ -4127,7 +4127,7 @@ test('a write that changes an item\'s state and keeps the number of items makes 
   await settle()
   expect(opens).toHaveLength(1)
   expect(closes).toEqual([])
-  expect(linesOf(await paneTree(hooks, $))).toEqual(['Claude TODO 2 in flight, 1 queued', '◐ Build the pane · no ETA', '◐ Renamed · ~5 min', '○ Then · no ETA'])
+  expect(linesOf(await paneTree(hooks, $))).toEqual(['Agent TODO 2 in flight, 1 queued', '◐ Build the pane · no ETA', '◐ Renamed · ~5 min', '○ Then · no ETA'])
 })
 
 test('after an open the pane refuses, the next write with the count that open asked for asks again, and the failure is logged; once an open is taken, a write that keeps the count asks for nothing', async () => {
@@ -4262,7 +4262,7 @@ test('with the pane on the Claude list, removing a human item, emptying the huma
   expect(closes).toEqual([])
   expect(open).toEqual(['human-items'])
   expect(values.selection).toBe('claude-todo')
-  expect(linesOf(await paneTree(hooks, $))[0]).toBe('Claude TODO 1 in flight, 5 queued')
+  expect(linesOf(await paneTree(hooks, $))[0]).toBe('Agent TODO 1 in flight, 5 queued')
 })
 
 test('with the pane on the Claude list, a tool call that changes no item, a read of the Claude list and a write that restates it leave the pane on the Claude list', async () => {
@@ -4382,15 +4382,15 @@ test('with the pane docked at a band of 52, switching it from a human item to th
   const before = opens.length
   pressKey(await bandAt(hooks, $, 52), 'claude-header')
   await settle()
-  expect(opens.slice(before).map(o => o.title)).toEqual(['Claude TODO'])
+  expect(opens.slice(before).map(o => o.title)).toEqual(['Agent TODO'])
   expect(await columnDrawn(hooks, $)).toBe(true)
   pressKey(await bandAt(hooks, $, 52), 'title-2')
   await settle()
-  expect(opens.slice(before).map(o => o.title)).toEqual(['Claude TODO', 'Items for you'])
+  expect(opens.slice(before).map(o => o.title)).toEqual(['Agent TODO', 'Items for you'])
   expect(await columnDrawn(hooks, $)).toBe(true)
   pressKey(await bandAt(hooks, $, 56), 'claude-header')
   await settle()
-  expect(opens.slice(before).map(o => o.title)).toEqual(['Claude TODO', 'Items for you', 'Claude TODO'])
+  expect(opens.slice(before).map(o => o.title)).toEqual(['Agent TODO', 'Items for you', 'Agent TODO'])
   expect(await columnDrawn(hooks, $)).toBe(true)
   expect(asked).toEqual([])
 })

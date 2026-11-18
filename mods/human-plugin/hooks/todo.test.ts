@@ -125,9 +125,9 @@ test('the counts read N in flight, M queued, with both numbers always', () => {
 
 test('a write and a read answer the counting line, then each entry in written order as its state, title and ETA; an empty list answers the counting line alone', () => {
   expect(todoReply(LIST)).toBe(
-    ['Claude TODO: 1 in flight, 2 queued', '- queued: Write tests (ETA: after tests)', '- in_flight: Build (ETA: ~10 min)', '- queued: Ship (ETA: no ETA)'].join('\n'),
+    ['Agent TODO: 1 in flight, 2 queued', '- queued: Write tests (ETA: after tests)', '- in_flight: Build (ETA: ~10 min)', '- queued: Ship (ETA: no ETA)'].join('\n'),
   )
-  expect(todoReply([])).toBe('Claude TODO: 0 in flight, 0 queued')
+  expect(todoReply([])).toBe('Agent TODO: 0 in flight, 0 queued')
 })
 
 test('the ETA is stored as written, trimmed', () => {
@@ -219,15 +219,20 @@ test('an entry\'s ETA tail, what follows its title where a person reads the list
 const call = (input: unknown, output: unknown, isRunning = false, isErrored = false) => todoLine({ input, output, isRunning, isErrored })
 
 test('the transcript line says the list is being written while a write runs, and being read while a read runs', () => {
-  expect(call({ entries: [{ title: 'Build', state: 'queued' }] }, undefined, true)).toBe('human-plugin: writing the Claude TODO list…')
-  expect(call({}, undefined, true)).toBe('human-plugin: reading the Claude TODO list…')
-  expect(call({ entries: [] }, undefined, true)).toBe('human-plugin: writing the Claude TODO list…')
+  expect(call({ entries: [{ title: 'Build', state: 'queued' }] }, undefined, true)).toBe('human-plugin: writing the Agent TODO list…')
+  expect(call({}, undefined, true)).toBe('human-plugin: reading the Agent TODO list…')
+  expect(call({ entries: [] }, undefined, true)).toBe('human-plugin: writing the Agent TODO list…')
 })
 
 test('the transcript line gives the counts once a call succeeds, for a write and for a read alike', () => {
+  expect(call({ entries: LIST }, todoReply(LIST))).toBe('human-plugin: Agent TODO 1 in flight, 2 queued')
+  expect(call({}, todoReply(LIST))).toBe('human-plugin: Agent TODO 1 in flight, 2 queued')
+  expect(call({ entries: [] }, todoReply([]))).toBe('human-plugin: Agent TODO 0 in flight, 0 queued')
+})
+
+test('the transcript line reads back the heading an answer was written under, with its counts: an answer headed Claude TODO: gives Claude TODO and its counts', () => {
   expect(call({ entries: LIST }, 'Claude TODO: 1 in flight, 2 queued')).toBe('human-plugin: Claude TODO 1 in flight, 2 queued')
-  expect(call({}, todoReply(LIST))).toBe('human-plugin: Claude TODO 1 in flight, 2 queued')
-  expect(call({ entries: [] }, 'Claude TODO: 0 in flight, 0 queued')).toBe('human-plugin: Claude TODO 0 in flight, 0 queued')
+  expect(call({ entries: [] }, 'Claude TODO: 1 in flight, 0 queued')).toBe('human-plugin: Claude TODO 1 in flight, 0 queued')
 })
 
 test('the transcript line gives the check\'s reason for an input the check refuses, and the reply of an errored or refused call, or failed when it has none', () => {
@@ -244,12 +249,12 @@ test('the transcript line is one line, whatever the title or the reply holds', (
 
 test('each state has one glyph: a half-filled circle in flight, an empty one queued, and done has none', () => {
   expect(GLYPH).toEqual({ in_flight: '◐', queued: '○' })
-  expect(HEADING).toBe('Claude TODO')
+  expect(HEADING).toBe('Agent TODO')
 })
 
 test('the band\'s short counts word the same counts as the long form: active for in flight', () => {
   expect(bandCountsText(LIST)).toBe('1 active, 2 queued')
   expect(bandCountsText([])).toBe('0 active, 0 queued')
   expect(bandCountsText([{ title: 'a', state: 'in_flight', eta: NO_ETA }, { title: 'b', state: 'in_flight', eta: NO_ETA }])).toBe('2 active, 0 queued')
-  expect(`${HEADING} ${bandCountsText(LIST)}`).toBe('Claude TODO 1 active, 2 queued')
+  expect(`${HEADING} ${bandCountsText(LIST)}`).toBe('Agent TODO 1 active, 2 queued')
 })
