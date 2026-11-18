@@ -125,6 +125,9 @@ export const learn = (c: Conversation, brief: string, agentId: string, model: st
   }
 }
 
+// The choice the spawn in flight for `brief` was made for, matched as `learn` matches it: undefined where no entry holds the brief, or where the entry predates the choice.
+export const spawnChoice = (c: Conversation, brief: string): string | undefined => matchSpawn(c.spawnsInFlight, brief)?.choice
+
 // Learns a team name an agent list gave to one of this conversation's reviewers.
 export const learnName = (c: Conversation, name: string): Conversation => (c.reviewerNames.includes(name) ? c : { ...c, reviewerNames: [...c.reviewerNames, name] })
 

@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'claude-code/testing'
 import type { AgentInfo } from 'claude-code'
 import type { Conversation } from '../types/index'
-import { adopt, compactionModel, idleTimerOf, isEndNotice, isHandBack, isNotice, isReviewerEntry, keeps, land, lapseOf, learn, learnName, letGo, letGoSwitched, letGoSwitchedIdle, markers, nameKnown, nameListed, originOf, reapIdle, reviewModels, reviewerNameOf, spawnName, spawning, standingOf, stopMissed, sweepable, withTurnEnd } from './reviewer'
+import { adopt, compactionModel, idleTimerOf, isEndNotice, isHandBack, isNotice, isReviewerEntry, keeps, land, lapseOf, learn, learnName, letGo, letGoSwitched, letGoSwitchedIdle, markers, nameKnown, nameListed, originOf, reapIdle, reviewModels, reviewerNameOf, spawnChoice, spawnName, spawning, standingOf, stopMissed, sweepable, withTurnEnd } from './reviewer'
 import type { Identity } from './reviewer'
 
 const ID: Identity = { plugin: 'auditor', name: 'auditor-reviewer', description: 'auditor review' }
@@ -358,6 +358,15 @@ describe('the choice a reviewer is spawned for', () => {
   test('a landing whose entry is gone keeps the choice of the reviewer already stored under its id', () => {
     const c = conversation({ review: undefined, reviewer: { id: 'ag1', model: '', choice: 'opus' }, reviewerIds: ['ag1'] })
     expect(land(c, 'b', 4, 2, { agentId: 'ag1', model: 'claude-opus-5-5' }).next.reviewer).toEqual({ id: 'ag1', model: 'claude-opus-5-5', choice: 'opus' })
+  })
+
+  test('the choice of the spawn in flight for a brief is found by the brief alone, and is none for an unknown brief or an entry that predates choices', () => {
+    const c = conversation({ spawnsInFlight: [entry({ brief: 'a', choice: 'opus' }), entry({ brief: 'b', choice: 'claude-opus-4-6' }), spawn({ brief: 'c' })] })
+    expect(spawnChoice(c, 'b')).toBe('claude-opus-4-6')
+    expect(spawnChoice(c, 'a')).toBe('opus')
+    expect(spawnChoice(c, 'c')).toBeUndefined()
+    expect(spawnChoice(c, 'unknown')).toBeUndefined()
+    expect(spawnChoice(conversation(), 'a')).toBeUndefined()
   })
 
   test('adoption takes the choice of the current epoch\'s newest spawn in flight, else the conversation\'s', () => {

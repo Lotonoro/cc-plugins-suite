@@ -2,6 +2,7 @@ import type { AgentInfo, AgentSpawnResult, CoreEngineInterface, ProcessRunResult
 import { update } from 'claude-code'
 import type { BriefTo, Conversation, FailCause, OpenReview, PendingNote, ReviewUsage, TurnEnd, TurnRecord, TurnStart, Wake } from '../types/index'
 import { PLUGIN, recordFailed, within } from './boundary'
+import { readChoices } from './catalog'
 import { MEMORY, MEMORY_ACTION, MEMORY_FIELD, MEMORY_LOG_CHARS, REVIEW_ENDED, WHY_CHARS, bounded, changeMemory, printMemory, renderMemory, withNote } from './memory'
 import type { MemoryChange } from './memory'
 import { answerOf, buttonOf } from './button'
@@ -12,7 +13,7 @@ import { REVIEWER_PROMPT } from './prompt'
 import { clip, editedLines, entryBlock, pageOf, renumberBlock, toolLine } from './record'
 import { DEFAULT_MODEL, FALLBACK_CHOICES, isFullId, takeChoice } from './models'
 import type { Choices } from './models'
-import { adopt, compactionModel, idleTimerOf, isEndNotice, isHandBack, isNotice, isReviewerEntry, land, lapseOf, learn, learnName, letGo, markers, nameKnown, nameListed, originOf, reapIdle, reviewModels, reviewerNameOf, spawnName, spawning, standingOf, stopMissed, sweepable, WORKING, withTurnEnd } from './reviewer'
+import { adopt, compactionModel, idleTimerOf, isEndNotice, isHandBack, isNotice, isReviewerEntry, land, lapseOf, learn, learnName, letGo, markers, nameKnown, nameListed, originOf, reapIdle, reviewModels, reviewerNameOf, spawnChoice, spawnName, spawning, standingOf, stopMissed, sweepable, WORKING, withTurnEnd } from './reviewer'
 import type { Identity, IdleTimer, Release, ReviewModels } from './reviewer'
 import { readLastModel, readModelIds, storeModelId } from './store'
 import { purged, withCompaction, withNoteGiven, withResponse, withReviewDone } from './tally'
@@ -62,7 +63,7 @@ const EMPTY_RECORD: TurnRecord = { blocks: [] }
 // How long a reviewer stop with its check, or an idle sweep, may run before it is given up (`withinTime`): both are started and left to run, and an engine call of theirs that never answered would otherwise hold their guard (`stopsRunning`, `sweeping`) until a reload.
 const BACKGROUND_TIMEOUT_MS = 90_000
 
-type Scope = Pick<CoreEngineInterface, 'state' | 'ui' | 'clock' | 'fs' | 'env' | 'session' | 'prompt' | 'agent' | 'process' | 'tool' | 'store'>
+type Scope = Pick<CoreEngineInterface, 'state' | 'ui' | 'clock' | 'fs' | 'env' | 'session' | 'prompt' | 'agent' | 'process' | 'tool' | 'store' | 'settings'>
 // A complete review's `note`: the body the gate let through for it, or null for a quiet review.
 type Ending = { status: 'complete'; note: string | null } | { status: 'incomplete'; reason: string }
 // Held notes taken for an attach, and the `epoch` at the take.
@@ -784,6 +785,21 @@ const recordSpawnedId = async ($: Pick<Scope, 'state' | 'ui' | 'agent'>, brief: 
   $.ui.log(`${PLUGIN}: reviewer id ${id} (${name}) from its spawn result`, { to: 'debug' })
 }
 
+// A reviewer spawn of the plugin's own that carries a full id as its choice: the spawn call takes only an alias as its `model`, so the call passes none and this sets it, from the choice the spawn's in-flight entry was made for, matched by brief. An alias choice rode the call itself and is left alone. Where the choice cannot be found, or the state cannot be read, the spawn goes on as it is, on the definition's default, and the review's log names that model.
+export const withChoice = async <E extends { prompt: string; model?: string }>($: Pick<Scope, 'state' | 'ui'>, e: E): Promise<E> => {
+  try {
+    const choice = spawnChoice(await readConversation($), e.prompt)
+    if (choice === undefined) {
+      recordFailed($, 'reviewer model choice', new Error('no spawn in flight holds this spawn\'s brief with a choice, so it keeps the definition\'s model'))
+      return e
+    }
+    return isFullId(choice) ? { ...e, model: choice } : e
+  } catch (err) {
+    recordFailed($, 'reviewer model choice', err)
+    return e
+  }
+}
+
 // The agent list, or undefined when it rejects: each caller says what a lost list means.
 const listAgents = ($: Pick<Scope, 'agent' | 'ui'>): Promise<AgentInfo[] | undefined> =>
   $.agent.list().catch((err: unknown) => {
@@ -858,7 +874,10 @@ const sendToReviewer = async ($: Scope, to: string, text: string, epoch: number,
 
 // What the take of a conversation's choice rests on: the last model set, and the choices it may take. Read before the change that takes it, since a change's callback is synchronous.
 type TakeInputs = { last: string | undefined; choices: Choices }
-const takeInputs = async ($: Scope): Promise<TakeInputs> => ({ last: await readLastModel($), choices: FALLBACK_CHOICES })
+const takeInputs = async ($: Scope): Promise<TakeInputs> => {
+  const [last, choices] = await Promise.all([readLastModel($), readChoices($)])
+  return { last, choices }
+}
 
 // Delivers the plan's brief to a reviewer, stored or spawned. Resolves true when the engine refused the brief in its stopped-session state, by either transport, so the caller gives the review back (`giveBack`); the stored reviewer is kept then, and no spawn is made after its refusal.
 const deliverBrief = async ($: Scope, plan: Plan): Promise<boolean> => {
@@ -1138,12 +1157,12 @@ export const register: Register = (on, options) => {
     return next(e)
   })
 
-  // A reviewer's spawn result reaches its hook, not the plugin's caller, so the id is taken here.
+  // A reviewer's spawn result reaches its hook, not the plugin's caller, so the id is taken here, and a full-id choice is set here (`withChoice`), since the call refuses one. Who spawned it decides, not its type or name: a worker may spawn its own agent of the reviewer's type, under the reviewer's name, and it keeps its default.
   on('agent.spawn', async ($, e, next) => {
-    const started = await next(e)
+    const own = originOf(PLUGIN, { from: 'hook', origin: next.origin }) === 'own'
+    const started = await next(own ? await withChoice($, e) : e)
     try {
-      // Who spawned it, not its type or name: a worker may spawn its own agent of the reviewer's type, under the reviewer's name.
-      if (originOf(PLUGIN, { from: 'hook', origin: next.origin }) === 'own') {
+      if (own) {
         await recordSpawnedId($, e.prompt, started)
       } else if (started.deny === undefined && started.agentId !== undefined) {
         const label = { type: subagentTypeOf(e), name: e.name ?? '' }

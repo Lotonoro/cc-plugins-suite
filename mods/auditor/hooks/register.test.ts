@@ -5,6 +5,7 @@ import { followUpText } from './notes'
 import { learn } from './reviewer'
 import type { MemoryEntry } from '../types/index'
 import { REVIEWER_PROMPT } from './prompt'
+import { catalogFile, fakeEngine } from './fakes'
 import * as register from './register'
 
 const ON = { options: { log: true } }
@@ -27,6 +28,8 @@ const NO_REVIEW = 'auditor has no review in progress for this reviewer, so there
 const LOG_1 = `${DIR}/0001.json`
 const LOG_2 = `${DIR}/0002.json`
 const TEN_MINUTES = 10 * 60 * 1000
+// Where the engine keeps its model catalog, under the test's home.
+const CATALOG_DIR = '/home/test/.claude/cache/model-catalog'
 
 type Env = Record<string, string>
 type SpawnHold = { until: Promise<void>; reached?: () => void; result?: unknown }
@@ -73,6 +76,8 @@ type Opts = {
   firstConversationReadFails?: boolean
   // The conversation a state written before this build holds, until the plugin first writes one.
   stateSeed?: unknown
+  // The first conversation read made while a reviewer spawn is in flight answers as if the spawn's entry were gone: the read the spawn hook makes for the choice, staged where no real run can take the entry away.
+  spawnEntryGone?: boolean
   // The first conversation read made while `when` holds for the conversation last written calls reached, then waits for `until` before it reads.
   getHold?: { when: (c: any) => boolean; until: Promise<void>; reached?: () => void }
   // The first conversation write made while `when` holds calls `reached`, then waits for `until` before it lands: a write made meanwhile moves the state's version, so the held one misses and its change runs again.
@@ -122,6 +127,10 @@ type Opts = {
   storeHangs?: boolean
   // A call the plugin bounds at one second has passed its bound as soon as its timer is set: one that has not answered by then is late.
   boundsPass?: boolean
+  // What the engine's model catalog directory holds, by file name: one file with the catalog `catalogFile` gives when not given, or `'none'` for a directory that is missing.
+  catalog?: Record<string, string> | 'none'
+  // What the availableModels setting holds: nothing when not given. The setting is read only here, never from the user's own.
+  available?: unknown
 }
 
 // The hold that covers the reviewer spawn numbered `n` (1-based), when one does.
@@ -164,6 +173,8 @@ const engine = (on: any, opts: Opts = {}) => {
     storeReads: [] as string[],
     storeWrites: [] as { key: string; value: unknown }[],
     storeHold: gate(),
+    // The directories the plugin listed to find the model catalog.
+    catalogLists: [] as string[],
   }
   current.seen = seen
   current.seed = opts.stateSeed
@@ -229,7 +240,19 @@ const engine = (on: any, opts: Opts = {}) => {
     opts.listHold.reached?.()
     return opts.listHold.until.then(() => answer)
   })
+  // The model catalog the engine caches, and the setting that filters it: both answer from the test, so no read reaches the user's own files. A read of the catalog is recorded apart from the plugin's own file reads.
+  const catalog = opts.catalog === 'none' ? undefined : (opts.catalog ?? { 'a-cc.json': catalogFile() })
+  on('fs.list', (_$: any, e: any) => {
+    seen.catalogLists.push(e.path)
+    if (catalog === undefined || e.path !== CATALOG_DIR) return { deny: 'no such directory' }
+    return { value: Object.entries(catalog).map(([name, text]) => ({ name, kind: 'file', size: text.length, mtimeMs: 1, isLink: false })) }
+  })
+  on('settings.read', () => ({ value: opts.available === undefined ? {} : { availableModels: opts.available } }))
   on('fs.read', (_$: any, e: any) => {
+    if (e.path.startsWith(`${CATALOG_DIR}/`)) {
+      const text = catalog?.[e.path.slice(CATALOG_DIR.length + 1)]
+      return text === undefined ? { deny: 'no such file' } : { value: text }
+    }
     seen.reads.push(e.path)
     return e.path in files ? { value: files[e.path] } : { deny: 'no such file' }
   })
@@ -267,6 +290,7 @@ const engine = (on: any, opts: Opts = {}) => {
     return answer.deny === undefined ? { ref: 1, result: null, text: answer.text, isError: answer.isError || opts.failsCall?.(e) === true } : { deny: answer.deny }
   })
   let getHeld = false
+  let entryTaken = false
   let conversationReads = 0
   on('state.get', async (_$: any, e: any, next: any) => {
     if (e.key === 'conversation' && opts.firstConversationReadFails === true && ++conversationReads === 1) return { deny: 'state unavailable' }
@@ -275,6 +299,11 @@ const engine = (on: any, opts: Opts = {}) => {
       const learns = learnedOnThrow.pending
       learnedOnThrow.pending = undefined
       return { ...answer, value: { ...answer.value, value: learns(answer.value.value) } }
+    }
+    if (e.key === 'conversation' && opts.spawnEntryGone === true && !entryTaken && (seen.conversation?.spawnsInFlight?.length ?? 0) > 0) {
+      entryTaken = true
+      const answer = await next(e)
+      return { ...answer, value: { ...answer.value, value: { ...answer.value.value, spawnsInFlight: [] } } }
     }
     if (e.key === 'conversation' && opts.getHold !== undefined && !getHeld && opts.getHold.when(seen.conversation)) {
       getHeld = true
@@ -8851,6 +8880,132 @@ describe('the reviewer model each conversation chooses', () => {
       expect(seen.conversation.choice).toBe('haiku')
       expect(debugLines(seen, 'store read of the last model set failed: Error: no answer within 1000 ms').length).toBe(1)
       seen.storeHold.open()
+    })
+  })
+
+  describe('the choices the engine\'s catalog offers', () => {
+    const OPUS = 'claude-opus-4-6'
+
+    test('a full id the catalog lists, stored as the last model set, is taken: the spawn reaches the engine with it as its model, and the review log reads it', ON, async ($, on) => {
+      const seen = engine(on, { store: { lastModel: OPUS }, spawnModels: [OPUS] })
+      await turn($)
+      expect(spawnedModels(seen)).toEqual([OPUS])
+      expect(seen.conversation.choice).toBe(OPUS)
+      expect(seen.catalogLists).toEqual([CATALOG_DIR])
+      await reviewed($, HANDBACK('Nothing to note.'), 'ag1')
+      await mainTurnEnd($)
+      expect(logOf(seen, LOG_1)).toMatchObject({ model_configured: OPUS, model_resolved: OPUS })
+      expect(seen.storeWrites).toEqual([])
+    })
+
+    test('with sonnet chosen the spawn reaches the engine with sonnet, as the call made it', ON, async ($, on) => {
+      const seen = engine(on, { store: { lastModel: 'sonnet' } })
+      await turn($)
+      expect(spawnedModels(seen)).toEqual(['sonnet'])
+    })
+
+    test('a worker\'s own spawn of the reviewer\'s type passes through the hook unchanged, while a full-id choice is held and the plugin\'s own spawn for it is in flight under the same brief', ON, async ($, on) => {
+      const held = heldSpawn()
+      const seen = engine(on, { store: { lastModel: OPUS }, spawnHold: { ...held.hold, to: 1 }, reviewerIds: ['wk1', 'ag1'] })
+      await $.prompt.submit(COMPOSER('fix the parser'))
+      const stopping = $.classic.Stop(stop)
+      await held.reached
+      await $.agent.spawn({ subagentType: 'auditor:reviewer', name: 'auditor-reviewer', description: 'd', prompt: seen.conversation.spawnsInFlight[0].brief } as any)
+      expect(spawnedModels(seen)).toEqual([OPUS, undefined])
+      held.land()
+      await stopping
+      await drained()
+    })
+
+    test('when the hook finds no spawn in flight for its own spawn, the spawn goes on with no model, and the failure is recorded', ON, async ($, on) => {
+      const seen = engine(on, { store: { lastModel: OPUS }, spawnEntryGone: true })
+      await turn($)
+      expect(spawnedModels(seen)).toEqual([undefined])
+      expect(debugLines(seen, 'reviewer model choice failed').length).toBe(1)
+    })
+
+    describe('the model the hook sets', () => {
+      const inFlight = (choice?: string) => ({ value: { spawnsInFlight: [{ brief: 'B', epoch: 1, number: 1, startedAt: 1, ...(choice === undefined ? {} : { choice }) }] } })
+      const call = { prompt: 'B', description: 'd' }
+
+      test('a full id held for the spawn is set as its model', async () => {
+        const { $, logs } = fakeEngine({ state: { get: async () => inFlight(OPUS) } })
+        expect(await register.withChoice($, call)).toEqual({ ...call, model: OPUS })
+        expect(logs).toEqual([])
+      })
+
+      test('an alias held for the spawn leaves the spawn as the call made it', async () => {
+        const { $, logs } = fakeEngine({ state: { get: async () => inFlight('sonnet') } })
+        expect(await register.withChoice($, call)).toBe(call)
+        expect(logs).toEqual([])
+      })
+
+      test('a brief no spawn in flight holds, and an entry with no choice, leave the spawn as it was, recorded', async () => {
+        for (const read of [inFlight(), { value: { spawnsInFlight: [] } }]) {
+          const { $, logs } = fakeEngine({ state: { get: async () => read } })
+          expect(await register.withChoice($, call)).toBe(call)
+          expect(logs).toHaveLength(1)
+          expect(logs[0]).toContain('reviewer model choice failed')
+        }
+      })
+
+      test('a conversation that cannot be read leaves the spawn as it was, recorded', async () => {
+        const { $, logs } = fakeEngine({ state: { get: () => Promise.reject(new Error('state unavailable')) } })
+        expect(await register.withChoice($, call)).toBe(call)
+        expect(logs).toHaveLength(1)
+        expect(logs[0]).toContain('reviewer model choice failed')
+        expect(logs[0]).toContain('state unavailable')
+      })
+    })
+
+    test('a stored last model set that the current catalog no longer lists is not taken, and the conversation takes haiku', ON, async ($, on) => {
+      const seen = engine(on, { store: { lastModel: OPUS }, catalog: { 'a-cc.json': catalogFile({ modelIds: ['claude-sonnet-5-5'] }) } })
+      await turn($)
+      expect(spawnedModels(seen)).toEqual(['haiku'])
+      expect(seen.conversation.choice).toBe('haiku')
+    })
+
+    test('with no catalog the choices are the four aliases: a catalog id stored as the last model set is not taken, and the missing catalog is recorded', ON, async ($, on) => {
+      const seen = engine(on, { store: { lastModel: OPUS }, catalog: 'none' })
+      await turn($)
+      expect(spawnedModels(seen)).toEqual(['haiku'])
+      expect(debugLines(seen, 'model catalog listing failed').length).toBe(1)
+    })
+
+    test('availableModels filters what a take may make: it moves the default off haiku, and removes a stored last model set', ON, async ($, on) => {
+      const filtered = engine(on, { available: ['opus', OPUS] })
+      await turn($)
+      expect(filtered.conversation.choice).toBe('opus')
+      expect(spawnedModels(filtered)).toEqual(['opus'])
+    })
+
+    test('a stored last model set the filter removes is not taken', ON, async ($, on) => {
+      const seen = engine(on, { store: { lastModel: 'sonnet' }, available: ['opus'] })
+      await turn($)
+      expect(seen.conversation.choice).toBe('opus')
+    })
+
+    test('an availableModels that leaves no choice is ignored, and recorded', ON, async ($, on) => {
+      const seen = engine(on, { store: { lastModel: 'sonnet' }, available: ['nosuch'] })
+      await turn($)
+      expect(seen.conversation.choice).toBe('sonnet')
+      expect(debugLines(seen, 'availableModels filter failed').length).toBe(1)
+    })
+
+    test('an availableModels that is not a list of names counts as unset, and is recorded', ON, async ($, on) => {
+      const seen = engine(on, { store: { lastModel: 'sonnet' }, available: 'opus' })
+      await turn($)
+      expect(seen.conversation.choice).toBe('sonnet')
+      expect(debugLines(seen, 'availableModels read failed').length).toBe(1)
+    })
+
+    test('the catalog is read at the take alone: a conversation that holds its choice lists it no more', ON, async ($, on) => {
+      const seen = engine(on, { reviewerIds: ['ag1', 'ag2'] })
+      await turn($)
+      await turnFailed($, 'ag1')
+      await turn($, 'again')
+      expect(spawnedModels(seen)).toEqual(['haiku', 'haiku'])
+      expect(seen.catalogLists).toEqual([CATALOG_DIR])
     })
   })
 

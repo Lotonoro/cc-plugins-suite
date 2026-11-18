@@ -1,12 +1,8 @@
 import { describe, expect, test } from 'claude-code/testing'
 import { BOUND_MS } from './boundary'
 import { readAvailable, readCatalog, readChoices } from './catalog'
-import { fakeEngine, never, settled } from './fakes'
+import { CATALOG_IDS, catalogFile, fakeEngine, never, settled } from './fakes'
 import type { FakeTimer } from './fakes'
-
-// The ids the engine's model catalog held when it was read (13, in the picker's order), and the file around them: the alias targets are present and never read.
-const PROBE_IDS = ['claude-opus-5-5', 'claude-fable-5-2', 'claude-sonnet-5-5', 'claude-haiku-5-5', 'claude-fable-5-1', 'claude-haiku-4-5-20251001', 'claude-sonnet-5', 'claude-opus-5', 'claude-fable-5', 'claude-opus-4-8', 'claude-opus-4-7', 'claude-opus-4-6', 'claude-sonnet-4-6']
-const catalogFile = (over: Record<string, unknown> = {}): string => JSON.stringify({ aliasTargets: { fable: { default: 'claude-fable-5-2' }, haiku: { default: 'claude-haiku-5-5' } }, modelIds: PROBE_IDS, fetchedAt: 1_794_728_996_752, staleAt: 1_794_731_126_951, ...over })
 
 const DIR = '/home/test/.claude/cache/model-catalog'
 const entry = (name: string, over: Record<string, unknown> = {}) => ({ name, kind: 'file', size: 16_000, mtimeMs: 1, isLink: false, ...over })
@@ -52,27 +48,27 @@ const waiting = (timers: FakeTimer[]): FakeTimer[] => timers.filter(timer => !ti
 describe('readCatalog', () => {
   test('a cache file holding the 13 ids gives them in their order, read from the config home\'s catalog directory', async () => {
     const { $, logs, reads } = home({ 'a-cc.json': catalogFile() })
-    expect(await readCatalog($)).toEqual(PROBE_IDS)
+    expect(await readCatalog($)).toEqual(CATALOG_IDS)
     expect(reads).toEqual([`${DIR}/a-cc.json`])
     expect(logs).toEqual([])
   })
 
   test('with CLAUDE_CONFIG_DIR set the cache is looked for under it', async () => {
     const { $, logs, reads } = home({ 'a-cc.json': catalogFile() }, { env: { HOME: '/home/test', CLAUDE_CONFIG_DIR: '/elsewhere/claude' }, dir: '/elsewhere/claude/cache/model-catalog' })
-    expect(await readCatalog($)).toEqual(PROBE_IDS)
+    expect(await readCatalog($)).toEqual(CATALOG_IDS)
     expect(reads).toEqual(['/elsewhere/claude/cache/model-catalog/a-cc.json'])
     expect(logs).toEqual([])
   })
 
   test('a trailing slash on the config directory is not doubled', async () => {
     const { $, reads } = home({ 'a-cc.json': catalogFile() }, { env: { CLAUDE_CONFIG_DIR: '/elsewhere/claude//' }, dir: '/elsewhere/claude/cache/model-catalog' })
-    expect(await readCatalog($)).toEqual(PROBE_IDS)
+    expect(await readCatalog($)).toEqual(CATALOG_IDS)
     expect(reads).toEqual(['/elsewhere/claude/cache/model-catalog/a-cc.json'])
   })
 
   test('an empty CLAUDE_CONFIG_DIR counts as unset', async () => {
     const { $ } = home({ 'a-cc.json': catalogFile() }, { env: { HOME: '/home/test', CLAUDE_CONFIG_DIR: '' } })
-    expect(await readCatalog($)).toEqual(PROBE_IDS)
+    expect(await readCatalog($)).toEqual(CATALOG_IDS)
   })
 
   test('with neither CLAUDE_CONFIG_DIR nor HOME there is no catalog, recorded', async () => {
@@ -103,7 +99,7 @@ describe('readCatalog', () => {
 
   test('only files whose names end in -cc.json are read', async () => {
     const { $, reads } = home({ 'a-cc.json': catalogFile(), 'b.json': catalogFile({ modelIds: ['claude-opus-4-6'] }), 'c-cc.json.tmp': catalogFile({ modelIds: ['claude-opus-4-6'] }) })
-    expect(await readCatalog($)).toEqual(PROBE_IDS)
+    expect(await readCatalog($)).toEqual(CATALOG_IDS)
     expect(reads).toEqual([`${DIR}/a-cc.json`])
   })
 
@@ -150,7 +146,7 @@ describe('readCatalog', () => {
 
   test('a file of exactly 256 KiB is read', async () => {
     const { $, reads } = home({ 'a-cc.json': catalogFile() }, { sizes: { 'a-cc.json': 256 * 1024 } })
-    expect(await readCatalog($)).toEqual(PROBE_IDS)
+    expect(await readCatalog($)).toEqual(CATALOG_IDS)
     expect(reads).toHaveLength(1)
   })
 
@@ -315,7 +311,7 @@ describe('readChoices', () => {
 
   test('with a catalog the choices are the four aliases followed by its ids', async () => {
     const { $, logs } = engineWith({ 'a-cc.json': catalogFile() }, undefined)
-    expect((await readChoices($)).list).toEqual(['haiku', 'sonnet', 'opus', 'fable', ...PROBE_IDS])
+    expect((await readChoices($)).list).toEqual(['haiku', 'sonnet', 'opus', 'fable', ...CATALOG_IDS])
     expect(logs).toEqual([])
   })
 
@@ -334,7 +330,7 @@ describe('readChoices', () => {
   test('a filter that leaves no choice is ignored, and recorded', async () => {
     const { $, logs } = engineWith({ 'a-cc.json': catalogFile() }, ['nosuch'])
     const choices = await readChoices($)
-    expect(choices.list).toEqual(['haiku', 'sonnet', 'opus', 'fable', ...PROBE_IDS])
+    expect(choices.list).toEqual(['haiku', 'sonnet', 'opus', 'fable', ...CATALOG_IDS])
     expect(choices.filterIgnored).toBe(true)
     expect(logs).toHaveLength(1)
     expect(logs[0]).toContain('availableModels filter failed')
@@ -342,7 +338,7 @@ describe('readChoices', () => {
 
   test('a setting that cannot be read leaves the list whole, recorded', async () => {
     const { $, logs } = home({ 'a-cc.json': catalogFile() }, { nouns: { settings: { read: () => Promise.reject(new Error('settings unreadable')) } } })
-    expect((await readChoices($)).list).toHaveLength(4 + PROBE_IDS.length)
+    expect((await readChoices($)).list).toHaveLength(4 + CATALOG_IDS.length)
     expect(logs).toHaveLength(1)
   })
 })

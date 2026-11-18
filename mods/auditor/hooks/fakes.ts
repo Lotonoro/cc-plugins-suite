@@ -1,4 +1,4 @@
-// A hand-made engine for the tests of the modules that take `$` as an argument (`boundary.ts`, `store.ts`, `catalog.ts`): the nouns a test gives, the debug log and the timers its calls leave. The test engine cannot make a hook's call reject or hang, so these tests call the module with this object.
+// A hand-made engine for the tests of the modules that take `$` as an argument (`boundary.ts`, `store.ts`, `catalog.ts`): the nouns a test gives, the debug log and the timers its calls leave. The test engine cannot make a hook's call reject or hang, so these tests call the module with this object. The model catalog fixture at the end is shared with the register tests.
 
 export type FakeTimer = { ms: number; fire: () => void; cancelled: boolean }
 export type Fake = { $: any; logs: string[]; timers: FakeTimer[] }
@@ -37,3 +37,7 @@ export const never = <T>(): Promise<T> => new Promise<T>(() => undefined)
 export const settled = async (): Promise<void> => {
   for (let turn = 0; turn < 50; turn++) await Promise.resolve()
 }
+
+// The engine's model catalog cache as it was read once: 13 ids in the picker's order, and the file around them, whose alias targets are present and never read.
+export const CATALOG_IDS: readonly string[] = ['claude-opus-5-5', 'claude-fable-5-2', 'claude-sonnet-5-5', 'claude-haiku-5-5', 'claude-fable-5-1', 'claude-haiku-4-5-20251001', 'claude-sonnet-5', 'claude-opus-5', 'claude-fable-5', 'claude-opus-4-8', 'claude-opus-4-7', 'claude-opus-4-6', 'claude-sonnet-4-6']
+export const catalogFile = (over: Record<string, unknown> = {}): string => JSON.stringify({ aliasTargets: { fable: { default: 'claude-fable-5-2' }, haiku: { default: 'claude-haiku-5-5' } }, modelIds: CATALOG_IDS, fetchedAt: 1_794_728_996_752, staleAt: 1_794_731_126_951, ...over })
