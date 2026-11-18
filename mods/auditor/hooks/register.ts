@@ -710,7 +710,7 @@ const briefCalled = (c: Conversation, tool: string, input: Record<string, unknow
   return typeof text === 'string' && c.briefsInFlight.includes(text) ? text : undefined
 }
 
-// The stored ids the switch check may need (`keeps`), read before the change that judges the stored reviewer, whose callback is synchronous: only where the reviewer was spawned for another name than the choice (`needsIds`). A read that fails leaves them unknown, and the names decide.
+// The stored ids the switch check may need (`keeps`), read before the change that judges the stored reviewer, whose callback is synchronous: only where the comparison has an alias in it (`needsIds`). A read that fails leaves them unknown, and an alias with no known id is the model of no other name.
 const idsForSwitch = async ($: Pick<Scope, 'state' | 'store' | 'clock' | 'ui'>): Promise<ModelIds> => {
   const c = await readConversation($)
   return needsIds(c) ? await readModelIds($) : {}

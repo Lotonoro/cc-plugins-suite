@@ -379,20 +379,55 @@ describe('the choice a reviewer is spawned for', () => {
 })
 
 describe('whether a stored reviewer is kept at a switch', () => {
+  // The stored reviewer's own model is 'm', which names no id: it is judged by its names.
   const held = (choice: string | undefined, spawnedFor: string | undefined, over: Partial<Conversation> = {}): Conversation =>
     conversation({ review: undefined, reviewerIds: ['ag1'], ...(choice === undefined ? {} : { choice }), reviewer: { id: 'ag1', model: 'm', ...(spawnedFor === undefined ? {} : { choice: spawnedFor }) }, ...over })
+  // The same, for a reviewer whose spawn resolved to `model`.
+  const ranOn = (model: string, choice: string | undefined, spawnedFor: string | undefined, over: Partial<Conversation> = {}): Conversation =>
+    held(choice, spawnedFor, { reviewer: { id: 'ag1', model, ...(spawnedFor === undefined ? {} : { choice: spawnedFor }) }, ...over })
 
-  test('a reviewer spawned for the conversation\'s choice is kept, whatever the ids say', () => {
+  test('a reviewer spawned for the conversation\'s choice is kept, whatever the ids say, the id it runs included', () => {
     expect(keeps(held('haiku', 'haiku'), {})).toBe(true)
     expect(keeps(held('claude-opus-4-6[1m]', 'claude-opus-4-6[1m]'), { 'claude-opus-4-6[1m]': 'claude-sonnet-5' })).toBe(true)
+    expect(keeps(ranOn('claude-haiku-5-5', 'haiku', 'haiku'), { haiku: 'claude-haiku-5-6' })).toBe(true)
+    expect(keeps(ranOn('claude-opus-4-6', 'claude-opus-4-6[1m]', 'claude-opus-4-6[1m]'), {})).toBe(true)
   })
 
-  test('a reviewer spawned for another name is kept when both ids are known and equal, and let go otherwise', () => {
+  test('a reviewer spawned for another name, whose own id is not known, is kept when both names\' ids are known and equal, and let go otherwise', () => {
     expect(keeps(held('claude-haiku-5-5', 'haiku'), { haiku: 'claude-haiku-5-5-20261001' })).toBe(true)
     expect(keeps(held('sonnet', 'haiku'), { haiku: 'claude-haiku-5-5', sonnet: 'claude-haiku-5-5' })).toBe(true)
     expect(keeps(held('sonnet', 'haiku'), { haiku: 'claude-haiku-5-5' })).toBe(false)
     expect(keeps(held('sonnet', 'haiku'), {})).toBe(false)
     expect(keeps(held('opus', 'claude-opus-4-6'), { opus: 'claude-opus-5-5' })).toBe(false)
+  })
+
+  test('a reviewer spawned for another name is kept when the id it runs is the id the choice resolves to, and let go otherwise', () => {
+    expect(keeps(ranOn('claude-haiku-5-5', 'claude-haiku-5-5', 'haiku'), {})).toBe(true)
+    expect(keeps(ranOn('claude-haiku-5-5', 'claude-haiku-5-5-20261001', 'haiku'), {})).toBe(true)
+    expect(keeps(ranOn('claude-haiku-5-5-20261001', 'claude-haiku-5-5', 'haiku'), {})).toBe(true)
+    expect(keeps(ranOn('claude-haiku-5-5', 'claude-haiku-5-6', 'haiku'), {})).toBe(false)
+    expect(keeps(ranOn('claude-sonnet-5-5', 'sonnet', 'claude-sonnet-5-5'), { sonnet: 'claude-sonnet-5-5' })).toBe(true)
+    expect(keeps(ranOn('claude-sonnet-5-5', 'sonnet', 'claude-sonnet-5-5'), { sonnet: 'claude-sonnet-5-6' })).toBe(false)
+    expect(keeps(ranOn('claude-sonnet-5-5', 'sonnet', 'claude-sonnet-5-5'), {})).toBe(false)
+  })
+
+  test('the id the reviewer runs outweighs what the stored ids say its own name resolves to, both ways', () => {
+    expect(keeps(ranOn('claude-haiku-5-5', 'claude-haiku-5-6', 'haiku'), { haiku: 'claude-haiku-5-6' })).toBe(false)
+    expect(keeps(ranOn('claude-haiku-5-6', 'claude-haiku-5-6', 'haiku'), { haiku: 'claude-haiku-5-5' })).toBe(true)
+  })
+
+  test('where the id the reviewer runs is not known, the names decide through the stored ids: blank, or no full id', () => {
+    for (const model of ['', 'm']) {
+      expect(keeps(ranOn(model, 'claude-haiku-5-5', 'haiku'), { haiku: 'claude-haiku-5-5' })).toBe(true)
+      expect(keeps(ranOn(model, 'claude-haiku-5-6', 'haiku'), { haiku: 'claude-haiku-5-5' })).toBe(false)
+      expect(keeps(ranOn(model, 'claude-haiku-5-5', 'haiku'), {})).toBe(false)
+    }
+  })
+
+  test('the id recorded for the reviewer\'s id is the one it runs when it stores none', () => {
+    const adopted = ranOn('', 'claude-haiku-5-5', 'haiku', { reviewerModels: { ag1: 'claude-haiku-5-5' } })
+    expect(keeps(adopted, {})).toBe(true)
+    expect(keeps({ ...adopted, reviewerModels: { ag1: 'claude-haiku-5-4' } }, { haiku: 'claude-haiku-5-5' })).toBe(false)
   })
 
   test('a conversation with no choice has switched nothing, and a reviewer with none ran the default', () => {
@@ -401,13 +436,23 @@ describe('whether a stored reviewer is kept at a switch', () => {
     expect(keeps(held('sonnet', undefined), {})).toBe(false)
   })
 
-  test('the stored ids are needed only where the reviewer\'s name differs from the choice\'s', () => {
+  test('the stored ids are needed only where the comparison goes through an alias', () => {
     expect(needsIds(held('sonnet', 'haiku'))).toBe(true)
     expect(needsIds(held('sonnet', undefined))).toBe(true)
     expect(needsIds(held('haiku', 'haiku'))).toBe(false)
     expect(needsIds(held('haiku', undefined))).toBe(false)
     expect(needsIds(held(undefined, 'sonnet'))).toBe(false)
     expect(needsIds(conversation({ choice: 'sonnet' }))).toBe(false)
+    expect(needsIds(held('claude-haiku-5-6', 'claude-haiku-5-5'))).toBe(false)
+    expect(needsIds(ranOn('', 'claude-haiku-5-6', 'haiku'))).toBe(true)
+  })
+
+  test('where the id the reviewer runs is known, only the choice\'s name can need the stored ids, and the same name needs none', () => {
+    expect(needsIds(ranOn('claude-haiku-5-5', 'claude-haiku-5-6', 'haiku'))).toBe(false)
+    expect(needsIds(ranOn('claude-haiku-5-5', 'sonnet', 'haiku'))).toBe(true)
+    expect(needsIds(ranOn('claude-haiku-5-5', 'haiku', 'haiku'))).toBe(false)
+    expect(needsIds(ranOn('', 'sonnet', 'haiku', { reviewerModels: { ag1: 'claude-haiku-5-5' } }))).toBe(true)
+    expect(needsIds(ranOn('', 'claude-haiku-5-6', 'haiku', { reviewerModels: { ag1: 'claude-haiku-5-5' } }))).toBe(false)
   })
 
   test('letting a switched reviewer go clears it like a rotation and notes the reason, and keeps its marks', () => {
@@ -421,6 +466,15 @@ describe('whether a stored reviewer is kept at a switch', () => {
     expect(letGoSwitched(kept, {})).toEqual({ next: kept, released: undefined })
     const none = conversation({ choice: 'sonnet' })
     expect(letGoSwitched(none, {})).toEqual({ next: none, released: undefined })
+  })
+
+  test('a reviewer that runs another id than the choice resolves to is let go, and one that runs it is kept, whatever the stored id of its own name', () => {
+    const stale = ranOn('claude-haiku-5-5', 'claude-haiku-5-6', 'haiku')
+    expect(letGoSwitched(stale, { haiku: 'claude-haiku-5-6' }).released).toBe('ag1')
+    expect(letGoSwitchedIdle(stale, { haiku: 'claude-haiku-5-6' }).released).toBe('ag1')
+    const current = ranOn('claude-haiku-5-6', 'claude-haiku-5-6', 'haiku')
+    expect(letGoSwitched(current, { haiku: 'claude-haiku-5-5' })).toEqual({ next: current, released: undefined })
+    expect(letGoSwitchedIdle(current, { haiku: 'claude-haiku-5-5' })).toEqual({ next: current, released: undefined })
   })
 
   test('the switch\'s own let-go takes an idle reviewer only: no review open, no spawn in flight', () => {

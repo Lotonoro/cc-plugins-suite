@@ -1,6 +1,6 @@
 import type { AgentInfo } from 'claude-code'
 import type { Conversation, FailCause, LetGoReason } from '../types/index'
-import { DEFAULT_MODEL, idOf, sameModel } from './models'
+import { DEFAULT_MODEL, canonicalOf, idOf, isFullId, sameModel } from './models'
 import type { ModelIds } from './models'
 
 // Every decision about whether an agent, a send, a delivery, a prompt or a row is the reviewer's, as pure functions; register.ts keeps every step on `$` and the plugin's identifying literals, which it passes in. This file imports only pure functions (`models.ts`), so nothing here reads state or the engine: a conversation, an event or a list entry in, a decision or the next conversation out.
@@ -207,16 +207,27 @@ export const withTurnEnd = (c: Conversation, id: string, at: number): Conversati
 const namesOf = (c: Conversation): { spawned: string; chosen: string } | undefined =>
   c.reviewer === undefined || c.choice === undefined ? undefined : { spawned: c.reviewer.choice ?? DEFAULT_MODEL, chosen: c.choice }
 
-// Whether the stored reviewer may take the next brief: it runs the model the conversation's choice names. A reviewer spawned for the choice the conversation holds is always kept, so an unchanged choice never lets one go whatever its ids say; one spawned for another name is kept when both names' ids are known and equal (`sameModel`), and otherwise let go.
-export const keeps = (c: Conversation, ids: ModelIds): boolean => {
+// The model the stored reviewer's spawn resolved to: the one it stores, else the one recorded for its id, which a reviewer adopted before its result landed has alone. Undefined where there is no reviewer, or it has none.
+const resolvedOf = (c: Conversation): string | undefined => (c.reviewer === undefined ? undefined : c.reviewer.model || c.reviewerModels[c.reviewer.id] || undefined)
+
+// What a switch compares, or undefined where nothing needs comparing: no reviewer, no choice yet, or a reviewer spawned for the choice itself, which is kept whatever the id it runs, so an unchanged choice never lets one go. Otherwise the choice, against the id the stored reviewer runs (the model its spawn resolved to, in canonical form) where that is a full id, else against the name it was spawned for. The id outweighs the name: an alias resolves again at every spawn, so what the stored ids say of the reviewer's name now is not what the reviewer runs.
+const comparedOf = (c: Conversation): { held: string; chosen: string } | undefined => {
   const names = namesOf(c)
-  return names === undefined || sameModel(names.spawned, names.chosen, ids)
+  if (names === undefined || names.spawned === names.chosen) return undefined
+  const resolved = resolvedOf(c)
+  return { held: (resolved === undefined ? undefined : canonicalOf(resolved)) ?? names.spawned, chosen: names.chosen }
 }
 
-// Whether judging the stored reviewer needs the stored ids: only where its name differs from the choice's, since the same name is kept whatever the ids say. A caller reads them before its change, whose callback is synchronous, and only then.
+// Whether the stored reviewer may take the next brief: it runs the model the conversation's choice names, which is the id the choice resolves to now (`sameModel`, through the stored ids where the choice is an alias). A reviewer spawned for the choice the conversation holds is always kept; one that runs a known id is kept when that is the choice's id; one whose id is not known (no spawn result yet, or no full id) is kept when the ids of its name and of the choice's are both known and equal; any other is let go.
+export const keeps = (c: Conversation, ids: ModelIds): boolean => {
+  const compared = comparedOf(c)
+  return compared === undefined || sameModel(compared.held, compared.chosen, ids)
+}
+
+// Whether judging the stored reviewer needs the stored ids: only where the comparison has an alias in it, since an unchanged choice is kept whatever the ids say and two full ids compare by themselves. A caller reads them before its change, whose callback is synchronous, and only then.
 export const needsIds = (c: Conversation): boolean => {
-  const names = namesOf(c)
-  return names !== undefined && names.spawned !== names.chosen
+  const compared = comparedOf(c)
+  return compared !== undefined && !(isFullId(compared.held) && isFullId(compared.chosen))
 }
 
 // The dispatch's half of a model switch: the stored reviewer let go (`model switch`) when it is not kept. It covers what the switch itself could not: a reviewer that was mid-review at the switch and has settled since, and a spawn in flight at the switch that landed on the old model.
@@ -231,8 +242,7 @@ export type ReviewModels = { configured: string | null; resolved: string | null 
 // The choice comes from the reviewer that held the review; with none, from the spawn in flight for the review's number (a lapse with no start); with neither, it is the conversation's choice, and null where there is none. The resolved model is the reviewer's, null where it holds none.
 export const reviewModels = (c: Conversation, number: number): ReviewModels => {
   const spawn = [...c.spawnsInFlight].reverse().find(s => s.number === number)
-  const resolved = c.reviewer === undefined ? undefined : c.reviewer.model || c.reviewerModels[c.reviewer.id]
-  return { configured: c.reviewer?.choice ?? spawn?.choice ?? c.choice ?? null, resolved: resolved || null }
+  return { configured: c.reviewer?.choice ?? spawn?.choice ?? c.choice ?? null, resolved: resolvedOf(c) ?? null }
 }
 
 // The model a compaction by reviewer `agentId` is priced at: the model recorded for that id, a former reviewer's from before a /clear included; else, for the stored reviewer whose spawn result never landed, the id its choice gets from the chain; else undefined, which the tally reads as an unknown model.

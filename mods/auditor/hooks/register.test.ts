@@ -9013,11 +9013,11 @@ describe('the reviewer model each conversation chooses', () => {
     const SONNET = 'claude-sonnet-5-5'
     const LOG_3 = `${DIR}/0003.json`
     const stopped = (seen: any): string[] => seen.stops.map((s: any) => s.task_id)
-    // A conversation whose review 1 is done, its reviewer ag1 stored and idle, spawned for `spawnedFor` while the conversation's choice is now `choice`.
-    const switched = (choice: string | undefined, spawnedFor: string | undefined = 'haiku') => ({
+    // A conversation whose review 1 is done, its reviewer ag1 stored and idle, spawned for `spawnedFor` and resolved to `model` (blank while its spawn result has not landed), while the conversation's choice is now `choice`.
+    const switched = (choice: string | undefined, spawnedFor: string | undefined = 'haiku', model = HAIKU) => ({
       dispatches: 1,
       ...(choice === undefined ? {} : { choice }),
-      reviewer: { id: 'ag1', model: HAIKU, ...(spawnedFor === undefined ? {} : { choice: spawnedFor }) },
+      reviewer: { id: 'ag1', model, ...(spawnedFor === undefined ? {} : { choice: spawnedFor }) },
       reviewerIds: ['ag1'],
     })
     const OPEN = { number: 1, record: ['[1] USER: fix\n\n'], dispatchedAt: 1000, nothingWakes: false }
@@ -9100,8 +9100,39 @@ describe('the reviewer model each conversation chooses', () => {
       expect(logOf(seen, LOG_2)).toMatchObject({ brief_to: 'stored', model_configured: 'haiku' })
     })
 
-    test('with the id of the reviewer\'s name unknown, another name lets the reviewer go', ON, async ($, on) => {
-      const seen = engine(on, { stateSeed: switched(HAIKU), reviewerIds: ['ag2'] })
+    test('a reviewer that runs the id the choice names is kept, whatever the stored ids say its own name resolves to', ON, async ($, on) => {
+      const seen = engine(on, { stateSeed: switched(HAIKU), store: { modelIds: { haiku: 'claude-haiku-5-4' } } })
+      await workerTurn($)
+      await turnEnded($, 'ag1', 'Nothing to note.')
+      await drained()
+      expect(stopped(seen)).toEqual([])
+      expect(spawnedModels(seen)).toEqual([])
+      expect(logOf(seen, LOG_2)).toMatchObject({ brief_to: 'stored', model_configured: 'haiku', model_resolved: HAIKU })
+    })
+
+    test('a reviewer that runs another id than the choice names is let go, though the stored ids say its own name resolves to the choice\'s id', ON, async ($, on) => {
+      const NEWER = 'claude-haiku-5-6'
+      const seen = engine(on, { stateSeed: switched(NEWER), store: { modelIds: { haiku: NEWER } }, spawnModels: [NEWER], reviewerIds: ['ag2'] })
+      await workerTurn($)
+      await drained()
+      expect(stopped(seen)).toEqual(['ag1'])
+      await turnEnded($, 'ag2', 'Nothing to note.')
+      expect(spawnedModels(seen)).toEqual([NEWER])
+      expect(logOf(seen, LOG_2)).toMatchObject({ brief_to: 'spawn: model switch', model_configured: NEWER, model_resolved: NEWER })
+    })
+
+    test('a full id the reviewer runs is compared by itself: no stored ids are read, so an unreadable store is not even asked', ON, async ($, on) => {
+      const seen = engine(on, { stateSeed: switched(HAIKU), storeReadFails: true })
+      await workerTurn($)
+      await turnEnded($, 'ag1', 'Nothing to note.')
+      await drained()
+      expect(stopped(seen)).toEqual([])
+      expect(seen.storeReads.filter(key => key === 'modelIds')).toEqual([])
+      expect(debugLines(seen, 'store read of the model ids failed')).toEqual([])
+    })
+
+    test('a reviewer whose spawn result has not landed is judged by its names: with the id of its name unknown, another name lets it go', ON, async ($, on) => {
+      const seen = engine(on, { stateSeed: switched(HAIKU, 'haiku', ''), reviewerIds: ['ag2'] })
       await workerTurn($)
       await drained()
       expect(stopped(seen)).toEqual(['ag1'])
@@ -9115,8 +9146,16 @@ describe('the reviewer model each conversation chooses', () => {
       expect(stopped(seen)).toEqual(['ag1'])
     })
 
-    test('stored ids that cannot be read leave the names to decide, and the failure is recorded', ON, async ($, on) => {
-      const seen = engine(on, { stateSeed: switched(HAIKU), store: { modelIds: { haiku: HAIKU } }, storeReadFails: true, reviewerIds: ['ag2'] })
+    test('stored ids that cannot be read leave the names of a reviewer whose spawn result has not landed to decide, and the failure is recorded', ON, async ($, on) => {
+      const seen = engine(on, { stateSeed: switched(HAIKU, 'haiku', ''), store: { modelIds: { haiku: HAIKU } }, storeReadFails: true, reviewerIds: ['ag2'] })
+      await workerTurn($)
+      await drained()
+      expect(stopped(seen)).toEqual(['ag1'])
+      expect(debugLines(seen, 'store read of the model ids failed').length).toBe(1)
+    })
+
+    test('stored ids that cannot be read give an alias choice no id, so the reviewer is let go, and the failure is recorded', ON, async ($, on) => {
+      const seen = engine(on, { stateSeed: switched('haiku', HAIKU), store: { modelIds: { haiku: HAIKU } }, storeReadFails: true, reviewerIds: ['ag2'] })
       await workerTurn($)
       await drained()
       expect(stopped(seen)).toEqual(['ag1'])
@@ -9410,6 +9449,29 @@ describe('the reviewer model each conversation chooses', () => {
       await turnEnded($, 'ag1', 'Nothing to note.')
       expect(spawnedModels(seen)).toEqual(['haiku'])
       expect(logOf(seen, LOG_2)).toMatchObject({ brief_to: 'stored', model_configured: 'haiku' })
+    })
+
+    test('switching to the id the reviewer runs stops nothing, whatever the stored ids say its own name resolves to', ON, async ($, on) => {
+      const seen = engine(on, { spawnModels: [HAIKU] })
+      await workerTurn($)
+      await turnEnded($, 'ag1', 'Nothing to note.')
+      seen.store['modelIds'] = { haiku: 'claude-haiku-5-4' }
+      await run($, `model ${HAIKU}`)
+      await drained()
+      expect(stopped(seen)).toEqual([])
+      expect(seen.conversation).toMatchObject({ choice: HAIKU, reviewer: { id: 'ag1', choice: 'haiku' } })
+    })
+
+    test('switching to the id a reviewer\'s name now resolves to stops a reviewer that runs another id, though the stored ids say the two are one', ON, async ($, on) => {
+      const NEWER = 'claude-haiku-5-6'
+      const seen = engine(on, { catalog: { 'a-cc.json': catalogFile([...CATALOG_IDS, NEWER]) }, spawnModels: [HAIKU], reviewerIds: ['ag1', 'ag2'] })
+      await workerTurn($)
+      await turnEnded($, 'ag1', 'Nothing to note.')
+      seen.store['modelIds'] = { haiku: NEWER }
+      await run($, `model ${NEWER}`)
+      await drained()
+      expect(stopped(seen)).toEqual(['ag1'])
+      expect(seen.conversation).toMatchObject({ choice: NEWER, lastLetGo: 'model switch' })
     })
 
     test('with the id of the reviewer\'s name unknown, switching to another name lets the reviewer go', ON, async ($, on) => {
