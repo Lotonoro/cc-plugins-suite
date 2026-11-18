@@ -1,7 +1,9 @@
 import type { AgentInfo } from 'claude-code'
 import type { Conversation, FailCause, LetGoReason } from '../types/index'
+import { DEFAULT_MODEL, canonicalOf, idOf, isFullId, sameModel } from './models'
+import type { ModelIds } from './models'
 
-// Every decision about whether an agent, a send, a delivery, a prompt or a row is the reviewer's, as pure functions; register.ts keeps every step on `$` and the plugin's identifying literals, which it passes in. This file imports no value, so nothing here reads state or the engine: a conversation, an event or a list entry in, a decision or the next conversation out.
+// Every decision about whether an agent, a send, a delivery, a prompt or a row is the reviewer's, as pure functions; register.ts keeps every step on `$` and the plugin's identifying literals, which it passes in. This file imports only pure functions (`models.ts`), so nothing here reads state or the engine: a conversation, an event or a list entry in, a decision or the next conversation out.
 
 // The literals that identify this plugin's reviewer: the plugin's name, the name its spawn is given, and the description its spawn is given.
 export type Identity = { plugin: string; name: string; description: string }
@@ -103,18 +105,28 @@ const matchSpawn = (spawns: readonly Spawn[], brief: string): Spawn | undefined 
 
 const withMember = (members: string[], member: string): string[] => (members.includes(member) ? members : [...members, member])
 
-// Learns a reviewer spawn's id and its team name, as the spawn hook sees them. The id and the model the spawn resolved to are kept on the spawn's entry in `spawnsInFlight`, matched by brief, for the spawning dispatch, which has the last word on whether the spawn stays the reviewer (`land`). The spawn stands in as the reviewer at once while its review is open in its epoch and none is stored, so its calls and turn end are the reviewer's before its dispatch resumes; a hook that matches no entry only marks the id and name.
+// A reviewer as the state stores it: its id and resolved model, and the choice it was spawned for where one is known.
+const reviewerOf = (id: string, model: string, choice: string | undefined): NonNullable<Conversation['reviewer']> => (choice === undefined ? { id, model } : { id, model, choice })
+
+// The per-id record of resolved models with `model` for `id`; unchanged where the model is blank (a spawn result that has not landed) or already recorded.
+const withModel = (models: Conversation['reviewerModels'], id: string, model: string): Conversation['reviewerModels'] => (model === '' || models[id] === model ? models : { ...models, [id]: model })
+
+// Learns a reviewer spawn's id and its team name, as the spawn hook sees them. The id and the model the spawn resolved to are kept on the spawn's entry in `spawnsInFlight`, matched by brief, for the spawning dispatch, which has the last word on whether the spawn stays the reviewer (`land`), and the model is recorded for the id (`reviewerModels`). The spawn stands in as the reviewer at once while its review is open in its epoch and none is stored, with the choice its entry was spawned for, so its calls and turn end are the reviewer's before its dispatch resumes; a hook that matches no entry only marks the id, the name and the model.
 export const learn = (c: Conversation, brief: string, agentId: string, model: string, name: string): Conversation => {
   const own = matchSpawn(c.spawnsInFlight, brief)
   const standsIn = !c.off && c.reviewer === undefined && own !== undefined && own.epoch === c.epoch && own.number === c.review?.number
   return {
     ...c,
     spawnsInFlight: c.spawnsInFlight.map(s => (s === own ? { ...s, id: agentId, model } : s)),
-    ...(standsIn ? { reviewer: { id: agentId, model } } : {}),
+    ...(standsIn ? { reviewer: reviewerOf(agentId, model, own?.choice) } : {}),
     reviewerIds: withMember(c.reviewerIds, agentId),
     reviewerNames: withMember(c.reviewerNames, name),
+    reviewerModels: withModel(c.reviewerModels, agentId, model),
   }
 }
+
+// The choice the spawn in flight for `brief` was made for, matched as `learn` matches it: undefined where no entry holds the brief, or where the entry predates the choice.
+export const spawnChoice = (c: Conversation, brief: string): string | undefined => matchSpawn(c.spawnsInFlight, brief)?.choice
 
 // Learns a team name an agent list gave to one of this conversation's reviewers.
 export const learnName = (c: Conversation, name: string): Conversation => (c.reviewerNames.includes(name) ? c : { ...c, reviewerNames: [...c.reviewerNames, name] })
@@ -123,10 +135,11 @@ export const learnName = (c: Conversation, name: string): Conversation => (c.rev
 const blocksAdoption = (c: Conversation, s: Spawn, agentId: string, now: number | undefined, timeoutMs: number): boolean =>
   s.epoch !== c.epoch && (s.id === undefined || s.id === agentId) && (now === undefined || now - s.startedAt <= timeoutMs)
 
-// Adopts a caller no stored reviewer id names as the reviewer whose spawn result has not landed yet. Only a reviewer with no stored id is adopted: a second agent under the reviewer's name is refused, not swapped in, and so is an id the state already knows. Nothing is adopted while off, nor while a spawn from an older epoch blocks it: the caller could be that spawn's agent.
+// Adopts a caller no stored reviewer id names as the reviewer whose spawn result has not landed yet, with no model resolved and the choice of the current epoch's newest spawn in flight, or the conversation's choice where there is none. Only a reviewer with no stored id is adopted: a second agent under the reviewer's name is refused, not swapped in, and so is an id the state already knows. Nothing is adopted while off, nor while a spawn from an older epoch blocks it: the caller could be that spawn's agent.
 export const adopt = (c: Conversation, agentId: string, name: string, now: number | undefined, timeoutMs: number): Conversation => {
   if (c.off || c.reviewer?.id !== undefined || c.reviewerIds.includes(agentId) || c.spawnsInFlight.some(s => blocksAdoption(c, s, agentId, now, timeoutMs))) return c
-  return { ...c, reviewer: { id: agentId, model: '' }, reviewerIds: withMember(c.reviewerIds, agentId), reviewerNames: withMember(c.reviewerNames, name) }
+  const choice = [...c.spawnsInFlight].reverse().find(s => s.epoch === c.epoch)?.choice ?? c.choice
+  return { ...c, reviewer: reviewerOf(agentId, '', choice), reviewerIds: withMember(c.reviewerIds, agentId), reviewerNames: withMember(c.reviewerNames, name) }
 }
 
 // Starts a reviewer spawn: no reviewer is stored from here until the spawn stands in, and the spawn is committed as an entry in `spawnsInFlight`.
@@ -135,16 +148,18 @@ export const spawning = (c: Conversation, spawn: Spawn): Conversation => ({ ...c
 // What a spawn's landing did: the id it settled on, whether it landed under an older epoch than its dispatch's, and whether it stood in as the reviewer.
 export type Landing = { next: Conversation; id: string | undefined; stale: boolean; stood: boolean }
 
-// Lands a spawn under the dispatch's epoch (`epoch`): its id is the result's, else its entry's, else the stored reviewer's, which under the dispatch's epoch can only be this spawn, adopted by name before its hook stood it in. The id marks the spawn's traffic and rows even when the spawn hook never saw it. A spawn that is not stale stands in as the reviewer while its review is open; a review that already closed, with another reviewer or none stored, means this spawn was retired or replaced since, and it is not stood in again. Otherwise the stored reviewer stays as it is: a stale spawn stored as the reviewer was adopted by name in the current epoch and may hold a later review, which clearing it would leave open with no reviewer to settle it.
+// Lands a spawn under the dispatch's epoch (`epoch`): its id is the result's, else its entry's, else the stored reviewer's, which under the dispatch's epoch can only be this spawn, adopted by name before its hook stood it in. The id marks the spawn's traffic and rows even when the spawn hook never saw it, and its resolved model is recorded for it. A spawn that stands in carries the choice its entry was spawned for, else the one the reviewer stored under its id already holds. A spawn that is not stale stands in as the reviewer while its review is open; a review that already closed, with another reviewer or none stored, means this spawn was retired or replaced since, and it is not stood in again. Otherwise the stored reviewer stays as it is: a stale spawn stored as the reviewer was adopted by name in the current epoch and may hold a later review, which clearing it would leave open with no reviewer to settle it.
 export const land = (c: Conversation, brief: string, number: number, epoch: number, started: { agentId?: string; model?: string }): Landing => {
   const kept = matchSpawn(c.spawnsInFlight, brief)
   const stale = c.epoch !== epoch
   const id = started.agentId ?? kept?.id ?? (stale ? undefined : c.reviewer?.id)
   if (id === undefined) return { next: c, id, stale, stood: false }
-  const known = c.reviewerIds.includes(id) ? c : { ...c, reviewerIds: [...c.reviewerIds, id] }
+  const model = kept?.id === id && kept.model !== undefined ? kept.model : (started.model ?? '')
+  const known = { ...c, reviewerIds: withMember(c.reviewerIds, id), reviewerModels: withModel(c.reviewerModels, id, model) }
   const stood = !stale && (c.review?.number === number || c.reviewer?.id === id)
   if (!stood) return { next: known, id, stale, stood }
-  return { next: { ...known, reviewer: { id, model: kept?.id === id && kept.model !== undefined ? kept.model : (started.model ?? '') } }, id, stale, stood }
+  const choice = kept?.choice ?? (c.reviewer?.id === id ? c.reviewer.choice : undefined)
+  return { next: { ...known, reviewer: reviewerOf(id, model, choice) }, id, stale, stood }
 }
 
 // How long an open review may go on before it is given up, by whether a reviewer is stored: a spawn that stood none in (`start`) or a stored reviewer that has not ended its turn (`finish`), each in milliseconds from the dispatch.
@@ -161,9 +176,9 @@ export const lapseOf = (c: Conversation, now: number, limits: Limits): Extract<F
 export type Release = { next: Conversation; released: string | undefined }
 
 // The reasons whose let-go clears the stored reviewer and its context. A refused brief's reviewer is cleared by the spawn that replaces it (`spawning`), and a stale landing's spawn was never the stored one. A rejected spawn's learned id clears it only where it is that id (`letGo`).
-const CLEARING: readonly LetGoReason[] = ['rotation', 'switch off', 'session end', 'lapsed', 'failed review', 'reaped idle']
+const CLEARING: readonly LetGoReason[] = ['rotation', 'switch off', 'session end', 'lapsed', 'failed review', 'reaped idle', 'model switch']
 
-// The one decision to let a reviewer go, for `reason`. `id` is the reviewer let go: the stored one's for a rotation, a switch off, a session end, a lapse, a failed review and an idle reap, the refused one's for a refused brief, the landed one's for a stale landing, the one the spawn hook learned for a rejected spawn (cleared from the stored reviewer only when it is that one, since a later spawn may have stored another). The reviewer's id and name still mark its traffic and rows. A rotation lets go only once the reviewer's context passed `rotateAt`, and a stale landing whose id is the stored reviewer's lets nothing go, since it is not stale after all. A let-go of an id notes its reason (`lastLetGo`), which a later one replaces; `released` is the id for the caller to stop, in the change that applies `next`.
+// The one decision to let a reviewer go, for `reason`. `id` is the reviewer let go: the stored one's for a rotation, a switch off, a session end, a lapse, a failed review, an idle reap and a model switch, the refused one's for a refused brief, the landed one's for a stale landing, the one the spawn hook learned for a rejected spawn (cleared from the stored reviewer only when it is that one, since a later spawn may have stored another). The reviewer's id and name still mark its traffic and rows. A rotation lets go only once the reviewer's context passed `rotateAt`, and a stale landing whose id is the stored reviewer's lets nothing go, since it is not stale after all. A let-go of an id notes its reason (`lastLetGo`), which a later one replaces; `released` is the id for the caller to stop, in the change that applies `next`.
 export const letGo = (c: Conversation, reason: LetGoReason, id: string | undefined, rotateAt = 0): Release => {
   if (reason === 'rotation' && c.reviewerContext <= rotateAt) return { next: c, released: undefined }
   if (reason === 'stale landing' && c.reviewer?.id === id) return { next: c, released: undefined }
@@ -188,8 +203,57 @@ export const reapIdle = (c: Conversation, timer: IdleTimer): Release => {
 // The conversation with the stored reviewer `id`'s latest turn end noted at `at`, which the idle timer counts from; unchanged where `id` is not the stored reviewer.
 export const withTurnEnd = (c: Conversation, id: string, at: number): Conversation => (c.reviewer?.id === id ? { ...c, reviewer: { ...c.reviewer, endedAt: at } } : c)
 
-// The reviewer markers a /clear keeps: they mark traffic, not a review.
-export const markers = (c: Conversation): Pick<Conversation, 'reviewerIds' | 'reviewerNames'> => ({ reviewerIds: c.reviewerIds, reviewerNames: c.reviewerNames })
+// The two names a switch compares: the one the stored reviewer was spawned for, and the one the conversation holds now. A reviewer that holds no choice, stored before choices existed, ran the definition's default. Undefined where there is no reviewer, or the conversation has switched nothing (no choice yet).
+const namesOf = (c: Conversation): { spawned: string; chosen: string } | undefined =>
+  c.reviewer === undefined || c.choice === undefined ? undefined : { spawned: c.reviewer.choice ?? DEFAULT_MODEL, chosen: c.choice }
+
+// The model the stored reviewer's spawn resolved to: the one it stores, else the one recorded for its id, which a reviewer adopted before its result landed has alone. Undefined where there is no reviewer, or it has none.
+const resolvedOf = (c: Conversation): string | undefined => (c.reviewer === undefined ? undefined : c.reviewer.model || c.reviewerModels[c.reviewer.id] || undefined)
+
+// What a switch compares, or undefined where nothing needs comparing: no reviewer, no choice yet, or a reviewer spawned for the choice itself, which is kept whatever the id it runs, so an unchanged choice never lets one go. Otherwise the choice, against the id the stored reviewer runs (the model its spawn resolved to, in canonical form) where that is a full id, else against the name it was spawned for. The id outweighs the name: an alias resolves again at every spawn, so what the stored ids say of the reviewer's name now is not what the reviewer runs.
+const comparedOf = (c: Conversation): { held: string; chosen: string } | undefined => {
+  const names = namesOf(c)
+  if (names === undefined || names.spawned === names.chosen) return undefined
+  const resolved = resolvedOf(c)
+  return { held: (resolved === undefined ? undefined : canonicalOf(resolved)) ?? names.spawned, chosen: names.chosen }
+}
+
+// Whether the stored reviewer may take the next brief: it runs the model the conversation's choice names, which is the id the choice resolves to now (`sameModel`, through the stored ids where the choice is an alias). A reviewer spawned for the choice the conversation holds is always kept; one that runs a known id is kept when that is the choice's id; one whose id is not known (no spawn result yet, or no full id) is kept when the ids of its name and of the choice's are both known and equal; any other is let go.
+export const keeps = (c: Conversation, ids: ModelIds): boolean => {
+  const compared = comparedOf(c)
+  return compared === undefined || sameModel(compared.held, compared.chosen, ids)
+}
+
+// Whether judging the stored reviewer needs the stored ids: only where the comparison has an alias in it, since an unchanged choice is kept whatever the ids say and two full ids compare by themselves. A caller reads them before its change, whose callback is synchronous, and only then.
+export const needsIds = (c: Conversation): boolean => {
+  const compared = comparedOf(c)
+  return compared !== undefined && !(isFullId(compared.held) && isFullId(compared.chosen))
+}
+
+// The dispatch's half of a model switch: the stored reviewer let go (`model switch`) when it is not kept. It covers what the switch itself could not: a reviewer that was mid-review at the switch and has settled since, and a spawn in flight at the switch that landed on the old model.
+export const letGoSwitched = (c: Conversation, ids: ModelIds): Release => (c.reviewer === undefined || keeps(c, ids) ? { next: c, released: undefined } : letGo(c, 'model switch', c.reviewer.id))
+
+// The switch's own half: the stored reviewer let go at once when it is idle, as the idle timer judges it, so it does not wait out its cache's life. A reviewer that is busy finishes on its old model, and the dispatch check (`letGoSwitched`) lets it go after.
+export const letGoSwitchedIdle = (c: Conversation, ids: ModelIds): Release => (idleTimerOf(c) === undefined ? { next: c, released: undefined } : letGoSwitched(c, ids))
+
+// The choice and the resolved model a review's log names.
+export type ReviewModels = { configured: string | null; resolved: string | null }
+
+// The choice comes from the reviewer that held the review; with none, from the spawn in flight for the review's number (a lapse with no start); with neither, it is the conversation's choice, and null where there is none. The resolved model is the reviewer's, null where it holds none.
+export const reviewModels = (c: Conversation, number: number): ReviewModels => {
+  const spawn = [...c.spawnsInFlight].reverse().find(s => s.number === number)
+  return { configured: c.reviewer?.choice ?? spawn?.choice ?? c.choice ?? null, resolved: resolvedOf(c) ?? null }
+}
+
+// The model a compaction by reviewer `agentId` is priced at: the model recorded for that id, a former reviewer's from before a /clear included; else, for the stored reviewer whose spawn result never landed, the id its choice gets from the chain; else undefined, which the tally reads as an unknown model.
+export const compactionModel = (c: Conversation, agentId: string, ids: ModelIds): string | undefined => {
+  const recorded = c.reviewerModels[agentId] || (c.reviewer?.id === agentId ? c.reviewer.model : '')
+  if (recorded) return recorded
+  return c.reviewer?.id === agentId && c.reviewer.choice !== undefined ? idOf(c.reviewer.choice, ids) : undefined
+}
+
+// The reviewer markers a /clear keeps: they mark traffic, not a review, and the models its reviewers ran on, which a late compaction is priced at.
+export const markers = (c: Conversation): Pick<Conversation, 'reviewerIds' | 'reviewerNames' | 'reviewerModels'> => ({ reviewerIds: c.reviewerIds, reviewerNames: c.reviewerNames, reviewerModels: c.reviewerModels })
 
 // The agent list's statuses that are in flight. A waiting agent is held on background work it owns, or on a plan's approval, and resumes by itself or by a message it can send the worker.
 export const WORKING: readonly string[] = ['pending', 'running', 'waiting']

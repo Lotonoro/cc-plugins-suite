@@ -34,8 +34,8 @@ export type BriefTo = 'stored' | 'spawn: no reviewer yet' | `spawn: ${LetGoReaso
 // Why the reviewer is failing: a review ended without an answer, none could be handed to a reviewer, a spawn did not start in time, a stored reviewer did not finish its review in time, or a state stored before causes existed. Every place that sets `failing` sets one of these, or adds a row for its own cause to the words in button.ts in the same change.
 export type FailCause = 'no answer' | 'not dispatched' | 'no start' | 'no finish' | 'unknown'
 
-// Why a reviewer was let go, which `letGo` in reviewer.ts decides: its context passed the rotation limit, the toggle switched off, the session ended, its brief was refused, its spawn landed after it was no longer wanted, its spawn rejected after the spawn hook had learned its id, its review lapsed without its turn ending, its review failed (ended incomplete, other than by an aborted turn, or could not be dispatched), or it sat idle past its prompt cache's life (`reaped idle`).
-export type LetGoReason = 'rotation' | 'switch off' | 'session end' | 'refused brief' | 'stale landing' | 'rejected spawn' | 'lapsed' | 'failed review' | 'reaped idle'
+// Why a reviewer was let go, which `letGo` in reviewer.ts decides: its context passed the rotation limit, the toggle switched off, the session ended, its brief was refused, its spawn landed after it was no longer wanted, its spawn rejected after the spawn hook had learned its id, its review lapsed without its turn ending, its review failed (ended incomplete, other than by an aborted turn, or could not be dispatched), it sat idle past its prompt cache's life (`reaped idle`), or the conversation's choice moved to another model (`model switch`).
+export type LetGoReason = 'rotation' | 'switch off' | 'session end' | 'refused brief' | 'stale landing' | 'rejected spawn' | 'lapsed' | 'failed review' | 'reaped idle' | 'model switch'
 
 // The last completed review: when it closed (the clock's time) and whether it gave a note.
 export type LastReview = { at: number; note: boolean }
@@ -74,12 +74,17 @@ export type Conversation = {
   // The session transcript's path from the engine's events; a session end clears it, so a /clear keeps it only if the engine reports it again.
   transcript: string | null
   // The current reviewer, once its spawn result names it or a call it makes is adopted by name. The state-based answer (`standingOf` in reviewer.ts) reads it for `current`: only this id settles a review, calls the reviewer's tools or has its context counted.
+  // `model`: what its spawn resolved to, empty while the result has not landed. `choice`: the choice it was spawned for, which travels with it (an alias may resolve to any id, so the resolved model cannot stand in for it); absent in a reviewer stored before choices existed.
   // `endedAt`: the clock's time of its latest turn end, absent while it has had none since it was stored; the idle timer counts the cache's life from it (`armReap`).
-  reviewer?: { id: string; model: string; endedAt?: number }
+  reviewer?: { id: string; model: string; choice?: string; endedAt?: number }
   // Every reviewer id this session's spawns have returned, oldest first, kept across /clear. The state-based answer reads it for `former`: an id here that is not the stored reviewer's is a retired, switched-off, forgotten or stale reviewer's, and is still a reviewer's wherever the answer asks for any reviewer: its task row is hidden, its calls stay out of the record, its compaction keeps what a reviewer keeps, and the agent list's entry for it is left out of the stall fact.
   reviewerIds: string[]
   // The team name each of this session's reviewer spawns runs under, as the agent list names it (the engine renames a taken name), kept across /clear: the name decisions in reviewer.ts read them, and a verified end-of-run notice from one of these is consumed.
   reviewerNames: string[]
+  // The model each reviewer id's spawn resolved to, kept across /clear beside the ids: a review's log names the one its reviewer ran on, and a compaction by that reviewer is priced at it, whichever reviewer is stored since. Absent for an id whose spawn result never landed.
+  reviewerModels: Record<string, string>
+  // The model this conversation has chosen for its reviewers, in the spelling of the list of choices: an alias or a full id. Absent until the conversation first needs a model, which takes the last model set or the default (`takeChoice` in models.ts); a reset (`session.end`) drops it. Each reviewer spawn runs on it, and a stored reviewer spawned for another model is let go at the next dispatch (`keeps`).
+  choice?: string
   // Why the latest reviewer was let go, kept across /clear: the /clear's own let-go is why the next brief goes to a spawn. Absent until a reviewer is let go; a switch on does not clear it.
   lastLetGo?: LetGoReason
   // The current reviewer's context at its last request (input, cache-read and cache-write tokens): past ROTATE_AT it is retired when its review is taken, never at a turn end that gives the review its follow-up, and the next dispatch spawns a fresh one.
@@ -88,8 +93,8 @@ export type Conversation = {
   memory: MemoryEntry[]
   // The reviewer's open review, if it has one.
   review?: OpenReview
-  // Each reviewer spawn still in flight, by the brief it was spawned with, the epoch it was spawned under, the number of the review it serves, the clock's time its dispatch started, and the id and resolved model once the spawn hook has seen it: a dispatch whose spawn result names no agent takes its id from here. No reset clears it, so a spawn a reset dropped still finds the id it is stopped by (`deliverBrief`). `learn`, `adopt` and `land` in reviewer.ts read and write it. Its landing takes it out (`releaseSpawn`). A review no reviewer has stood in for `SPAWN_TIMEOUT_MS` after its dispatch, and one its stored reviewer has not finished `REVIEW_TIMEOUT_MS` after it, fail at the next dispatch (`dispatchIdle`).
-  spawnsInFlight: { brief: string; epoch: number; number: number; startedAt: number; id?: string; model?: string }[]
+  // Each reviewer spawn still in flight, by the brief it was spawned with, the epoch it was spawned under, the number of the review it serves, the clock's time its dispatch started, the choice it was spawned for (`choice`; the hook that sets a full id on the spawn reads it) and the id and resolved model once the spawn hook has seen it: a dispatch whose spawn result names no agent takes its id from here. No reset clears it, so a spawn a reset dropped still finds the id it is stopped by (`deliverBrief`). `learn`, `adopt` and `land` in reviewer.ts read and write it. Its landing takes it out (`releaseSpawn`). A review no reviewer has stood in for `SPAWN_TIMEOUT_MS` after its dispatch, and one its stored reviewer has not finished `REVIEW_TIMEOUT_MS` after it, fail at the next dispatch (`dispatchIdle`).
+  spawnsInFlight: { brief: string; epoch: number; number: number; startedAt: number; choice?: string; id?: string; model?: string }[]
   // Why the last review failed, while none has succeeded since: no review is dispatched until a turn the user's own prompt started ends. Absent means not failing. A state stored before causes existed holds `true` (read as the unknown cause) or `false` (not failing).
   failing?: FailCause | boolean
   // What started the worker's latest turn. A turn a reviewer's task notification started records nothing and dispatches nothing at its end.

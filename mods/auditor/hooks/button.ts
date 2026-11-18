@@ -1,6 +1,8 @@
 import type { BoxProps, ButtonProps, ElementConstructor, RenderElement, TextProps } from 'claude-code'
 import type { FailCause, LastReview } from '../types/index'
-import { centsOf, percentOf, shareOf, wholeOf } from './pricing'
+import { idOf, isFable } from './models'
+import type { Choices, ModelIds } from './models'
+import { centsOf, isPriced, percentOf, shareOf, wholeOf } from './pricing'
 
 // The button's words and drawing: the footer label, the hover popup's rows as an ordered list, and `/auditor`'s answer, all from the same plain figures so they cannot drift apart.
 
@@ -84,6 +86,30 @@ export const rowsOf = (f: Figures): Row[] => {
 
 // What `/auditor` answers: the label the footer would draw, then the popup's rows.
 export const answerOf = (f: Figures): string => [labelOf(f), ...rowsOf(f).map(row => row.text)].join('\n')
+
+// What `/auditor model` shows of one choice: its name, and what is worth marking beside it.
+export type ChoiceFigure = { name: string; isCurrent: boolean; isDefault: boolean; isFable: boolean; costUnknown: boolean }
+
+// What `/auditor model` answers from: the model the reviewer runs on, and the choices with their marks.
+export type ModelFigures = { current: string; choices: readonly ChoiceFigure[] }
+
+// The marks of each choice. A choice is checked at the id the chain gives it (`idOf`), so one whose id is outside the price table reads "cost unknown", and an alias with no id yet reads none until its first review resolves one: the default never warns in a fresh install.
+export const modelFiguresOf = (current: string, choices: Choices, ids: ModelIds): ModelFigures => ({
+  current,
+  choices: choices.list.map(name => {
+    const id = idOf(name, ids)
+    return { name, isCurrent: name === current, isDefault: name === choices.defaultChoice, isFable: isFable(name), costUnknown: id !== undefined && !isPriced(id) }
+  }),
+})
+
+const marksOf = (c: ChoiceFigure): string => {
+  const marks = [c.isCurrent ? 'current' : '', c.isDefault ? 'default' : '', c.isFable ? 'Fable' : '', c.costUnknown ? 'cost unknown' : ''].filter(mark => mark !== '')
+  return marks.length === 0 ? '' : ` (${marks.join(', ')})`
+}
+
+// What `/auditor model` answers: a note on what the command did when it did something, the model the reviewer runs on, then every choice with its marks.
+export const modelAnswerOf = (f: ModelFigures, note?: string): string =>
+  [...(note === undefined ? [] : [note]), `Reviewer model: ${f.current}`, 'Choices:', ...f.choices.map(c => `  ${c.name}${marksOf(c)}`), 'Set one with /auditor model <name>.'].join('\n')
 
 // The button and, beside it in a keyed box, its popup: a dim column of rows one row above the button, out of the flow, its right edge on the box's, shown only while the box is hovered (as cachier's footer popup does), so showing it moves nothing on the footer line.
 export const buttonOf = (t: Table, key: string, f: Figures, onPress: () => void): RenderElement => {
