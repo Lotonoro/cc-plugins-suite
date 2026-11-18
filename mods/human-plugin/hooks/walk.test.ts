@@ -155,7 +155,7 @@ test('a walk asks about the first open item, blocking first: the summary and the
   expect(asked[0]?.options).toEqual(['Use postgres', 'Use sqlite', 'Stop', 'Skip'])
   expect(lines(asked[0]?.question ?? '').slice(0, 3)).toEqual([
     '1 blocking and 2 non-blocking items are open.',
-    'They are asked one at a time, blocking first, and each answer is sent as you give it. Stop, or stop typed under Other, or closing the question ends this; what you have not answered stays on the list.',
+    'They are asked one at a time, blocking first, and each answer is written to the list as you give it and reaches the agent by your next prompt. Stop, or stop typed under Other, or closing the question ends this; what you have not answered stays on the list.',
     '1 of 3 — #2 blocking: Pick 2',
   ])
 })
