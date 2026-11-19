@@ -98,6 +98,9 @@ type Opts = {
   agentsAfterStops?: (stops: number) => NonNullable<Opts['agents']>
   // The first agent list call made after a TaskStop calls reached, then waits for until before the engine answers it.
   listHold?: { until: Promise<void>; reached?: () => void }
+  // The first agent list call made while `when` holds for the conversation last written rejects (`listFailsWhen`), or calls reached and then waits for until before the engine answers it (`listHoldWhen`): a way to reach the one read a step makes, whatever reads came before it.
+  listFailsWhen?: (c: any) => boolean
+  listHoldWhen?: { when: (c: any) => boolean; until: Promise<void>; reached?: () => void }
   // A spawn a hold covers calls its `reached`, then waits for `until` before its result lands (`result` when given, else the reviewer's id). A single hold covers the spawns numbered `from` (1-based, 1 by default) through `to` when given; an array holds the spawn numbered i + 1 by its entry i, and an undefined entry holds none.
   spawnHold?: (SpawnHold & { from?: number; to?: number }) | (SpawnHold | undefined)[]
   // From the reviewer spawn numbered `spawnThrowsFrom` (1-based) on, the spawn throws; from `spawnDeniesFrom` on, it is refused.
@@ -224,12 +227,23 @@ const engine = (on: any, opts: Opts = {}) => {
   })
   let listHeld = false
   let firstListHeld = false
+  let listFailedWhen = false
+  let listHeldWhen = false
   on('agent.list', () => {
     seen.listCalls++
     if (opts.listFailsWith !== undefined) throw new Error(opts.listFailsWith)
     if (seen.listCalls === opts.listFailsAt) throw new Error('agent list unavailable')
     if (opts.listFails === true || (opts.listFailsAfterStop === true && seen.stops.length > 0)) throw new Error('agent list unavailable')
+    if (opts.listFailsWhen !== undefined && !listFailedWhen && opts.listFailsWhen(seen.conversation)) {
+      listFailedWhen = true
+      throw new Error('agent list unavailable')
+    }
     const answer = { value: opts.agentsAfterStops?.(seen.stops.length) ?? opts.agents ?? [] }
+    if (opts.listHoldWhen !== undefined && !listHeldWhen && opts.listHoldWhen.when(seen.conversation)) {
+      listHeldWhen = true
+      opts.listHoldWhen.reached?.()
+      return opts.listHoldWhen.until.then(() => answer)
+    }
     if (opts.firstListHold !== undefined && !firstListHeld) {
       firstListHeld = true
       opts.firstListHold.reached?.()
@@ -450,6 +464,11 @@ const logOf = (seen: { files: Record<string, string> }, path: string): any => (p
 
 // The debug lines logged so far that contain `text`.
 const debugLines = (seen: { logs: { text: string }[] }, text: string): string[] => seen.logs.map(line => line.text).filter(line => line.includes(text))
+
+// The one debug line a lapse writes: the review, its cause and its age in seconds; the reviewer the state held, with its status in the agent list (`held` reads `none` for no reviewer); the turn ends counted on the review by reason, and the agent of the latest; the reviewer its brief reached; and the plugin spawns the state did not know, with their label.
+const lapseLine = (p: { review: number; cause: 'no start' | 'no finish'; seconds: number; held?: string; former?: number; letGo?: number; last?: string; briefed?: string; unknown: number | 'unread' }): string =>
+  `auditor: review ${p.review} lapsed (${p.cause}) after ${p.seconds} s; held reviewer ${p.held ?? 'none'}; turn ends counted on it: former reviewer ${p.former ?? 0}, let go during its settle ${p.letGo ?? 0}, last counted agent ${p.last ?? 'none'}; briefed reviewer ${p.briefed ?? 'none'}; unknown plugin spawns, possibly another conversation's: ${p.unknown}`
+const lapseLines = (seen: { logs: { text: string }[] }): string[] => debugLines(seen, ' lapsed (')
 
 // The lines logged to the transcript so far, as text.
 const transcriptLines = (seen: { logs: { text: string; to: string }[] }): string[] => seen.logs.filter(line => line.to === 'transcript').map(line => line.text)
@@ -7567,6 +7586,8 @@ describe('the reviewer turn ends that closed no review', () => {
   const NO_REVIEW_OPEN = 'auditor: the reviewer ended a turn with no review in progress; not recorded'
   // The debug line for a turn end that closed nothing: the agent, the reason, and the open review's number or none.
   const closedNothing = (agent: string, reason: string, review: number | 'none') => `auditor: a turn end of reviewer ${agent} closed nothing (${reason}); open review: ${review}`
+  // The same line where the open review was dispatched after the turn end was first read, so it is named and not counted on.
+  const closedNothingOnNewer = (agent: string, reason: string, review: number) => `${closedNothing(agent, reason, review)}, not counted on it: it was dispatched after this turn end was read`
   const closedLines = (seen: any): string[] => debugLines(seen, 'closed nothing')
   // What a review that no such turn end reached logs.
   const NONE_COUNTED = { unmatched_former: 0, unmatched_let_go: 0 }
@@ -7630,7 +7651,8 @@ describe('the reviewer turn ends that closed no review', () => {
     expect(logOf(seen, LOG_2).unmatched_last).toEqual([])
   })
 
-  test('a stored reviewer\'s turn end whose settle finds it let go while its review is open is counted on that review as let go during its settle, and the no-review line is still written', ON, async ($, on) => {
+  // Review 2 is briefed to the stored ag1 and its brief is refused, so ag1 is let go and the brief goes to a spawn, ag2, which holds review 2. ag1's turn end was read while it was stored: its settle finds it let go and counts it on review 2, which stays open.
+  const settledLetGo = async ($: any, on: any) => {
     const armed = { on: false }
     const sent = gate()
     const briefed = gate()
@@ -7653,13 +7675,35 @@ describe('the reviewer turn ends that closed no review', () => {
     expect(seen.conversation).toMatchObject({ reviewer: { id: 'ag2' }, lastLetGo: 'refused brief' })
     taking.open()
     await ending
+    return seen
+  }
+
+  test('a stored reviewer\'s turn end whose settle finds it let go while its review is open is counted on that review as let go during its settle, and that one line names it: no line says no review is in progress', ON, async ($, on) => {
+    const seen = await settledLetGo($, on)
     expect(seen.conversation.review.unmatched).toMatchObject({ former: 0, letGo: 1 })
     expect(seen.conversation.review.unmatched.last.map((end: any) => end.agentId)).toEqual(['ag1'])
-    expect(debugLines(seen, 'no review in progress')).toEqual([NO_REVIEW_OPEN])
+    expect(debugLines(seen, 'no review in progress')).toEqual([])
     expect(closedLines(seen)).toEqual([closedNothing('ag1', LET_GO, 2)])
     await turnEnded($, 'ag2', 'Nothing to note.')
     expect(logOf(seen, LOG_2)).toMatchObject({ status: 'complete', unmatched_former: 0, unmatched_let_go: 1, brief_to: 'spawn: refused brief' })
     expect(logOf(seen, LOG_2).unmatched_last.map((end: any) => end.agent_id)).toEqual(['ag1'])
+  })
+
+  test('a stored reviewer\'s turn end whose settle finds its review gone and itself let go by a switch off is named by one line, which gives the review as none', ON, async ($, on) => {
+    const armed = { on: false }
+    const taking = gate()
+    const takeReached = gate()
+    const seen = engine(on, { holdWrite: { when: () => armed.on, until: taking.until, reached: takeReached.open } })
+    await workerTurn($)
+    armed.on = true
+    const ending = $.turn.complete(TURN_END('ag1', 'Nothing to note.'))
+    await takeReached.until
+    // The switch off drops review 1 and lets ag1 go while ag1's take waits.
+    await $.command.run({ command: 'auditor', args: 'off' } as any)
+    taking.open()
+    await ending
+    expect(debugLines(seen, 'no review in progress')).toEqual([])
+    expect(closedLines(seen)).toEqual([closedNothing('ag1', LET_GO, 'none')])
   })
 
   test('a stored reviewer\'s turn end with no review open is counted on no review, and writes the existing line word for word and no other', ON, async ($, on) => {
@@ -7674,7 +7718,7 @@ describe('the reviewer turn ends that closed no review', () => {
     expect(logOf(seen, LOG_2)).toMatchObject({ status: 'complete', ...NONE_COUNTED })
   })
 
-  test('a former reviewer\'s turn end whose recording change runs after a new review was dispatched leaves that review\'s counts unchanged, and writes its line with the review given as none', ON, async ($, on) => {
+  test('a former reviewer\'s turn end whose recording change runs after a new review was dispatched leaves that review\'s counts unchanged, and writes its line naming that review as open and not counted on', ON, async ($, on) => {
     const armed = { on: false }
     const recorded = gate()
     const reached = gate()
@@ -7687,7 +7731,7 @@ describe('the reviewer turn ends that closed no review', () => {
     recorded.open()
     await late
     expect(seen.conversation.review.unmatched).toBeUndefined()
-    expect(closedLines(seen)).toEqual([closedNothing('ag1', FORMER, 'none')])
+    expect(closedLines(seen)).toEqual([closedNothingOnNewer('ag1', FORMER, 2)])
     await turnEnded($, 'ag2', 'Nothing to note.')
     expect(logOf(seen, LOG_2)).toMatchObject({ status: 'complete', ...NONE_COUNTED })
   })
@@ -7755,6 +7799,50 @@ describe('the reviewer turn ends that closed no review', () => {
     await turnEnded($, 'ag1', 'Nothing to note.')
     expect(logOf(seen, LOG_1)).toMatchObject({ status: 'complete', ...NONE_COUNTED })
     expect(logOf(seen, LOG_1).unmatched_last).toEqual([])
+  })
+
+  test('a lapse after a former reviewer\'s turn end during the review shows a former count of 1 and that agent in its debug line', ON, async ($, on) => {
+    const seen = await rotated($, on)
+    await workerTurn($, 'Second.')
+    await $.turn.complete(TURN_END('ag1', 'Nothing to note.'))
+    seen.clock = seen.conversation.review.dispatchedAt + TEN_MINUTES + 1
+    await $.prompt.submit(HELPER)
+    await $.classic.Stop(stop)
+    await drained()
+    expect(lapseLines(seen)).toEqual([lapseLine({ review: 2, cause: 'no finish', seconds: 600, held: 'ag2, status absent', former: 1, last: 'ag1', briefed: 'ag2', unknown: 0 })])
+  })
+
+  test('a lapse whose only former turn end came before its dispatch shows a former count of 0 in its debug line', ON, async ($, on) => {
+    const seen = await rotated($, on)
+    await $.turn.complete(TURN_END('ag1', 'Nothing to note.'))
+    await workerTurn($, 'Second.')
+    seen.clock = seen.conversation.review.dispatchedAt + TEN_MINUTES + 1
+    await $.prompt.submit(HELPER)
+    await $.classic.Stop(stop)
+    await drained()
+    expect(lapseLines(seen)).toEqual([lapseLine({ review: 2, cause: 'no finish', seconds: 600, held: 'ag2, status absent', briefed: 'ag2', unknown: 0 })])
+  })
+
+  test('a lapse after a settle found the stored reviewer let go shows that count and agent in its debug line', ON, async ($, on) => {
+    const seen = await settledLetGo($, on)
+    seen.clock = seen.conversation.review.dispatchedAt + TEN_MINUTES + 1
+    await $.prompt.submit(HELPER)
+    await $.classic.Stop(stop)
+    await drained()
+    expect(lapseLines(seen)).toEqual([lapseLine({ review: 2, cause: 'no finish', seconds: 600, held: 'ag2, status absent', letGo: 1, last: 'ag1', briefed: 'ag2', unknown: 0 })])
+  })
+
+  test('a lapse after three former reviewers\' turn ends shows their count and the latest of them, not the first, in its debug line', ON, async ($, on) => {
+    const seen = engine(on, { stateSeed: seeded })
+    for (const [id, at] of [['agA', 100], ['agB', 200], ['agC', 300]] as const) {
+      seen.clock = at
+      await $.turn.complete(TURN_END(id, 'Nothing to note.'))
+    }
+    seen.clock = seeded.review.dispatchedAt + TEN_MINUTES + 1
+    await $.prompt.submit(HELPER)
+    await $.classic.Stop(stop)
+    await drained()
+    expect(lapseLines(seen)).toEqual([lapseLine({ review: 1, cause: 'no finish', seconds: 600, held: 'ag1, status absent', former: 3, last: 'agC', unknown: 0 })])
   })
 
   test('with the log option off no file is written, and the counted turn end is still named in the debug log', async ($, on) => {
@@ -8214,6 +8302,222 @@ describe('an open review whose stored reviewer never ends its turn', () => {
     await turnEnded($, 'ag2', 'Nothing to note.')
     expect(seen.conversation.failing).toBeUndefined()
     expect(logOf(seen, LOG_2)).toMatchObject({ status: 'complete', brief_to: 'spawn: lapsed' })
+  })
+})
+
+// What a review's log and the debug log say of a review that lapses: when the lapse was detected and how long the review really ran, the reviewer the state held and its status in the agent list, and the plugin spawns the list shows that the state did not know.
+describe('the record of a review that lapses', () => {
+  const REASON = 'reviewer did not finish in 10 minutes'
+  const NOT_LAPSED = { lapse_detected_at: null, lapse_age_ms: null, lapse_held_id: null, lapse_held_status: null, lapse_unknown_spawns: null, lapse_unknown_spawns_total: null }
+  // A reviewer as the agent list shows one this plugin spawned.
+  const listedReviewer = (id: string, status = 'running') => ({ id, name: 'auditor-reviewer', type: 'auditor:reviewer', status, description: 'auditor review', spawnedBy: 'auditor' })
+  // Review 1 is dispatched to the spawned reviewer ag1, and the clock then stands `age` milliseconds after its dispatch, so the next reading is the lapse decision's.
+  const stuck = async ($: any, on: any, opts: Opts = {}, age = TEN_MINUTES + 1) => {
+    const seen = engine(on, { reviewerIds: ['ag1', 'ag2'], ...opts })
+    await $.prompt.submit(COMPOSER('first'))
+    await $.classic.Stop(stop)
+    await mainTurnEnd($)
+    expect(seen.conversation.review).toMatchObject({ number: 1, briefedId: 'ag1' })
+    seen.clock = seen.conversation.review.dispatchedAt + age
+    return seen
+  }
+  // What the list shows until a stop is made, and nothing after it: a stopped reviewer was measured absent from the list.
+  const shows = (...entries: ReturnType<typeof listedReviewer>[]): Opts => ({ agentsAfterStops: stops => (stops === 0 ? entries : []) })
+  // The worker's next turn, which the user starts: a failure is followed by the next brief only at the end of such a turn.
+  const nextTurn = async ($: any) => {
+    await $.prompt.submit(COMPOSER('second'))
+    await $.classic.Stop(stop)
+    await drained()
+  }
+
+  test('a never-finished lapse logs when it was detected and the age its review really had, and the next review is dispatched at that same reading', ON, async ($, on) => {
+    const seen = await stuck($, on, shows(listedReviewer('ag1')))
+    await nextTurn($)
+    await turnEnded($, 'ag2', 'Nothing to note.')
+    const lapsed = logOf(seen, LOG_1)
+    expect(lapsed).toMatchObject({ status: 'incomplete', number: 1, reason: REASON, lapse_age_ms: 600_001, lapse_held_id: 'ag1' })
+    expect(lapsed.lapse_detected_at).toBe(logOf(seen, LOG_2).dispatched_at)
+    expect(lapsed.lapse_detected_at - lapsed.dispatched_at).toBe(600_001)
+  })
+
+  for (const status of ['running', 'idle'] as const) {
+    test(`a never-finished lapse whose reviewer the list shows ${status} logs that reviewer as its held one, with that status`, ON, async ($, on) => {
+      const seen = await stuck($, on, shows(listedReviewer('ag1', status)))
+      await nextTurn($)
+      expect(logOf(seen, LOG_1)).toMatchObject({ lapse_held_id: 'ag1', lapse_held_status: status })
+    })
+  }
+
+  test('a never-finished lapse whose reviewer the list does not show logs that reviewer as held, and its status as absent', ON, async ($, on) => {
+    const seen = await stuck($, on, shows(listedReviewer('ag7')))
+    await nextTurn($)
+    expect(logOf(seen, LOG_1)).toMatchObject({ lapse_held_id: 'ag1', lapse_held_status: 'absent' })
+  })
+
+  test('a never-started lapse holds no reviewer, so it logs no held id and no status, and still logs its age and the plugin spawns the list shows', ON, async ($, on) => {
+    const held = heldSpawn()
+    // The spawn is still in flight, so the state does not know the id the list shows for it.
+    const seen = engine(on, { spawnHold: { ...held.hold, to: 1 }, reviewerIds: ['ag1', 'ag2'], agents: [listedReviewer('ag1', 'idle')] })
+    await $.prompt.submit(COMPOSER('fix'))
+    const stopping = $.classic.Stop(stop)
+    await held.reached
+    seen.clock = seen.conversation.review.dispatchedAt + TEN_MINUTES + 1
+    await $.prompt.submit(HELPER)
+    await $.classic.Stop(stop)
+    const lapsed = logOf(seen, LOG_1)
+    expect(lapsed).toMatchObject({ status: 'incomplete', reason: 'reviewer spawn did not settle in 10 minutes', lapse_age_ms: 600_001, lapse_held_id: null, lapse_held_status: null, lapse_unknown_spawns_total: 1 })
+    expect(lapsed.lapse_unknown_spawns).toEqual([{ agent_id: 'ag1', status: 'idle' }])
+    expect(lapsed.lapse_detected_at - lapsed.dispatched_at).toBe(600_001)
+    expect(lapseLines(seen)).toEqual([lapseLine({ review: 1, cause: 'no start', seconds: 600, unknown: 1 })])
+    held.land()
+    await stopping
+    await drained()
+  })
+
+  test('a lapse whose list names four plugin spawns the state does not know logs three of them and a total of four, and never a former reviewer, the held one or the worker\'s own agents', ON, async ($, on) => {
+    const seen = engine(on, {
+      stateSeed: { dispatches: 1, reviewer: { id: 'ag1', model: 'm' }, reviewerIds: ['ag1', 'agOld'], review: { number: 1, record: ['USER: x'], dispatchedAt: 1, nothingWakes: false, briefTo: 'stored', briefedId: 'ag1' } },
+      agents: [
+        listedReviewer('agOld', 'idle'),
+        listedReviewer('ag1'),
+        { id: 'sub1', name: 'auditor-reviewer', type: 'auditor:reviewer', status: 'running', description: 'd' },
+        listedReviewer('agA', 'idle'),
+        listedReviewer('agB'),
+        { id: 'sub2', type: 'general-purpose', status: 'idle', description: 'd', spawnedBy: 'cachier' },
+        listedReviewer('agC', 'waiting'),
+        listedReviewer('agD', 'killed'),
+      ],
+    })
+    seen.clock = 1 + TEN_MINUTES + 1
+    await $.prompt.submit(HELPER)
+    await $.classic.Stop(stop)
+    const lapsed = logOf(seen, LOG_1)
+    expect(lapsed).toMatchObject({ status: 'incomplete', lapse_held_id: 'ag1', lapse_held_status: 'running', lapse_unknown_spawns_total: 4 })
+    expect(lapsed.lapse_unknown_spawns).toEqual([{ agent_id: 'agA', status: 'idle' }, { agent_id: 'agB', status: 'running' }, { agent_id: 'agC', status: 'waiting' }])
+    expect(lapseLines(seen)).toEqual([lapseLine({ review: 1, cause: 'no finish', seconds: 600, held: 'ag1, status running', briefed: 'ag1', unknown: 4 })])
+  })
+
+  test('a lapse whose list read rejects logs the reviewer\'s status as unread and no spawns, writes one line for the failed read, and goes on: the reviewer is stopped, its entries go back, the cause is set and the next brief goes out', ON, async ($, on) => {
+    const seen = await stuck($, on, { listFailsWhen: c => c?.failing === 'no finish' })
+    await nextTurn($)
+    expect(logOf(seen, LOG_1)).toMatchObject({ status: 'incomplete', reason: REASON, lapse_held_id: 'ag1', lapse_held_status: 'unread', lapse_unknown_spawns: null, lapse_unknown_spawns_total: null })
+    expect(debugLines(seen, 'agent list read at a lapse failed')).toHaveLength(1)
+    expect(lapseLines(seen)).toEqual([lapseLine({ review: 1, cause: 'no finish', seconds: 600, held: 'ag1, status unread', briefed: 'ag1', unknown: 'unread' })])
+    expect(seen.stops.map(s => s.task_id)).toEqual(['ag1'])
+    expect(seen.conversation.failing).toBe('no finish')
+    expect(seen.conversation.review).toMatchObject({ number: 2 })
+    expect(seen.conversation.review.record.join('')).toContain('USER: first')
+    expect(seen.spawns.length).toBe(2)
+  })
+
+  test('a lapse whose list read never answers holds its dispatch for the one-second bound and no longer, logs the status as unread with one line for the late read, and goes on: the reviewer is stopped, then the next brief goes out', ON, async ($, on) => {
+    const answer = gate()
+    const reached = gate()
+    const seen = await stuck($, on, { listHoldWhen: { when: c => c?.failing === 'no finish', until: answer.until, reached: reached.open } })
+    await $.prompt.submit(COMPOSER('second'))
+    const dispatching = $.classic.Stop(stop)
+    await reached.until
+    await drained()
+    // The review is given up in the state, and the dispatch waits at the read: nothing is logged, stopped or briefed, and the wait is the one-second bound.
+    expect(seen.conversation.failing).toBe('no finish')
+    expect(logOf(seen, LOG_1)).toBeUndefined()
+    expect(seen.stops).toEqual([])
+    expect(seen.spawns.length).toBe(1)
+    expect(seen.timers.at(-1)?.ms).toBe(1000)
+    seen.timers.at(-1)?.fire()
+    await dispatching
+    await drained()
+    expect(logOf(seen, LOG_1)).toMatchObject({ status: 'incomplete', reason: REASON, lapse_held_id: 'ag1', lapse_held_status: 'unread', lapse_unknown_spawns: null, lapse_unknown_spawns_total: null })
+    expect(debugLines(seen, 'agent list read at a lapse failed: Error: no answer within 1000 ms')).toHaveLength(1)
+    expect(debugLines(seen, 'agent list read at a lapse')).toHaveLength(1)
+    expect(seen.stops).toEqual([{ task_id: 'ag1', spawns: 1 }])
+    expect(seen.conversation.review).toMatchObject({ number: 2 })
+    expect(seen.spawns.length).toBe(2)
+    // Its answer, when it comes, changes nothing.
+    answer.open()
+    await drained()
+    expect(debugLines(seen, 'agent list read at a lapse')).toHaveLength(1)
+    expect(seen.stops.length).toBe(1)
+  })
+
+  test('the lapsed reviewer\'s stop is issued after the log entry is written and before the next brief goes out', ON, async ($, on) => {
+    const seen = await stuck($, on)
+    await nextTurn($)
+    // Only the first review's spawn had been made, and only the lapse's log file had been written, when the stop was made.
+    expect(seen.stops).toEqual([{ task_id: 'ag1', spawns: 1 }])
+    expect(seen.stopWrites).toEqual([1])
+    expect(seen.spawns.length).toBe(2)
+  })
+
+  test('each lapse writes one debug line with its review, cause, age in seconds, held reviewer and its status, counts, last counted agent, briefed reviewer and unknown plugin spawns, beside the failure line, which is as it was', ON, async ($, on) => {
+    const seen = await stuck($, on, shows(listedReviewer('ag1', 'idle'), listedReviewer('ag9'), listedReviewer('ag8', 'idle')))
+    await nextTurn($)
+    expect(lapseLines(seen)).toEqual([lapseLine({ review: 1, cause: 'no finish', seconds: 600, held: 'ag1, status idle', briefed: 'ag1', unknown: 2 })])
+    expect(debugLines(seen, 'review failed')).toEqual(['auditor: review failed: reviewer did not finish in 10 minutes'])
+  })
+
+  test('a completed review, and one the auditor was switched off on, log all six lapse keys null', ON, async ($, on) => {
+    const seen = engine(on)
+    await workerTurn($)
+    await turnEnded($, 'ag1', 'Nothing to note.')
+    await workerTurn($, 'Second.')
+    await $.command.run({ command: 'auditor', args: 'off' } as any)
+    expect(logOf(seen, LOG_1)).toMatchObject({ status: 'complete', ...NOT_LAPSED })
+    expect(logOf(seen, LOG_2)).toMatchObject({ status: 'incomplete', reason: 'the auditor was switched off', ...NOT_LAPSED })
+  })
+
+  test('a review whose spawn the engine refused logs all six lapse keys null', ON, async ($, on) => {
+    const seen = engine(on, { spawn: { deny: 'no' } })
+    await workerTurn($)
+    expect(logOf(seen, LOG_1)).toMatchObject({ status: 'incomplete', ...NOT_LAPSED })
+  })
+
+  test('with the log option off a lapse writes no log file and still writes its debug line', async ($, on) => {
+    const seen = await stuck($, on)
+    await nextTurn($)
+    expect(seen.writes).toEqual([])
+    expect(lapseLines(seen)).toEqual([lapseLine({ review: 1, cause: 'no finish', seconds: 600, held: 'ag1, status absent', briefed: 'ag1', unknown: 0 })])
+  })
+
+  test('a dispatch that lapses a never-started review reads the agent list once more, and one that lapses nothing reads it no more', ON, async ($, on) => {
+    const held = heldSpawn()
+    const seen = engine(on, { spawnHold: { ...held.hold, to: 1 }, reviewerIds: ['ag1', 'ag2'] })
+    await $.prompt.submit(COMPOSER('fix'))
+    const stopping = $.classic.Stop(stop)
+    await held.reached
+    const dispatchedAt = seen.conversation.review.dispatchedAt
+    await mainTurnEnd($)
+    // A turn the user did not start: no brief follows the failure, so the dispatch's reads are the whole difference, and the worker's own turn end reads no list of its own.
+    await $.prompt.submit(HELPER)
+    seen.clock = dispatchedAt + TEN_MINUTES
+    const before = seen.listCalls
+    await mainTurnEnd($)
+    expect(seen.conversation.review).toMatchObject({ number: 1 })
+    expect(seen.listCalls).toBe(before)
+    seen.clock = dispatchedAt + TEN_MINUTES + 1
+    await mainTurnEnd($)
+    expect(seen.conversation.review).toBeUndefined()
+    expect(seen.listCalls).toBe(before + 1)
+    held.land()
+    await stopping
+    await drained()
+  })
+
+  test('a dispatch that lapses a never-finished review reads the agent list once before it stops the reviewer', ON, async ($, on) => {
+    let reads = 0
+    // A read made before any stop is the lapse's: the stop's own check reads after the stop.
+    const seen = await stuck($, on, {
+      agentsAfterStops: stops => {
+        if (stops === 0) reads++
+        return []
+      },
+    })
+    await $.prompt.submit(HELPER)
+    reads = 0
+    await mainTurnEnd($)
+    await drained()
+    expect(seen.stops.map(s => s.task_id)).toEqual(['ag1'])
+    expect(reads).toBe(1)
   })
 })
 

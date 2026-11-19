@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'claude-code/testing'
 import type { AgentInfo } from 'claude-code'
 import type { Conversation } from '../types/index'
-import { adopt, compactionModel, countUnmatched, idleTimerOf, isEndNotice, isHandBack, isNotice, isReviewerEntry, keeps, land, lapseOf, learn, learnName, letGo, letGoSwitched, letGoSwitchedIdle, markers, nameKnown, nameListed, needsIds, originOf, reapIdle, reviewModels, reviewerNameOf, spawnChoice, spawnName, spawning, standingOf, stopMissed, sweepable, withTurnEnd } from './reviewer'
+import { adopt, compactionModel, countUnmatched, idleTimerOf, isEndNotice, isHandBack, isNotice, isReviewerEntry, keeps, land, lapseListFacts, lapseOf, learn, learnName, letGo, letGoSwitched, letGoSwitchedIdle, markers, nameKnown, nameListed, needsIds, originOf, reapIdle, reviewModels, reviewerNameOf, spawnChoice, spawnName, spawning, standingOf, stopMissed, sweepable, withTurnEnd } from './reviewer'
 import type { Identity } from './reviewer'
 
 const ID: Identity = { plugin: 'auditor', name: 'auditor-reviewer', description: 'auditor review' }
@@ -660,6 +660,75 @@ describe('the lapse of an open review', () => {
   })
 })
 
+describe('what the agent list says at a lapse', () => {
+  // ag1 holds review 4 and ag0 was let go before it. The plugin's own spawns carry `spawnedBy`.
+  const held = (over: Partial<Conversation> = {}): Conversation => conversation({ reviewer: { id: 'ag1', model: 'm' }, reviewerIds: ['ag0', 'ag1'], ...over })
+  const spawned = (id: string, over: Partial<AgentInfo> = {}): AgentInfo => listed(id, { spawnedBy: 'auditor', type: 'auditor:reviewer', name: 'auditor-reviewer', ...over })
+
+  test('the held reviewer is the stored one, and its status is the one the list gives it, whatever it is', () => {
+    for (const status of ['pending', 'running', 'waiting', 'idle', 'completed', 'failed', 'killed'] as const) {
+      expect(lapseListFacts(ID, held(), [spawned('ag1', { status })])).toMatchObject({ heldId: 'ag1', heldStatus: status })
+    }
+  })
+
+  test('a held reviewer the list does not show is absent, whatever else it shows', () => {
+    expect(lapseListFacts(ID, held(), []).heldStatus).toBe('absent')
+    expect(lapseListFacts(ID, held(), [spawned('ag0'), listed('sub1')]).heldStatus).toBe('absent')
+  })
+
+  test('a list that could not be read leaves the held reviewer\'s status unread, and names no spawn and no total', () => {
+    expect(lapseListFacts(ID, held(), undefined)).toEqual({ heldId: 'ag1', heldStatus: 'unread', unknown: undefined, unknownTotal: undefined })
+  })
+
+  test('with no reviewer held there is no id and no status to give, read or not, and the spawns are still named', () => {
+    const none = held({ reviewer: undefined })
+    expect(lapseListFacts(ID, none, [spawned('ag1')])).toMatchObject({ heldId: undefined, heldStatus: undefined })
+    expect(lapseListFacts(ID, none, undefined)).toEqual({ heldId: undefined, heldStatus: undefined, unknown: undefined, unknownTotal: undefined })
+    expect(lapseListFacts(ID, none, [spawned('ag9', { status: 'idle' })])).toMatchObject({ unknown: [{ agentId: 'ag9', status: 'idle' }], unknownTotal: 1 })
+  })
+
+  test('an unknown spawn is a listed agent the list names as this plugin\'s whose id the state does not know, with its status', () => {
+    expect(lapseListFacts(ID, held(), [spawned('ag1'), spawned('ag7', { status: 'idle' }), spawned('ag8', { status: 'running' })])).toMatchObject({
+      unknown: [{ agentId: 'ag7', status: 'idle' }, { agentId: 'ag8', status: 'running' }],
+      unknownTotal: 2,
+    })
+  })
+
+  test('a reviewer the state let go, the held reviewer and the worker\'s own agents are never unknown spawns, a name under a reviewer\'s included', () => {
+    const agents = [
+      spawned('ag0', { status: 'idle' }),
+      spawned('ag1'),
+      listed('sub1'),
+      listed('sub2', { name: 'auditor-reviewer', type: 'auditor:reviewer' }),
+      listed('sub3', { spawnedBy: 'cachier', name: 'auditor-reviewer' }),
+    ]
+    expect(lapseListFacts(ID, held(), agents)).toMatchObject({ unknown: [], unknownTotal: 0 })
+  })
+
+  test('three are named at most, the first three the list gives, and the total counts every one', () => {
+    const agents = [spawned('agA', { status: 'idle' }), spawned('agB'), listed('sub1'), spawned('agC', { status: 'waiting' }), spawned('agD', { status: 'killed' }), spawned('agE')]
+    const facts = lapseListFacts(ID, held(), agents)
+    expect(facts.unknown).toEqual([{ agentId: 'agA', status: 'idle' }, { agentId: 'agB', status: 'running' }, { agentId: 'agC', status: 'waiting' }])
+    expect(facts.unknownTotal).toBe(5)
+  })
+
+  test('exactly three are all named, and four name three with a total of four', () => {
+    const three = [spawned('agA'), spawned('agB'), spawned('agC')]
+    expect(lapseListFacts(ID, held(), three)).toMatchObject({ unknownTotal: 3 })
+    expect(lapseListFacts(ID, held(), three).unknown?.length).toBe(3)
+    expect(lapseListFacts(ID, held(), [...three, spawned('agD')])).toMatchObject({ unknownTotal: 4 })
+    expect(lapseListFacts(ID, held(), [...three, spawned('agD')]).unknown?.length).toBe(3)
+  })
+
+  test('it is judged on the conversation it is given: the reviewer a lapse let go is held before the let-go, and known, so never unknown, after it', () => {
+    const before = held()
+    const after = letGo(before, 'lapsed', 'ag1').next
+    const agents = [spawned('ag1', { status: 'idle' })]
+    expect(lapseListFacts(ID, before, agents)).toMatchObject({ heldId: 'ag1', heldStatus: 'idle', unknownTotal: 0 })
+    expect(lapseListFacts(ID, after, agents)).toMatchObject({ heldId: undefined, heldStatus: undefined, unknownTotal: 0 })
+  })
+})
+
 describe('the reviewer\'s latest turn end', () => {
   test('is noted on the stored reviewer whose turn ended, and on no other', () => {
     const c = conversation({ reviewer: { id: 'ag1', model: 'm' } })
@@ -682,7 +751,7 @@ describe('the reviewer turn ends that closed nothing', () => {
   test('a former reviewer\'s turn end is counted on the open review with its agent and arrival time, and the review that took it is named', () => {
     const c = held()
     const counted = countUnmatched(c, 'ag0', FORMER, 7000, 4)
-    expect(counted).toMatchObject({ reason: FORMER, review: 4 })
+    expect(counted).toMatchObject({ reason: FORMER, review: 4, open: 4 })
     expect(counted.next.review).toMatchObject({ number: 4, record: [], dispatchedAt: 1, nothingWakes: false })
     expect(counted.next.review?.unmatched).toEqual({ former: 1, letGo: 0, last: [{ agentId: 'ag0', at: 7000 }] })
     expect(c.review?.unmatched).toBeUndefined()
@@ -712,15 +781,16 @@ describe('the reviewer turn ends that closed nothing', () => {
     expect(counted.next).toBe(c)
     expect(counted.reason).toBe(FORMER)
     expect(counted.review).toBeUndefined()
+    expect(counted.open).toBeUndefined()
   })
 
-  test('a review dispatched after the dispatch count the turn end read is newer than it and is not counted on; one dispatched by then is', () => {
+  test('a review dispatched after the dispatch count the turn end read is newer than it and is not counted on, though it is the review open; one dispatched by then is counted on', () => {
     const c = held()
     const newer = countUnmatched(c, 'ag0', FORMER, 7000, 3)
     expect(newer.next).toBe(c)
-    expect(newer).toMatchObject({ reason: FORMER, review: undefined })
-    expect(countUnmatched(c, 'ag0', FORMER, 7000, 4)).toMatchObject({ review: 4 })
-    expect(countUnmatched(c, 'ag0', FORMER, 7000, 9)).toMatchObject({ review: 4 })
+    expect(newer).toMatchObject({ reason: FORMER, review: undefined, open: 4 })
+    expect(countUnmatched(c, 'ag0', FORMER, 7000, 4)).toMatchObject({ review: 4, open: 4 })
+    expect(countUnmatched(c, 'ag0', FORMER, 7000, 9)).toMatchObject({ review: 4, open: 4 })
   })
 
   test('only the latest two are kept in full, newest last, in the order they were recorded; the count covers every one', () => {
