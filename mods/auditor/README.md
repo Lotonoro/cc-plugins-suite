@@ -40,7 +40,7 @@ sending notes. The main agent handles any edits.
 ## Token cost
 
 Auditor runs the reviewer at high effort, on Haiku unless you choose another
-model with `/auditor model`. On Haiku, reviews under 100,000 prompt tokens use
+model with `/auditor model`. On Haiku, reviews up to 100,000 prompt tokens use
 the standard tier. On a warm review, reused context is priced as cache reads
 at one-tenth of Haiku’s standard input rate in Auditor’s pricing table.
 
