@@ -160,7 +160,7 @@ test('a walk asks about the first open item, blocking first: the summary and the
   expect(asked[0]?.options).toEqual(['Use postgres', 'Use sqlite', 'Stop', 'Skip'])
   expect(lines(asked[0]?.question ?? '').slice(0, 3)).toEqual([
     '1 blocking and 2 non-blocking items are open.',
-    'They are asked one at a time, blocking first, and each answer is written to the list as you give it and reaches the agent by your next prompt. Stop, or stop typed under Other, or closing the question ends this; what you have not answered stays on the list.',
+    'They are asked one at a time, blocking first, and each answer is written to the list as you give it and reaches the agent by your next prompt. Stop, or stop typed under Other, ends the walk; Skip, or closing the question, passes over an item. What you have not answered stays on the list.',
     '1 of 3 — #2 blocking: Pick 2',
   ])
 })
@@ -408,19 +408,107 @@ test('a note edit, a brief edit and an agent append to an item never answered le
   )
 })
 
-test('a rejected dialog (closed, expired or refused) writes nothing for its item, keeps the earlier answers, logs the message, and ends naming the item', async () => {
+test('a rejected dialog (closed, expired or refused) is skipped: nothing is written for its item, the earlier answers stay, its message is logged, and asked last it leads the end text as skipped #<n>, the item still counted as open', async () => {
   fresh()
-  const { env, values, debug, asked } = walkEnv([made(1), made(2), made(3)], [{ gives: 'Done' }, { gives: { rejects: 'The user dismissed the question' } }])
+  const { env, values, debug, asked } = walkEnv([made(1), made(2)], [{ gives: 'Done' }, { gives: { rejects: 'The user dismissed the question' } }])
   const text = await walk(env, WINDOW)
   expect(asked).toHaveLength(2)
-  expect(values.list.items.map(it => it.state)).toEqual(['done-waiting', 'open', 'open'])
+  expect(values.list.items.map(it => it.state)).toEqual(['done-waiting', 'open'])
   expect(text).toBe(
     [
-      '  It ended when the question on #2 was closed, timed out or refused; nothing was sent for it. /todo 2 shows it, and /todo 2 <form> answers it.',
-      '  The walk sent 1 answer; 2 items are still open. /todo answer asks about them again.',
+      '  skipped #2',
+      '  It asked about every open item.',
+      '  The walk sent 1 answer; 1 item is still open. /todo answer asks about it again.',
     ].join('\n'),
   )
-  expect(debug).toContain('human-plugin: walk ask #2: rejected: The user dismissed the question; record matched; not written')
+  expect(debug).toContain('human-plugin: walk ask #2: rejected: The user dismissed the question; record matched; skipped')
+})
+
+test('a rejected dialog does not end the walk: the answers before and after it are written, the item is left open and unchanged but read, its notice is not owed, and the next question opens with skipped #<n>', async () => {
+  fresh()
+  const { env, values, clock, timers, submitted, asked } = walkEnv(
+    [made(1), made(2, { unread: true }), made(3)],
+    [{ gives: 'Done' }, { gives: { rejects: 'The user dismissed the question' } }, { gives: 'Done' }],
+  )
+  clock.now = 1000
+  const text = await walk(env, WINDOW)
+  expect(asked.map(a => a.header)).toEqual(['#1', '#2', '#3'])
+  expect(lines(asked[2]?.question ?? '').slice(0, 2)).toEqual(['skipped #2', '3 of 3 — #3 non-blocking: Item 3'])
+  expect(values.list.items.map(it => it.state)).toEqual(['done-waiting', 'open', 'done-waiting'])
+  // Nothing is written for the skipped item: it is as it was, its unread mark aside, which showing its question cleared.
+  expect(itemOf(values, 2)).toEqual(made(2))
+  expect(text).toBe(
+    [
+      '  answered #3 with done',
+      '  It asked about every open item.',
+      '  The walk sent 2 answers; 1 item is still open. /todo answer asks about it again.',
+    ].join('\n'),
+  )
+  await tickAt(timers, clock, 1000)
+  expect(submitted).toEqual([{ text: doneNotice(itemOf(values, 1)) }])
+  expect(pending()).toEqual({ held: [], waiting: [{ id: 3, text: doneNotice(itemOf(values, 3)) }] })
+})
+
+test('a walk whose every dialog is rejected, whatever the messages say, asks each open item once, writes nothing, owes no notice, and ends saying it asked about every open item, the skipped items still open', async () => {
+  fresh()
+  const messages = ['The user dismissed the question', 'no answer (No response after 20s — the user may be away from keyboard.)', 'the dialog was closed or refused']
+  const { env, values, clock, timers, submitted, debug, asked } = walkEnv(
+    [made(1, { unread: true }), made(2, { unread: true }), made(3, { blocking: true, unread: true })],
+    messages.map(message => ({ gives: { rejects: message } })),
+  )
+  clock.now = 1000
+  const text = await walk(env, WINDOW)
+  expect(asked.map(a => a.header)).toEqual(['#3', '#1', '#2'])
+  expect(lines(asked[1]?.question ?? '').slice(0, 2)).toEqual(['skipped #3', '2 of 3 — #1 non-blocking: Item 1'])
+  expect(lines(asked[2]?.question ?? '').slice(0, 2)).toEqual(['skipped #1', '3 of 3 — #2 non-blocking: Item 2'])
+  expect(text).toBe(
+    [
+      '  skipped #2',
+      '  It asked about every open item.',
+      '  The walk sent nothing; 3 items are still open. /todo answer asks about them again.',
+    ].join('\n'),
+  )
+  // The rejection's message is for the debug line alone: no end text says refused, declined, timed out or closed.
+  expect(text).not.toMatch(/refused|declined|timed out|closed/)
+  expect(values.list.items.map(it => [it.state, it.unread])).toEqual([['open', false], ['open', false], ['open', false]])
+  expect(debug.filter(line => line.startsWith('human-plugin: walk ask '))).toEqual(
+    [3, 1, 2].map((id, at) => `human-plugin: walk ask #${id}: rejected: ${messages[at]}; record matched; skipped`),
+  )
+  expect(timers).toEqual([])
+  await tickAt(timers, clock, 1000)
+  expect(submitted).toEqual([])
+  expect(pending()).toEqual({ held: [], waiting: [] })
+})
+
+test('a rejected dialog, then a dialog that resolves with afkTimeoutMs: the walk ends with the auto-continue text, asks no item after it, and counts the skipped item as still open', async () => {
+  fresh()
+  const { env, values, asked } = walkEnv(
+    [made(1), made(2), made(3), made(4)],
+    [{ gives: 'Done' }, { gives: { rejects: 'The user dismissed the question' } }, { gives: 'Done', seen: 'auto' }],
+  )
+  const text = await walk(env, WINDOW)
+  expect(asked.map(a => a.header)).toEqual(['#1', '#2', '#3'])
+  expect(lines(asked[2]?.question ?? '')[0]).toBe('skipped #2')
+  expect(values.list.items.map(it => it.state)).toEqual(['done-waiting', 'open', 'open', 'open'])
+  expect(text).toBe(
+    [
+      '  It ended when the question auto-continued while you were away; nothing was sent for #3.',
+      '  The walk sent 1 answer; 3 items are still open. /todo answer asks about them again.',
+    ].join('\n'),
+  )
+})
+
+test('a walk after a walk that skipped on a rejected dialog asks that item again, in its place in the band\'s order', async () => {
+  fresh()
+  const { env, asked, steps } = walkEnv(
+    [made(1), made(2, { blocking: true }), made(3)],
+    [{ gives: { rejects: 'The user dismissed the question' } }, { gives: 'Skip' }, { gives: 'Done' }],
+  )
+  await walk(env, WINDOW)
+  expect(asked.map(a => a.header)).toEqual(['#2', '#1', '#3'])
+  steps.push({ gives: 'Skip' }, { gives: 'Skip' })
+  await walk(env, WINDOW)
+  expect(asked.map(a => a.header)).toEqual(['#2', '#1', '#3', '#2', '#1'])
 })
 
 test('a result that carries afkTimeoutMs writes nothing and ends with the auto-continue text; its record line says present', async () => {
@@ -437,20 +525,31 @@ test('a result that carries afkTimeoutMs writes nothing and ends with the auto-c
   expect(debug).toEqual(['human-plugin: walk record for #1: afkTimeoutMs present', 'human-plugin: walk ask #1: label "Done"; record matched; not written'])
 })
 
-test('a rejected dialog whose record carries afkTimeoutMs writes nothing and ends with the rejection text, not the auto-continue text; its message is logged', async () => {
+test('a rejected dialog whose record carries afkTimeoutMs writes nothing and is skipped like any rejection, not ended as auto-continued; its message is logged, and the walk goes on', async () => {
   fresh()
   const message = 'no answer (No response after 20s — the user may be away from keyboard.)'
   const asking = (question: string): unknown => ({ questions: [{ question }] })
-  const { env, values, debug } = walkEnv([made(1), made(2)], [{ gives: { rejects: message }, observed: { call: asking, result: { result: { afkTimeoutMs: 20000 } } } }])
+  const { env, values, debug, asked } = walkEnv(
+    [made(1), made(2)],
+    [{ gives: { rejects: message }, observed: { call: asking, result: { result: { afkTimeoutMs: 20000 } } } }, { gives: 'Done' }],
+  )
   const text = await walk(env, WINDOW)
-  expect(values.list.items.map(it => it.state)).toEqual(['open', 'open'])
+  expect(asked.map(a => a.header)).toEqual(['#1', '#2'])
+  expect(lines(asked[1]?.question ?? '')[0]).toBe('skipped #1')
+  expect(values.list.items.map(it => it.state)).toEqual(['open', 'done-waiting'])
   expect(text).toBe(
     [
-      '  It ended when the question on #1 was closed, timed out or refused; nothing was sent for it. /todo 1 shows it, and /todo 1 <form> answers it.',
-      '  The walk sent nothing; 2 items are still open. /todo answer asks about them again.',
+      '  answered #2 with done',
+      '  It asked about every open item.',
+      '  The walk sent 1 answer; 1 item is still open. /todo answer asks about it again.',
     ].join('\n'),
   )
-  expect(debug).toEqual(['human-plugin: walk record for #1: afkTimeoutMs present', `human-plugin: walk ask #1: rejected: ${message}; record matched; not written`])
+  expect(walkLines(debug)).toEqual([
+    'human-plugin: walk record for #1: afkTimeoutMs present',
+    `human-plugin: walk ask #1: rejected: ${message}; record matched; skipped`,
+    'human-plugin: walk record for #2: afkTimeoutMs absent',
+    'human-plugin: walk ask #2: label "Done"; record matched; written',
+  ])
 })
 
 test('an answer the observer saw no result for, or only a result for another question, writes nothing, ends as one that cannot be confirmed, and logs a line', async () => {
@@ -726,7 +825,6 @@ test('every way a walk ends releases the hold: a notice offered while it asked w
     ['Stop', [made(1)], [{ gives: 'Stop' }], false],
     ['every open item asked', [made(1)], [{ gives: 'Skip' }], false],
     ['an answer written', [made(1)], [{ gives: 'Done' }], false],
-    ['a closed dialog', [made(1)], [{ gives: { rejects: 'The user dismissed the question' } }], false],
     ['an answer that cannot be confirmed', [made(1)], [{ gives: 'Done', seen: 'none' }], false],
     ['nothing open', [], [], false],
     ['an error', [made(1)], [], true],

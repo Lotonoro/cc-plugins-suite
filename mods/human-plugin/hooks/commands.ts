@@ -363,7 +363,7 @@ export const walkSummary = (open: readonly Item[]): string[] => {
   const counts = [...(blocking > 0 ? [`${blocking} blocking`] : []), ...(rest > 0 ? [`${rest} non-blocking`] : [])]
   return [
     `${counts.join(' and ')} ${open.length === 1 ? 'item is' : 'items are'} open.`,
-    'They are asked one at a time, blocking first, and each answer is written to the list as you give it and reaches the agent by your next prompt. Stop, or stop typed under Other, or closing the question ends this; what you have not answered stays on the list.',
+    'They are asked one at a time, blocking first, and each answer is written to the list as you give it and reaches the agent by your next prompt. Stop, or stop typed under Other, ends the walk; Skip, or closing the question, passes over an item. What you have not answered stays on the list.',
   ]
 }
 
@@ -470,7 +470,7 @@ export type Reason =
   | { kind: 'stop' }
   | { kind: 'error' }
   | { kind: 'session' }
-  | { kind: 'closed' | 'auto' | 'unconfirmed'; id: number }
+  | { kind: 'auto' | 'unconfirmed'; id: number }
 
 const reasonLine = (reason: Reason): string => {
   switch (reason.kind) {
@@ -478,8 +478,6 @@ const reasonLine = (reason: Reason): string => {
       return 'It asked about every open item.'
     case 'stop':
       return 'It ended on Stop.'
-    case 'closed':
-      return `It ended when the question on #${reason.id} was closed, timed out or refused; nothing was sent for it. /${COMMAND} ${reason.id} shows it, and /${COMMAND} ${reason.id} <form> answers it.`
     case 'auto':
       return `It ended when the question auto-continued while you were away; nothing was sent for #${reason.id}.`
     case 'unconfirmed':
