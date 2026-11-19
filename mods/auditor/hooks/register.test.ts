@@ -10341,10 +10341,10 @@ describe('the reviewer model each conversation chooses', () => {
     })
 
     test('a compaction by a reviewer whose resolved model is outside the price table makes the cost read unknown for that model', ON, async ($, on) => {
-      const seen = engine(on, { spawnModels: ['claude-sonnet-4-6'], compactUsage: COMPACT_USAGE })
+      const seen = engine(on, { spawnModels: ['claude-unpriced-1-1'], compactUsage: COMPACT_USAGE })
       await turn($)
       await $.session.compact(compacting('ag1'))
-      expect(seen.conversation).toMatchObject({ spent: 0, unpriced: 'claude-sonnet-4-6' })
+      expect(seen.conversation).toMatchObject({ spent: 0, unpriced: 'claude-unpriced-1-1' })
     })
 
     test('a reviewer with no recorded model and no choice makes the cost read unknown for a named model, not a blank', ON, async ($, on) => {

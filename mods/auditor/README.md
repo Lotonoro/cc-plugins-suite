@@ -58,13 +58,16 @@ at one-tenth of Haiku’s standard input rate in Auditor’s pricing table.
   where the previous reviewer left off.
 
 The footer and `/auditor` show estimated review spend and its share of
-the session total. The estimate uses Haiku API list prices for new input,
-output, cache reads and writes, and reviewer compaction requests.
+the session total. The estimate prices each review at its own model’s API
+list prices, for new input, output, cache reads and writes, and for reviewer
+compaction requests.
 
-Auditor’s pricing table covers one Haiku model. A review on any other model,
-a newer Haiku included, leaves the cost unknown: the footer drops its
-figures and `/auditor` says `cost unknown`, naming the model, until you
-switch Auditor off and on again or run `/clear`.
+The priced models are those the claude-api skill’s model table listed when
+the rates were taken, on 2026-11-18. A review on any other model leaves the
+cost unknown: the footer drops its figures and `/auditor` says
+`cost unknown`, naming the model, until you switch Auditor off and on again
+or run `/clear`. A price tier a model gains later is followed only once its
+rates are taken again.
 
 ## Get started
 

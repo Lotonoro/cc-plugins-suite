@@ -2,7 +2,7 @@ import type { BoxProps, ButtonProps, ElementConstructor, RenderElement, TextProp
 import type { FailCause, LastReview } from '../types/index'
 import { idOf, isFable } from './models'
 import type { Choices, ModelIds } from './models'
-import { centsOf, isPriced, percentOf, shareOf, wholeOf } from './pricing'
+import { centsOf, entryOf, percentOf, shareOf, wholeOf } from './pricing'
 
 // The button's words and drawing: the footer label, the hover popup's rows as an ordered list, and `/auditor`'s answer, all from the same plain figures so they cannot drift apart.
 
@@ -98,7 +98,7 @@ export const modelFiguresOf = (current: string, choices: Choices, ids: ModelIds)
   current,
   choices: choices.list.map(name => {
     const id = idOf(name, ids)
-    return { name, isCurrent: name === current, isDefault: name === choices.defaultChoice, isFable: isFable(name), costUnknown: id !== undefined && !isPriced(id) }
+    return { name, isCurrent: name === current, isDefault: name === choices.defaultChoice, isFable: isFable(name), costUnknown: id !== undefined && entryOf(id) === undefined }
   }),
 })
 

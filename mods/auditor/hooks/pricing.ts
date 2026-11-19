@@ -1,27 +1,43 @@
 import type { ModelUsage } from 'claude-code'
+import { canonicalOf } from './models'
 
 // What the auditor's spend costs at API list prices, as pure functions: it knows nothing of the conversation or the engine.
 
-// The one model priced: the id the reviewer's default alias (`DEFAULT_MODEL` in models.ts, `haiku`) resolves to today. When the alias moves to a newer Haiku, responses come back unpriced until this id and RATES are updated.
-export const PRICED_MODEL = 'claude-haiku-5-5'
+// One set of rates, in dollars per million tokens.
+export type RateSet = { input: number; output: number; cacheRead: number; cacheWrite: number }
 
-// Haiku 5.5 list prices in dollars per million tokens, from the claude-api skill's model table (cached 2026-10-06) and checked on 2026-11-09 (engine 2.1.311) against the session ledger: over a reviewer-only stretch, one past 100,000 tokens of prompt and one with three compactions, the ledger grew by exactly the sum these rates give. The prompt is the uncached input, the cache reads and the cache writes; a response whose prompt is over TIER_PROMPT_TOKENS is priced whole, output included, at the `large` set. Every cache write prices as a 5-minute write: the engine's usage gives one write count with no lifetime split, and the reviewer writes the 5-minute cache.
-const RATES = {
-  standard: { input: 0.1, output: 0.5, cacheRead: 0.01, cacheWrite: 0.125 },
-  large: { input: 0.5, output: 2.5, cacheRead: 0.05, cacheWrite: 0.625 },
+// What a priced model costs. A model whose price steps up with the prompt has a boundary, the prompt size in tokens above which a response is priced whole at the higher set; a model with none has one set.
+export type Entry = { boundary: null; standard: RateSet } | { boundary: number; standard: RateSet; higher: RateSet }
+
+// Each priced model's rates, keyed by canonical id (`canonicalOf` in models.ts: the date suffix dropped and the context suffix kept, so a `[1m]` variant has no entry until its own rates are taken). True of every entry: the prompt is the uncached input, the cache reads and the cache writes; a response whose prompt is over the entry's boundary is priced whole, output included, at its higher set; every cache write is priced as a 5-minute write, since the engine's usage gives one write count with no lifetime split and the reviewer writes the 5-minute cache.
+// Where the rates come from, read on 2026-11-18: input and output from the claude-api skill's model table (cached 2026-10-06); the cache write at 1.25 times the input rate, as the skill states for a 5-minute write; the cache read at the figure the skill's text gives where it gives one (Fable 5 $1, Fable 5.1 $0.25, Opus 5.5 and Sonnet 5.5 $0.20) and at a tenth of the input rate where it does not; each boundary from the pricing page. The session ledger grew by exactly these sums across 25 of the 26 responses measured on engine 2.1.311 on 2026-11-15; the other is the first exception.
+// The exceptions. Sonnet 5.5's $0.20 cache read is the skill's, where the ledger charged $0.10 and the pricing page lists $0.10. Sonnet 5's $0.20 is implied by the skill's saying Sonnet 5.5 has Sonnet 5's prices. Haiku 5.5's higher set, past 100,000 tokens of prompt, is the skill's $0.50 / $2.50 with its cache rates derived from that input rate; no measured response reached it, but on 2026-11-09 (engine 2.1.311) the ledger grew by exactly its sums over a reviewer-only stretch past 100,000 tokens of prompt and one with three compactions.
+const TABLE: Readonly<Record<string, Entry>> = {
+  'claude-fable-5-1': { boundary: null, standard: { input: 10, output: 50, cacheRead: 0.25, cacheWrite: 12.5 } },
+  'claude-fable-5': { boundary: null, standard: { input: 10, output: 50, cacheRead: 1, cacheWrite: 12.5 } },
+  'claude-opus-5-5': { boundary: null, standard: { input: 4, output: 20, cacheRead: 0.2, cacheWrite: 5 } },
+  'claude-opus-5': { boundary: null, standard: { input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25 } },
+  'claude-opus-4-8': { boundary: null, standard: { input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25 } },
+  'claude-opus-4-7': { boundary: null, standard: { input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25 } },
+  'claude-opus-4-6': { boundary: null, standard: { input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25 } },
+  'claude-sonnet-5-5': { boundary: null, standard: { input: 2, output: 10, cacheRead: 0.2, cacheWrite: 2.5 } },
+  'claude-sonnet-5': { boundary: null, standard: { input: 2, output: 10, cacheRead: 0.2, cacheWrite: 2.5 } },
+  'claude-sonnet-4-6': { boundary: null, standard: { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 } },
+  'claude-haiku-5-5': { boundary: 100_000, standard: { input: 0.1, output: 0.5, cacheRead: 0.01, cacheWrite: 0.125 }, higher: { input: 0.5, output: 2.5, cacheRead: 0.05, cacheWrite: 0.625 } },
+  'claude-haiku-4-5': { boundary: null, standard: { input: 1, output: 5, cacheRead: 0.1, cacheWrite: 1.25 } },
 }
-export const TIER_PROMPT_TOKENS = 100_000
 const PER_TOKEN = 1_000_000
 
-// The pinned id, bare or with a date suffix (`-YYYYMMDD`, `@YYYYMMDD`); an alias, another model or a partner-prefixed form is not priced.
-const PRICED_ID = new RegExp(`^${PRICED_MODEL}(?:[-@]\\d{8})?$`)
+// The entry a name is priced at, or undefined where it is unpriced. The name is whatever a caller holds: a response's reported model with or without a date suffix, a compaction's model, a choice's id. A name that is not a full id is unpriced: an alias, a partner-prefixed form, the tally's `UNKNOWN_MODEL`.
+export const entryOf = (name: string): Entry | undefined => {
+  const id = canonicalOf(name)
+  return id === undefined ? undefined : TABLE[id]
+}
 
-export const isPriced = (model: string): boolean => PRICED_ID.test(model)
-
-// The dollars one response cost, judged on its own prompt size.
-export const priceOf = (usage: ModelUsage): number => {
+// The dollars one response cost at an entry, judged on its own prompt size.
+export const priceOf = (entry: Entry, usage: ModelUsage): number => {
   const prompt = usage.input_tokens + usage.cache_read_input_tokens + usage.cache_creation_input_tokens
-  const rates = prompt > TIER_PROMPT_TOKENS ? RATES.large : RATES.standard
+  const rates = entry.boundary !== null && prompt > entry.boundary ? entry.higher : entry.standard
   return (usage.input_tokens * rates.input + usage.output_tokens * rates.output + usage.cache_read_input_tokens * rates.cacheRead + usage.cache_creation_input_tokens * rates.cacheWrite) / PER_TOKEN
 }
 

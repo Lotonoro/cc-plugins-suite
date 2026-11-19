@@ -206,6 +206,11 @@ describe('modelFiguresOf', () => {
     expect(choices.filter(c => c.costUnknown).map(c => c.name)).toEqual(['sonnet', 'claude-nosuch-9-9'])
   })
 
+  test('a model the table prices is not marked whichever model it is, and a context-suffixed variant of one is', () => {
+    const choices = marked('haiku', ['claude-opus-4-6', 'claude-opus-4-6[1m]', 'claude-haiku-4-5-20251001'])
+    expect(choices.filter(c => c.costUnknown).map(c => c.name)).toEqual(['claude-opus-4-6[1m]'])
+  })
+
   test('a current model the list does not offer is marked on no row', () => {
     expect(marked('claude-gone-1-1', undefined).filter(c => c.isCurrent)).toEqual([])
   })
