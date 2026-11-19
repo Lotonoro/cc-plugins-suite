@@ -33,7 +33,7 @@ const corrected = atom(CORRECTED, [] as number[])
 const NOTICES = { plugin: 'human-plugin', key: 'notices' } as const
 const notices = atom(NOTICES, { held: [], waiting: [] } as OwedNotices)
 
-// Ends the turn: what it leaves goes to a turn of its own, or waits for the human (turns.ts). The turn's end and its failure
+// Ends the turn: what it leaves goes to a turn of its own, or waits for the human, or, while a walk is asking, for the next turn to start (turns.ts). The turn's end and its failure
 // handler both end it this way; the failure handler cannot tell which of the list's items are still there, so it keeps all.
 const finishTurn = ($: EngineInterface, turnId: string, interrupted: boolean, isLive: (id: number) => boolean): void => {
   const submit = endTurn(turnId, interrupted, isLive)
@@ -339,8 +339,8 @@ export const wireHooks = (on: On, windowMs: number): void => {
 
   // A done notice reaches a running turn at a read point the engine holds before its next request (turns.ts): the end of
   // a tool batch. A request that starts afterwards carries it; a turn that ends first hands what is left to a turn of its
-  // own, or, after an interrupt, holds it for the human's next prompt.
-  // A notice that landed while the turn was starting is appended here, before the turn's first request.
+  // own, or, after an interrupt, holds it for the human's next prompt, or, while a walk is asking, leaves it waiting for the next turn to start.
+  // A notice that landed while the turn was starting, or that a walk kept waiting, is appended here, before the turn's first request.
   on('turn.start', async ($, e, next) => {
     if (e.agentId !== undefined) return next(e)
     startTurn()
