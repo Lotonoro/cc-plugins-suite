@@ -171,6 +171,8 @@ const engine = (on: any, opts: Opts = {}) => {
     // The conversation writes attempted so far, and the attempt number (1-based) that is refused.
     stateWriteAttempts: 0,
     stateWritesFailAt: undefined as number | undefined,
+    // Whether the engine has emptied the conversation (`emptyConversation`): its reads answer no value, at the version the state stands at, until the plugin's next landed write.
+    conversationEmptied: false,
     // The cost ledger reads made so far.
     ledgerReads: 0,
     // The plugin's own store: what it holds, the keys read, and the writes made, in order.
@@ -331,6 +333,10 @@ const engine = (on: any, opts: Opts = {}) => {
       opts.getHold.reached?.()
       await opts.getHold.until
     }
+    if (e.key === 'conversation' && seen.conversationEmptied) {
+      const answer = await next(e)
+      return { ...answer, value: { ...answer.value, value: undefined } }
+    }
     return opts.stateFails !== undefined && e.key === opts.stateFails ? { deny: 'state unavailable' } : opts.stateSeed !== undefined && e.key === 'conversation' && seen.conversation === undefined ? { value: { value: opts.stateSeed } } : next(e)
   })
   // The conversation as the plugin last wrote it; stripBriefs writes it as a state from before briefsInFlight existed.
@@ -348,6 +354,7 @@ const engine = (on: any, opts: Opts = {}) => {
     if (e.key === 'conversation') {
       seen.conversation = e.value
       seen.conversations.push(e.value)
+      seen.conversationEmptied = false
     }
     return next(seen.stripBriefs && e.key === 'conversation' ? { ...e, value: { ...e.value, briefsInFlight: undefined } } : e)
   })
@@ -432,6 +439,11 @@ const engine = (on: any, opts: Opts = {}) => {
     return { value: ledger === 'absent' ? base : { ...base, cost: { usd: ledger === 'nan' ? Number.NaN : ledger } } }
   })
   return seen
+}
+
+// What the engine does to the conversation at a /clear, between the session's end and the new session's start (measured on engine 2.1.311): the state is scoped to the session id in force, so the new session reads it unset, while a variable of the hooks module written at the end is still there. The kit keeps the state, so a test says when. A write by the test's own `$` cannot stand in for it: `$.state.set` is raised by the value's owner alone, and it would count among the plugin's writes.
+const emptyConversation = (seen: { conversationEmptied: boolean }): void => {
+  seen.conversationEmptied = true
 }
 
 // The writes into a record or live directory: no entry is written to a file, so there are none.
@@ -9611,18 +9623,6 @@ describe('the reviewer model each conversation chooses', () => {
       expect(seen.conversation.choice).toBe('sonnet')
     })
 
-    test('a session end with reason clear drops the choice, and the next need takes the last model set', ON, async ($, on) => {
-      const seen = engine(on, { store: { lastModel: 'sonnet' }, reviewerIds: ['ag1', 'ag2'] })
-      await turn($)
-      expect(seen.conversation.choice).toBe('sonnet')
-      seen.store['lastModel'] = 'opus'
-      await $.session.end({ reason: 'clear', sessionId: 's1' } as any)
-      expect(seen.conversation.choice).toBeUndefined()
-      await turn($, 'after the clear')
-      expect(spawnedModels(seen)).toEqual(['sonnet', 'opus'])
-      expect(seen.conversation.choice).toBe('opus')
-    })
-
     test('a store that fails to read leaves the first spawn on haiku, and the failure is recorded', ON, async ($, on) => {
       const seen = engine(on, { storeReadFails: true })
       await turn($)
@@ -9638,6 +9638,103 @@ describe('the reviewer model each conversation chooses', () => {
       expect(seen.conversation.choice).toBe('haiku')
       expect(debugLines(seen, 'store read of the last model set failed: Error: no answer within 1000 ms').length).toBe(1)
       seen.storeHold.open()
+    })
+  })
+
+  // A /clear as 2.1.311 runs one: the session ends with reason clear, the engine empties the conversation state (`emptyConversation`), and the new session starts with source clear. Where a test sets the last model to haiku after the conversation chose sonnet, the fallback alone would give haiku, and only a carry gives the conversation its own choice.
+  describe('the choice across a /clear', () => {
+    const endOfClear = ($: any) => $.session.end({ reason: 'clear', sessionId: 's1' } as any)
+    const startOf = ($: any, source: string, path = '/tmp/w.jsonl') => $.classic.SessionStart({ source, transcript_path: path } as any)
+    const cleared = async ($: any, seen: ReturnType<typeof engine>) => {
+      await endOfClear($)
+      emptyConversation(seen)
+      await startOf($, 'clear')
+    }
+
+    test('a /clear keeps the conversation\'s choice: its next reviewer spawns on it, whatever another session has set as the last model since', ON, async ($, on) => {
+      const seen = engine(on, { reviewerIds: ['ag1', 'ag2'] })
+      await run($, 'model sonnet')
+      await turn($)
+      seen.store['lastModel'] = 'haiku'
+      await cleared($, seen)
+      await turn($, 'after the clear')
+      expect(spawnedModels(seen)).toEqual(['sonnet', 'sonnet'])
+      expect(seen.conversation.choice).toBe('sonnet')
+    })
+
+    test('a /clear leaves the last model set as it was', ON, async ($, on) => {
+      const seen = engine(on)
+      await run($, 'model sonnet')
+      seen.store['lastModel'] = 'haiku'
+      const writes = seen.storeWrites.length
+      await cleared($, seen)
+      expect(seen.conversation.choice).toBe('sonnet')
+      expect(seen.store['lastModel']).toBe('haiku')
+      expect(seen.storeWrites.length).toBe(writes)
+    })
+
+    test('a session start of any source, with no session end before it, leaves the conversation\'s choice as it was', ON, async ($, on) => {
+      const seen = engine(on, { store: { lastModel: 'sonnet' } })
+      await turn($)
+      expect(seen.conversation.choice).toBe('sonnet')
+      for (const source of ['startup', 'resume', 'clear', 'compact', 'fork']) {
+        await startOf($, source, `/tmp/${source}.jsonl`)
+        expect(seen.conversation).toMatchObject({ choice: 'sonnet', transcript: `/tmp/${source}.jsonl` })
+      }
+    })
+
+    test('a session start of another source after a /clear\'s end takes the choice it carried and hands none in, and a clear start after it hands in none either', ON, async ($, on) => {
+      const seen = engine(on)
+      await run($, 'model sonnet')
+      expect(seen.conversation.choice).toBe('sonnet')
+      await endOfClear($)
+      emptyConversation(seen)
+      await startOf($, 'resume')
+      expect(seen.conversation).toMatchObject({ transcript: '/tmp/w.jsonl' })
+      expect(seen.conversation.choice).toBeUndefined()
+      await startOf($, 'clear')
+      expect(seen.conversation.choice).toBeUndefined()
+    })
+
+    test('a /clear whose reset write is refused still carries the choice', ON, async ($, on) => {
+      const seen = engine(on)
+      await run($, 'model sonnet')
+      seen.stateWritesFailAt = seen.stateWriteAttempts + 1
+      await endOfClear($)
+      expect(debugLines(seen, 'session end failed').length).toBe(1)
+      emptyConversation(seen)
+      await startOf($, 'clear')
+      expect(seen.conversation.choice).toBe('sonnet')
+    })
+
+    test('a clear start whose state change is refused still takes the carried choice: a second clear start, with no session end between, hands in none', ON, async ($, on) => {
+      const seen = engine(on)
+      await run($, 'model sonnet')
+      await endOfClear($)
+      emptyConversation(seen)
+      seen.stateWritesFailAt = seen.stateWriteAttempts + 1
+      await startOf($, 'clear')
+      expect(debugLines(seen, 'session start failed').length).toBe(1)
+      await startOf($, 'clear')
+      expect(seen.conversation).toMatchObject({ transcript: '/tmp/w.jsonl' })
+      expect(seen.conversation.choice).toBeUndefined()
+    })
+
+    test('a clear start whose change runs again, since another write landed first, hands the carried choice in on that run too', ON, async ($, on) => {
+      const armed = { on: false }
+      const landed = gate()
+      const reached = gate()
+      const seen = engine(on, { holdWrite: { when: () => armed.on, until: landed.until, reached: reached.open } })
+      await run($, 'model sonnet')
+      await endOfClear($)
+      emptyConversation(seen)
+      armed.on = true
+      const starting = startOf($, 'clear')
+      await reached.until
+      await $.prompt.submit(COMPOSER('fix the parser'))
+      landed.open()
+      await starting
+      expect(seen.conversation).toMatchObject({ choice: 'sonnet', midTurn: true, transcript: '/tmp/w.jsonl' })
     })
   })
 

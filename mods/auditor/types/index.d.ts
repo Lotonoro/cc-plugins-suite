@@ -93,7 +93,7 @@ export type Conversation = {
   reviewerNames: string[]
   // The model each reviewer id's spawn resolved to, kept across /clear beside the ids: a review's log names the one its reviewer ran on, and a compaction by that reviewer is priced at it, whichever reviewer is stored since. Absent for an id whose spawn result never landed.
   reviewerModels: Record<string, string>
-  // The model this conversation has chosen for its reviewers, in the spelling of the list of choices: an alias or a full id. Absent until the conversation first needs a model, which takes the last model set or the default (`takeChoice` in models.ts); a reset (`session.end`) drops it. Each reviewer spawn runs on it, and a stored reviewer spawned for another model is let go at the next dispatch (`keeps`).
+  // The model this conversation has chosen for its reviewers, in the spelling of the list of choices: an alias or a full id. Absent until the conversation first needs a model, which takes the last model set or the default (`takeChoice` in models.ts); a reset (`session.end`) drops it, and the start that follows a /clear hands it back to the new conversation (`classic.SessionStart`). Each reviewer spawn runs on it, and a stored reviewer spawned for another model is let go at the next dispatch (`keeps`).
   choice?: string
   // Why the latest reviewer was let go, kept across /clear: the /clear's own let-go is why the next brief goes to a spawn. Absent until a reviewer is let go; a switch on does not clear it.
   lastLetGo?: LetGoReason
