@@ -145,6 +145,9 @@ const noTaskFound = (reason: string, id: string): boolean => reason.trim().repla
 // The session end reasons of a process that is exiting (`/exit`, ctrl+c, ctrl+d; a `-p` run finished, or a signal); any other reason (`clear`, `resume`, `logout`) leaves the process going or costs a line at worst.
 const EXIT_REASONS: readonly string[] = ['prompt_input_exit', 'other']
 
+// The session end reason of a /clear: the process goes on under a new session id, and the conversation's choice goes on with it (`carried`).
+const CLEAR_REASON = 'clear'
+
 type Label = { type: string; name: string }
 
 // A subagent as the record names it: its id, then its type and name where known.
@@ -1185,6 +1188,8 @@ const lookUp = async ($: Pick<Scope, 'process' | 'ui'>, transcript: string | nul
 
 export const register: Register = (on, options) => {
   const log = options['log'] === true
+  // The conversation's choice between a /clear's session end and the session start after it: the engine empties the conversation state between the two (`$.state` is scoped to the session id in force), but the hooks module's memory outlives both. Set by `session.end`, taken by `classic.SessionStart`. It is the registering function's own rather than the module's, so each load, and each test, starts with none, and it needs no session key: a process runs one session at a time. A fresh load between the two (a reload, an enable, a worker respawn), a failed state change at the start and a reset that fails at its read leave the new conversation with none, which takes the last model set.
+  let carried: string | undefined
 
   on('session.start', async ($, e, next) => {
     // The footer button's twin for every surface: a phone draws no footer, but its typed commands run here and their answer shows there.
@@ -1246,12 +1251,16 @@ export const register: Register = (on, options) => {
     return next(e)
   })
 
-  // The session's start carries its transcript path, which a /clear renews; the lookup tool reads it from state.
+  // The session's start carries its transcript path, which a /clear renews; the lookup tool reads it from state. A /clear's start also hands the new conversation the choice its session end set aside (`carried`).
   on('classic.SessionStart', async ($, e, next) => {
+    // Every start takes what the end set aside and empties it, before the change, whose callback may run more than once with the same choice: a hand-over is used at most once, a failed change's included. Only a /clear's start hands it in.
+    const handed = e.source === 'clear' ? carried : undefined
+    carried = undefined
     try {
-      await change($, c => withTranscript(c, e.transcript_path))
+      // The name handed in is not checked against the choices: it is the conversation's own choice of moments ago, which it would have kept unchecked had it not cleared, as `takeChoice` keeps a held one. A rule added there for a held choice belongs here too.
+      await change($, c => ({ ...withTranscript(c, e.transcript_path), ...(handed === undefined ? {} : { choice: handed }) }))
     } catch (err) {
-      recordFailed($, 'transcript path', err)
+      recordFailed($, 'session start', err)
     }
     return next(e)
   })
@@ -1373,7 +1382,8 @@ export const register: Register = (on, options) => {
       const done = await release($, c => {
         ended.conversation = c
         const gone = letGo(c, 'session end', c.reviewer?.id)
-        // The toggle is the session's: a /clear keeps it off. The reviewer markers are kept, so a pre-/clear reviewer's late end notice is still consumed, its calls stay out of the record and its task row stays hidden; so is the reason the reviewer was let go. Everything else starts over, and the epoch moves on (`epoch`). The spawns still in flight are kept for their dispatches to settle (`spawnsInFlight`).
+        carried = e.reason === CLEAR_REASON ? c.choice : undefined
+        // The toggle is the session's: a /clear keeps it off. The reviewer markers are kept, so a pre-/clear reviewer's late end notice is still consumed, its calls stay out of the record and its task row stays hidden; so is the reason the reviewer was let go. A /clear keeps the choice too, but not in the state, which the engine empties before the new session starts: it is set aside in `carried` for that session's start to hand back (any other reason sets nothing aside, and a callback that runs again sets it again, the last run's conversation standing). Everything else starts over, and the epoch moves on (`epoch`). The spawns still in flight are kept for their dispatches to settle (`spawnsInFlight`).
         return { next: { ...fresh(), dispatches: c.dispatches, dispatchesAtPrompt: c.dispatches, off: c.off, epoch: c.epoch + 1, spawnsInFlight: c.spawnsInFlight, ...markers(c), lastLetGo: gone.next.lastLetGo }, released: gone.released }
       }, false, !exiting)
       released = done.released

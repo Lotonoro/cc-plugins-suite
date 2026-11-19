@@ -111,9 +111,9 @@ from the repository root.
   (Haiku, unless `availableModels` rules it out), each Fable, and
   `cost unknown` beside a model Auditor has no price for.
 - **Switch mid-session.** A switch applies from the next review; one in
-  progress finishes on its old model. The choice survives `/auditor off` and
-  `/auditor on`, and a new session or `/clear` starts on the last model any
-  session set.
+  progress finishes on its old model. The choice survives `/auditor off`,
+  `/auditor on` and `/clear`. A new session starts on the last model set in
+  any session.
 
 For implementation details, see the [reviewer’s instructions](hooks/prompt.ts),
 [review dispatch](hooks/register.ts), [finding memory](hooks/memory.ts),
