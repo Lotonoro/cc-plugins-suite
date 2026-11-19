@@ -771,6 +771,137 @@ test('a write whose row carries no id is taken as live, as the human list\'s cal
   expect((await replay([sourceOf(text)])).todo).toEqual(entries(['Build', 'queued']))
 })
 
+// The name the agent states for its list: the last live, successful, main-agent call that states one, with or without entries. The calls that state a name are held apart from the
+// calls that write entries, so a call with entries and no name counts for its entries, and a name-only call for its name.
+const NAME_CALLS = lines(
+  link('u0', null, at(0), prompt('start')),
+  link('a1', 'u0', at(1), todoUse('w1', { name: 'Ada', entries: entries(['First plan', 'in_flight']) })),
+  link('r1', 'a1', at(2), toolResult('w1', 'Ada TODO: 1 in flight, 0 queued')),
+  link('a2', 'r1', at(3), todoUse('w2', { name: 'Grace' })),
+  link('r2', 'a2', at(4), toolResult('w2', 'Grace TODO: 1 in flight, 0 queued\n- in_flight: First plan (ETA: no ETA)')),
+  link('a3', 'r2', at(5), todoUse('w3', { entries: entries(['Second plan', 'queued']) })),
+  link('r3', 'a3', at(6), toolResult('w3', 'Grace TODO: 0 in flight, 1 queued')),
+  link('a4', 'r3', at(7), todoUse('w4', {})),
+  link('r4', 'a4', at(8), toolResult('w4', 'Grace TODO: 0 in flight, 1 queued\n- queued: Second plan (ETA: no ETA)')),
+)
+
+test('the rebuilt name is the last call\'s that stated one, a name-only call included, whatever calls without a name followed it; the rebuilt list is still the last write\'s', async () => {
+  const { name, todo } = await replay([sourceOf(NAME_CALLS)])
+  expect(name).toBe('Grace')
+  expect(todo).toEqual(entries(['Second plan', 'queued']))
+})
+
+test('a call with entries and a name counts for both: the name it states and the list it writes', async () => {
+  const text = lines(
+    link('u0', null, at(0), prompt('start')),
+    link('a1', 'u0', at(1), todoUse('w1', { name: 'Ada', entries: entries(['Build', 'in_flight']) })),
+    link('r1', 'a1', at(2), toolResult('w1', 'Ada TODO: 1 in flight, 0 queued')),
+  )
+  const { name, todo } = await replay([sourceOf(text)])
+  expect([name, todo]).toEqual(['Ada', entries(['Build', 'in_flight'])])
+})
+
+test('a name-only call writes no list: the list stays the last write\'s, and an earlier name-only call leaves the list empty', async () => {
+  const text = lines(
+    link('u0', null, at(0), prompt('start')),
+    link('a1', 'u0', at(1), todoUse('w1', { name: 'Ada' })),
+    link('r1', 'a1', at(2), toolResult('w1', 'Ada TODO: 0 in flight, 0 queued')),
+  )
+  expect(await replay([sourceOf(text)])).toMatchObject({ name: 'Ada', todo: [] })
+  const after = lines(
+    link('u0', null, at(0), prompt('start')),
+    link('a1', 'u0', at(1), todoUse('w1', { entries: entries(['Build', 'in_flight']) })),
+    link('r1', 'a1', at(2), toolResult('w1', 'Agent TODO: 1 in flight, 0 queued')),
+    link('a2', 'r1', at(3), todoUse('w2', { name: 'Ada' })),
+    link('r2', 'a2', at(4), toolResult('w2', 'Ada TODO: 1 in flight, 0 queued')),
+  )
+  expect(await replay([sourceOf(after)])).toMatchObject({ name: 'Ada', todo: entries(['Build', 'in_flight']) })
+})
+
+test('a transcript whose calls state no name rebuilds none, whatever lists they write', async () => {
+  expect((await replay([sourceOf(TODO_WRITES)])).name).toBeNull()
+  expect((await replay([sourceOf(MAIN)])).name).toBeNull()
+  expect((await replay([sourceOf('')])).name).toBeNull()
+})
+
+test('a last name that is blank rebuilds as cleared, the empty text, and so does one that holds only line breaks and blanks', async () => {
+  for (const blank of ['', '   ', '\n \t']) {
+    const text = lines(
+      link('u0', null, at(0), prompt('start')),
+      link('a1', 'u0', at(1), todoUse('w1', { name: 'Ada' })),
+      link('r1', 'a1', at(2), toolResult('w1', 'Ada TODO: 0 in flight, 0 queued')),
+      link('a2', 'r1', at(3), todoUse('w2', { name: blank })),
+      link('r2', 'a2', at(4), toolResult('w2', 'Agent TODO: 0 in flight, 0 queued')),
+    )
+    expect((await replay([sourceOf(text)])).name, JSON.stringify(blank)).toBe('')
+  }
+})
+
+test('a name is rebuilt as the call\'s check reads it: on one line and trimmed', async () => {
+  const text = lines(
+    link('u0', null, at(0), prompt('start')),
+    link('a1', 'u0', at(1), todoUse('w1', { name: '  Ada\n Lovelace ' })),
+    link('r1', 'a1', at(2), toolResult('w1', 'Ada Lovelace TODO: 0 in flight, 0 queued')),
+  )
+  expect((await replay([sourceOf(text)])).name).toBe('Ada Lovelace')
+})
+
+test('a call answered with an error, a call the check refuses, a subagent\'s call and a call on a rewound branch state no name that counts', async () => {
+  const text = lines(
+    link('u0', null, at(0), prompt('start')),
+    link('a1', 'u0', at(1), todoUse('w1', { name: 'Kept' })),
+    link('r1', 'a1', at(2), toolResult('w1', 'Kept TODO: 0 in flight, 0 queued')),
+    link('a2', 'r1', at(3), todoUse('w2', { name: 'Errored', entries: entries(['Build', 'queued']) })),
+    link('r2', 'a2', at(4), todoError('w2', 'claude_todo: the mod failed to answer the call')),
+    link('a3', 'r2', at(5), todoUse('w3', { name: 'Refused', entries: entries(['x'.repeat(81), 'queued']) })),
+    link('r3', 'a3', at(6), toolResult('w3', 'entry 1: the title is over 80')),
+    link('a4', 'r3', at(7), todoUse('w4', { name: 3 })),
+    link('r4', 'a4', at(8), toolResult('w4', 'name must be text')),
+    link('p-old', 'r4', at(9), prompt('ask for gone')),
+    link('a-old', 'p-old', at(10), todoUse('old', { name: 'Rewound away' })),
+    link('r-old', 'a-old', at(11), toolResult('old', 'Rewound away TODO: 0 in flight, 0 queued')),
+    link('p-new', 'r4', at(12), prompt('ask for new')),
+  )
+  expect((await replay([sourceOf(text)])).name).toBe('Kept')
+  const sub = lines(
+    link('sa', null, at(7), todoUse('s1', { name: 'Sub' })),
+    link('sr', 'sa', at(8), toolResult('s1', 'Sub TODO: 0 in flight, 0 queued')),
+  )
+  expect((await replay([sourceOf(NAME_CALLS), sourceOf(sub, 'sub-1')])).name).toBe('Grace')
+  expect((await replay([sourceOf(''), sourceOf(sub, 'sub-1')])).name).toBeNull()
+})
+
+test('a call that states a name in parallel with another tool counts, and one whose row carries no id is taken as live', async () => {
+  const parallel = lines(
+    link('u0', null, at(0), prompt('start')),
+    link('a1', 'u0', at(1), todoUse('w1', { name: 'In parallel' })),
+    link('a2', 'a1', at(1), toolUse('t2', { command: 'ls' }, 'Bash')),
+    link('r1', 'a1', at(2), toolResult('w1', 'In parallel TODO: 0 in flight, 0 queued')),
+    link('r2', 'a2', at(3), toolResult('t2', 'ok')),
+    link('tail', 'r2', at(4), { type: 'assistant', message: { role: 'assistant', content: 'done' } }),
+  )
+  expect((await replay([sourceOf(parallel)])).name).toBe('In parallel')
+  const noId = [
+    JSON.stringify({ type: 'assistant', timestamp: at(2), message: { role: 'assistant', content: [{ type: 'tool_use', id: 'w1', name: TODO_TOOL, input: { name: 'No id' } }] } }),
+    result(at(3), 'w1', 'No id TODO: 0 in flight, 0 queued'),
+  ].join('\n') + '\n'
+  expect((await replay([sourceOf(noId)])).name).toBe('No id')
+})
+
+test('the name leaves the human list as it was: a transcript with both rebuilds the same human list as without the name', async () => {
+  const body = (...extra: string[]) =>
+    lines(
+      link('u0', null, at(0), prompt('start')),
+      link('a1', 'u0', at(1), toolUse('t1', { action: 'add', title: 'Pick a db', blocking: true })),
+      link('r1', 'a1', at(2), toolResult('t1', 'added #1')),
+      ...extra,
+    )
+  const named = await replay([sourceOf(body(link('a2', 'r1', at(3), todoUse('w1', { name: 'Ada' })), link('r2', 'a2', at(4), toolResult('w1', 'Ada TODO: 0 in flight, 0 queued'))))])
+  const plain = await replay([sourceOf(body())])
+  expect(named.store).toEqual(plain.store)
+  expect(named.name).toBe('Ada')
+})
+
 // A batch's hidden context in the transcript, as the engine wrote it (recorded live 2026-11-09, engine 2.1.311): an attachment row that names
 // the PostToolBatch hook and carries the text rendered as a system reminder, then an api-request-blob row with role system.
 test('a transcript holding the reminder rebuilds the same human list and Claude list as the transcript without it', async () => {

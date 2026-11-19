@@ -1,10 +1,10 @@
 import { atom, read, update, type EngineInterface } from 'claude-code'
 import type { HookFailure, On, Register, UiCopyArgs } from 'claude-code'
 import type { OwedNotices, Store } from '../types'
-import { TOOL, act, carryNext, clearAll, parseInput, type Outcome } from './items'
+import { PLUGIN, TOOL, act, carryNext, clearAll, parseInput, type Outcome } from './items'
 import { STEERING, TODO_SPEC, TOOL_SPEC } from './steering'
 import { countBatch } from './reminder'
-import { SUBAGENT_REFUSAL, TODO_NAME, TODO_TOOL, emptyTodo, parseTodo, readTodo, todoLine, todoReply, writeTodo } from './todo'
+import { SUBAGENT_REFUSAL, TODO_NAME, TODO_TOOL, emptyTodo, parseTodo, readName, readTodo, todoLine, todoReply, writeName, writeTodo } from './todo'
 import { oneLine } from './cut'
 import { messageOf, stateOf } from './done'
 import {
@@ -21,6 +21,7 @@ import { endPushes, pushAnswer } from './push'
 import { pressAnswer, pressDone, pressReply, rearmWindows, stopTicker } from './windows'
 import { restored, resetRebuild, setForkedTranscript, startForkRestore, startRestore } from './rebuild'
 import { emptyList, inBackground, readList, updateList } from './shared'
+import { endWalk, observeAsked, walk } from './walk'
 
 const SOUND = '/System/Library/Sounds/Glass.aiff'
 const UNDO_WINDOW_MS = 3000
@@ -172,15 +173,16 @@ const answer = async ($: EngineInterface, e: unknown) => {
   return { result: out.reply }
 }
 
-// The `/asks` command's answer: the list, one item whole, or the confirmation of an answer form. It waits for a rebuild in progress as the tool
-// does, and clears the unread mark of the one item it shows, if that item is still the one it printed (markRead); an answer form clears its
-// item's mark in its own write (pressAnswer). The wording and the parse are commands.ts's. A mark that cannot be cleared is logged, and the text
-// is still returned: the item is what the person asked for.
-const asks = async ($: EngineInterface, args: string, windowMs: number): Promise<string> => {
+// The `/todo` command's answer: the list, one item whole, the confirmation of an answer form, or the walk's end text (`/todo answer`, walk.ts, which asks
+// about each open item before it returns). It waits for a rebuild in progress as the tool does, and clears the unread mark of the one item it shows, if that
+// item is still the one it printed (markRead); an answer form clears its item's mark in its own write (pressAnswer). The wording and the parse are
+// commands.ts's. A mark that cannot be cleared is logged, and the text is still returned: the item is what the person asked for.
+const todoCommand = async ($: EngineInterface, args: string, windowMs: number): Promise<string> => {
   const ask = parseAsk(args)
   if (ask.kind === 'usage') return USAGE
   if (!(await restored($))) return REBUILDING
   if (ask.kind === 'answer') return answerLine(await pressAnswer($, ask.digits, ask.form, windowMs))
+  if (ask.kind === 'walk') return walk($, windowMs)
   const { items } = await readList($)
   const { text, shown } = answerTo(items, ask)
   const printed = items.find(it => it.id === shown)
@@ -194,21 +196,32 @@ const asks = async ($: EngineInterface, args: string, windowMs: number): Promise
   return text
 }
 
-// The `/claude-todo` command's answer: the Claude TODO list, once a rebuild in progress has ended, as the print commands.ts words. It takes no argument.
+// The `/claude-todo` command's answer: the Claude TODO list under the name the agent stated for it, once a rebuild in progress has ended, as the print commands.ts words. It takes no argument.
 const claudeTodo = async ($: EngineInterface, args: string): Promise<string> => {
   if (hasArgument(args)) return CLAUDE_USAGE
   if (!(await restored($))) return CLAUDE_REBUILDING
-  return claudeTodoText(await readTodo($))
+  return claudeTodoText(await readTodo($), await readName($))
 }
 
 // The Claude list tool's calls, in the order they arrived. The engine does not promise to finish parallel calls in the order it started them,
 // and a resume replays the transcript's order, so each call waits for the one before it: the list left live is the list a resume rebuilds.
 let todoTurn: Promise<void> = Promise.resolve()
 
-// The Claude list tool's answer: a write replaces the list whole, a call with no list reads it. Only the main agent keeps the list, so a
-// subagent's call is refused. Like the human tool's, a call waits for a rebuild in progress, so it never reads or replaces a list the rebuild
-// has not filled in. A refused call changes nothing and takes no turn. A write is followed up before the call answers, inside its place in the call order (todoTurn),
-// so the pane that shows the list follows each write in order.
+// The name a call states, stored after the list it may carry. A name that cannot be stored is logged and not thrown: the list is written by then, so the call is answered, and its
+// answer is headed by the name as stored.
+const storeName = async ($: EngineInterface, name: string): Promise<void> => {
+  try {
+    await writeName($, name)
+  } catch (err) {
+    $.ui.log(`human-plugin: the agent list's name was not stored: ${String(err)}`)
+  }
+}
+
+// The Claude list tool's answer: a write replaces the list whole, a call with no list reads it, and a call that states a name sets it, a blank one clearing it. Only the main agent keeps
+// the list, so a subagent's call is refused. Like the human tool's, a call waits for a rebuild in progress, so it never reads or replaces a list the rebuild has not filled in. A refused
+// call changes nothing and takes no turn. The list is written before the name, so a list write that fails fails the call before the name changes. A call that writes either is followed up
+// once, after both writes and before the call answers, inside its place in the call order (todoTurn), so the pane that shows the list follows each call in order. A call that states a
+// name and no list writes no list, and is a read in every other way.
 const todoAnswer = async ($: EngineInterface, e: unknown) => {
   const parsed = parseTodo(e)
   if (!parsed.ok) return { deny: `${TODO_NAME}: ${parsed.reason}` }
@@ -219,11 +232,10 @@ const todoAnswer = async ($: EngineInterface, e: unknown) => {
   try {
     await before
     if (!(await restored($))) return { deny: `${TODO_NAME}: the list is still being rebuilt from the transcript; call again in a moment` }
-    if (parsed.value !== null) {
-      await writeTodo($, parsed.value)
-      await followTodo($, parsed.value)
-    }
-    return { result: todoReply(parsed.value ?? (await readTodo($))) }
+    if (parsed.value !== null) await writeTodo($, parsed.value)
+    if (parsed.name !== null) await storeName($, parsed.name)
+    if (parsed.value !== null || parsed.name !== null) await followTodo($)
+    return { result: todoReply(parsed.value ?? (await readTodo($)), await readName($)) }
   } finally {
     turn.done()
   }
@@ -284,6 +296,20 @@ export const wireHooks = (on: On, windowMs: number): void => {
     return { sections: [...composed.sections, STEERING] }
   })
 
+  // The walk's own dialogs (`$.ui.ask`, raised from the `/todo` hook) reach this hook as AskUserQuestion calls, and it sees each result before the dialog
+  // returns. Every call passes through unchanged: the model's and other plugins' as well as the walk's. A call this plugin made is also handed, with its
+  // result, to the walk, which records it (walk.ts); a throw there is logged and leaves the result as it was. The hook has no `.catch`: one that passed the
+  // call on again would raise a dismissed dialog a second time. The matcher spells the tool's name out, as the others do.
+  on('tool.call', { tool: 'AskUserQuestion' }, async ($, e, next) => {
+    const result = await next(e)
+    try {
+      if (next.origin.plugin === PLUGIN) observeAsked($, e, result)
+    } catch (err) {
+      $.ui.log(`human-plugin: the record of a walk's question failed: ${messageOf(err)}`)
+    }
+    return result
+  })
+
   // The mod answers its own calls in tool.call, so the engine never checks them; this allow is the verdict the
   // engine's own check would otherwise ask the person for (the default is ask). The matchers spell the tool's name out, since
   // `claude plugin validate` reports a matcher whose value is a constant as {tool=?}.
@@ -300,7 +326,7 @@ export const wireHooks = (on: On, windowMs: number): void => {
   )
 
   // The matcher spells the name out, as the tool's do. A throw is logged and answers one error line; the list is left as it was.
-  on('command.run', { command: 'asks' }, ($, e) => asks($, e.args, windowMs).then(text => ({ text }))).catch(($, _e, next) => {
+  on('command.run', { command: 'todo' }, ($, e) => todoCommand($, e.args, windowMs).then(text => ({ text }))).catch(($, _e, next) => {
     failed($, 'command.run', next.error)
     return { text: FAILED }
   })
@@ -341,7 +367,7 @@ export const wireHooks = (on: On, windowMs: number): void => {
   // The human's own prompt carries the notices an interrupt held, as context beside it: once, and only when it enters. A
   // held notice whose item the agent has removed since is dropped, the list being read here as at the turn's end. A prompt
   // from the phone also carries the open items (commands.ts's phoneBlock), as context the person does not see: it waits for a
-  // rebuild in progress, as /asks does, and when the wait runs out it carries the rebuilding line instead. The block is in the
+  // rebuild in progress, as /todo does, and when the wait runs out it carries the rebuilding line instead. The block is in the
   // one call that passes the prompt on, ahead of the held notices. The wait comes before the read, so the read sees what a rebuild filled
   // in. A failed wait has its own try: it is logged, and the prompt goes through with its held notices, filtered as above, and no block.
   // The read sits outside that try, so an unreadable list still reaches the catch.
@@ -383,14 +409,16 @@ export const wireHooks = (on: On, windowMs: number): void => {
   })
 
   // A session's end ends what the mod holds for its conversation: the turn's notices, the undo countdown's redraw, a rebuild in progress
-  // (its generation is dropped after a /clear or a /resume alike, so it cannot fill the next conversation's list) and a fork waiting for
-  // its transcript. /clear also empties the list; a resume starts with a fresh one (the state is held per session), which its rebuild fills.
+  // (its generation is dropped after a /clear or a /resume alike, so it cannot fill the next conversation's list), a fork waiting for
+  // its transcript and the walk that is asking (its flag is released, so a dialog it leaves open cannot block the next walk). /clear also empties
+  // the list; a resume starts with a fresh one (the state is held per session), which its rebuild fills.
   // The id counter goes to the plugin store for the new session to carry (see carry).
   on('session.end', async ($, e, next) => {
     endPushes()
     reset()
     stopTicker()
     resetRebuild()
+    endWalk()
     // The pane goes first, before anything that can fail: after a /clear its item leaves with the list, and a resume rebuilds the Claude list the backlog shows, so the pane must
     // not stay open on nothing or on the old list's rows.
     endPane($, e.reason === 'clear')
@@ -446,12 +474,13 @@ export const wireHooks = (on: On, windowMs: number): void => {
     const store = await readList($)
     setDrawn(store.items)
     const todo = await readTodo($)
-    setDrawnTodo(todo)
+    const name = await readName($)
+    setDrawnTodo(todo, name)
     if (!bandDraws(store.items.length, todo)) return next(e)
     // Read for the record it keeps (pane.ts, lastRead): the stored selection a press decides on after a reload with the pane open, before any press or move has set one. The band draws
     // no row as the shown one, so it uses nothing the read returns.
     await shownSelection($)
-    const view: View = { maxRows: e.props.maxRows, now: await $.clock.now(), windowMs, claude: { items: todo, columns: e.props.bodyColumns, isDocked: paneDocked(e.surface) } }
+    const view: View = { maxRows: e.props.maxRows, now: await $.clock.now(), windowMs, claude: { items: todo, columns: e.props.bodyColumns, isDocked: paneDocked(e.surface), name } }
     return band($.ui.resolve(e), handlers($, windowMs), store, view)
   })
 
@@ -462,8 +491,9 @@ export const wireHooks = (on: On, windowMs: number): void => {
     // The pane shows the Claude list or a human item, by what the selection says.
     if (selected === CLAUDE_VIEW) {
       const todo = await readTodo($)
-      setDrawnTodo(todo)
-      return backlogPane($.ui.resolve(e), todo, e.props.bodyColumns)
+      const name = await readName($)
+      setDrawnTodo(todo, name)
+      return backlogPane($.ui.resolve(e), todo, e.props.bodyColumns, name)
     }
     const view: View = { maxRows: 0, now: await $.clock.now(), windowMs, selected }
     const store = await readList($)

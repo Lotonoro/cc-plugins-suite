@@ -1,5 +1,5 @@
 import { expect, test } from 'claude-code/testing'
-import { backlogTail, bandDraws, bandRows, bandWidths, claudeRows, columnHeader, cutTitle, cutToColumns, foldCount, headerLines, humanFoldRows, isChipShort, isSqueezed, rowLayout, squeezedFold, wrapText, type BandWidths, type ClaudeRow, type Control, type RowTexts } from './layout'
+import { backlogTail, bandDraws, bandRows, bandWidths, claudeRows, columnHeader, cutTitle, cutToColumns, foldCount, headerLines, humanFoldRows, isChipShort, isSqueezed, nameFirstHeader, rowLayout, squeezedFold, wrapText, type BandWidths, type ClaudeRow, type Control, type RowTexts } from './layout'
 import { displayColumns, unitsOf } from './columns'
 import { endsJoining } from './joining-oracle'
 import { SEQUENCES } from './sequences'
@@ -363,8 +363,8 @@ test('a word wider than the line breaks across lines, starting on the line it fo
 
 test('the spaces stay where they fall: a full line sends the space after it to the next line, and a trailing space after an exact fit takes a line of its own', () => {
   expect(wrapText('aaaa bbbbb cc', 10)).toEqual(['aaaa bbbbb', ' cc'])
-  expect(wrapText(' To do for xxxxxxxxxxxxxxxxxxxx ', 20)).toEqual([' To do for ', 'xxxxxxxxxxxxxxxxxxxx', ' '])
-  expect(wrapText(' To do for xxxxxxxxxxxxxxxxxxxx ', 30)).toEqual([' To do for ', 'xxxxxxxxxxxxxxxxxxxx '])
+  expect(wrapText(' xxxxxxxxxxxxxxxxxxxx TODO ', 20)).toEqual([' ', 'xxxxxxxxxxxxxxxxxxxx', ' TODO '])
+  expect(wrapText(' xxxxxxxxxxxxxxxxxxxx TODO ', 26)).toEqual([' xxxxxxxxxxxxxxxxxxxx TODO', ' '])
 })
 
 test('a wide character counts two columns and is never split: the line breaks before one that does not fit', () => {
@@ -559,7 +559,7 @@ test('whatever the text and the room, the cut is the longest start of the text t
   }
 })
 
-// Text built from sub-plan 3's measured sequences, every 37th of them (the doubled-joiner unit among them by name), each between ASCII, CJK and spaces so no two join into a
+// Text built from the measured sequences, every 37th of them (the doubled-joiner unit among them by name), each between ASCII, CJK and spaces so no two join into a
 // longer one, except the two pieces that end on a joiner followed by U+FE0F or by a combining mark: a joiner joins the piece after it, so no cut may fall directly after either.
 // Its pieces, whose ends are the only places a cut or a wrap may fall.
 const MEASURED = SEQUENCES.filter((_, k) => k % 37 === 0).map(([hex]) => cps(...hex.split(' ').map(code => parseInt(code, 16))))
@@ -640,37 +640,102 @@ test('a title label measures at most its room, is the whole title with its marke
 })
 
 // The Claude column's header, the heading and the counts cut at the column's layout width as the two parts ui.ts draws; the counts are the part that is pressed.
-const HEADING = 'Claude TODO'
+const HEADING = 'Agent TODO'
 const COUNTS = '1 active, 2 queued'
 
-test('the header is the heading with its space and the counts: whole from 30 columns, the counts cut to the 8 the heading leaves at 20 (`1 activ…`), and at 6 the line cut as one text (`Claud…`)', () => {
-  expect(displayColumns(`${HEADING} ${COUNTS}`)).toBe(30)
-  for (const width of [30, 31, 80]) expect(columnHeader(HEADING, COUNTS, width), `${width}`).toEqual({ heading: 'Claude TODO ', counts: COUNTS })
-  expect(columnHeader(HEADING, COUNTS, 29)).toEqual({ heading: 'Claude TODO ', counts: '1 active, 2 queu…' })
-  expect(columnHeader(HEADING, COUNTS, 20)).toEqual({ heading: 'Claude TODO ', counts: '1 activ…' })
-  expect(columnHeader(HEADING, COUNTS, 6)).toEqual({ heading: 'Claud…', counts: '' })
+test('the header is the heading with its space and the counts: whole from 29 columns, the counts cut to the 9 the heading leaves at 20 (`1 active…`), and at 6 the line cut as one text (`Agent…`)', () => {
+  expect(displayColumns(`${HEADING} ${COUNTS}`)).toBe(29)
+  for (const width of [29, 30, 80]) expect(columnHeader(HEADING, COUNTS, width), `${width}`).toEqual({ heading: 'Agent TODO ', counts: COUNTS })
+  expect(columnHeader(HEADING, COUNTS, 28)).toEqual({ heading: 'Agent TODO ', counts: '1 active, 2 queu…' })
+  expect(columnHeader(HEADING, COUNTS, 20)).toEqual({ heading: 'Agent TODO ', counts: '1 active…' })
+  expect(columnHeader(HEADING, COUNTS, 6)).toEqual({ heading: 'Agent…', counts: '' })
 })
 
-test('the counts part keeps a column while the heading and its space leave one: `1…` at 14 and a bare `…` at 13; at 12 and 11 the heading part is the line cut, `Claude TODO…` and `Claude TOD…`, and the counts part is empty', () => {
-  expect(columnHeader(HEADING, COUNTS, 14)).toEqual({ heading: 'Claude TODO ', counts: '1…' })
-  expect(columnHeader(HEADING, COUNTS, 13)).toEqual({ heading: 'Claude TODO ', counts: '…' })
-  expect(columnHeader(HEADING, COUNTS, 12)).toEqual({ heading: 'Claude TODO…', counts: '' })
-  expect(columnHeader(HEADING, COUNTS, 11)).toEqual({ heading: 'Claude TOD…', counts: '' })
+test('the counts part keeps a column while the heading and its space leave one: `1…` at 13 and a bare `…` at 12; at 11 and 10 the heading part is the line cut, `Agent TODO…` and `Agent TOD…`, and the counts part is empty', () => {
+  expect(columnHeader(HEADING, COUNTS, 13)).toEqual({ heading: 'Agent TODO ', counts: '1…' })
+  expect(columnHeader(HEADING, COUNTS, 12)).toEqual({ heading: 'Agent TODO ', counts: '…' })
+  expect(columnHeader(HEADING, COUNTS, 11)).toEqual({ heading: 'Agent TODO…', counts: '' })
+  expect(columnHeader(HEADING, COUNTS, 10)).toEqual({ heading: 'Agent TOD…', counts: '' })
 })
 
-test('whatever the counts and the width, the two parts joined are the line cut at the width and measure at most the width, and the counts part is empty exactly when the width is 12 or less', () => {
+test('whatever the counts and the width, the two parts joined are the line cut at the width and measure at most the width, and the counts part is empty exactly when the width is 11 or less', () => {
   for (const counts of ['0 active, 0 queued', COUNTS, '12 active, 13 queued', '120 active, 13 queued']) {
     for (let width = 0; width <= 45; width++) {
       const where = `${counts} in ${width}`
       const parts = columnHeader(HEADING, counts, width)
       expect(`${parts.heading}${parts.counts}`, where).toBe(cutToColumns(`${HEADING} ${counts}`, width))
       expect(displayColumns(`${parts.heading}${parts.counts}`), where).toBeLessThanOrEqual(width)
-      expect(parts.counts === '', where).toBe(width <= 12)
+      expect(parts.counts === '', where).toBe(width <= 11)
       // The heading part is whole with its space while the counts draw, and below that it is the cut line, which ends in the ellipsis.
-      if (width >= 13) expect(parts.heading, where).toBe('Claude TODO ')
+      if (width >= 12) expect(parts.heading, where).toBe('Agent TODO ')
       else if (width >= 1) expect(parts.heading.endsWith('…'), where).toBe(true)
     }
   }
+})
+
+// The header of a column whose agent has stated a name: the name, the fixed words after it and the counts. The name is the part that gives way first.
+const TAIL = ' TODO'
+
+test('a stated name is whole with its words and the counts from the width the line takes: `Ada TODO 1 active, 2 queued` is 27 columns, whole from 27 and cut by the counts first below', () => {
+  expect(displayColumns(`Ada${TAIL} ${COUNTS}`)).toBe(27)
+  for (const width of [27, 28, 80]) expect(nameFirstHeader('Ada', TAIL, COUNTS, width), `${width}`).toEqual({ heading: 'Ada TODO ', counts: COUNTS })
+  // The name is whole while its columns fit, and the counts are cut only once the name is down to its ellipsis: at 26 the name loses a column to `A…`, the counts whole.
+  expect(nameFirstHeader('Ada', TAIL, COUNTS, 26)).toEqual({ heading: 'A… TODO ', counts: COUNTS })
+  expect(nameFirstHeader('Ada', TAIL, COUNTS, 25)).toEqual({ heading: '… TODO ', counts: COUNTS })
+})
+
+test('a name of 60 columns at a layout width of 31 is cut to the 7 the words and the counts leave it, `xxxxxx…`, and the counts stay whole and pressable', () => {
+  const header = nameFirstHeader('x'.repeat(60), TAIL, COUNTS, 31)
+  expect(header).toEqual({ heading: 'xxxxxx… TODO ', counts: COUNTS })
+  expect(displayColumns(`${header.heading}${header.counts}`)).toBe(31)
+})
+
+test('once the name is down to its ellipsis the line is `… TODO ` and the counts, cut as the default heading\'s are: `1 active, 2 queu…` at 24, `1…` at 9 and a bare `…` at 8, and at 7 and 6 the line cut as one text with no counts part', () => {
+  const name = 'x'.repeat(60)
+  expect(nameFirstHeader(name, TAIL, COUNTS, 25)).toEqual({ heading: '… TODO ', counts: COUNTS })
+  expect(nameFirstHeader(name, TAIL, COUNTS, 24)).toEqual({ heading: '… TODO ', counts: '1 active, 2 queu…' })
+  expect(nameFirstHeader(name, TAIL, COUNTS, 9)).toEqual({ heading: '… TODO ', counts: '1…' })
+  expect(nameFirstHeader(name, TAIL, COUNTS, 8)).toEqual({ heading: '… TODO ', counts: '…' })
+  expect(nameFirstHeader(name, TAIL, COUNTS, 7)).toEqual({ heading: '… TODO…', counts: '' })
+  expect(nameFirstHeader(name, TAIL, COUNTS, 6)).toEqual({ heading: '… TOD…', counts: '' })
+  expect(nameFirstHeader(name, TAIL, COUNTS, 1)).toEqual({ heading: '…', counts: '' })
+  expect(nameFirstHeader(name, TAIL, COUNTS, 0)).toEqual({ heading: '', counts: '' })
+})
+
+test('whatever the name and the width from 0 to 60, the header is never wider than the width, is the whole line where that fits, keeps the counts whole while the cut name keeps a character before its ellipsis, and has counts to press exactly from 8 columns', () => {
+  const NAMES = ['x'.repeat(60), '漢'.repeat(30), FAMILY.repeat(8), `a${FAMILY}b`.repeat(6), `${HEART}${KEYCAP_ONE}`.repeat(8), 'Ada', 'Ada: backend', '日本語のタイトル and some words']
+  for (const name of NAMES) {
+    const units = unitsOf(name).map(unit => unit.text)
+    const boundaries = endsOf(units)
+    for (let width = 0; width <= 60; width++) {
+      const where = `${JSON.stringify(name)} in ${width}`
+      const parts = nameFirstHeader(name, TAIL, COUNTS, width)
+      const line = `${parts.heading}${parts.counts}`
+      expect(displayColumns(line), where).toBeLessThanOrEqual(width)
+      expect(parts.counts !== '', where).toBe(width >= 8)
+      if (displayColumns(`${name}${TAIL} ${COUNTS}`) <= width) {
+        expect(parts, where).toEqual({ heading: `${name}${TAIL} `, counts: COUNTS })
+        continue
+      }
+      // Cut: the line is the kept start of the name, an ellipsis and the words, or, with the name down to its ellipsis, the line `… TODO <counts>` cut at the width.
+      const kept = parts.heading.endsWith(`…${TAIL} `) ? parts.heading.slice(0, -`…${TAIL} `.length) : null
+      if (kept === null) {
+        expect(line, where).toBe(cutToColumns(`…${TAIL} ${COUNTS}`, width))
+        continue
+      }
+      // The start the name keeps ends between units, never inside a joined sequence or on a joiner.
+      expect(kept === '' || boundaries.has(kept), where).toBe(true)
+      expect(endsJoining(kept), where).toBe(false)
+      if (kept !== '') expect(parts.counts, where).toBe(COUNTS)
+      else expect(line, where).toBe(cutToColumns(`…${TAIL} ${COUNTS}`, width))
+    }
+  }
+})
+
+test('the name gives way before the counts, where the default rule given the same heading cuts the counts first: a name of 20 columns at 31 keeps 7 columns and the counts whole, where the counts would be cut to 5', () => {
+  const name = 'n'.repeat(20)
+  expect(nameFirstHeader(name, TAIL, COUNTS, 31)).toEqual({ heading: 'nnnnnn… TODO ', counts: COUNTS })
+  expect(columnHeader(`${name}${TAIL}`, COUNTS, 31)).toEqual({ heading: `${name}${TAIL} `, counts: '1 ac…' })
 })
 
 // --- a row's ladder
@@ -922,7 +987,7 @@ test('for an id of one to four digits, a row draws its control and prefix from t
 
 // A squeezed list (layout.ts's isSqueezed) starts the ladder at its third rung. What hand work gives for the id 12 and the 3-second window: for each kind and layout
 // width, the answer width, the control column and the title's room, the rung always the third. The widths are the lists of 20, 32 and 42 columns beside the
-// Claude column, laid out in one column less (19, 31 and 41), and sub-plan 7's `oneline-output.txt` figures at 20, 32 and 42.
+// Claude column, laid out in one column less (19, 31 and 41), and the one-line output figures measured at 20, 32 and 42.
 const SQUEEZED_FIGURES: [Kind, [number, number, number, number][]][] = [
   [PLAIN, [[19, 24, 9, 4], [20, 24, 9, 5], [31, 24, 9, 16], [32, 24, 9, 17], [41, 24, 9, 26], [42, 24, 9, 27]]],
   [YES_NO, [[19, 24, 9, 4], [20, 24, 9, 5], [31, 24, 9, 16], [32, 24, 9, 17], [41, 24, 9, 26], [42, 24, 9, 27]]],
@@ -985,30 +1050,30 @@ test('a row the unsqueezed ladder already takes to its third rung is laid out th
   expect(squeezedHere).toBeGreaterThan(0)
 })
 
-test('the header counts the count\'s wrapped lines in the columns the chip leaves, which never shrinks: ` To do for you ` and ` 8 open ` take 23 columns, so a list of 20 draws the count on two lines', () => {
-  // ` To do for you ` is 15 columns and ` 8 open ` 8: in the 5 that a list of 20 leaves they wrap to ` 8 ` and `open `.
-  expect(headerLines(' To do for you ', ' 8 open ', 23)).toBe(1)
-  expect(headerLines(' To do for you ', ' 8 open ', 120)).toBe(1)
-  expect(headerLines(' To do for you ', ' 8 open ', 22)).toBe(2)
-  expect(headerLines(' To do for you ', ' 8 open ', 20)).toBe(2)
-  expect(wrapText(' 8 open ', 5)).toEqual([' 8 ', 'open '])
+test('the header counts the count\'s wrapped lines in the columns the chip leaves, which never shrinks: ` Human TODO ` and ` 8 open ` take 20 columns, so a list of 19 draws the count on two lines', () => {
+  // ` Human TODO ` is 12 columns and ` 8 open ` 8: in the 7 that a list of 19 leaves they wrap to ` 8 open` and a space.
+  expect(headerLines(' Human TODO ', ' 8 open ', 23)).toBe(1)
+  expect(headerLines(' Human TODO ', ' 8 open ', 120)).toBe(1)
+  expect(headerLines(' Human TODO ', ' 8 open ', 20)).toBe(1)
+  expect(headerLines(' Human TODO ', ' 8 open ', 19)).toBe(2)
+  expect(wrapText(' 8 open ', 7)).toEqual([' 8 open', ' '])
 })
 
 test('a count wider than the columns the chip leaves wraps word by word there, and with no column left it takes a line per character', () => {
-  // The count ` 1234 open, 999999999999 sent ` is 30 columns: the 25 a list of 40 leaves beside the chip hold ` 1234 open, 999999999999` and `sent `.
+  // The count ` 1234 open, 999999999999 sent ` is 30 columns: the 28 a list of 40 leaves beside the chip hold ` 1234 open, 999999999999` and `sent `.
   const count = ` 1234 open, ${'9'.repeat(12)} sent `
   expect(displayColumns(count)).toBe(30)
-  expect(headerLines(' To do for you ', count, 40)).toBe(2)
-  expect(headerLines(' To do for you ', count, 45)).toBe(1)
-  // The chip never shrinks, and a 20-column term makes it 32 columns, as wide as a list of 32 and wider than one of 31 or 20, so the chip leaves the count
-  // -12, -1 and 0 columns there, and 1 at 33. The model wraps in at least one column, so ` 8 open `, its eight characters (a space, `8`, a space, `o`, `p`,
+  expect(headerLines(' Human TODO ', count, 40)).toBe(2)
+  expect(headerLines(' Human TODO ', count, 45)).toBe(1)
+  // The chip never shrinks, and a 20-column term makes it 27 columns, as wide as a list of 27 and wider than one of 26 or 20, so the chip leaves the count
+  // -7, -1 and 0 columns there, and 1 at 28. The model wraps in at least one column, so ` 8 open `, its eight characters (a space, `8`, a space, `o`, `p`,
   // `e`, `n`, a space), takes eight lines at all four widths. That is the model's count only: how the engine draws a count with no column left beside the
   // chip is unmeasured.
-  const chip = ` To do for ${'x'.repeat(20)} `
-  expect(displayColumns(chip)).toBe(32)
+  const chip = ` ${'x'.repeat(20)} TODO `
+  expect(displayColumns(chip)).toBe(27)
   expect(wrapText(' 8 open ', 1)).toEqual([' ', '8', ' ', 'o', 'p', 'e', 'n', ' '])
-  for (const width of [20, 31, 32, 33]) expect(headerLines(chip, ' 8 open ', width), `${width}`).toBe(8)
-  // With the 8 columns a list of 40 leaves, the count fits on one line.
+  for (const width of [20, 26, 27, 28]) expect(headerLines(chip, ' 8 open ', width), `${width}`).toBe(8)
+  // With the 13 columns a list of 40 leaves, the count fits on one line.
   expect(headerLines(chip, ' 8 open ', 40)).toBe(1)
 })
 
@@ -1093,9 +1158,9 @@ test('a backlog tail measures at most the room (body less the smaller of the hea
 })
 
 test('a list that is not squeezed takes the stacked header only when it is narrower than its chip and one column, for the chip of the default term and of a 20-column term', () => {
-  const chipOf = (term: string): string => ` To do for ${term} `
+  const chipOf = (term: string): string => ` ${term} TODO `
   const alone = (width: number): BandWidths => ({ human: { box: width, layout: width }, claude: null })
-  for (const [chip, columns] of [[chipOf('you'), 15], [chipOf('x'.repeat(20)), 32]] as const) {
+  for (const [chip, columns] of [[' Human TODO ', 12], [chipOf('x'.repeat(20)), 27]] as const) {
     expect(displayColumns(chip)).toBe(columns)
     for (let width = 1; width <= 120; width++) expect(isChipShort(alone(width), chip), `${columns}-column chip at ${width}`).toBe(width < columns + 1)
   }
@@ -1103,5 +1168,5 @@ test('a list that is not squeezed takes the stacked header only when it is narro
   const squeezed: BandWidths = { human: { box: 30, layout: 29 }, claude: { box: 32, layout: 31 } }
   expect(isSqueezed(squeezed)).toBe(true)
   expect(isChipShort(squeezed, chipOf('x'.repeat(20)))).toBe(false)
-  expect(isChipShort({ human: null, claude: { box: 32, layout: 32 } }, chipOf('you'))).toBe(false)
+  expect(isChipShort({ human: null, claude: { box: 32, layout: 32 } }, ' Human TODO ')).toBe(false)
 })

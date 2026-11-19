@@ -1017,6 +1017,7 @@ describe('the stamp pass: a walk that ends unread is written to the debug log', 
   const timeAfterMute = async ($: any, clock: Clock, doc: Doc, id: string) => {
     expect(await draw($, id)).not.toContain(hhmm(T0 - 60000))
     doc.blockFault = undefined
+    doc.deny = undefined
     doc.text += lines([user({ uuid: id, parent: null, ts: iso(T0 - 60000) })])
     await clock.advance(1000)
     expect(await draw($, id)).toContain(hhmm(T0 - 60000))
@@ -1311,6 +1312,137 @@ describe('the stamp pass: a walk that ends unread is written to the debug log', 
     await readsThrough(clock, doc)
     await timeAfterMute($, clock, doc, AGAIN)
     expect(stamps(rec)).toEqual([...held, NO_MORE_PATHS, ...alternatingLines(1, 19), MUTED])
+  })
+
+  // The fault lines of the stamp lookup, the size read and the cache read: each name has a budget of 20 lines a load, and the 21st is replaced by one `cachier faults` line naming the writer.
+  describe('a fault that lasts: the stamp lookup\'s, the size read\'s and the cache read\'s lines are bounded, each name by its own budget', () => {
+    // The text of the errors the denied block reads and the refused size reads raise.
+    const DENIED = 'denied-by-test-3c9e41'
+    const REFUSED = 'stat refused'
+    const muted = (writer: string) => ({ writer, ended: 'muted', lines: 20 })
+    const reports = (n: number) => Array.from({ length: n }, () => 'report')
+    // What a flipping size read writes while its budget lasts: a report, then the line that it is readable again.
+    const flips = (n: number) => Array.from({ length: n }, () => ['report', 'readable again']).flat()
+    // The fault lines written so far, in order: a failure report as 'report', the size read's recovery line as 'readable again', and a `cachier faults` line as its object.
+    const faultLines = (rec: { logs: string[] }) =>
+      rec.logs
+        .map((l) => JSON.parse(l) as { text: string; to: string })
+        .filter((e) => e.to === 'debug')
+        .flatMap((e) => {
+          if (e.text.startsWith('cachier faults ')) return [JSON.parse(e.text.slice('cachier faults '.length))]
+          if (e.text === 'cachier: transcript readable again') return ['readable again']
+          return e.text.includes(DENIED) || e.text.includes(REFUSED) ? ['report'] : []
+        })
+    // `n` passes, each after a growth: each asks one cache read and, with a message wanted, one lookup.
+    const passes = async (clock: Clock, doc: Doc, n: number) => {
+      for (let pass = 1; pass <= n; pass++) await nextPass(clock, doc)
+    }
+    // A turn's step and end, each of which asks a cache read.
+    const turn = async ($: any, clock: Clock) => {
+      await mainStep($)
+      await turnEnd($)
+      await clock.settle()
+    }
+    // `n` flips of the size read: refused for a tick, readable again for the next. The file does not change, so neither tick asks a read.
+    const flipping = async (clock: Clock, doc: Doc, n: number) => {
+      for (let flip = 1; flip <= n; flip++) {
+        doc.broken = true
+        await clock.advance(1000)
+        doc.broken = false
+        await clock.advance(1000)
+      }
+    }
+
+    test('a cache read that throws every time writes 20 reports across its triggers, one muted line, then nothing, and still lands once the fault lifts', async ($, on) => {
+      // The world answers a turn's step, which `started` leaves unanswered.
+      const doc: Doc = cached()
+      const rec = kaWorld(on, doc)
+      const clock = mock.clock(on, { now: T0 })
+      await $.classic.SessionStart({ source: 'startup', transcript_path: PATH })
+      await clock.settle()
+      doc.deny = DENIED
+      // Eight reads from four turns, then twelve from ticks that follow growth.
+      for (let n = 1; n <= 4; n++) await turn($, clock)
+      await passes(clock, doc, 12)
+      expect(faultLines(rec)).toEqual(reports(20))
+      // The 21st read's report is the muted line, and five more reads of each kind write nothing.
+      await passes(clock, doc, 1)
+      await turn($, clock)
+      await passes(clock, doc, 3)
+      expect(faultLines(rec)).toEqual([...reports(20), muted('cache read')])
+      expect(lastStatus(rec)).toContain('TTL unread')
+      // The next read lands, and the tick after it draws the countdown from the cache it read.
+      await timeAfterMute($, clock, doc, LATE)
+      await clock.advance(1000)
+      expect(await hint($)).toMatch(/^\d+:\d\d$/)
+    })
+
+    test('with a message wanted, the stamp lookup and the cache read each write 20 reports and one muted line of their own, and no more over later passes', async ($, on) => {
+      const doc: Doc = cached()
+      const { rec, clock } = await started($, on, doc)
+      await draw($, LATE)
+      doc.deny = DENIED
+      // The 21st pass is each name's 21st line; five more passes follow.
+      await passes(clock, doc, 26)
+      const written = faultLines(rec)
+      // The two writers' reports read alike, so the 40 reports precede both muted lines, one for each writer.
+      expect(written.slice(0, 40)).toEqual(reports(40))
+      expect(written.slice(40)).toHaveLength(2)
+      expect(written.slice(40)).toEqual(expect.arrayContaining([muted('stamp lookup'), muted('cache read')]))
+      await timeAfterMute($, clock, doc, LATE)
+    })
+
+    test('a size read that flaps writes its report and its readable-again line 10 times, then one muted line, then nothing', async ($, on) => {
+      const doc: Doc = cached()
+      const { rec, clock } = await started($, on, doc)
+      await flipping(clock, doc, 10)
+      expect(faultLines(rec)).toEqual(flips(10))
+      // The 11th flip's report is the 21st line; the line that it is readable again and five more flips write nothing.
+      await flipping(clock, doc, 6)
+      expect(faultLines(rec)).toEqual([...flips(10), muted('transcript size')])
+      await timeAfterMute($, clock, doc, LATE)
+    })
+
+    test('a muted size read and a muted cache read leave the stamp lookup its own budget', async ($, on) => {
+      const doc: Doc = cached()
+      const { rec, clock } = await started($, on, doc)
+      await flipping(clock, doc, 11)
+      doc.deny = DENIED
+      await passes(clock, doc, 21)
+      await draw($, LATE)
+      await passes(clock, doc, 26)
+      expect(faultLines(rec)).toEqual([...flips(10), muted('transcript size'), ...reports(20), muted('cache read'), ...reports(20), muted('stamp lookup')])
+      await timeAfterMute($, clock, doc, LATE)
+    })
+
+    test('a muted stamp lookup and a muted cache read leave the size read its own budget', async ($, on) => {
+      const doc: Doc = cached()
+      const { rec, clock } = await started($, on, doc)
+      await draw($, LATE)
+      doc.deny = DENIED
+      await passes(clock, doc, 26)
+      const before = faultLines(rec)
+      expect(before.filter((l) => typeof l === 'object')).toHaveLength(2)
+      await flipping(clock, doc, 16)
+      expect(faultLines(rec).slice(before.length)).toEqual([...flips(10), muted('transcript size')])
+      await timeAfterMute($, clock, doc, LATE)
+    })
+
+    test('a throw that escapes a read, a state-store fault, is reported under the cache read budget the failed reads spend', async ($, on) => {
+      let refused = false
+      on('state.set', (_$: any, e: any, next: any) => (refused && e.key === 'view' ? { deny: DENIED } : next(e)))
+      const doc: Doc = cached()
+      const { rec, clock } = await started($, on, doc)
+      // Ten reads fail in the read, ten more escape it: the budget is one.
+      doc.deny = DENIED
+      await passes(clock, doc, 10)
+      doc.deny = undefined
+      refused = true
+      await passes(clock, doc, 16)
+      expect(faultLines(rec)).toEqual([...reports(20), muted('cache read')])
+      refused = false
+      await timeAfterMute($, clock, doc, LATE)
+    })
   })
 })
 
@@ -9406,8 +9538,8 @@ describe('the best setup: one sentence, in the pane and in the bare command, pri
     await clock.advance(1000)
     await commandText($, 'on 300')
     await clock.advance(1000)
-    // A run that sends nothing costs what keepalive off does, so the paused setup is the cheapest and the block states the baseline.
-    expect(sectionLines(await commandText($, ''), 'Advice')).toEqual(['setup: 5m/paused (lead 300s ≥ 300s TTL) (cheapest)', '5m/off ≈ same cost (10 recent pauses)'])
+    // A run that sends nothing costs what keepalive off does, so the paused setup is optimal and the block states the baseline.
+    expect(sectionLines(await commandText($, ''), 'Advice')).toEqual(['setup: 5m/paused (lead 300s ≥ 300s TTL) (optimal)', '5m/off ≈ same cost (10 recent pauses)'])
   })
 
   test('the details pane carries the block, each row whole, in its Advice section', async ($, on) => {
@@ -9453,7 +9585,7 @@ describe('the best setup: one sentence, in the pane and in the bare command, pri
     const text = (await commandText($, '')).replace(/\n\s*/g, ' ')
     // The count capped at 1 cannot hold the pauses at 1 h, so no row names 1h/on (the change test below, without the cap, draws it).
     expect(text).not.toContain('1h/on')
-    expect(sectionLines(await commandText($, ''), 'Advice')).toEqual(['setup: 5m/off (cheapest)', 'saves ~$3.00 vs 1h/off (10 recent pauses)'])
+    expect(sectionLines(await commandText($, ''), 'Advice')).toEqual(['setup: 5m/off (optimal)', 'saves ~$3.00 vs 1h/off (10 recent pauses)'])
   })
 
   test('every session\'s pauses are read with at most eight store reads running, and all of them are priced', async ($, on) => {

@@ -11,8 +11,9 @@ export type Source = { rows: AsyncIterable<Row | null>; agent: string | null }
 
 // `skipped` counts rows that could not be read, `unreadable` the subagent transcripts left out because reading them
 // failed, and `known` every id the transcripts handed out, on any branch. `todo` is the Claude list the main transcript's last live write
-// gave: empty when it holds no write.
-export type Replayed = { store: Store; todo: TodoItem[]; skipped: number; unreadable: { agent: string; reason: string }[]; known: number[] }
+// gave: empty when it holds no write. `name` is the name its last live call that stated one gave, with entries or without: null when it holds no such call,
+// and the empty text when the last stated a blank one.
+export type Replayed = { store: Store; todo: TodoItem[]; name: string | null; skipped: number; unreadable: { agent: string; reason: string }[]; known: number[] }
 
 type Step = { at: number; seq: number; run: (store: Store) => Store }
 
@@ -159,21 +160,23 @@ const noticeText = (row: Row, blocks: Block[]): string | null => {
   return Array.isArray(attachment.content) ? attachment.content.filter((text): text is string => typeof text === 'string').join('\n') : null
 }
 
-// What one transcript holds for the list: its rows' places, the mod's own actions by row, the Claude list's writes by row (in file order), and
-// the subagents it spawned.
+// What one transcript holds for the list: its rows' places, the mod's own actions by row, the Claude list's writes by row (in file order), the names its
+// calls stated by row (in file order, held apart from the writes, so a call with entries and no name counts for its entries and a name-only call for its name),
+// and the subagents it spawned.
 type Read = {
   nodes: Node[]
   own: { k: number; step: Step }[]
   writes: { k: number; items: TodoItem[] }[]
+  names: { k: number; name: string }[]
   spawns: { agent: string; k: number }[]
   issued: number[]
   skipped: number
 }
 
 const readSource = async (source: Source, next: () => number): Promise<Read> => {
-  const read: Read = { nodes: [], own: [], writes: [], spawns: [], issued: [], skipped: 0 }
+  const read: Read = { nodes: [], own: [], writes: [], names: [], spawns: [], issued: [], skipped: 0 }
   const pending = new Map<string, ToolInput>()
-  const pendingWrites = new Map<string, TodoItem[]>()
+  const pendingTodo = new Map<string, { items: TodoItem[] | null; name: string | null }>()
   for await (const row of source.rows) {
     if (row === null) {
       read.skipped++
@@ -189,16 +192,19 @@ const readSource = async (source: Source, next: () => number): Promise<Read> => 
         // A call the mod refused as malformed never ran; its result is an error and is not replayed.
         if (parsed.ok) pending.set(block.id, parsed.value)
       } else if (block.type === 'tool_use' && block.name === TODO_TOOL && typeof block.id === 'string') {
-        // Only a write that passed the check counts: a read-only call (no list) and a call the check refused change nothing. Only the main
-        // transcript's writes are kept, since only the main agent keeps the list.
+        // Only a call that passed the check and states something counts: a call that gives neither a list nor a name, and a call the check refused, change nothing. Only the main
+        // transcript's calls are kept, since only the main agent keeps the list.
         const written = parseTodo(block.input)
-        if (source.agent === null && written.ok && written.value !== null) pendingWrites.set(block.id, written.value)
+        if (source.agent === null && written.ok && (written.value !== null || written.name !== null)) pendingTodo.set(block.id, { items: written.value, name: written.name })
       } else if (block.type === 'tool_result' && typeof block.tool_use_id === 'string') {
-        const items = pendingWrites.get(block.tool_use_id)
-        if (items !== undefined) {
-          pendingWrites.delete(block.tool_use_id)
-          // A write whose result is an error was refused or failed and changed nothing.
-          if (block.is_error !== true) read.writes.push({ k, items })
+        const stated = pendingTodo.get(block.tool_use_id)
+        if (stated !== undefined) {
+          pendingTodo.delete(block.tool_use_id)
+          // A call whose result is an error was refused or failed and changed nothing.
+          if (block.is_error !== true) {
+            if (stated.items !== null) read.writes.push({ k, items: stated.items })
+            if (stated.name !== null) read.names.push({ k, name: stated.name })
+          }
           continue
         }
         const input = pending.get(block.tool_use_id)
@@ -249,6 +255,7 @@ export const replay = async (sources: readonly Source[]): Promise<Replayed> => {
   let skipped = 0
   const spawnedLive = new Map<string, boolean>()
   let todo: TodoItem[] = []
+  let name: string | null = null
   for (const source of sources) {
     let read: Read
     try {
@@ -267,13 +274,14 @@ export const replay = async (sources: readonly Source[]): Promise<Replayed> => {
       continue
     }
     for (const { k, step } of read.own) if (k < 0 || live(k)) steps.push(step)
-    // The last live write is the list: a write gives the whole list, so the ones before it are not replayed.
+    // The last live write is the list: a write gives the whole list, so the ones before it are not replayed. The last live call that stated a name is the name.
     for (const write of read.writes) if (write.k < 0 || live(write.k)) todo = write.items
+    for (const stated of read.names) if (stated.k < 0 || live(stated.k)) name = stated.name
   }
   steps.sort((a, b) => a.at - b.at || a.seq - b.seq)
   const replayed = steps.reduce<Store>((store, step) => step.run(store), EMPTY)
   let next = replayed.next
   for (const id of known) next = Math.max(next, id + 1)
   const store = { items: replayed.items.map(it => ({ ...it, unread: false })), next, term: replayed.term }
-  return { store, todo, skipped, unreadable, known: [...known] }
+  return { store, todo, name, skipped, unreadable, known: [...known] }
 }

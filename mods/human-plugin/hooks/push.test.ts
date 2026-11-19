@@ -107,7 +107,7 @@ test('a blocking filing pushes one line that names the item, and plays the chime
   const runs = chimes(on)
   await $.tool.call({ tool: TOOL, action: 'add', blocking: true, title: 'Pick a db' })
   await clock.settle()
-  expect(messages).toEqual(['Blocking: #1 Pick a db'])
+  expect(messages).toEqual(['Blocking: #1 Pick a db · /todo answer'])
   expect(runs).toEqual([['afplay', SOUND]])
 })
 
@@ -130,7 +130,7 @@ test('an update that makes an open item blocking pushes once, and plays the chim
   await $.tool.call({ tool: TOOL, action: 'add', title: 'Pick a db' })
   await $.tool.call({ tool: TOOL, action: 'update', id: 1, blocking: true })
   await clock.settle()
-  expect(messages).toEqual(['Blocking: #1 Pick a db'])
+  expect(messages).toEqual(['Blocking: #1 Pick a db · /todo answer'])
   expect(runs).toEqual([['afplay', SOUND]])
 })
 
@@ -142,7 +142,7 @@ test('an update to an open blocking item that leaves it blocking pushes nothing 
   await $.tool.call({ tool: TOOL, action: 'add', blocking: true, title: 'Pick a db' })
   await $.tool.call({ tool: TOOL, action: 'update', id: 1, title: 'Pick a database' })
   await clock.settle()
-  expect(messages).toEqual(['Blocking: #1 Pick a db'])
+  expect(messages).toEqual(['Blocking: #1 Pick a db · /todo answer'])
 })
 
 test('an append that reopens a blocking item the human answered pushes once, and plays no chime', async ($, on) => {
@@ -158,7 +158,7 @@ test('an append that reopens a blocking item the human answered pushes once, and
   await clock.advance(3000)
   await $.tool.call({ tool: TOOL, action: 'append', id: 1, text: 'The sqlite file is in data/.' })
   await clock.settle()
-  expect(messages).toEqual(['Blocking: #1 Pick a db', 'Blocking: #1 Pick a db'])
+  expect(messages).toEqual(['Blocking: #1 Pick a db · /todo answer', 'Blocking: #1 Pick a db · /todo answer'])
   expect(runs).toEqual([['afplay', SOUND]])
 })
 
@@ -175,13 +175,13 @@ test('an update that reopens a sent blocking item pushes once, and so does one t
   await clock.advance(3000)
   await $.tool.call({ tool: TOOL, action: 'update', id: 1, title: 'Pick a database' })
   await clock.settle()
-  expect(messages).toEqual(['Blocking: #1 Pick a db', 'Blocking: #1 Pick a database'])
+  expect(messages).toEqual(['Blocking: #1 Pick a db · /todo answer', 'Blocking: #1 Pick a database · /todo answer'])
   await $.tool.call({ tool: TOOL, action: 'add', title: 'Plain ask' })
   await ui.press({ key: 'done-2' })
   await clock.advance(3000)
   await $.tool.call({ tool: TOOL, action: 'update', id: 2, blocking: true })
   await clock.settle()
-  expect(messages).toEqual(['Blocking: #1 Pick a db', 'Blocking: #1 Pick a database', 'Blocking: #2 Plain ask'])
+  expect(messages).toEqual(['Blocking: #1 Pick a db · /todo answer', 'Blocking: #1 Pick a database · /todo answer', 'Blocking: #2 Plain ask · /todo answer'])
   expect(runs).toEqual([['afplay', SOUND]])
 })
 
@@ -219,17 +219,17 @@ test('the push is one line: a line break in the title is drawn as a space', asyn
   const messages = pushes(on)
   await $.tool.call({ tool: TOOL, action: 'add', blocking: true, title: 'Pick\na db\r\nnow' })
   await clock.settle()
-  expect(messages).toEqual(['Blocking: #1 Pick a db now'])
+  expect(messages).toEqual(['Blocking: #1 Pick a db now · /todo answer'])
 })
 
-test('a title too long for the push is cut to 180 characters in all, the ellipsis counted within them', async ($, on) => {
+test('a title too long for the push is cut so that the whole message is 180 characters, the ellipsis counted and the pointer kept whole', async ($, on) => {
   const clock = mock.clock(on)
   mock.store(on)
   on('ui.panes', () => ({ value: [] }))
   const messages = pushes(on)
   await $.tool.call({ tool: TOOL, action: 'add', blocking: true, title: 'b'.repeat(200) })
   await clock.settle()
-  expect(messages).toEqual([`Blocking: #1 ${'b'.repeat(166)}…`])
+  expect(messages).toEqual([`Blocking: #1 ${'b'.repeat(151)}… · /todo answer`])
   expect(messages[0]?.length).toBe(180)
 })
 
@@ -238,19 +238,37 @@ test('a cut push never splits a surrogate pair: one that would is one unit short
   mock.store(on)
   on('ui.panes', () => ({ value: [] }))
   const messages = pushes(on)
-  await $.tool.call({ tool: TOOL, action: 'add', blocking: true, title: `${'a'.repeat(165)}😀tail` })
+  await $.tool.call({ tool: TOOL, action: 'add', blocking: true, title: `${'a'.repeat(150)}😀tail` })
   await clock.settle()
-  expect(messages).toEqual([`Blocking: #1 ${'a'.repeat(165)}…`])
+  expect(messages).toEqual([`Blocking: #1 ${'a'.repeat(150)}… · /todo answer`])
 })
 
-test('a title that fits the 180 characters with its prefix is pushed whole', async ($, on) => {
+test('a title that fits the 180 characters with its prefix and the pointer is pushed whole', async ($, on) => {
   const clock = mock.clock(on)
   mock.store(on)
   on('ui.panes', () => ({ value: [] }))
   const messages = pushes(on)
-  await $.tool.call({ tool: TOOL, action: 'add', blocking: true, title: 'b'.repeat(167) })
+  await $.tool.call({ tool: TOOL, action: 'add', blocking: true, title: 'b'.repeat(152) })
   await clock.settle()
-  expect(messages).toEqual([`Blocking: #1 ${'b'.repeat(167)}`])
+  expect(messages).toEqual([`Blocking: #1 ${'b'.repeat(152)} · /todo answer`])
+  expect(messages[0]?.length).toBe(180)
+})
+
+test('at every title length the pointer ends the message whole, and the title is cut with its ellipsis only when it does not fit', async ($, on) => {
+  const clock = mock.clock(on)
+  mock.store(on)
+  on('ui.panes', () => ({ value: [] }))
+  const messages = pushes(on)
+  const lengths = [1, 100, 151, 152, 153, 154, 200, 500]
+  for (const length of lengths) await $.tool.call({ tool: TOOL, action: 'add', blocking: true, title: 'c'.repeat(length) })
+  await clock.settle()
+  expect(messages).toHaveLength(lengths.length)
+  messages.forEach((message, k) => {
+    const length = lengths[k] ?? 0
+    const title = length <= 152 ? 'c'.repeat(length) : `${'c'.repeat(151)}…`
+    expect(message).toBe(`Blocking: #${k + 1} ${title} · /todo answer`)
+    expect(message.length).toBeLessThanOrEqual(180)
+  })
 })
 
 test('a push refused as user_present is tried again a minute after its answer, with the title the item has now, until one is sent', async ($, on) => {
@@ -260,9 +278,9 @@ test('a push refused as user_present is tried again a minute after its answer, w
   await clock.settle()
   await $.tool.call({ tool: TOOL, action: 'update', id: 1, title: 'Pick a database' })
   await clock.advance(59000)
-  expect(messages).toEqual(['Blocking: #1 Pick a db'])
+  expect(messages).toEqual(['Blocking: #1 Pick a db · /todo answer'])
   await clock.advance(1000)
-  expect(messages).toEqual(['Blocking: #1 Pick a db', 'Blocking: #1 Pick a database'])
+  expect(messages).toEqual(['Blocking: #1 Pick a db · /todo answer', 'Blocking: #1 Pick a database · /todo answer'])
   await clock.advance(600000)
   expect(messages.length).toBe(2)
 })
@@ -315,7 +333,7 @@ test('a push refused as config_off is not tried again, and is logged once, at de
   const messages = pushes(on, answering({ pushSent: false, disabledReason: 'config_off' }))
   await $.tool.call({ tool: TOOL, action: 'add', blocking: true, title: 'Pick a db' })
   await clock.advance(120000)
-  expect(messages).toEqual(['Blocking: #1 Pick a db'])
+  expect(messages).toEqual(['Blocking: #1 Pick a db · /todo answer'])
   const pushLog = lines.filter(line => line.text.includes('the push for #1'))
   expect(pushLog).toEqual([{ text: 'human-plugin: the push for #1 was not sent: config_off', to: 'debug' }])
 })
@@ -326,7 +344,7 @@ test('a push refused as no_transport is not tried again, and is logged once, at 
   const messages = pushes(on, answering({ pushSent: false, disabledReason: 'no_transport' }))
   await $.tool.call({ tool: TOOL, action: 'add', blocking: true, title: 'Pick a db' })
   await clock.advance(120000)
-  expect(messages).toEqual(['Blocking: #1 Pick a db'])
+  expect(messages).toEqual(['Blocking: #1 Pick a db · /todo answer'])
   const pushLog = lines.filter(line => line.text.includes('the push for #1'))
   expect(pushLog).toEqual([{ text: 'human-plugin: the push for #1 was not sent: no_transport', to: 'debug' }])
 })
@@ -345,7 +363,7 @@ for (const [kind, answer, said] of ENDED) {
     const messages = pushes(on, answer)
     await $.tool.call({ tool: TOOL, action: 'add', blocking: true, title: 'Pick a db' })
     await clock.advance(180000)
-    expect(messages).toEqual(['Blocking: #1 Pick a db'])
+    expect(messages).toEqual(['Blocking: #1 Pick a db · /todo answer'])
     const pushLog = lines.filter(line => line.text.includes('the push for #1'))
     expect(pushLog.length).toBe(1)
     expect(pushLog[0]?.text).toContain(`the push for #1 ${said}`)
@@ -364,7 +382,7 @@ test('a push unanswered after 10 seconds ends its item\'s tries: it is logged on
   expect(lines.filter(line => line.text.includes('the push for #1'))).toEqual([])
   await clock.advance(1)
   await clock.advance(120000)
-  expect(messages).toEqual(['Blocking: #1 Pick a db'])
+  expect(messages).toEqual(['Blocking: #1 Pick a db · /todo answer'])
   expect(lines.filter(line => line.text.includes('the push for #1'))).toEqual([{ text: 'human-plugin: the push for #1 was not answered in 10 seconds', to: 'transcript' }])
 })
 
@@ -380,7 +398,7 @@ test('a reopen makes its own push when the item\'s earlier push went unanswered'
   await clock.advance(3000)
   await $.tool.call({ tool: TOOL, action: 'append', id: 1, text: 'The sqlite file is in data/.' })
   await clock.settle()
-  expect(messages).toEqual(['Blocking: #1 Pick a db', 'Blocking: #1 Pick a db'])
+  expect(messages).toEqual(['Blocking: #1 Pick a db · /todo answer', 'Blocking: #1 Pick a db · /todo answer'])
 })
 
 test('the first push call of a session logs its whole answer at debug, and no later call does', async ($, on) => {
@@ -391,7 +409,7 @@ test('the first push call of a session logs its whole answer at debug, and no la
   await clock.settle()
   await $.tool.call({ tool: TOOL, action: 'add', blocking: true, title: 'Second' })
   await clock.settle()
-  expect(messages).toEqual(['Blocking: #1 Pick a db', 'Blocking: #2 Second'])
+  expect(messages).toEqual(['Blocking: #1 Pick a db · /todo answer', 'Blocking: #2 Second · /todo answer'])
   const whole = lines.filter(line => line.text.includes('first push call'))
   expect(whole.length).toBe(1)
   expect(whole[0]?.to).toBe('debug')
@@ -411,7 +429,7 @@ test('a push answered user_present after its 10 seconds have passed schedules no
   await clock.advance(10000)
   answerLate()
   await clock.advance(120000)
-  expect(messages).toEqual(['Blocking: #1 Pick a db'])
+  expect(messages).toEqual(['Blocking: #1 Pick a db · /todo answer'])
 })
 
 test('a clear ends the retries of the items filed before it: none is tried again', async ($, on) => {
@@ -425,7 +443,7 @@ test('a clear ends the retries of the items filed before it: none is tried again
   // The clear empties the list, and a retry that finds its item gone ends anyway: the list is put back, so only the chain's end stops it.
   list.replaceList(listed)
   await clock.advance(3600000)
-  expect(messages).toEqual(['Blocking: #1 Pick a db'])
+  expect(messages).toEqual(['Blocking: #1 Pick a db · /todo answer'])
 })
 
 // The list is replaced with the empty one a resumed session starts from, numbering from 1, so the new item takes the id the refused item had.
@@ -444,9 +462,9 @@ test('a new item that takes the id of an item refused before a session end is pu
   await clock.settle()
   expect(String((await $.tool.call({ tool: TOOL, action: 'list' })).result)).toContain('#1 blocking, open: New')
   await clock.advance(50000)
-  expect(messages).toEqual(['Blocking: #1 Old', 'Blocking: #1 New'])
+  expect(messages).toEqual(['Blocking: #1 Old · /todo answer', 'Blocking: #1 New · /todo answer'])
   await clock.advance(3600000)
-  expect(messages).toEqual(['Blocking: #1 Old', 'Blocking: #1 New', 'Blocking: #1 New'])
+  expect(messages).toEqual(['Blocking: #1 Old · /todo answer', 'Blocking: #1 New · /todo answer', 'Blocking: #1 New · /todo answer'])
   expect(lines.filter(line => line.text.includes('the push for #1'))).toEqual([])
 })
 
@@ -460,7 +478,7 @@ test('a resume ends the retries of the items filed before it, and the list it re
   await $.classic.SessionStart({ source: 'resume', transcript_path: MAIN })
   await clock.settle()
   await clock.advance(600000)
-  expect(messages).toEqual(['Blocking: #1 Pick a db'])
+  expect(messages).toEqual(['Blocking: #1 Pick a db · /todo answer'])
 })
 
 test('a retry from before a resume pushes nothing after it, and an item filed after the resume is pushed by its own chain alone', async ($, on) => {
@@ -472,11 +490,11 @@ test('a retry from before a resume pushes nothing after it, and an item filed af
   await $.session.end({ reason: 'resume', sessionId: 's1', resume: { id: 's1' } })
   await $.tool.call({ tool: TOOL, action: 'add', blocking: true, title: 'New' })
   await clock.settle()
-  expect(messages).toEqual(['Blocking: #1 Old', 'Blocking: #2 New'])
+  expect(messages).toEqual(['Blocking: #1 Old · /todo answer', 'Blocking: #2 New · /todo answer'])
   await clock.advance(30000)
-  expect(messages).toEqual(['Blocking: #1 Old', 'Blocking: #2 New'])
+  expect(messages).toEqual(['Blocking: #1 Old · /todo answer', 'Blocking: #2 New · /todo answer'])
   await clock.advance(30000)
-  expect(messages).toEqual(['Blocking: #1 Old', 'Blocking: #2 New', 'Blocking: #2 New'])
+  expect(messages).toEqual(['Blocking: #1 Old · /todo answer', 'Blocking: #2 New · /todo answer', 'Blocking: #2 New · /todo answer'])
 })
 
 test('a session end whose later steps throw still ends every pending retry', async ($, on) => {
@@ -493,7 +511,7 @@ test('a session end whose later steps throw still ends every pending retry', asy
   await clock.settle()
   await $.session.end({ reason: 'clear', sessionId: 's1', resume: { id: 's1' } }).catch(() => undefined)
   await clock.advance(600000)
-  expect(messages).toEqual(['Blocking: #1 Pick a db'])
+  expect(messages).toEqual(['Blocking: #1 Pick a db · /todo answer'])
 })
 
 test('a push in flight at a session end that is answered user_present afterwards pushes nothing and schedules no retry', async ($, on) => {
@@ -507,7 +525,7 @@ test('a push in flight at a session end that is answered user_present afterwards
   await $.session.end({ reason: 'prompt_input_exit', sessionId: 's1', resume: { id: 's1' } })
   answerLate()
   await clock.advance(600000)
-  expect(messages).toEqual(['Blocking: #1 Pick a db'])
+  expect(messages).toEqual(['Blocking: #1 Pick a db · /todo answer'])
 })
 
 test('an item answered and reopened within a minute of its refused push has one chain: its push a minute after the reopen is the only retry', async ($, on) => {
@@ -583,7 +601,7 @@ test('a new session\'s first push call logs its whole answer at debug, as the fi
   await $.session.end({ reason: 'prompt_input_exit', sessionId: 's1', resume: { id: 's1' } })
   await $.tool.call({ tool: TOOL, action: 'add', blocking: true, title: 'Next' })
   await clock.settle()
-  expect(messages).toEqual(['Blocking: #1 Pick a db', 'Blocking: #2 Next'])
+  expect(messages).toEqual(['Blocking: #1 Pick a db · /todo answer', 'Blocking: #2 Next · /todo answer'])
   expect(lines.filter(line => line.text.includes('first push call')).length).toBe(2)
 })
 
@@ -603,7 +621,7 @@ test('an update to blocking inside the undo window pushes nothing at the call, a
   expect(runs).toEqual([])
   await clock.advance(2000)
   await clock.settle()
-  expect(messages).toEqual(['Blocking: #1 Pick a db'])
+  expect(messages).toEqual(['Blocking: #1 Pick a db · /todo answer'])
   expect(runs).toEqual([])
 })
 
@@ -618,10 +636,10 @@ test('an agent turn the undo window takes pushes once when the window reopens th
   await clock.advance(1000)
   await $.tool.call({ tool: TOOL, action: 'append', id: 1, text: 'The sqlite file is in data/.' })
   await clock.settle()
-  expect(messages).toEqual(['Blocking: #1 Pick a db'])
+  expect(messages).toEqual(['Blocking: #1 Pick a db · /todo answer'])
   await clock.advance(2000)
   await clock.settle()
-  expect(messages).toEqual(['Blocking: #1 Pick a db', 'Blocking: #1 Pick a db'])
+  expect(messages).toEqual(['Blocking: #1 Pick a db · /todo answer', 'Blocking: #1 Pick a db · /todo answer'])
   expect(runs.length).toBe(1)
 })
 
@@ -635,7 +653,7 @@ test('a window the agent changed nothing in pushes nothing when it ends', async 
   await ui.press({ key: 'done-1' })
   await clock.advance(3000)
   await clock.settle()
-  expect(messages).toEqual(['Blocking: #1 Pick a db'])
+  expect(messages).toEqual(['Blocking: #1 Pick a db · /todo answer'])
   expect(runs.length).toBe(1)
 })
 
@@ -651,7 +669,7 @@ test('an undo pushes nothing, and the item stays open and blocking', async ($, o
   await ui.press({ key: 'done-1' })
   await clock.advance(5000)
   await clock.settle()
-  expect(messages).toEqual(['Blocking: #1 Pick a db'])
+  expect(messages).toEqual(['Blocking: #1 Pick a db · /todo answer'])
   expect(runs.length).toBe(1)
   expect(String((await $.tool.call({ tool: TOOL, action: 'list' })).result)).toContain('#1 blocking, open: Pick a db')
 })
@@ -670,7 +688,7 @@ test('a retry that fires inside the undo window pushes nothing and waits a minut
   await clock.advance(1000)
   await ui.press({ key: 'done-1' })
   await clock.advance(59000)
-  expect(messages).toEqual(['Blocking: #1 Pick a db', 'Blocking: #1 Pick a db'])
+  expect(messages).toEqual(['Blocking: #1 Pick a db · /todo answer', 'Blocking: #1 Pick a db · /todo answer'])
 })
 
 test('a retry inside the undo window, with the window then ending unchanged, leaves no retry to push', async ($, on) => {
@@ -701,7 +719,7 @@ test('a push hung at one window\'s end does not hold back another item\'s send t
   await $.tool.call({ tool: TOOL, action: 'update', id: 1, blocking: true })
   await clock.advance(3000)
   expect(lines.filter(line => line.text.includes('sent #2 for press')).length).toBe(1)
-  expect(messages).toEqual(['Blocking: #1 Plain ask'])
+  expect(messages).toEqual(['Blocking: #1 Plain ask · /todo answer'])
 })
 
 test('a push whose title holds a family straddling the 180th unit holds the family whole or not at all', async ($, on) => {
@@ -710,11 +728,12 @@ test('a push whose title holds a family straddling the 180th unit holds the fami
   on('ui.panes', () => ({ value: [] }))
   const messages = pushes(on)
   const family = '👨‍👩‍👧‍👦'
-  for (let k = 150; k <= 165; k++) await $.tool.call({ tool: TOOL, action: 'add', blocking: true, title: `${'a'.repeat(k)}${family.repeat(5)}` })
+  for (let k = 135; k <= 150; k++) await $.tool.call({ tool: TOOL, action: 'add', blocking: true, title: `${'a'.repeat(k)}${family.repeat(5)}` })
   await clock.settle()
   expect(messages).toHaveLength(16)
   for (const message of messages) {
     expect(message.length).toBeLessThanOrEqual(180)
-    expect(message.replace(/[a\s…]|Blocking:|#\d+/g, '').split(family).join('')).toBe('')
+    expect(message.endsWith(' · /todo answer')).toBe(true)
+    expect(message.slice(0, -' · /todo answer'.length).replace(/[a\s…]|Blocking:|#\d+/g, '').split(family).join('')).toBe('')
   }
 })

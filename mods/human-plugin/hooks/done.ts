@@ -53,13 +53,13 @@ export const humanTurn = (item: Item): Turn => ({ speaker: 'human', words: item.
 
 // The item's exchange as it reads: its thread, then the human's answer while its undo window runs or once it is sent and awaits the agent (the
 // newest human turn), then the agent's turns its window took (none once sent, since the window's end reopens the item with them: expire). The
-// list, the pane and `/asks` read it here.
+// list, the pane and `/todo` read it here.
 export const turnsOf = (item: Item): Turn[] => [...item.thread, ...(item.state === 'open' ? [] : [humanTurn(item)]), ...item.windowTurns]
 
 // The label a turn is listed and drawn under: who spoke.
 export const labelOf = (turn: Turn): string => (turn.speaker === 'human' ? 'you' : 'agent')
 
-// A decision's options in the order the pane draws them and `/asks` numbers them: the recommended one first, the rest in their own order.
+// A decision's options in the order the pane draws them and `/todo` numbers them: the recommended one first, the rest in their own order.
 export const orderedOptions = (item: Item): ItemOption[] => [...item.options].sort((a, b) => Number(b.recommended) - Number(a.recommended))
 
 // Whether the human has answered the item, so an agent addition is a turn and not a change to the brief: a human turn is in the thread, or an
@@ -127,19 +127,19 @@ export const expire = (store: Store, id: number, token: number): { store: Store;
   return { store: mapItem(store, id, () => (reopened ? archive(sent) : sent)), sent, reopened }
 }
 
-// A form an answer takes, as `/asks <n> <form>` names it (commands.ts parses it): done, yes or no, a decision's option by its number, or a
+// A form an answer takes, as `/todo <n> <form>` names it (commands.ts parses it): done, yes or no, a decision's option by its number, or a
 // reply with its text.
 export type Form = { kind: 'done' } | { kind: 'yes' } | { kind: 'no' } | { kind: 'option'; n: number } | { kind: 'reply'; text: string }
 export type FormKind = Form['kind']
 
 // The forms an item takes, by its kind, classified as the pane draws it: a decision's options first, then a yes/no's yes and no, else a to-do's
-// done. Every item takes a reply. The foot of `/asks <n>` lists these and answerOf takes only these, so the two cannot differ.
+// done. Every item takes a reply. The foot of `/todo <n>` lists these and answerOf takes only these, so the two cannot differ.
 export const formsOf = (item: Item): FormKind[] => (item.options.length > 0 ? ['option', 'reply'] : item.yesno ? ['yes', 'no', 'reply'] : ['done', 'reply'])
 
 // Whether an item is the one a number names: its id as text is the digits, which carry no leading zero.
 export const isNumbered = (item: Item, digits: string): boolean => String(item.id) === digits
 
-// A reply's text as the pane's reply field sends it: trimmed as JavaScript trims, or null when nothing is left. The pane and `/asks <n> reply` both take it.
+// A reply's text as the pane's reply field sends it: trimmed as JavaScript trims, or null when nothing is left. The pane and `/todo <n> reply` both take it.
 export const replyText = (text: string): string | null => {
   const trimmed = text.trim()
   return trimmed === '' ? null : trimmed
@@ -152,6 +152,13 @@ export type AnswerOutcome =
   | { kind: 'sent'; item: Item }
   | { kind: 'undoing'; item: Item }
   | { kind: 'takes'; item: Item }
+
+// What a walk's guarded answer did to the item it showed: the applied answer, the item gone from the list, or the item not as the walk showed it (nothing is
+// written then).
+export type ShownOutcome = Extract<AnswerOutcome, { kind: 'applied' | 'missing' }> | { kind: 'changed' }
+
+// What the guarded write answers: what became of the item, or that the walk no longer owns its session (nothing is written then either).
+export type GuardedOutcome = ShownOutcome | { kind: 'session' }
 
 // The answer a press of a form carries, for a form that is not a reply: a to-do's label as it stands, `yes` or `no`, or the option's label in the
 // order the pane draws the options.
@@ -182,4 +189,33 @@ export const answerOf = (store: Store, digits: string, form: Form, token: number
   if (form.kind === 'reply') return { store: readItem(reply(store, target.id, token, form.text)), outcome: { kind: 'applied', item: target, answer: form.text } }
   const answer = pressOf(target, form)
   return { store: readItem(press(store, target.id, token, answer)), outcome: { kind: 'applied', item: target, answer: answer ?? 'done' } }
+}
+
+const sameLabels = (a: readonly ItemOption[], b: readonly ItemOption[]): boolean => a.length === b.length && a.every((option, k) => option.label === b[k]?.label)
+const sameThread = (a: readonly Turn[], b: readonly Turn[]): boolean =>
+  a.length === b.length && a.every((turn, k) => turn.speaker === b[k]?.speaker && turn.words === b[k]?.words)
+
+// Whether an item still means to an answer what it meant when a walk showed it: it is open, and its title, its options' labels in the pane's order, its
+// done label and its thread are as shown. A turn is added to the thread only once the item has been answered, so an item answered elsewhere and reopened, or
+// one the agent has answered back, differs. A note or brief edit, and the agent's append to an item the human never answered (which lands in the brief),
+// leave it as it was, since they change what the item says and not what an answer to it means. The yes/no mark cannot change after filing.
+const sameAsShown = (now: Item, shown: Item): boolean =>
+  now.state === 'open' &&
+  now.title === shown.title &&
+  now.doneLabel === shown.doneLabel &&
+  sameLabels(orderedOptions(now), orderedOptions(shown)) &&
+  sameThread(now.thread, shown.thread)
+
+// A walk's answer to the item it showed: the resolver's write (answerOf) for `form`, unless the walk no longer owns its session, which writes nothing and answers
+// `session`, or the item is no longer as shown (sameAsShown), which writes nothing and answers `changed`, or has left the list, which answers `missing`. The guard
+// sits in the same update as the write, so nothing can change the item between the two, and `owns`, the walk's own test of its session, is called here for the
+// same reason: a session that ends after the walk's last test and before this update cannot be followed by a write. The session is checked first, since the list
+// may by then be another session's. What the guard lets through cannot be refused by the resolver, so a refusal of it is read as a change as well.
+export const answerShown = (store: Store, shown: Item, form: Form, token: number, owns: () => boolean): { store: Store; outcome: GuardedOutcome } => {
+  if (!owns()) return { store, outcome: { kind: 'session' } }
+  const now = store.items.find(it => it.id === shown.id)
+  if (now === undefined) return { store, outcome: { kind: 'missing' } }
+  if (!sameAsShown(now, shown)) return { store, outcome: { kind: 'changed' } }
+  const result = answerOf(store, String(shown.id), form, token)
+  return result.outcome.kind === 'applied' ? { store: result.store, outcome: result.outcome } : { store, outcome: { kind: 'changed' } }
 }

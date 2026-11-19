@@ -109,6 +109,7 @@ export const TODO_SPEC = {
           required: ['title', 'state'],
         },
       },
+      name: { type: 'string', description: "The name this session goes by, shown on this list's heading. A blank name clears it." },
     },
   },
   isDeferred: false,

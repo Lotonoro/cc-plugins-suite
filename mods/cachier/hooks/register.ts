@@ -179,17 +179,18 @@ const wanted = new Map<string, string>()
 // Ids newly drawn since the last lookup pass.
 const fresh = new Set<string>()
 // Whether the transcript's size could not be read at the last tick: a failure is logged when it starts, and once more
-// when it is readable again.
+// when it is readable again, both within the `transcript size` budget (faultLine).
 let unreadable = false
 // The transcript size at the last lookup pass; a pass also runs when the transcript has changed size since.
 let lastPassSize: number | undefined
 // The stamp pass's stretch: the consecutive passes on this transcript whose walk ended unread for one reason, and how many of them the doubling rule wrote to the debug
 // log. Ended by a pass that reads through, and by a change of transcript. What is written is bounded apart from it, by the budgets below.
 let stampStretch: { reason: StampUnread; passes: number; written: number } | undefined
-// The most `cachier stamps` lines one transcript path has written in a load, before its `muted` line; and the most paths that hold such a budget.
-const STAMP_BUDGET = 20
+// The most lines a debug budget writes in a load, before its `muted` line: one transcript path's `cachier stamps` lines, and the lines under one name of `cachier faults`.
+const LINE_BUDGET = 20
+// The most transcript paths that hold a stamp budget.
 const STAMP_PATHS = 32
-// The `cachier stamps` lines each transcript path has had written this load, up to STAMP_BUDGET, and one more once its `muted` line is written, which ends them. Kept for the whole load and
+// The `cachier stamps` lines each transcript path has had written this load, up to LINE_BUDGET, and one more once its `muted` line is written, which ends them. Kept for the whole load and
 // never evicted, so a change of transcript leaves them alone, unlike the stretch; only a reload starts them anew. A path is held from its first line, and at most STAMP_PATHS are held.
 const stampSpent = new Map<string, number>()
 // Whether the one `muted` line for the paths is written: the first pass that would write a line for a path not held, with STAMP_PATHS held, writes it, and after it nothing is written for a path
@@ -271,7 +272,7 @@ const settleColdMark = async ($: Dollar) => {
 }
 
 // Reads the transcript and writes its reading. A path learned while the read ran makes the reading stale: it is not
-// written, and the reread that learning queued reads the new path.
+// written, and the reread that learning queued reads the new path. A read that fails is reported under the `cache read` budget (faultReport), whoever asked for it.
 const readOnce = async ($: Dollar) => {
   const transcript = (await $.state.get(TRANSCRIPT)).value ?? null
   if (transcript === null) return
@@ -292,7 +293,7 @@ const readOnce = async ($: Dollar) => {
       view = NO_CACHE
     }
   } catch (err) {
-    report($, err)
+    faultReport($, 'cache read', err)
     view = { kind: 'unread' }
   }
   if ((await $.state.get(TRANSCRIPT)).value !== transcript) return
@@ -339,7 +340,7 @@ const statsWrite = async ($: Dollar, change: (s: StatsState) => StatsState): Pro
 }
 
 // Reads the transcript, one read at a time. A request that comes in during a read is merged into one read after it.
-// The flag is cleared in the same step the loop exits, so no request can fall between the loop and its end.
+// The flag is cleared in the same step the loop exits, so no request can fall between the loop and its end. A throw that escapes a read is reported under the `cache read` budget, as a failed read is.
 const readUntilSettled = async ($: Dollar) => {
   try {
     do {
@@ -347,7 +348,7 @@ const readUntilSettled = async ($: Dollar) => {
       try {
         await readOnce($)
       } catch (err) {
-        report($, err)
+        faultReport($, 'cache read', err)
       }
     } while (rereadWanted)
   } finally {
@@ -1498,10 +1499,20 @@ const STAMP_REASONS: Record<StampUnread, string> = {
   'row-unparsed': 'a row naming a wanted id did not parse',
 }
 
-// Writes a `cachier stamps` line within the budgets (stampSpent). The pass that would write a path's line past STAMP_BUDGET writes its `muted` line, with `lines`, in its place, whichever kind
+// Spends one line of a debug budget that has written `spent` lines (none if undefined), and returns the lines it has then written: `write` writes the line while the budget lasts, the
+// call that would write the line after LINE_BUDGET writes the `muted` line under `marker` in its place, and later calls write nothing. Every debug budget counts by this one rule.
+const spendLine = ($: Dollar, spent: number | undefined, marker: string, muted: object, write: () => void): number => {
+  const lines = spent ?? 0
+  if (lines > LINE_BUDGET) return lines
+  if (lines === LINE_BUDGET) debugLine($, marker, muted)
+  else write()
+  return lines + 1
+}
+
+// Writes a `cachier stamps` line within the budgets (stampSpent). The pass that would write a path's line past LINE_BUDGET writes its `muted` line, with `lines`, in its place, whichever kind
 // the line would have been, and the path writes nothing after it. The first pass that would write a line for a path not held, with STAMP_PATHS held, writes the one `muted` line for the paths,
 // with `paths`, in its place; after it nothing is written for a path not held, and the paths held keep their own budgets and `muted` lines. So a load writes at most
-// STAMP_PATHS × (STAMP_BUDGET + 1) + 1 lines, whatever the hooks do with the path.
+// STAMP_PATHS × (LINE_BUDGET + 1) + 1 lines, whatever the hooks do with the path.
 const stampLine = ($: Dollar, path: string, line: object) => {
   const spent = stampSpent.get(path)
   if (spent === undefined && stampSpent.size >= STAMP_PATHS) {
@@ -1511,11 +1522,21 @@ const stampLine = ($: Dollar, path: string, line: object) => {
     }
     return
   }
-  const lines = spent ?? 0
-  if (lines > STAMP_BUDGET) return
-  stampSpent.set(path, lines + 1)
-  debugLine($, 'cachier stamps', lines === STAMP_BUDGET ? { ended: 'muted', lines: STAMP_BUDGET } : line)
+  stampSpent.set(path, spendLine($, spent, 'cachier stamps', { ended: 'muted', lines: LINE_BUDGET }, () => debugLine($, 'cachier stamps', line)))
 }
+
+// The names a fault line is written under: the stamp pass's lookup, its size read, and the cache read.
+type FaultWriter = 'stamp lookup' | 'transcript size' | 'cache read'
+// The lines each name has had written this load, up to LINE_BUDGET, and one more once its `muted` line is written, which ends them. Kept for the whole load; only a reload starts them anew.
+const faultSpent = new Map<FaultWriter, number>()
+// Writes a fault line under `writer` within its budget (faultSpent): the line `write` makes, until the call that would write the name's 21st writes `cachier faults` with `writer`, `ended`
+// `muted` and `lines` in its place, and nothing after it. A name's budget is its own, whoever the caller is, so a load writes at most 3 × (LINE_BUDGET + 1) fault lines, whatever the faults do.
+// A budget stops the writing, never the pass or the read that wrote.
+const faultLine = ($: Dollar, writer: FaultWriter, write: () => void) => {
+  faultSpent.set(writer, spendLine($, faultSpent.get(writer), 'cachier faults', { writer, ended: 'muted', lines: LINE_BUDGET }, write))
+}
+// Reports `err` under `writer`'s budget.
+const faultReport = ($: Dollar, writer: FaultWriter, err: unknown) => faultLine($, writer, () => report($, err))
 
 // Keeps the stretch and writes the `cachier stamps` line a pass's ending calls for, through stampLine. A pass that ends unread for the stretch's reason is its next pass, and one
 // for another reason starts a new stretch; a stretch's 1st, 2nd, 4th, 8th pass and so on are written. A pass that reads through ends the stretch, and says so where
@@ -1541,7 +1562,8 @@ const stampEnded = ($: Dollar, path: string, ending: StampEnding, asked: number,
 // One backward pass over the transcript for the drawn ids not yet found. It runs when an id is newly drawn, or when the
 // transcript has changed size since the last pass, so an id that is missing is looked up again only after growth. A
 // failed lookup is retried the same way: on the next size change, not on every tick. A pass whose walk ended unread, or
-// read through after one that did, is written to the debug log within its path's budget (stampEnded): a budget stops the writing and never the pass. A pass that threw is reported alone.
+// read through after one that did, is written to the debug log within its path's budget (stampEnded): a budget stops the writing and never the pass. A pass that threw is reported under the
+// `stamp lookup` budget, and a failed size read under the `transcript size` budget, each a budget for the load (faultLine).
 const lookupStamps = async ($: Dollar) => {
   const transcript = (await $.state.get(TRANSCRIPT)).value ?? null
   if (transcript === null) return
@@ -1558,12 +1580,12 @@ const lookupStamps = async ($: Dollar) => {
     size = (await $.fs.exists(transcript)) ? (await $.fs.stat(transcript)).size : undefined
     if (unreadable) {
       unreadable = false
-      $.ui.log('cachier: transcript readable again', { to: 'debug' })
+      faultLine($, 'transcript size', () => $.ui.log('cachier: transcript readable again', { to: 'debug' }))
     }
   } catch (err) {
     if (!unreadable) {
       unreadable = true
-      report($, err)
+      faultReport($, 'transcript size', err)
     }
   }
   // The file grew since the last read: its newest rows are not in the view or the counts yet, so read again.
@@ -1578,7 +1600,7 @@ const lookupStamps = async ($: Dollar) => {
     try {
       found = await lookupRows(hostOf($), transcript, asked, (ending) => endings.push(ending))
     } catch (err) {
-      report($, err)
+      faultReport($, 'stamp lookup', err)
       found = new Map()
     }
     for (const id of asked) {

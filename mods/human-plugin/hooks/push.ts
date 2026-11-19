@@ -1,5 +1,6 @@
 import type { EngineInterface, Timer } from 'claude-code'
 import type { Item } from '../types'
+import { PUSH_POINTER } from './commands'
 import { cutLine } from './cut'
 import { messageOf } from './done'
 import type { Outcome } from './items'
@@ -14,8 +15,9 @@ const RETRY_MS = 60_000
 // No retry comes this long after its chain's first try.
 const LIMIT_MS = 3_600_000
 
-// The message a blocking item's push carries: its number and its title.
-const pushText = (item: Item): string => cutLine(`Blocking: #${item.id} ${item.title}`, MESSAGE_MAX)
+// The message a blocking item's push carries: its number and its title, then the pointer to the command that answers it. The pointer is never cut: the
+// title is cut to the room it leaves.
+const pushText = (item: Item): string => `${cutLine(`Blocking: #${item.id} ${item.title}`, MESSAGE_MAX - PUSH_POINTER.length)}${PUSH_POINTER}`
 
 // An item's chain of tries: its first try, then the retries a refusal schedules. An item has at most one chain. A trigger replaces the item's
 // chain, and every step of a chain checks that its chain is still the item's current one, so an ended chain's call, bound or timer pushes,

@@ -1,6 +1,6 @@
 import { atom, read, update, type EngineInterface } from 'claude-code'
 import type { TodoItem } from '../types'
-import { cutLine, repairCut } from './cut'
+import { cutLine, oneLine, repairCut } from './cut'
 import { LINE_BREAK } from './items'
 import { resetCount } from './reminder'
 import type { ToolCall } from './ui'
@@ -14,7 +14,7 @@ type WrittenState = (typeof STATES)[number]
 const isState = (raw: unknown): raw is WrittenState => STATES.some(state => state === raw)
 const STATE_LIST = `${STATES.slice(0, -1).join(', ')} or ${STATES[STATES.length - 1]}`
 
-// The longest title, in UTF-16 units: the unit the length of a JavaScript string is, and the one /asks's bounds are counted in.
+// The longest title, in UTF-16 units: the unit the length of a JavaScript string is, and the one /todo's bounds are counted in.
 export const TITLE_MAX = 80
 
 // The longest ETA, in UTF-16 units, and the text an entry holds when it is given none. An ETA is never refused: etaOf stores what it can.
@@ -30,13 +30,27 @@ export const etaOf = (raw: unknown): string => {
   return eta === '' ? NO_ETA : eta
 }
 
-export const HEADING = 'Claude TODO'
+// A list's heading is a name and the fixed words after it, `<name> TODO`. A list whose agent has stated no name is headed by the plugin's own word for it, `Agent`, and the same words.
+// Every view that names the list takes its heading from here (headingOf).
+export const HEADING_TAIL = ' TODO'
+export const HEADING = `Agent${HEADING_TAIL}`
+
+// The heading the list is drawn, printed and answered under: the name the agent stated and the fixed words after it, or the default where it stated none or cleared it (the empty text).
+export const headingOf = (name: string): string => (name === '' ? HEADING : `${name}${HEADING_TAIL}`)
 
 // The list lives in $.state under its own key (a hot reload keeps it), and is null until it is first written in a session: that tells a list
 // not written yet from an emptied one (fillTodo). The reference is declared here, with literal plugin and key, where the engine's scan of the
 // state calls can read it, and every helper that takes $ is a function declaration (see shared.ts).
 const TODO = { plugin: 'human-plugin', key: 'todo' } as const
 const todo = atom(TODO, null as TodoItem[] | null)
+
+// The name the agent states for the list lives under a key of its own, beside the list's: null until a call states one in a session, and the empty text once a call clears it.
+// None stated and cleared both draw the default heading; the two differ only for a rebuild, which sets a name only where none was stated (fillName).
+const STATED = { plugin: 'human-plugin', key: 'todoName' } as const
+const stated = atom(STATED, null as string | null)
+
+// A stored name, or null when none was stated.
+const normalizeName = (raw: unknown): string | null => (typeof raw === 'string' ? raw : null)
 
 // A stored list, or null when none was written. A stored entry is kept when its title is text and its state is known; its title's length is not
 // re-checked, so a hand-edited list can hold a longer one. Its ETA is read as a write's is, so an entry stored before the field gets NO_ETA.
@@ -63,23 +77,47 @@ export async function fillTodo($: EngineInterface, items: TodoItem[]): Promise<v
   await update($, todo, raw => normalizeTodo(raw) ?? items)
 }
 
-// A /clear: the list is written empty (session.end). Both points that store the list start the reminder's count over (reminder.ts).
-export async function emptyTodo($: EngineInterface): Promise<void> {
-  await $.state.set(TODO, [])
-  await resetCount($)
+// The name the heading is drawn from, as stored: the empty text where the agent has stated none or has cleared it.
+export async function readName($: EngineInterface): Promise<string> {
+  return normalizeName(await read($, stated)) ?? ''
 }
 
-// What a call gives: the whole list to store (the done entries already gone, the rest in the order given), or null for a call that gives no
-// array and only reads.
-export type TodoParsed = { ok: true; value: TodoItem[] | null } | { ok: false; reason: string }
+// A call states a name, as parseTodo read it: the empty text clears it. The list is not written, so the reminder's count is not started over.
+export async function writeName($: EngineInterface, name: string): Promise<void> {
+  await $.state.set(STATED, name)
+}
+
+// A rebuild sets the name only while none was stated in this session: a name or a clear stated live is newer than any the transcript can hold.
+export async function fillName($: EngineInterface, name: string): Promise<void> {
+  await update($, stated, raw => normalizeName(raw) ?? name)
+}
+
+// A /clear: the list is written empty and the name is cleared (session.end), each attempted whichever write before it throws. The engine resets the state at a /clear, so the name
+// is read as none in the next conversation either way, and the rebuild's generation check is what keeps the old conversation's name out of it (rebuild.ts). Both points that store
+// the list start the reminder's count over (reminder.ts).
+export async function emptyTodo($: EngineInterface): Promise<void> {
+  try {
+    await $.state.set(TODO, [])
+    await resetCount($)
+  } finally {
+    await $.state.set(STATED, '')
+  }
+}
+
+// What a call gives: the whole list to store (the done entries already gone, the rest in the order given), or null for a call that gives no array and only reads; and the
+// name it states, or null where it states none. A name that is blank is the empty text, which clears the name.
+export type TodoParsed = { ok: true; value: TodoItem[] | null; name: string | null } | { ok: false; reason: string }
 
 const SHAPE = 'each with a title and a state'
 
-// The model's tool input is external data: it is checked here once, and the rest of the mod sees only a list. A refusal names the entry.
+// The model's tool input is external data: it is checked here once, and the rest of the mod sees only a list and a name. A refusal names the entry, or the name. The name is read on
+// one line as an ETA is (etaOf): a line break and the blanks around it become one space and it is trimmed, the runs of spaces inside it kept. It has no bound: it is cut where it is drawn.
 export const parseTodo = (raw: unknown): TodoParsed => {
   if (typeof raw !== 'object' || raw === null) return { ok: false, reason: 'the input must be an object' }
-  const entries = (raw as Record<string, unknown>).entries
-  if (entries === undefined) return { ok: true, value: null }
+  const { entries, name: given } = raw as Record<string, unknown>
+  if (given !== undefined && typeof given !== 'string') return { ok: false, reason: 'name must be text' }
+  const name = given === undefined ? null : oneLine(given.trim())
+  if (entries === undefined) return { ok: true, value: null, name }
   if (!Array.isArray(entries)) return { ok: false, reason: `entries must be a list of entries, ${SHAPE}` }
   const kept: TodoItem[] = []
   for (let k = 0; k < entries.length; k++) {
@@ -95,7 +133,7 @@ export const parseTodo = (raw: unknown): TodoParsed => {
     if (!isState(state)) return { ok: false, reason: `${at}: the state must be ${STATE_LIST}` }
     if (state !== 'done') kept.push({ title, state, eta: etaOf(eta) })
   }
-  return { ok: true, value: kept }
+  return { ok: true, value: kept, name }
 }
 
 // The order the list is drawn and printed in: in-flight entries first, then queued ones, each in written order. The stored order is the written
@@ -120,18 +158,22 @@ export const countsText = (items: readonly TodoItem[]): string => `${countOf(ite
 // The same counts in the band's short form, which names the in-flight state "active" (the column's header is too narrow for the long form).
 export const bandCountsText = (items: readonly TodoItem[]): string => `${countOf(items, 'in_flight')} active, ${countOf(items, 'queued')} queued`
 
-// The tool's answer, to a write and to a read alike: a line that counts the list, then every entry in written order with its state, its title and
-// its ETA as stored, so the agent sees a default or a cut it was given and its next write can restate the list.
-export const todoReply = (items: readonly TodoItem[]): string =>
-  [`${HEADING}: ${countsText(items)}`, ...items.map(it => `- ${it.state}: ${it.title} (ETA: ${it.eta})`)].join('\n')
+// The tool's answer, to a write and to a read alike: a line that counts the list under its heading (headingOf `name`), then every entry in written order with its state, its title and
+// its ETA as stored, so the agent sees a default or a cut it was given and its next write can restate the list. The name is printed whole.
+export const todoReply = (items: readonly TodoItem[], name = ''): string =>
+  [`${headingOf(name)}: ${countsText(items)}`, ...items.map(it => `- ${it.state}: ${it.title} (ETA: ${it.eta})`)].join('\n')
 
-// The counts a successful call's reply opens with, as the transcript row says them.
+// The counts a successful call's reply opens with, as the transcript row says them: the heading the reply was written under, then its counts. The split is at the
+// colon right before the counts, not the first colon, so a heading that holds a colon of its own stays whole.
+const COUNTED_HEAD = /^(.+): (\d+ in flight, \d+ queued)$/
 const countsOf = (reply: string): string => {
   const head = reply.split('\n')[0] ?? ''
-  return head.startsWith(`${HEADING}: `) ? `${HEADING} ${head.slice(HEADING.length + 2)}` : head
+  const counted = COUNTED_HEAD.exec(head)
+  return counted ? `${counted[1]} ${counted[2]}` : head
 }
 
-// The one line a call to the tool draws in the transcript, from its input and its reply, as toolLine does for the human list's tool.
+// The one line a call to the tool draws in the transcript, from its input and its reply, as toolLine does for the human list's tool. A running call names no heading, since the call
+// that may rename the list is still running; a finished one reads the heading its answer opened with.
 export const todoLine = (call: ToolCall): string => {
   const reply = typeof call.output === 'string' ? call.output : ''
   const parsed = parseTodo(call.input)
@@ -140,9 +182,10 @@ export const todoLine = (call: ToolCall): string => {
     : call.isErrored
       ? reply || 'failed'
       : call.isRunning
-        ? `${parsed.value === null ? 'reading' : 'writing'} the ${HEADING} list…`
+        ? `${parsed.value === null ? 'reading' : 'writing'} the list…`
         : countsOf(reply) || 'failed'
   return `human-plugin: ${text}`.replace(/\s+/g, ' ')
 }
 
-export const SUBAGENT_REFUSAL = `only the main agent keeps the ${HEADING} list`
+// Said to an agent, so it names the list as the steering section does, not by the heading.
+export const SUBAGENT_REFUSAL = 'only the main agent keeps the Claude TODO list'

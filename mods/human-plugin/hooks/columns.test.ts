@@ -91,7 +91,7 @@ test('a code point the scan did not measure counts two, the widest any measured 
     ['U+10FFFF', 0x10ffff],
   ]
   for (const [name, code] of unmeasured) expect(displayColumns(cps(code)), name).toBe(2)
-  // Three code points past the scan were measured by sub-plan 3 alone, 0 in tmux and in the engine, where the fallback would give 2.
+  // Three code points past the scan were measured in tmux and the engine (0 columns in both), where the fallback would give 2.
   for (const code of [0xe0067, 0xe007f, 0xe0100]) expect(displayColumns(cps(code)), `U+${code.toString(16)} measured`).toBe(0)
   // A lone surrogate is not a code point of the scan either.
   expect(displayColumns('\ud800'), 'lone high surrogate').toBe(2)
@@ -104,7 +104,7 @@ const FAMILY = cps(0x1f468, 0x200d, 0x1f469, 0x200d, 0x1f467, 0x200d, 0x1f466)
 const KISS = cps(0x1f468, 0x1f3fb, 0x200d, 0x2764, 0xfe0f, 0x200d, 0x1f48b, 0x200d, 0x1f468, 0x1f3fb)
 const HANDSHAKE = cps(0x1faf1, 0x1f3fb, 0x200d, 0x1faf2, 0x1f3fc)
 
-test('a joined sequence sub-plan 3 measured counts at the wider of what tmux draws and the engine lays out: two where they agree, the family of four, the rainbow flag, a thumbs-up with a medium skin tone, the keycap 1, the US flag and the England flag', () => {
+test('a measured joined sequence counts at the wider of what tmux draws and the engine lays out: two where they agree, the family of four, the rainbow flag, a thumbs-up with a medium skin tone, the keycap 1, the US flag and the England flag', () => {
   expect(displayColumns(FAMILY), 'family of four').toBe(2)
   expect(displayColumns(cps(0x1f3f3, 0xfe0f, 0x200d, 0x1f308)), 'rainbow flag').toBe(2)
   expect(displayColumns(cps(0x1f44d, 0x1f3fd)), 'thumbs-up, medium skin tone').toBe(2)

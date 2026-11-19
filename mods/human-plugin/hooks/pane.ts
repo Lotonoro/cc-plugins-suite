@@ -2,7 +2,7 @@ import { atom, read, update, type EngineInterface, type PaneCloseOrigin, type Pa
 import type { Item, Selection, TodoItem } from '../types'
 import { successorOf, type Outcome } from './items'
 import { inBackground, readList, updateList } from './shared'
-import { HEADING, readTodo } from './todo'
+import { HEADING, headingOf, readName, readTodo } from './todo'
 import { backlogRows, paneRows } from './ui'
 
 export const PANE = 'human-items'
@@ -32,27 +32,29 @@ let pendingOpen = false
 // carries. Only a draw says: the engine's pane list does not, and a session may draw on several surfaces. A report of another placement leaves a surface
 // as it is, so within one opening a surface only goes from unseen to seen. The records outlive a close and reset on the next open from closed (openPane).
 const docks = new Set<string>()
-// The human list the surface drew last, from the band or the item view, and the whole stored Claude list the band or the backlog read last (not only the rows they drew, which the
-// band may limit to the column's header, in-flight rows and queued line). A press reads them synchronously when it opens or resizes the pane (see openPane). The surface redraws on each change,
-// so each is at most one draw behind its list.
+// The human list the surface drew last, from the band or the item view, and the Claude view the band or the backlog drew last: the whole stored Claude list it read (not only the rows it drew,
+// which the band may limit to the column's header, in-flight rows and queued line) and the heading it read with it, as one record, so a press opens the pane on one draw's list under that
+// draw's heading. A press reads them synchronously when it opens or resizes the pane (see openPane). The surface redraws on each change, so each is at most one draw behind its list.
+type ClaudeView = { todo: readonly TodoItem[]; heading: string }
 let drawnItems: readonly Item[] = []
-let drawnTodo: readonly TodoItem[] = []
+let drawnClaude: ClaudeView = { todo: [], heading: HEADING }
 // What the pane shows as the mod last set it (a press or a move), set before its selection write is awaited, so a read that follows a press sees it while the write is
 // in flight. Null until a press or move sets one this session.
 let shownPick: Shown | null = null
 // The stored selection the last read of the shown selection returned (shownSelection): where a press looks while no press or move has set shownPick, as after a
 // reload with the pane open.
 let lastRead: Selection = null
-// The number of items the backlog last asked rows for (countAsked), so a write that keeps the count asks for nothing (followTodo). Null until the backlog asks, as after a reload, and
-// after an open the pane refused.
-let askedItems: number | null = null
+// What the backlog last asked the pane for (recordAsked): the number of items it asked rows for and the heading it asked as the title, as one value, so a call that keeps both asks for
+// nothing (followTodo). Null until the backlog asks, as after a reload, and after an open the pane refused.
+type Asked = { items: number; heading: string }
+let asked: Asked | null = null
 
-// Each draw records the lists it drew (drawnItems, drawnTodo).
+// Each draw records what it drew (drawnItems, drawnClaude). The Claude view takes the heading of `name`, the name the agent stated, which is the empty text where it stated none.
 export const setDrawn = (items: readonly Item[]): void => {
   drawnItems = items
 }
-export const setDrawnTodo = (todo: readonly TodoItem[]): void => {
-  drawnTodo = todo
+export const setDrawnTodo = (todo: readonly TodoItem[], name: string): void => {
+  drawnClaude = { todo, heading: headingOf(name) }
 }
 
 // Whether a band drawn on `surface` sits beside this plugin's pane docked: the pane is open and a draw of it on that surface has reported a dock since it was
@@ -85,16 +87,17 @@ export const personClosed = (id: string, origin: PaneCloseOrigin['kind']): void 
 // and the item's box, and every open sets them anew.
 const paneRequest = (id: number, items: readonly Item[]): PaneOpenArgs => ({ id: PANE, title: 'Items for you', rows: paneRows(items.find(it => it.id === id)), focus: true })
 
-// The backlog's request for `todo`: the Claude list's title, a row for its header and one for each item, and the keyboard, so a list taller than the pane scrolls.
-const backlogRequest = (todo: readonly TodoItem[]): PaneOpenArgs => ({ id: PANE, title: HEADING, rows: backlogRows(todo), focus: true })
+// The backlog's request for `view`: the Claude list's heading as the title, a row for its header and one for each item, and the keyboard, so a list taller than the pane scrolls.
+const backlogRequest = ({ todo, heading }: ClaudeView): PaneOpenArgs => ({ id: PANE, title: heading, rows: backlogRows(todo), focus: true })
 
-// Counts the rows the backlog asks of the pane for `todo` (askedItems) as the open is made, so a write that follows while the open is in flight is compared with the rows it asked for.
-// An open the pane refuses leaves the pane with rows the count does not name, so the count is forgotten and the next write asks again, unless a later ask counted another number;
+// Records what the backlog asks of the pane for `view` (asked) as the open is made, so a call that follows while the open is in flight is compared with what it asked for.
+// An open the pane refuses leaves the pane with rows and a title the record does not name, so the record is forgotten and the next call asks again, unless a later ask has replaced it;
 // the failure itself is left to the caller's catch.
-function countAsked(todo: readonly TodoItem[], opening: Promise<unknown>): Promise<unknown> {
-  askedItems = todo.length
+function recordAsked({ todo, heading }: ClaudeView, opening: Promise<unknown>): Promise<unknown> {
+  const ask = { items: todo.length, heading }
+  asked = ask
   return opening.catch((err: unknown) => {
-    if (askedItems === todo.length) askedItems = null
+    if (asked === ask) asked = null
     throw err
   })
 }
@@ -199,16 +202,18 @@ export async function followSent($: EngineInterface, id: number): Promise<void> 
   else moveOn($, items, id)
 }
 
-// After a write to the Claude list, while the pane shows it: an empty list closes the pane, as an empty human list closes an item's view. Otherwise the pane asks for
-// its rows again only when the number of items differs from the list it last asked rows for, so a write that keeps the count leaves the pane, and where it is scrolled,
-// alone. The pane's draw reads the stored list itself. Called inside the tool's call, so two writes' follow-ups never land out of order.
-export async function followTodo($: EngineInterface, todo: readonly TodoItem[]): Promise<void> {
+// After a call that writes the Claude list or its name, while the pane shows the list: it reads the list and the heading as stored now. An empty list closes the pane, as an empty
+// human list closes an item's view. Otherwise the pane asks for its rows and title again only when the number of items or the heading differs from what it last asked, so a call that
+// keeps both leaves the pane, and where it is scrolled, alone. The pane's draw reads the stored list and name itself. Called inside the tool's call, so two calls' follow-ups never land out of order.
+export async function followTodo($: EngineInterface): Promise<void> {
   if (!paneOpen) return
+  const todo = await readTodo($)
+  const heading = headingOf(await readName($))
   const shown = await shownView($)
-  // Checked after the read: the person may have closed the pane meanwhile, and a re-ask would then reopen it.
+  // Checked after the reads: the person may have closed the pane meanwhile, and a re-ask would then reopen it.
   if (!paneOpen || shown !== CLAUDE_VIEW) return
   if (todo.length === 0) inBackground($, closePane($))
-  else if (todo.length !== askedItems) inBackground($, countAsked(todo, $.ui.open(backlogRequest(todo))))
+  else if (todo.length !== asked?.items || heading !== asked.heading) inBackground($, recordAsked({ todo, heading }, $.ui.open(backlogRequest({ todo, heading }))))
 }
 
 // Shows an item in the pane: the pane opens first when it is shut (the open is made inside the press), then the item is selected.
@@ -218,14 +223,14 @@ export function showItem($: EngineInterface, id: number): Promise<unknown> {
   return Promise.all([opening, select($, id)])
 }
 
-// Shows the Claude list in the pane, from the list last drawn: opened from closed, or the open pane switched to it. It shows no human item, so it reads none.
-// The list drawn last is at most one draw behind, and a write made since asked the pane nothing while it did not show the list. So once the open has settled, the pane follows
-// the stored list as it follows a write (followTodo): it asks for the rows again when the count has changed since, and closes on a list a write has emptied, where it would stay
+// Shows the Claude list in the pane, from the view last drawn: opened from closed, or the open pane switched to it. It shows no human item, so it reads none.
+// The view drawn last is at most one draw behind, and a call made since asked the pane nothing while it did not show the list. So once the open has settled, the pane follows
+// the stored list and name as it follows a call (followTodo): it asks again when the count or the heading has changed since, and closes on a list a write has emptied, where it would stay
 // open on its header line alone.
 function showBacklog($: EngineInterface): Promise<unknown> {
-  const todo = drawnTodo
-  const opening = paneOpen ? $.ui.open(backlogRequest(todo)) : openPane($, backlogRequest(todo))
-  const followed = countAsked(todo, opening).then(async () => followTodo($, await readTodo($)))
+  const view = drawnClaude
+  const opening = paneOpen ? $.ui.open(backlogRequest(view)) : openPane($, backlogRequest(view))
+  const followed = recordAsked(view, opening).then(() => followTodo($))
   return Promise.all([followed, select($, CLAUDE_VIEW)])
 }
 
@@ -233,7 +238,7 @@ function showBacklog($: EngineInterface): Promise<unknown> {
 // Both are normalized (normalizeItem), so their keys come in one order and the JSON compares the content.
 const sameContent = (now: Item, printed: Item): boolean => JSON.stringify({ ...now, unread: false }) === JSON.stringify({ ...printed, unread: false })
 
-// Marks one item read: an item the pane switches to is shown, so its unread mark goes. `/asks <n>` passes the item as it printed it, and the mark
+// Marks one item read: an item the pane switches to is shown, so its unread mark goes. `/todo <n>` passes the item as it printed it, and the mark
 // goes only while the item is still that one: a change made since the print is not in the text, so the mark it raised stays.
 export function markRead($: EngineInterface, id: number, printed?: Item): Promise<unknown> {
   return updateList($, store => ({
@@ -274,6 +279,6 @@ export function endPane($: EngineInterface, clear: boolean): void {
   paneOpen = false
   shownPick = null
   lastRead = null
-  askedItems = null
+  asked = null
   if (closes) inBackground($, closePane($))
 }

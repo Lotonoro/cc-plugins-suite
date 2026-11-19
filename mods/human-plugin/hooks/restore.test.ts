@@ -119,7 +119,7 @@ test('a resumed session draws the chip with the term the main agent last stated,
   await $.classic.SessionStart({ source: 'resume', transcript_path: MAIN })
   await titles($)
   const ui = await $.ui.mount({ plugin: 'human-plugin', surface: 'terminal', component: 'AbovePrompt', props: BAND_PROPS })
-  expect(JSON.stringify(await ui.drawn())).toContain('To do for owner')
+  expect(JSON.stringify(await ui.drawn())).toContain('owner TODO')
 })
 
 test('a rebuild keeps a term set live, where the transcript states another', async ($, on) => {
@@ -130,7 +130,7 @@ test('a rebuild keeps a term set live, where the transcript states another', asy
   await $.classic.SessionStart({ source: 'resume', transcript_path: MAIN })
   await titles($)
   const ui = await $.ui.mount({ plugin: 'human-plugin', surface: 'terminal', component: 'AbovePrompt', props: BAND_PROPS })
-  expect(JSON.stringify(await ui.drawn())).toContain('To do for mine')
+  expect(JSON.stringify(await ui.drawn())).toContain('mine TODO')
 })
 
 test('a rebuild keeps a term cleared live, where the transcript states another', async ($, on) => {
@@ -141,17 +141,17 @@ test('a rebuild keeps a term cleared live, where the transcript states another',
   await $.classic.SessionStart({ source: 'resume', transcript_path: MAIN })
   await titles($)
   const ui = await $.ui.mount({ plugin: 'human-plugin', surface: 'terminal', component: 'AbovePrompt', props: BAND_PROPS })
-  expect(JSON.stringify(await ui.drawn())).toContain('To do for you')
+  expect(JSON.stringify(await ui.drawn())).toContain('Human TODO')
 })
 
-test('a resumed session whose transcript ends on a clear draws To do for you, not the term before the clear', async ($, on) => {
+test('a resume whose transcript ends on a clear draws Human TODO, not the term before the clear', async ($, on) => {
   mock.clock(on)
   on('ui.panes', () => ({ value: [] }))
   host(on, { [MAIN]: CLEARED })
   await $.classic.SessionStart({ source: 'resume', transcript_path: MAIN })
   await titles($)
   const ui = await $.ui.mount({ plugin: 'human-plugin', surface: 'terminal', component: 'AbovePrompt', props: BAND_PROPS })
-  expect(JSON.stringify(await ui.drawn())).toContain('To do for you')
+  expect(JSON.stringify(await ui.drawn())).toContain('Human TODO')
 })
 
 test('a call waits for the rebuild only so long, and is refused rather than answered against the unfilled list', async ($, on) => {
@@ -242,7 +242,7 @@ const TODO_SESSION = jsonl(
   reply('r6', 'a6', 13, 'w6', 'Claude TODO: 1 in flight, 0 queued'),
   prompt('p-new', 'r5', 14),
 )
-const LAST_LIST = 'Claude TODO: 1 in flight, 1 queued\n- in_flight: Plan three (ETA: no ETA)\n- queued: Plan four (ETA: no ETA)'
+const LAST_LIST = 'Agent TODO: 1 in flight, 1 queued\n- in_flight: Plan three (ETA: no ETA)\n- queued: Plan four (ETA: no ETA)'
 // The same session with a human ask added on the live branch after the last prompt.
 const BOTH = jsonl(...TODO_SESSION.trim().split('\n').map(line => JSON.parse(line) as Record<string, unknown>), call('h1', 'p-new', 15, 'h', { action: 'add', title: 'An ask' }), reply('hr', 'h1', 16, 'h', 'added #1'))
 const todoList = async ($: Engine) => String((await $.tool.call({ tool: TODO_TOOL })).result)
@@ -267,7 +267,7 @@ test('a rebuild over a stored split ETA restores it repaired', async ($, on) => 
     ),
   })
   await $.classic.SessionStart({ source: 'resume', transcript_path: MAIN })
-  expect(await todoList($)).toBe(`Claude TODO: 1 in flight, 0 queued\n- in_flight: Plan one (ETA: ${'a'.repeat(20)}…)`)
+  expect(await todoList($)).toBe(`Agent TODO: 1 in flight, 0 queued\n- in_flight: Plan one (ETA: ${'a'.repeat(20)}…)`)
 })
 
 test('a transcript with no Claude list write rebuilds an empty Claude list', async ($, on) => {
@@ -275,7 +275,7 @@ test('a transcript with no Claude list write rebuilds an empty Claude list', asy
   host(on, { [MAIN]: SESSION })
   await $.classic.SessionStart({ source: 'resume', transcript_path: MAIN })
   expect(await titles($)).toContain('#1 non-blocking, open: One')
-  expect(await todoList($)).toBe('Claude TODO: 0 in flight, 0 queued')
+  expect(await todoList($)).toBe('Agent TODO: 0 in flight, 0 queued')
 })
 
 test('a Claude list call made during the rebuild waits for it, and sees the rebuilt list once the wait ends', async ($, on) => {
@@ -307,7 +307,7 @@ test('a list written live before the rebuild stays as written, an emptied one in
   host(on, { [MAIN]: TODO_SESSION })
   await $.tool.call({ tool: TODO_TOOL, entries: entries(['Live', 'in_flight']) })
   await $.classic.SessionStart({ source: 'resume', transcript_path: MAIN })
-  expect(await todoList($)).toBe('Claude TODO: 1 in flight, 0 queued\n- in_flight: Live (ETA: no ETA)')
+  expect(await todoList($)).toBe('Agent TODO: 1 in flight, 0 queued\n- in_flight: Live (ETA: no ETA)')
 })
 
 test('a list emptied live before the rebuild stays empty', async ($, on) => {
@@ -315,7 +315,7 @@ test('a list emptied live before the rebuild stays empty', async ($, on) => {
   host(on, { [MAIN]: TODO_SESSION })
   await $.tool.call({ tool: TODO_TOOL, entries: [] })
   await $.classic.SessionStart({ source: 'resume', transcript_path: MAIN })
-  expect(await todoList($)).toBe('Claude TODO: 0 in flight, 0 queued')
+  expect(await todoList($)).toBe('Agent TODO: 0 in flight, 0 queued')
 })
 
 test('a forked session\'s Claude list is rebuilt once its transcript exists, at the same point as the human list\'s', async ($, on) => {
@@ -345,7 +345,7 @@ test('a fork whose first live write lands before its rebuild starts keeps that w
   files.appear(FORK)
   await $.turn.start({ text: 'go on', turnId: 't1' })
   await clock.settle()
-  expect(await todoList($)).toBe('Claude TODO: 1 in flight, 0 queued\n- in_flight: Newer than the transcript (ETA: no ETA)')
+  expect(await todoList($)).toBe('Agent TODO: 1 in flight, 0 queued\n- in_flight: Newer than the transcript (ETA: no ETA)')
 })
 
 // A write to one key of the state that never lands: the version it checks against is always stale, so the update gives up. The kit answers the
@@ -370,7 +370,7 @@ test('a rebuild whose Claude list write fails logs the failure, leaves that list
   await $.classic.SessionStart({ source: 'resume', transcript_path: MAIN })
   expect(await titles($)).toBe('#1 non-blocking, open: An ask')
   expect(shown.filter(line => line.includes('the Claude TODO list was not rebuilt')).length).toBeGreaterThan(0)
-  expect(await todoList($)).toBe('Claude TODO: 0 in flight, 0 queued')
+  expect(await todoList($)).toBe('Agent TODO: 0 in flight, 0 queued')
 })
 
 test('a rebuild whose human list write fails logs it and still rebuilds the Claude list', async ($, on) => {
@@ -404,5 +404,186 @@ test('a session that ends between the rebuild\'s two writes does not get the old
   await $.session.end({ reason: 'resume', sessionId: 's1', resume: { id: 's1' } })
   held.release()
   await clock.settle()
-  expect(await todoList($)).toBe('Claude TODO: 0 in flight, 0 queued')
+  expect(await todoList($)).toBe('Agent TODO: 0 in flight, 0 queued')
 })
+
+// The name the agent states for its list, rebuilt in the same pass as the lists: Ada with a write, then Grace by a call with no entries, then a write with no name, and a name on a branch a /rewind abandoned.
+const NAMED_SESSION = jsonl(
+  prompt('u0', null, 0),
+  todoCall('a1', 'u0', 1, 'w1', { name: 'Ada', entries: entries(['Plan one', 'in_flight']) }),
+  reply('r1', 'a1', 2, 'w1', 'Ada TODO: 1 in flight, 0 queued'),
+  todoCall('a2', 'r1', 3, 'w2', { name: 'Grace' }),
+  reply('r2', 'a2', 4, 'w2', 'Grace TODO: 1 in flight, 0 queued\n- in_flight: Plan one (ETA: no ETA)'),
+  todoCall('a3', 'r2', 5, 'w3', { entries: entries(['Plan two', 'queued']) }),
+  reply('r3', 'a3', 6, 'w3', 'Grace TODO: 0 in flight, 1 queued'),
+  todoCall('a4', 'r3', 7, 'w4', { name: 'Errored' }),
+  todoErrored('r4', 'a4', 8, 'w4', 'claude_todo: the mod failed to answer the call'),
+  prompt('p-old', 'r4', 9),
+  todoCall('a5', 'p-old', 10, 'w5', { name: 'Rewound away' }),
+  reply('r5', 'a5', 11, 'w5', 'Rewound away TODO: 0 in flight, 1 queued'),
+  prompt('p-new', 'r4', 12),
+)
+const NAMED_LAST = 'Grace TODO: 0 in flight, 1 queued\n- queued: Plan two (ETA: no ETA)'
+// The first line of the answer to a read of the Claude list: its heading and counts.
+const headLine = async ($: Engine) => (await todoList($)).split('\n')[0]
+
+test('a resumed session draws the name the main agent last stated, a name-only call included and a later call with no name leaving it, with the list the last write gave; an errored call, a rewound one and a call before them state none that counts', async ($, on) => {
+  mock.clock(on)
+  on('ui.panes', () => ({ value: [] }))
+  host(on, { [MAIN]: NAMED_SESSION })
+  await $.classic.SessionStart({ source: 'resume', transcript_path: MAIN })
+  expect(await todoList($)).toBe(NAMED_LAST)
+  const ui = await $.ui.mount({ plugin: 'human-plugin', surface: 'terminal', component: 'AbovePrompt', props: BAND_PROPS })
+  expect(JSON.stringify(await ui.drawn())).toContain('Grace TODO ')
+})
+
+test('a resumed session whose last call that stated a name stated a blank one draws Agent TODO', async ($, on) => {
+  mock.clock(on)
+  host(on, {
+    [MAIN]: jsonl(
+      prompt('u0', null, 0),
+      todoCall('a1', 'u0', 1, 'w1', { name: 'Ada', entries: entries(['Plan one', 'in_flight']) }),
+      reply('r1', 'a1', 2, 'w1', 'Ada TODO: 1 in flight, 0 queued'),
+      todoCall('a2', 'r1', 3, 'w2', { name: '  ' }),
+      reply('r2', 'a2', 4, 'w2', 'Agent TODO: 1 in flight, 0 queued\n- in_flight: Plan one (ETA: no ETA)'),
+    ),
+  })
+  await $.classic.SessionStart({ source: 'resume', transcript_path: MAIN })
+  expect(await todoList($)).toBe('Agent TODO: 1 in flight, 0 queued\n- in_flight: Plan one (ETA: no ETA)')
+})
+
+test('a transcript whose calls state no name leaves the resumed session without one: its heading is Agent TODO', async ($, on) => {
+  mock.clock(on)
+  host(on, { [MAIN]: TODO_SESSION })
+  await $.classic.SessionStart({ source: 'resume', transcript_path: MAIN })
+  expect(await headLine($)).toBe('Agent TODO: 1 in flight, 1 queued')
+})
+
+test('a name stated live before the rebuild is kept over the transcript\'s', async ($, on) => {
+  mock.clock(on)
+  host(on, { [MAIN]: NAMED_SESSION })
+  await $.tool.call({ tool: TODO_TOOL, name: 'Mine' })
+  await $.classic.SessionStart({ source: 'resume', transcript_path: MAIN })
+  expect(await headLine($)).toBe('Mine TODO: 0 in flight, 1 queued')
+})
+
+test('a name cleared live before the rebuild stays cleared: the next answer opens Agent TODO', async ($, on) => {
+  mock.clock(on)
+  host(on, { [MAIN]: NAMED_SESSION })
+  await $.tool.call({ tool: TODO_TOOL, name: '  ' })
+  await $.classic.SessionStart({ source: 'resume', transcript_path: MAIN })
+  expect(await headLine($)).toBe('Agent TODO: 0 in flight, 1 queued')
+})
+
+test('a call that states a name waits for the rebuild as the list\'s calls do, and then replaces the rebuilt name', async ($, on) => {
+  const clock = mock.clock(on)
+  const files = host(on, { [MAIN]: NAMED_SESSION }, { held: true })
+  await $.classic.SessionStart({ source: 'resume', transcript_path: MAIN })
+  const renaming = $.tool.call({ tool: TODO_TOOL, name: 'Linus' })
+  await clock.settle()
+  files.gate.open()
+  expect(String((await renaming).result).split('\n')[0]).toBe('Linus TODO: 0 in flight, 1 queued')
+})
+
+test('a rebuild whose list fill fails logs it and still sets the name', async ($, on) => {
+  mock.clock(on)
+  const shown = shownLogs(on)
+  failingWrite(on, 'todo')
+  host(on, { [MAIN]: NAMED_SESSION })
+  await $.classic.SessionStart({ source: 'resume', transcript_path: MAIN })
+  expect(await todoList($)).toBe('Grace TODO: 0 in flight, 0 queued')
+  expect(shown.filter(line => line.includes('the Claude TODO list was not rebuilt')).length).toBeGreaterThan(0)
+  expect(shown.filter(line => line.includes('the agent list\'s name was not rebuilt'))).toEqual([])
+})
+
+test('a rebuild whose name fill fails logs the failure naming the name, and leaves the rebuilt list in place under Agent TODO', async ($, on) => {
+  mock.clock(on)
+  const shown = shownLogs(on)
+  failingWrite(on, 'todoName')
+  host(on, { [MAIN]: NAMED_SESSION })
+  await $.classic.SessionStart({ source: 'resume', transcript_path: MAIN })
+  expect(await todoList($)).toBe('Agent TODO: 0 in flight, 1 queued\n- queued: Plan two (ETA: no ETA)')
+  const failed = shown.filter(line => line.startsWith('human-plugin: the agent list\'s name was not rebuilt: '))
+  expect(failed).toHaveLength(1)
+  expect(shown.filter(line => line.includes('the Claude TODO list was not rebuilt'))).toEqual([])
+})
+
+// A session's end during the rebuild, held where the rebuild fills the list: the first write to the list's key is held, so the session can end after the rebuild passed its checks and
+// while its list fill is under way, and before the name's fill begins. Only the first write: a /clear writes the key again.
+for (const reason of ['clear', 'resume'] as const) {
+  test(`a session's end (${reason}) that lands while the rebuild's list fill is held leaves no name from that rebuild: the next answer opens Agent TODO`, async ($, on) => {
+    const clock = mock.clock(on)
+    mock.store(on)
+    on('session.end', (_$, e) => ({ sessionId: e.sessionId }))
+    host(on, { [MAIN]: NAMED_SESSION })
+    const held: { release: () => void; reached: () => void } = { release: () => undefined, reached: () => undefined }
+    const gate = new Promise<void>(resolve => (held.release = resolve))
+    const reached = new Promise<void>(resolve => (held.reached = resolve))
+    let first = true
+    on('state.set', async (_$, e, next) => {
+      if (e.key === 'todo' && first) {
+        first = false
+        held.reached()
+        await gate
+      }
+      return next(e)
+    })
+    await $.classic.SessionStart({ source: 'resume', transcript_path: MAIN })
+    await reached
+    await $.session.end({ reason, sessionId: 's1', resume: { id: 's1' } })
+    held.release()
+    await clock.settle()
+    expect(await headLine($)).toMatch(/^Agent TODO: \d+ in flight, \d+ queued$/)
+  })
+}
+
+test('a /clear writes the name as cleared: the heading reads Agent TODO, and a call that states a name after it sets it', async ($, on) => {
+  mock.clock(on)
+  mock.store(on)
+  on('session.end', (_$, e) => ({ sessionId: e.sessionId }))
+  await $.tool.call({ tool: TODO_TOOL, name: 'Ada', entries: entries(['Plan one', 'in_flight']) })
+  expect(await headLine($)).toBe('Ada TODO: 1 in flight, 0 queued')
+  await $.session.end({ reason: 'clear', sessionId: 's1', resume: { id: 's1' } })
+  expect(await todoList($)).toBe('Agent TODO: 0 in flight, 0 queued')
+  expect(String((await $.tool.call({ tool: TODO_TOOL, name: 'Ada' })).result)).toBe('Ada TODO: 0 in flight, 0 queued')
+})
+
+test('a session\'s end that is not a /clear leaves the name', async ($, on) => {
+  mock.clock(on)
+  mock.store(on)
+  on('session.end', (_$, e) => ({ sessionId: e.sessionId }))
+  await $.tool.call({ tool: TODO_TOOL, name: 'Ada' })
+  await $.session.end({ reason: 'resume', sessionId: 's1', resume: { id: 's1' } })
+  expect(await headLine($)).toBe('Ada TODO: 0 in flight, 0 queued')
+})
+
+// A fork's transcript is the copy the engine makes: the original's live branch from its last compaction on. A name stated after that compaction is in it; one stated before it is not.
+const FORK_NAMED = jsonl(
+  { uuid: 'c0', parentUuid: null, timestamp: at(0), type: 'user', isCompactSummary: true, message: { role: 'user', content: 'The conversation so far, summarised.' } },
+  todoCall('a1', 'c0', 1, 'w1', { name: 'Ada', entries: entries(['Plan one', 'in_flight']) }),
+  reply('r1', 'a1', 2, 'w1', 'Ada TODO: 1 in flight, 0 queued'),
+)
+const FORK_UNNAMED = jsonl(
+  { uuid: 'c0', parentUuid: null, timestamp: at(0), type: 'user', isCompactSummary: true, message: { role: 'user', content: 'The conversation so far, summarised. The agent had named itself Ada.' } },
+  todoCall('a1', 'c0', 1, 'w1', { entries: entries(['Plan one', 'in_flight']) }),
+  reply('r1', 'a1', 2, 'w1', 'Ada TODO: 1 in flight, 0 queued'),
+)
+
+for (const [what, text, want] of [
+  ['stated after the original\'s last compaction draws it', FORK_NAMED, 'Ada TODO: 1 in flight, 0 queued\n- in_flight: Plan one (ETA: no ETA)'],
+  ['stated only before it is not restored: the fork draws Agent TODO with the list the copied transcript\'s last write gave', FORK_UNNAMED, 'Agent TODO: 1 in flight, 0 queued\n- in_flight: Plan one (ETA: no ETA)'],
+] as const) {
+  test(`a fork's name ${what}`, async ($, on) => {
+    const clock = mock.clock(on)
+    on('session.start', (_$, e) => ({ cwd: e.cwd }))
+    on('tool.register', () => ({ value: { tool: TOOL } }))
+    on('turn.start', (_$, e) => ({ turnId: e.turnId }))
+    const files = host(on, { [FORK]: text }, { hidden: [FORK] })
+    await $.classic.SessionStart({ source: 'fork', transcript_path: FORK })
+    await $.session.start({ cwd: DIR, surface: 'terminal', isInteractive: true })
+    files.appear(FORK)
+    await $.turn.start({ text: 'go on', turnId: 't1' })
+    await clock.settle()
+    expect(await todoList($)).toBe(want)
+  })
+}
