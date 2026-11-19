@@ -4,6 +4,7 @@ import { ALREADY_ASKING, NOTHING_OPEN, openOf, outcomeLine, readAnswer, skippedL
 import { messageOf } from './done'
 import { markRead } from './pane'
 import { readList } from './shared'
+import { setWalkAsking } from './turns'
 import { pressShown } from './windows'
 
 // The walk behind `/todo answer`: it asks about each open item in one dialog, writes each answer the person gives through the path `/todo <n> <form>` takes (a
@@ -13,7 +14,8 @@ import { pressShown } from './windows'
 
 // The walk that is asking, if one is. A walk takes the flag in the step it starts, before it awaits anything, so two `/todo answer` cannot both start. The flag
 // is also the walk's tie to its session: a walk whose flag is no longer its own has lost its session (endWalk), and asks and writes nothing more. Only the walk
-// that took the flag clears it, so a walk that settles late leaves a newer walk's flag in place.
+// that took the flag clears it, so a walk that settles late leaves a newer walk's flag in place. The same step tells the turn-state module a walk is asking, so
+// no submit is tried for a notice meanwhile (turns.ts), and only the walk that took the flag tells it the walk is over; a session's end resets that module.
 let walking: symbol | null = null
 
 // What the observer saw of the plugin's own call: the question as the call carried it, and whether the result carried `afkTimeoutMs`, which only a dialog the
@@ -172,6 +174,7 @@ export async function walk($: EngineInterface, windowMs: number): Promise<string
   if (walking !== null) return ALREADY_ASKING
   const me = Symbol('walk')
   walking = me
+  setWalkAsking(true)
   try {
     const progress: Progress = { asked: new Set(), sent: 0, pending: null }
     let reason: Reason | null
@@ -191,6 +194,9 @@ export async function walk($: EngineInterface, windowMs: number): Promise<string
     }
     return walkEnd(progress.pending, reason, progress.sent, open)
   } finally {
-    if (owns(me)) walking = null
+    if (owns(me)) {
+      walking = null
+      setWalkAsking(false)
+    }
   }
 }

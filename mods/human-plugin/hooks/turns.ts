@@ -8,8 +8,13 @@ export type Submit = { text: string; notices: Notice[] }
 // offered while a turn runs waits for a read point: the end of a tool batch, or the start of a turn (a notice that
 // came in while the turn was starting), which the engine holds before its next request. There it is appended, and it is
 // unread until that request, which carries it, starts. Each notice moves on once, so the agent reads it once. The turn's
-// end takes whatever is left: a turn of its own, or, after an interrupt, the human's next prompt (see takeHeld).
+// end takes whatever is left: a turn of its own; after an interrupt, the human's next prompt (see takeHeld); and, while a walk
+// is asking, the next turn to start.
 let busy = false
+// Whether a walk is asking (walk.ts switches it). The engine refuses a submit made while the walk's command hook is in flight, so
+// none is tried: a notice that would have started a turn of its own waits instead, with the session left idle, and the next turn
+// to start, whoever starts it, appends it at its first read point. A turn that ends takes what it left the same way.
+let walkAsking = false
 let waiting: Notice[] = []
 let unread: Notice[] = []
 // The notices held over an interrupt or a submit that did not enter, for the human's next prompt to carry as context.
@@ -32,13 +37,19 @@ export const startTurn = (): void => {
   busy = true
 }
 
+// The walk that is asking switches this on in the step it starts and off when it ends; a session's end (reset) switches it off too.
+export const setWalkAsking = (on: boolean): void => {
+  walkAsking = on
+}
+
 // Decides a notice's path in one synchronous step. The first notice of an idle session takes the turn: busy is set here,
 // not when the turn starts, so a notice that lands before the turn starts waits for it instead of starting a second one.
-export const offer = (notice: Notice): 'queued' | 'submit' => {
-  if (busy) {
+// While a walk is asking an idle session is not taken: the notice waits ('walk') and busy stays unset.
+export const offer = (notice: Notice): 'queued' | 'submit' | 'walk' => {
+  if (busy || walkAsking) {
     waiting = [...waiting, notice]
     onChange()
-    return 'queued'
+    return busy ? 'queued' : 'walk'
   }
   busy = true
   return 'submit'
@@ -125,7 +136,9 @@ export const carryHeld = async <E extends { origin: { kind: string }; context?: 
 // waiting ones. That prompt keeps the session busy until it enters (its turn starts) or is refused (notEntered).
 // Interrupted: the waiting ones are held for the human's next prompt, and nothing is submitted, so an interrupt starts
 // no turn. The appended ones are not held: their rows are in the conversation, and the next request, the human's, reads
-// them with the rest.
+// them with the rest. While a walk is asking, a turn that was not interrupted submits nothing either: the waiting ones keep
+// waiting for the next turn to start, the session is idle, and the pointer to the appended ones is not sent (the next
+// request reads their rows all the same).
 export const endTurn = (turnId: string, interrupted: boolean, isLive: (id: number) => boolean): Submit | null => {
   if (turnId === ended) return null
   ended = turnId
@@ -137,6 +150,12 @@ export const endTurn = (turnId: string, interrupted: boolean, isLive: (id: numbe
   if (interrupted) {
     busy = false
     held = [...held, ...left]
+    onChange()
+    return null
+  }
+  if (walkAsking) {
+    busy = false
+    waiting = left
     onChange()
     return null
   }
@@ -160,10 +179,11 @@ export const giveBack = (notices: readonly Notice[]): void => {
   onChange()
 }
 
-// A /clear: the conversation the notices were for is gone.
+// A /clear: the conversation the notices were for is gone, and so is the walk that was asking in it.
 export const reset = (): void => {
   turnEnds += 1
   busy = false
+  walkAsking = false
   waiting = []
   unread = []
   held = []

@@ -4853,13 +4853,14 @@ const nextFrom = (result: unknown, plugin: string): CalledBy => {
 // What a scripted dialog gives back: the person's answer, or a dismissal with its message.
 type Given = string | { rejects: string }
 // What a scripted host records or does besides: the questions asked, every log line, whether the hook handed each result back as it got it, the plugin whose
-// hook makes the call, a promise that keeps every dialog open until it settles, and the start of a log line that throws instead.
-type Scripted = { asked?: string[]; logs?: string[]; through?: boolean[]; plugin?: string; hold?: Promise<void>; refuseLog?: string }
+// hook makes the call, a promise that keeps every dialog open until it settles, the start of a log line that throws instead, and a step that runs while the
+// dialog of a given position (0 for the first) is open.
+type Scripted = { asked?: string[]; logs?: string[]; through?: boolean[]; plugin?: string; hold?: Promise<void>; refuseLog?: string; during?: (position: number) => Promise<void> }
 
 // `env` with a `$.ui.ask` that answers each dialog from `given`, as the engine answers one a hook raises: the call and its result go through the registered
 // AskUserQuestion hook, made by a hook of `plugin`, before the dialog returns.
 const askingHost = (hooks: Record<string, Handler>, env: object, given: Given[], scripted: Scripted = {}) => {
-  const { asked = [], logs = [], through = [], plugin = 'human-plugin', hold, refuseLog } = scripted
+  const { asked = [], logs = [], through = [], plugin = 'human-plugin', hold, refuseLog, during } = scripted
   let n = 0
   const host: { ui: object } & Record<string, unknown> = {
     ...env,
@@ -4870,10 +4871,12 @@ const askingHost = (hooks: Record<string, Handler>, env: object, given: Given[],
         logs.push(text)
       },
       ask: async (question: string, options: { options: string[]; header: string }) => {
-        const answer = given[n++]
+        const position = n++
+        const answer = given[position]
         asked.push(question)
         if (answer === undefined) throw new Error('a dialog nobody scripted')
         await hold
+        await during?.(position)
         const said = typeof answer === 'string' ? answer : answer.rejects
         const questions = [{ question, header: options.header, options: options.options.map(label => ({ label })), multiSelect: false }]
         const result =
@@ -5035,4 +5038,125 @@ test('a throw inside the AskUserQuestion hook\'s record is logged and leaves the
   expect(through).toEqual([true])
   expect(text.split('\n')[0]).toBe('  answered #1 with done')
   expect(values.list).toMatchObject({ items: [{ id: 1, state: 'done-waiting' }] })
+})
+
+// While a walk asks, no submit is tried: the engine refuses one made while the walk's command hook is in flight. A notice that would have started a turn waits, saved as
+// waiting, for the next turn to start. The person's pause over a question is where the undo ticker's tick falls, so the walks below run the tick while a dialog is open.
+
+// The rows a turn that starts appends: its start hook appends each notice waiting then, one row each, which this records.
+const turnStartRows = async (hooks: Record<string, Handler>, env: object, turnId: string): Promise<string[]> => {
+  const rows: string[] = []
+  const $ = {
+    ...env,
+    session: {
+      append: async (e: { message: { content: { text: string }[] } }) => {
+        rows.push(e.message.content[0]?.text ?? '')
+        return {}
+      },
+    },
+  }
+  await (hooks['turn.start'] as Handler)($ as never, { turnId } as never, next(false) as never)
+  await settle()
+  return rows
+}
+const waitingIds = (saved: unknown): number[] => (saved as { waiting: { id: number }[] }).waiting.map(notice => notice.id)
+
+test('/todo answer in an idle session tries no submit while it asks: each answer\'s notice waits, saved as waiting; its last answer\'s tick, after the walk, submits that notice alone, and the turn that starts appends the earlier ones once each', async () => {
+  freshModule()
+  const wired = wire()
+  const submitted: unknown[] = []
+  const timers: Timer[] = []
+  const { env, values, clock } = memEnv([made(1, { detail: '' }), made(2, { detail: '' }), made(3, { detail: '' })], [], null, submitted, timers)
+  await endSession(wired.hooks, env)
+  await started(wired, env)
+  clock.now = 1000
+  const logs: string[] = []
+  const between: { submits: number; saved: unknown }[] = []
+  const pause = async (position: number): Promise<void> => {
+    if (position === 0) return
+    await tickAt(timers, clock, 1000)
+    between.push({ submits: submitted.length, saved: values.notices })
+  }
+  const text = await askText(wired.hooks, askingHost(wired.hooks, env, ['Done', 'Done', 'Done'], { logs, during: pause }), 'answer')
+  expect(text).toContain('The walk sent 3 answers; nothing is left open.')
+  expect(between.map(seen => seen.submits)).toEqual([0, 0])
+  expect(between.map(seen => waitingIds(seen.saved))).toEqual([[1], [1, 2]])
+  expect(submitted).toEqual([])
+  await tickAt(timers, clock, 1000)
+  expect(submitted).toHaveLength(1)
+  expect((submitted[0] as { text: string }).text.startsWith('#3 is done: Item 3')).toBe(true)
+  expect(logs.filter(line => line.startsWith('human-plugin: sent #')).map(line => line.replace(/ for press -?\d+/, ''))).toEqual([
+    'human-plugin: sent #1 kept for the next turn while a walk asks',
+    'human-plugin: sent #2 kept for the next turn while a walk asks',
+    'human-plugin: sent #3 via submit',
+  ])
+  expect((await turnStartRows(wired.hooks, env, 't1')).map(row => row.split('\n')[0])).toEqual(['#1 is done: Item 1', '#2 is done: Item 2'])
+  expect(values.notices).toEqual({ held: [], waiting: [] })
+})
+
+test('/todo answer that ends on Stop in an idle session submits nothing at all: the notices wait, and the next turn appends the ones whose items are still on the list, once each', async () => {
+  freshModule()
+  const wired = wire()
+  const submitted: unknown[] = []
+  const timers: Timer[] = []
+  const { env, values, clock } = memEnv([made(1, { detail: '' }), made(2, { detail: '' }), made(3, { detail: '' })], [], null, submitted, timers)
+  await endSession(wired.hooks, env)
+  await started(wired, env)
+  clock.now = 1000
+  const pause = async (position: number): Promise<void> => {
+    if (position > 0) await tickAt(timers, clock, 1000)
+  }
+  const text = await askText(wired.hooks, askingHost(wired.hooks, env, ['Done', 'Done', 'Stop'], { during: pause }), 'answer')
+  expect(text).toContain('It ended on Stop.')
+  await tickAt(timers, clock, 1000)
+  expect(submitted).toEqual([])
+  expect(waitingIds(values.notices)).toEqual([1, 2])
+  // The agent removes #1 before the human's prompt starts the next turn. The prompt carries no context, since the walk's notices are waiting ones, not held ones.
+  const list = values.list as { items: { id: number }[] }
+  values.list = { ...list, items: list.items.filter(it => it.id !== 1) }
+  expect((await entered(wired.hooks, env, { origin: { kind: 'composer' }, text: 'hi' }))[0]?.context).toBeUndefined()
+  expect((await turnStartRows(wired.hooks, env, 't1')).map(row => row.split('\n')[0])).toEqual(['#2 is done: Item 2'])
+  expect(values.notices).toEqual({ held: [], waiting: [] })
+})
+
+test('the session\'s end releases the hold of the walk that is asking: a notice in the new session takes the idle path while the old dialog is still open', async () => {
+  freshModule()
+  const { hooks } = wire()
+  const { env } = memEnv([made(1, { detail: '' })], [], null)
+  await endSession(hooks, env)
+  const asked: string[] = []
+  let release = (): void => {}
+  const hold = new Promise<void>(resolve => (release = resolve))
+  const old = askText(hooks, askingHost(hooks, env, ['Skip'], { asked, hold }), 'answer')
+  await until(() => asked.length === 1)
+  expect(offer({ id: 8, text: '#8 is done: while the walk asked' })).toBe('walk')
+  await endSession(hooks, env)
+  expect(offer({ id: 9, text: '#9 is done: in the new session' })).toBe('submit')
+  release()
+  await old
+})
+
+test('a turn that ends while a walk is asking submits nothing and leaves its notice waiting, saved as waiting; a turn that was interrupted holds it for the human\'s next prompt', async () => {
+  const notice = { id: 1, text: '#1 is done: Item 1' }
+  for (const aborted of [false, true]) {
+    freshModule()
+    const wired = wire()
+    const submitted: unknown[] = []
+    const { env, values } = memEnv([made(1, { detail: '' })], [], null, submitted)
+    await endSession(wired.hooks, env)
+    await started(wired, env)
+    await (wired.hooks['turn.start'] as Handler)(env as never, { turnId: 't1' } as never, next(false) as never)
+    const asked: string[] = []
+    let release = (): void => {}
+    const hold = new Promise<void>(resolve => (release = resolve))
+    const running = askText(wired.hooks, askingHost(wired.hooks, env, ['Skip'], { asked, hold }), 'answer')
+    await until(() => asked.length === 1)
+    offer(notice)
+    await (wired.hooks['turn.complete'] as Handler)(env as never, { agentId: undefined, isAborted: aborted, turnId: 't1' } as never, next(false) as never)
+    await settle()
+    expect([aborted, submitted]).toEqual([aborted, []])
+    expect([aborted, values.notices]).toEqual([aborted, aborted ? { held: [notice], waiting: [] } : { held: [], waiting: [notice] }])
+    release()
+    await running
+  }
 })

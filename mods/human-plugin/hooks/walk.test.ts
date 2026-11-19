@@ -1,7 +1,7 @@
 import { expect, test } from 'claude-code/testing'
 import { ALREADY_ASKING, NOTHING_OPEN } from './commands'
 import { doneNotice, type Form } from './done'
-import { pending, reset } from './turns'
+import { handOver, offer, pending, reset, startTurn } from './turns'
 import { endWalk, observeAsked, walk } from './walk'
 import { pressAnswer, stopTicker } from './windows'
 import type { Item, Store } from '../types'
@@ -40,6 +40,11 @@ type Asked = { question: string; options: readonly string[]; header: string | un
 
 const settle = async (): Promise<void> => {
   for (let i = 0; i < 50; i++) await Promise.resolve()
+}
+
+// Lets pending work run until `done` holds. The bound makes a walk that never gets there fail its test's next check instead of hanging it.
+const until = async (done: () => boolean): Promise<void> => {
+  for (let i = 0; i < 40 && !done(); i++) await settle()
 }
 
 const walkEnv = (items: Item[], steps: Step[]) => {
@@ -667,4 +672,111 @@ test('the debug lines word every return and every outcome, and none holds a repl
     'human-plugin: walk ask #4: blank; record matched; skipped',
   ])
   expect(debug.join('\n')).not.toContain(secret)
+})
+
+// While a walk asks, no submit is tried (turns.ts): the engine refuses one made while the walk's command hook is in flight. The walk switches that on in the step it
+// claims its session, and the walk that made the claim switches it off.
+test('a tick that ends an answer\'s window while the walk is still asking submits nothing: the notice waits for the next turn, its debug line says so, and the walk\'s end releases the hold', async () => {
+  fresh()
+  let release = (): void => {}
+  const gate = new Promise<void>(resolve => (release = resolve))
+  const { env, values, clock, timers, submitted, debug, asked } = walkEnv([made(1), made(2)], [{ gives: 'Done' }, { gives: 'Stop', wait: gate }])
+  clock.now = 1000
+  const running = walk(env, WINDOW)
+  await until(() => asked.length === 2)
+  await tickAt(timers, clock, 1000)
+  expect(itemOf(values, 1).state).toBe('done-pending')
+  expect(submitted).toEqual([])
+  expect(pending()).toEqual({ held: [], waiting: [{ id: 1, text: doneNotice(itemOf(values, 1)) }] })
+  expect(debug.filter(line => line.startsWith('human-plugin: sent #1 '))).toEqual([`human-plugin: sent #1 for press ${1000 - WINDOW} kept for the next turn while a walk asks`])
+  // The session is idle: a second notice is kept too, not queued for a turn that is not running.
+  expect(offer({ id: 8, text: 'while asking' })).toBe('walk')
+  release()
+  await running
+  expect(offer({ id: 9, text: 'after' })).toBe('submit')
+})
+
+test('with a turn running when the walk starts, a tick that ends an answer\'s window sends the notice to that turn\'s read point, as it does without a walk', async () => {
+  fresh()
+  startTurn()
+  let release = (): void => {}
+  const gate = new Promise<void>(resolve => (release = resolve))
+  const { env, values, clock, timers, submitted, debug, asked } = walkEnv([made(1), made(2)], [{ gives: 'Done' }, { gives: 'Stop', wait: gate }])
+  clock.now = 1000
+  const running = walk(env, WINDOW)
+  await until(() => asked.length === 2)
+  await tickAt(timers, clock, 1000)
+  expect(submitted).toEqual([])
+  expect(debug.filter(line => line.startsWith('human-plugin: sent #1 '))).toEqual([`human-plugin: sent #1 for press ${1000 - WINDOW} to the running turn`])
+  const appended: string[] = []
+  await handOver(
+    async text => {
+      appended.push(text)
+      return true
+    },
+    async () => () => true,
+  )
+  expect(appended).toEqual([doneNotice(itemOf(values, 1))])
+  release()
+  await running
+})
+
+test('every way a walk ends releases the hold: a notice offered while it asked waited, and the next one takes the idle path', async () => {
+  const ends: [string, Item[], Step[], boolean][] = [
+    ['Stop', [made(1)], [{ gives: 'Stop' }], false],
+    ['every open item asked', [made(1)], [{ gives: 'Skip' }], false],
+    ['an answer written', [made(1)], [{ gives: 'Done' }], false],
+    ['a closed dialog', [made(1)], [{ gives: { rejects: 'The user dismissed the question' } }], false],
+    ['an answer that cannot be confirmed', [made(1)], [{ gives: 'Done', seen: 'none' }], false],
+    ['nothing open', [], [], false],
+    ['an error', [made(1)], [], true],
+  ]
+  for (const [name, items, steps, throws] of ends) {
+    fresh()
+    const { env, breakGet } = walkEnv(items, steps)
+    // The walk's first read of the list comes after it has claimed its session, so a notice offered there is offered while it asks.
+    const probed: string[] = []
+    breakGet.when = () => {
+      if (probed.length === 0) probed.push(offer({ id: 8, text: 'while asking' }))
+      return throws
+    }
+    await walk(env, WINDOW)
+    expect([name, probed, offer({ id: 9, text: 'after' })]).toEqual([name, ['walk'], 'submit'])
+  }
+})
+
+test('a walk told that one is already asking leaves the first walk\'s hold on', async () => {
+  fresh()
+  let release = (): void => {}
+  const gate = new Promise<void>(resolve => (release = resolve))
+  const { env, asked } = walkEnv([made(1)], [{ gives: 'Skip', wait: gate }])
+  const first = walk(env, WINDOW)
+  await until(() => asked.length === 1)
+  expect(await walk(env, WINDOW)).toBe(ALREADY_ASKING)
+  expect(offer({ id: 8, text: 'while asking' })).toBe('walk')
+  release()
+  await first
+  expect(offer({ id: 9, text: 'after' })).toBe('submit')
+})
+
+test('a walk that settles after its session ended leaves the hold of a newer walk on, and the newer walk\'s end releases it', async () => {
+  fresh()
+  let releaseOld = (): void => {}
+  let releaseNew = (): void => {}
+  const gateOld = new Promise<void>(resolve => (releaseOld = resolve))
+  const gateNew = new Promise<void>(resolve => (releaseNew = resolve))
+  const { env, asked } = walkEnv([made(1)], [{ gives: 'Skip', wait: gateOld }, { gives: 'Skip', wait: gateNew }])
+  const old = walk(env, WINDOW)
+  await until(() => asked.length === 1)
+  // The session's end, as its end hook makes it.
+  reset()
+  endWalk()
+  const newer = walk(env, WINDOW)
+  await until(() => asked.length === 2)
+  releaseOld()
+  expect(await old).toContain('It ended with its session')
+  expect(offer({ id: 8, text: 'while the newer walk asks' })).toBe('walk')
+  releaseNew()
+  await newer
+  expect(offer({ id: 9, text: 'after' })).toBe('submit')
 })
