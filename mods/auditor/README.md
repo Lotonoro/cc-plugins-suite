@@ -88,8 +88,19 @@ from the repository root.
 - **Inspect findings.** Run `/auditor memory` to see the reviewer’s notes and
   which findings are still open or settled. Enable the plugin’s `log` option
   to write per-review JSON under `~/.claude/auditor/`, including timing, token
-  use, the reviewer’s model, and notes. `/clear` starts a new transcript and
-  resets the reviewer’s memory.
+  use, the reviewer’s model, notes, and the reviewer the brief reached
+  (`briefed_id`). It also counts the reviewer turn ends that arrived while the
+  review was open but did not close it: `unmatched_former` for a reviewer the
+  plugin had already let go, `unmatched_let_go` for the current reviewer, found
+  let go as its turn end was settled, and `unmatched_last` for the last two,
+  with agent and time. A review given up after its 10 minutes also logs how
+  long it really ran (`lapse_age_ms`), when that was found
+  (`lapse_detected_at`), the reviewer held for it and its status in the agent
+  list then (`lapse_held_id`, `lapse_held_status`), and up to three Auditor
+  reviewers in the list that the plugin had no record of
+  (`lapse_unknown_spawns`, with their total in `lapse_unknown_spawns_total`),
+  which may belong to another conversation. `/clear` starts a new transcript
+  and resets the reviewer’s memory.
 - **Choose the reviewer’s model.** Run `/auditor model` to list the choices and
   `/auditor model <name>` to set one. The choices are `haiku`, `sonnet`,
   `opus`, and `fable`, plus the model ids `/model` lists, narrowed by your
