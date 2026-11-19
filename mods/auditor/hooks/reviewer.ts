@@ -1,4 +1,4 @@
-import type { AgentInfo } from 'claude-code'
+import type { AgentInfo, AgentStatus } from 'claude-code'
 import type { Conversation, FailCause, LetGoReason, OpenReview } from '../types/index'
 import { DEFAULT_MODEL, canonicalOf, idOf, isFullId, sameModel } from './models'
 import type { ModelIds } from './models'
@@ -41,15 +41,15 @@ const withUnmatched = (review: OpenReview, reason: UnmatchedReason, agentId: str
   return { ...review, unmatched: { former: held.former + (former ? 1 : 0), letGo: held.letGo + (former ? 0 : 1), last: [...held.last, { agentId, at }].slice(-UNMATCHED_KEPT) } }
 }
 
-// What a reviewer turn end that closed nothing did: the conversation after it, the reason it counts under (absent where the agent is not one the state knows as let go), and the number of the review that took it (absent where none did).
-export type Counted = { next: Conversation; reason: UnmatchedReason | undefined; review: number | undefined }
+// What a reviewer turn end that closed nothing did: the conversation after it, the reason it counts under (absent where the agent is not one the state knows as let go), the number of the review that took it (absent where none did) and the number of the review open then, whether or not it took the count (absent where none was open): a review dispatched after the turn end was first read is open and takes none.
+export type Counted = { next: Conversation; reason: UnmatchedReason | undefined; review: number | undefined; open: number | undefined }
 
 // Counts the turn end of `agentId`, which arrived at `at`, on the open review under `reason`. It is judged on the conversation a change reads, never on the one the hook first read: only an agent the state knows as a reviewer it let go counts (the stored reviewer and the worker's own agents never do), and the open review takes it only when that review was dispatched by the time of the first read (`dispatched`, the dispatch count there). A review's number is its dispatch's count, so a newer review is not counted on; a clock reading could not say this exactly, since a dispatch in the window can carry a later time and a same-millisecond one ties.
 export const countUnmatched = (c: Conversation, agentId: string, reason: UnmatchedReason, at: number, dispatched: number): Counted => {
-  if (standingOf(c, agentId) !== 'former') return { next: c, reason: undefined, review: undefined }
   const open = c.review
-  if (open === undefined || open.number > dispatched) return { next: c, reason, review: undefined }
-  return { next: { ...c, review: withUnmatched(open, reason, agentId, at) }, reason, review: open.number }
+  if (standingOf(c, agentId) !== 'former') return { next: c, reason: undefined, review: undefined, open: open?.number }
+  if (open === undefined || open.number > dispatched) return { next: c, reason, review: undefined, open: open?.number }
+  return { next: { ...c, review: withUnmatched(open, reason, agentId, at) }, reason, review: open.number, open: open.number }
 }
 
 // What an event's origin says: this plugin's own hook (`own`), an agent this plugin spawned (`spawned`), or neither.
@@ -198,6 +198,26 @@ export const lapseOf = (c: Conversation, now: number, limits: Limits): Extract<F
   if (c.review === undefined) return undefined
   const stored = c.reviewer !== undefined
   return now - c.review.dispatchedAt > (stored ? limits.finish : limits.start) ? (stored ? 'no finish' : 'no start') : undefined
+}
+
+// How many of a lapse's unknown plugin spawns its record names, with their status; the total counts every one.
+const UNKNOWN_NAMED = 3
+
+// What the agent list says at a lapse, in the words its log entry and debug line use. `heldId`: the reviewer the state held for the review, absent where none (a spawn that stood none in). `heldStatus`: the status the list gives it, `absent` where the list shows no agent under that id, `unread` where the list could not be read; absent where no reviewer was held. `unknown`: the first UNKNOWN_NAMED agents the list names as this plugin's spawn whose id the state did not know, in the list's order, with their status, and `unknownTotal` how many there are in all; both absent where the list could not be read.
+export type LapseListFacts = {
+  heldId: string | undefined
+  heldStatus: AgentStatus | 'absent' | 'unread' | undefined
+  unknown: { agentId: string; status: AgentStatus }[] | undefined
+  unknownTotal: number | undefined
+}
+
+// The lapse's list facts, judged on `c`, the conversation as it was before the lapse let its reviewer go (a let-go clears the stored reviewer, so a later conversation holds none), and `listed`, the agent list read after the lapse was decided, undefined where it could not be read. An unknown spawn is a listed agent the list names as this plugin's (`originOf`) whose id the state does not know (`standingOf`): a reviewer the state let go, the held reviewer and any agent this plugin did not spawn, a worker's own subagent under a reviewer's name included, are not. The list shows every reviewer of the process whatever conversation it served and no field of an entry tells conversations apart (`sweepable`), so an unknown spawn may be another conversation's.
+export const lapseListFacts = (id: Identity, c: Conversation, listed: readonly AgentInfo[] | undefined): LapseListFacts => {
+  const heldId = c.reviewer?.id
+  const heldStatus = heldId === undefined ? undefined : listed === undefined ? 'unread' : (listed.find(a => a.id === heldId)?.status ?? 'absent')
+  if (listed === undefined) return { heldId, heldStatus, unknown: undefined, unknownTotal: undefined }
+  const unknown = listed.filter(a => standingOf(c, a.id) === 'neither' && originOf(id.plugin, { from: 'listed', agent: a }) === 'spawned')
+  return { heldId, heldStatus, unknown: unknown.slice(0, UNKNOWN_NAMED).map(a => ({ agentId: a.id, status: a.status })), unknownTotal: unknown.length }
 }
 
 // What a let-go decided: the conversation after it, and the id of the reviewer to stop (absent when none was let go).

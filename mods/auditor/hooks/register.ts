@@ -13,8 +13,8 @@ import { REVIEWER_PROMPT } from './prompt'
 import { clip, editedLines, entryBlock, pageOf, renumberBlock, toolLine } from './record'
 import { DEFAULT_MODEL, FALLBACK_CHOICES, isFullId, offered, takeChoice } from './models'
 import type { Choices, ModelIds } from './models'
-import { adopt, compactionModel, countUnmatched, idleTimerOf, isEndNotice, isHandBack, isNotice, isReviewerEntry, land, lapseOf, learn, learnName, letGo, letGoSwitched, letGoSwitchedIdle, markers, nameKnown, nameListed, needsIds, originOf, reapIdle, reviewModels, reviewerNameOf, spawnChoice, spawnName, spawning, standingOf, stopMissed, sweepable, WORKING, withTurnEnd } from './reviewer'
-import type { Counted, Identity, IdleTimer, Release, ReviewModels, UnmatchedReason } from './reviewer'
+import { adopt, compactionModel, countUnmatched, idleTimerOf, isEndNotice, isHandBack, isNotice, isReviewerEntry, land, lapseListFacts, lapseOf, learn, learnName, letGo, letGoSwitched, letGoSwitchedIdle, markers, nameKnown, nameListed, needsIds, originOf, reapIdle, reviewModels, reviewerNameOf, spawnChoice, spawnName, spawning, standingOf, stopMissed, sweepable, WORKING, withTurnEnd } from './reviewer'
+import type { Counted, Identity, IdleTimer, LapseListFacts, Release, ReviewModels, UnmatchedReason } from './reviewer'
 import { readLastModel, readModelIds, storeModelId, writeLastModel } from './store'
 import { purged, withCompaction, withNoteGiven, withResponse, withReviewDone } from './tally'
 import { DIGEST_CHARS, LOOKUP_TIMEOUT_MS, SEARCH_TERM_CHARS, digestBlocks, digestOf, lineCommand, lookupOf, parseSearch, renderSearch, searchCommand } from './transcript'
@@ -73,7 +73,10 @@ type Ending = { status: 'complete'; note: string | null } | { status: 'incomplet
 type TakenNotes = { notes: readonly PendingNote[]; epoch: number }
 // `models`: the choice and the resolved model the review's log names. `released`: the reviewer the take let go, when it did (a rotation or a failed review). `epoch`: the epoch at the take.
 type Taken = { review: OpenReview; models: ReviewModels; released: string | undefined; epoch: number }
-type Closed = { review: OpenReview; models: ReviewModels; turnEnd: TurnEnd | null }
+// What a lapsed review's log adds to its closed-review hand-over: when the lapse was detected (the clock reading its decision compared) and how long the review had run by then, and the list facts (`lapseListFacts`).
+type LapseRecord = LapseListFacts & { detectedAt: number; ageMs: number }
+// `lapse`: the lapse's record, set by the dispatch that gave the review up and by no other close.
+type Closed = { review: OpenReview; models: ReviewModels; turnEnd: TurnEnd | null; lapse?: LapseRecord }
 type Finished = { answer: string; reason: string; isAborted: boolean; durationMs: number; usage?: TurnUsage }
 // `epoch`: the epoch at the plan; `at`: the clock's time at the plan.
 type Plan = { number: number; brief: string; send: string | undefined; epoch: number; at: number }
@@ -193,7 +196,7 @@ const change = (
 
 const logReview = async ($: Scope, sessionId: string, log: boolean, closed: Closed, ending: Ending): Promise<void> => {
   if (!log) return
-  const { review, models, turnEnd } = closed
+  const { review, models, turnEnd, lapse } = closed
   try {
     const note = ending.status === 'complete' ? ending.note : (review.note ?? null)
     // The marks are read from the stored body, as the gate read them from the send.
@@ -227,6 +230,13 @@ const logReview = async ($: Scope, sessionId: string, log: boolean, closed: Clos
       unmatched_former: review.unmatched?.former ?? 0,
       unmatched_let_go: review.unmatched?.letGo ?? 0,
       unmatched_last: (review.unmatched?.last ?? []).map(end => ({ agent_id: end.agentId, at: end.at })),
+      // A review given up at a dispatch (`dispatchIdle`): when the lapse was detected and the age the review had then, the reviewer the state held for it, its status in the agent list, and up to three of the plugin spawns the list showed that the state did not know, with their total. Null for every review that did not lapse; an unread list gives null for both spawn keys.
+      lapse_detected_at: lapse?.detectedAt ?? null,
+      lapse_age_ms: lapse?.ageMs ?? null,
+      lapse_held_id: lapse?.heldId ?? null,
+      lapse_held_status: lapse?.heldStatus ?? null,
+      lapse_unknown_spawns: lapse?.unknown?.map(spawn => ({ agent_id: spawn.agentId, status: spawn.status })) ?? null,
+      lapse_unknown_spawns_total: lapse?.unknownTotal ?? null,
     }
     await $.fs.write(`${await sessionDir($, sessionId)}/${numbered(review.number)}.json`, JSON.stringify(body))
   } catch (err) {
@@ -237,9 +247,9 @@ const logReview = async ($: Scope, sessionId: string, log: boolean, closed: Clos
 // A review as its log reads it when its brief is not known to have reached a reviewer: without its route, and without the reviewer that route reached.
 const withoutRoute = ({ briefTo: _route, briefedId: _briefed, ...review }: OpenReview): OpenReview => review
 
-// Logs a review that closed with no reviewer turn end as incomplete.
-const logIncomplete = ($: Scope, sessionId: string, log: boolean, review: OpenReview, models: ReviewModels, reason: string): Promise<void> =>
-  logReview($, sessionId, log, { review, models, turnEnd: null }, { status: 'incomplete', reason })
+// Logs a review that closed with no reviewer turn end as incomplete. Only a lapse passes its record (`lapse`); every other close logs the lapse keys as null.
+const logIncomplete = ($: Scope, sessionId: string, log: boolean, review: OpenReview, models: ReviewModels, reason: string, lapse?: LapseRecord): Promise<void> =>
+  logReview($, sessionId, log, { review, models, turnEnd: null, lapse }, { status: 'incomplete', reason })
 
 // Logs as incomplete the open review a conversation dropped (a switch to off, a session end), when it had one.
 const logDropped = async ($: Scope, sessionId: string, log: boolean, c: Conversation, reason: string): Promise<void> => {
@@ -594,8 +604,8 @@ const holdOrRelease = async ($: Scope, refusal: Refusal): Promise<Decided | unde
   return got.decided
 }
 
-// Counts a reviewer turn end that closed nothing under `reason` in one change (`countUnmatched`), on the review open then when that review was dispatched by the time the turn end was first read (`dispatched`, the conversation's dispatch count there), and writes one debug line naming the agent, the reason and that review's number, or none, whatever the log option says. A turn end whose agent the state does not know as a reviewer it let go is not recorded, and writes nothing. The clock is read before the change, whose callback is synchronous. A failed read or write loses this one turn end's count and is the caller's to record.
-const recordUnmatched = async ($: Pick<Scope, 'state' | 'clock' | 'ui'>, agentId: string, reason: UnmatchedReason, dispatched: number): Promise<void> => {
+// Counts a reviewer turn end that closed nothing under `reason` in one change (`countUnmatched`), on the review open then when that review was dispatched by the time the turn end was first read (`dispatched`, the conversation's dispatch count there), and writes one debug line naming the agent, the reason and the review open then, whatever the log option says: its number, with the note that it was not counted on where it was dispatched after the turn end was first read, or none. A turn end whose agent the state does not know as a reviewer it let go is not recorded and writes nothing; the result says whether the line was written. The clock is read before the change, whose callback is synchronous. A failed read or write loses this one turn end's count and is the caller's to record.
+const recordUnmatched = async ($: Pick<Scope, 'state' | 'clock' | 'ui'>, agentId: string, reason: UnmatchedReason, dispatched: number): Promise<boolean> => {
   const at = await $.clock.now()
   const got: { counted?: Counted } = {}
   await change($, c => {
@@ -603,12 +613,14 @@ const recordUnmatched = async ($: Pick<Scope, 'state' | 'clock' | 'ui'>, agentId
     return got.counted.next
   })
   const counted = got.counted
-  if (counted?.reason === undefined) return
-  $.ui.log(`${PLUGIN}: a turn end of reviewer ${agentId} closed nothing (${counted.reason}); open review: ${counted.review ?? 'none'}`, { to: 'debug' })
+  if (counted?.reason === undefined) return false
+  const open = counted.open === undefined ? 'none' : counted.review === undefined ? `${counted.open}, not counted on it: it was dispatched after this turn end was read` : `${counted.open}`
+  $.ui.log(`${PLUGIN}: a turn end of reviewer ${agentId} closed nothing (${counted.reason}); open review: ${open}`, { to: 'debug' })
+  return true
 }
 
 // The reviewer's turn end settles its open review, with the outcome the gate saw (`settleOutcome`): the take computes it in its own change, which takes the review, so the entries go back exactly when it fails, or marks it for its one follow-up (`followUp`) and leaves it open.
-// The review is taken or marked only while `agentId` is still the stored reviewer, in the take's own change: a reviewer a switch or a /clear let go after its turn end was matched must not close the next run's review. Where the take finds none, the turn end of a reviewer let go since it was read is counted on the review then open, in a change of its own (`recordUnmatched`), never in the take, whose other caller, the dispatch failure, has no turn end to count.
+// The review is taken or marked only while `agentId` is still the stored reviewer, in the take's own change: a reviewer a switch or a /clear let go after its turn end was matched must not close the next run's review. Where the take finds none, the turn end of a reviewer let go since it was read is counted on the review then open, in a change of its own (`recordUnmatched`), never in the take, whose other caller, the dispatch failure, has no turn end to count. That change writes the line that names the turn end and the review open. The line that says no review is in progress is written for a turn end nothing names, and where counting it fails (the caller records that failure), so the two lines never describe one counted turn end.
 // `dispatched`: the conversation's dispatch count when the hook first read it for this turn end.
 // `unsent`: this settle follows a follow-up that could not be sent, whose attempt already put the answer in the debug log, and whose turn end the settle before it already matched, so it counts none.
 const settle = async ($: Scope, log: boolean, agentId: string, done: Finished, dispatched: number, unsent = false): Promise<void> => {
@@ -616,8 +628,12 @@ const settle = async ($: Scope, log: boolean, agentId: string, done: Finished, d
   // An incomplete review lets its reviewer go unless its turn was aborted: an abort is the user's Esc, and a cold respawn after it is what the stopped-session refusal already costs.
   const taken = await takeReview($, (_r, c) => standingOf(c, agentId) === 'current', r => outcomeOf(r).status === 'incomplete', r => outcomeOf(r).status === 'follow-up', r => outcomeOf(r).status === 'incomplete' && !done.isAborted)
   if (taken === undefined) {
-    $.ui.log(`${PLUGIN}: the reviewer ended a turn with no review in progress; not recorded`, { to: 'debug' })
-    if (!unsent) await recordUnmatched($, agentId, 'let go during its settle', dispatched)
+    let named = false
+    try {
+      named = !unsent && (await recordUnmatched($, agentId, 'let go during its settle', dispatched))
+    } finally {
+      if (!named) $.ui.log(`${PLUGIN}: the reviewer ended a turn with no review in progress; not recorded`, { to: 'debug' })
+    }
     return
   }
   const { review, models, released, epoch } = taken
@@ -737,8 +753,30 @@ const idsForSwitch = async ($: Pick<Scope, 'state' | 'store' | 'clock' | 'ui'>):
   return needsIds(c) ? await readModelIds($) : {}
 }
 
-// A review given up at a dispatch: the review, its cause and logged reason, the models its log names, and the reviewer let go with it, if any.
-type Lapsed = { review: OpenReview; cause: Extract<FailCause, 'no start' | 'no finish'>; reason: string; models: ReviewModels; released: string | undefined }
+// A review given up at a dispatch: the review, its cause and logged reason, the models its log names, the reviewer let go with it, if any, and the conversation as it was before that let-go (`before`), which still holds the reviewer and the ids the state knew, as the lapse's record reads them.
+type Lapsed = { review: OpenReview; cause: Extract<FailCause, 'no start' | 'no finish'>; reason: string; models: ReviewModels; released: string | undefined; before: Conversation }
+
+// The one debug line a lapse writes beside its failure line, whatever the log option says: the review, its cause and its age in seconds; the reviewer the state held, with its status in the agent list; the turn ends counted on the review by reason, and the agent of the latest; the reviewer its brief reached; and how many plugin spawns the list showed that the state did not know, which may belong to another conversation, since the list shows every reviewer of the process.
+const lapseLine = ({ review, cause }: Lapsed, record: LapseRecord): string => {
+  const held = record.heldId === undefined ? 'none' : `${record.heldId}, status ${record.heldStatus}`
+  const { former = 0, letGo = 0, last = [] } = review.unmatched ?? {}
+  return `${PLUGIN}: review ${review.number} lapsed (${cause}) after ${Math.round(record.ageMs / 1000)} s; held reviewer ${held}; turn ends counted on it: former reviewer ${former}, let go during its settle ${letGo}, last counted agent ${last.at(-1)?.agentId ?? 'none'}; briefed reviewer ${review.briefedId ?? 'none'}; unknown plugin spawns, possibly another conversation's: ${record.unknownTotal ?? 'unread'}`
+}
+
+// What a lapse adds to its log entry and its debug log: the record (`LapseRecord`) and the debug line (`lapseLine`). It never throws, since a diagnostic never holds back the dispatch it comes with. The agent list is read once, bounded, on the engine's own call and not through `listAgents`, which turns a rejection into an answer: a failed or late read is recorded once, by the bound, and the record gives the list as unread. Whatever then throws from the list's entries or the line (an entry that is not an object, a stored count of another shape) is recorded as the record's failure and costs the debug line, and the record keeps what the list does not give, the age and the held reviewer, with the list unread. The age is the decision's own clock reading (`now`) less the dispatch's, never a second reading.
+const lapseDiagnostics = async ($: Pick<Scope, 'agent' | 'clock' | 'ui'>, lapsed: Lapsed, now: number): Promise<{ record: LapseRecord; line: string | undefined }> => {
+  const listed = await within($, 'agent list read at a lapse', () => $.agent.list())
+  const known = { detectedAt: now, ageMs: now - lapsed.review.dispatchedAt }
+  let record: LapseRecord | undefined
+  let line: string | undefined
+  try {
+    record = { ...known, ...lapseListFacts(IDENTITY, lapsed.before, listed?.value) }
+    line = lapseLine(lapsed, record)
+  } catch (err) {
+    recordFailed($, 'lapse record', err)
+  }
+  return { record: record ?? { ...known, ...lapseListFacts(IDENTITY, lapsed.before, undefined) }, line }
+}
 
 // The reviewer gets one brief when it has no open review and turns since its last dispatch.
 // Eligibility is judged in the change alone: a get reads the dispatch's starting moment, so a settle's own take of the open review is invisible to it.
@@ -761,7 +799,7 @@ const dispatchIdle = async ($: Scope, log: boolean): Promise<void> => {
     let d: Conversation = c
     if (open !== undefined && cause !== undefined) {
       const gone = cause === 'no finish' ? letGo(c, 'lapsed', c.reviewer?.id) : { next: c, released: undefined }
-      planned.lapsed = { review: open, cause, reason: cause === 'no finish' ? REVIEW_LAPSED : SPAWN_LAPSED, models: reviewModels(c, open.number), released: gone.released }
+      planned.lapsed = { review: open, cause, reason: cause === 'no finish' ? REVIEW_LAPSED : SPAWN_LAPSED, models: reviewModels(c, open.number), released: gone.released, before: c }
       d = { ...gone.next, review: undefined, failing: cause, record: withEntriesFirst(open.record, c.record) }
     }
     if (!eligible(d)) return d
@@ -779,10 +817,12 @@ const dispatchIdle = async ($: Scope, log: boolean): Promise<void> => {
   })
   const { plan, lapsed, bound } = planned
   if (lapsed !== undefined) {
-    // The stop is issued last whatever the log does: a reviewer let go is never left running by a throw.
+    // The stop is issued last whatever the log does: a reviewer let go is never left running by a throw. The agent list is read here, after the lapse is decided, so a dispatch that lapses nothing never reads it, and before the stop, so the status is the one the lapse found.
     try {
-      await logIncomplete($, sessionId, log, lapsed.review, lapsed.models, lapsed.reason)
+      const { record, line } = await lapseDiagnostics($, lapsed, now)
+      await logIncomplete($, sessionId, log, lapsed.review, lapsed.models, lapsed.reason, record)
       $.ui.log(`${PLUGIN}: review failed: ${lapsed.reason}`, { to: 'debug' })
+      if (line !== undefined) $.ui.log(line, { to: 'debug' })
     } finally {
       await stopReviewer($, lapsed.released, true)
     }
