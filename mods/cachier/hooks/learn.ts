@@ -12,7 +12,7 @@ import { labelled } from './countdown'
 import type { PauseRecord } from './history'
 import { TTL_MS } from './prices'
 import type { Line } from './sections'
-import { refreshIntervalMs } from './setup'
+import { refreshIntervalMs, runSpanMs } from './setup'
 
 // The cache's timing and price that a count is learned for: those of the cache the next pause would ping.
 export type Pricing = { ttlMs: number; leadMs: number; ratio: number }
@@ -22,7 +22,7 @@ export const pauseCost = (count: number, pausedMs: number, p: Pricing): number =
   // Where the run sends none, the count handed in is none, so no ping fires and the pause holds only within the TTL.
   const interval = refreshIntervalMs(p.leadMs, p.ttlMs)
   const fired = interval === null ? 0 : Math.min(count, Math.max(0, Math.ceil(pausedMs / interval) - 1))
-  const alive = pausedMs < count * (interval ?? 0) + p.ttlMs
+  const alive = pausedMs < runSpanMs(p.leadMs, p.ttlMs, count)
   return fired + (alive ? 0 : p.ratio)
 }
 
@@ -92,8 +92,7 @@ const looCostsOnce = (history: readonly PauseRecord[], maxCount: number, p: Pric
 // every count costs break-even's pings and the rewrite too, where no pings would cost the rewrite alone. Ties between rules go to
 // break-even first, then to all pauses over the hour's.
 export const learnedOf = (history: readonly PauseRecord[], hour: number, maxCount: number, p: Pricing): Learned | null => {
-  const interval = refreshIntervalMs(p.leadMs, p.ttlMs)
-  if (history.length === 0 || interval === null) return null
+  if (history.length === 0 || refreshIntervalMs(p.leadMs, p.ttlMs) === null) return null
   const loo = looCostsOnce(history, maxCount, p)
   const rule: Rule = loo.all < loo['break-even'] - 1e-9 && loo.all <= loo.hour + 1e-9 ? 'all' : loo.hour < loo['break-even'] - 1e-9 ? 'hour' : 'break-even'
   if (rule === 'break-even') return null
@@ -102,7 +101,7 @@ export const learnedOf = (history: readonly PauseRecord[], hour: number, maxCoun
   const lengths = scope.map((r) => r.pausedMs)
   const count = cheapest(totalsOf(lengths, maxCount, p))
   if (count === maxCount) return null
-  const coverMs = count * interval + p.ttlMs
+  const coverMs = runSpanMs(p.leadMs, p.ttlMs, count)
   return { count, rule, within: lengths.filter((l) => l < coverMs).length, of: lengths.length, coverMs }
 }
 

@@ -1,7 +1,7 @@
 import type { EngineInterface, Register, RenderElement } from 'claude-code'
 import type { ModelForkResult, ModelUsage } from 'claude-code'
 import type { CacheView, ColdMark, HintCost, HintState, Judged, KeepaliveState, PriceCue, RestFact, Spend, StatsState, TallyState, Unit } from '../types'
-import { cacheLineOf, expiredAt, expiryOf, labelled, pieOf, readingOf, rebuildDrawnOf, settleCold, touchedAt } from './countdown'
+import { cacheLineOf, expiredAt, expiryOf, labelled, pieOf, readingOf, rebuildDrawnOf, settleCold, touchedAt, type PieSpan } from './countdown'
 import {
   coldBegun,
   coldLanded,
@@ -23,6 +23,7 @@ import {
   off,
   parseRequest,
   pingLine,
+  plannedOf,
   pressOf,
   promptDropped,
   promptSubmitted,
@@ -63,7 +64,7 @@ import { compactionDueOf, overnightOf, overnightRowOf, restFactOf, restReadingOf
 import { nightAction, nightClean, nightCompact, nightLearn, nightNotice, nightRead, nightScan, nightState, nightStepped, noticeOpen, type Compaction } from './nightstep'
 import { breakEvenLine, breakEvenOf, countLineOf, judge, KEPT_COUNT, ratioOf, rebuildSpendOf, runCountOf, sessionBalanceLine, NO_JUDGED, pauseOf, type Pause } from './verdict'
 import { answerOf, paneLayoutOf, spanOf, type Line, type PaneRow, type PaneSize, type Setting, type Snapshot } from './sections'
-import { secsTerse } from './setup'
+import { runSpanMs, secsTerse } from './setup'
 import { stampLabel, withStamp } from './stamp'
 import { foldStatsEvents, INITIAL_STATS, noRefreshesLine, pendingFor, rundownSections, sessionLineOf, type MissEvent, type LongPauseEvent } from './stats'
 import { lookupRows, readCache, type History, type Host, type Row, type StampEnding, type StampUnread } from './transcript'
@@ -215,6 +216,9 @@ let rereadWanted = false
 // Whether a keepalive ping is claimed, from before its first await to its outcome; a tick that finds one claimed starts
 // no second.
 let pinging = false
+// The refresh the tick has begun and not finished: the `seq` its commit writes, the generation it is sent under, the refreshes left that commit writes, and the touch it is
+// sent against. Set before the commit and cleared when the tick ends, so a commit that is lost or a send that throws leaves none. Read by `inFlightFor`.
+let inFlight: { seq: number; generation: number; remaining: number; touchMs: number | null } | null = null
 // Set when a main-thread hook could not write its state: the gap then counts as closed until a main-thread write lands.
 let gapBroken = false
 // Set when a stats write failed, and cleared by the next stats write that lands. Stats are not on the cache path, so this
@@ -873,13 +877,31 @@ const keepaliveTick = async ($: Dollar) => {
     }
     if (verdict.kind !== 'ping' || view.kind !== 'known' || k.config === null) return
     const seq = k.seq + 1
+    inFlight = { seq, generation: k.generation, remaining: k.remaining - 1, touchMs: live }
     const committed = await $.state.set(KEEPALIVE, { ...k, remaining: k.remaining - 1, seq }, { ifVersion: held.version })
     if (!committed.isSet) return
     const fork = $.model.fork({ prompt: PING_PROMPT })
     await settlePing($, { fork, view, generation: k.generation, seq, decidedMs, leadMs: k.config.leadMs, ttlMs: view.ttlMs, pauseEpoch: k.pauseEpoch })
   } finally {
     pinging = false
+    inFlight = null
   }
+}
+
+// Whether the refresh the tick has in flight is one the pie counts as still to come: the state carries what its commit wrote (the seq, the generation and the refreshes left) and the touch is
+// still the one it was sent against. So a draw before the commit sees the old seq and counts none; once the reply has moved the touch the refresh is counted by the touch alone; a prompt, a
+// toggle or a cold mark moves the generation, so a reply the tick will discard is not counted; and a refusal that is retried gives its refresh back to the state, which counts it. A draw reads the
+// touch, then keepalive's state, then this with no wait after the state: a commit comes before the reply that moves the touch, so the other order could count one refresh by both.
+const inFlightFor = (k: KeepaliveState, liveMs: number | null): boolean =>
+  inFlight !== null && k.seq === inFlight.seq && k.generation === inFlight.generation && k.remaining === inFlight.remaining && liveMs === inFlight.touchMs
+
+// The span the pie's quarters count while keepalive's planned refreshes extend the time to staleness, else undefined, and the quarters count the TTL alone. `counted` is the view keepalive counts and `shown`
+// the stored view the reading is built from, whose TTL the span is worked out at; `flying` is `inFlightFor`'s answer, which adds one refresh still to come.
+const pieSpanOf = (k: KeepaliveState, counted: CacheView, shown: CacheView, liveMs: number | null, nowMs: number, flying: boolean): PieSpan | undefined => {
+  const planned = plannedOf(k, counted, liveMs, nowMs)
+  if (planned === null || shown.kind !== 'known') return undefined
+  const { leadMs, count, left } = planned
+  return { spanMs: runSpanMs(leadMs, shown.ttlMs, count), beyondMs: runSpanMs(leadMs, shown.ttlMs, left + (flying ? 1 : 0)) - shown.ttlMs }
 }
 
 // Turns keepalive off, as `/keepalive off` does.
@@ -996,12 +1018,14 @@ const settingsOf = (raw: CacheView, run: { leadMs: number; count: number | null 
 }
 
 // The figures and sentences the bare command's sections state. The clock is read first, then each state key once, in sequence:
-// not an atomic snapshot, so a write that lands between two reads can leave figures from two moments. A surface that states the
+// not an atomic snapshot, so a write that lands between two reads can leave figures from two moments. The touch is read before keepalive's
+// state, which the pie's count of a refresh in flight needs (`inFlightFor`). A surface that states the
 // sections calls it: the bare command, which lays them out wrapped at 48 columns, and the details pane's draw, which lays them out for the engine to wrap.
 const snapshotNow = async ($: Dollar): Promise<Snapshot> => {
   const nowMs = await $.clock.now()
-  const held = (await $.state.get(KEEPALIVE)).value ?? INITIAL
   const live = (await $.state.get(TOUCH)).value ?? null
+  const held = (await $.state.get(KEEPALIVE)).value ?? INITIAL
+  const flying = inFlightFor(held, live)
   const raw = (await $.state.get(VIEW)).value ?? NO_CACHE
   const cold = (await $.state.get(COLD)).value ?? null
   const unitHeld = (await $.state.get(UNIT)).value
@@ -1012,7 +1036,7 @@ const snapshotNow = async ($: Dollar): Promise<Snapshot> => {
   // The rebuild is priced once here: the figure and the 'in tokens' reason both come from this spend.
   const rebuildPriced = raw.kind === 'known' ? rebuildSpendOf(raw, money) : null
   const rebuild = rebuildPriced === null ? '' : uponOf(rebuildPriced, money.unit)
-  const reading = readingOf(raw, live, cold, nowMs, rebuild)
+  const reading = readingOf(raw, live, cold, nowMs, rebuild, pieSpanOf(held, view, raw, live, nowMs, flying))
   // The lines that state a refresh price state the rebuild beside it while the cache is warm.
   const pair = { warm: reading?.state === 'warm', rebuild: rebuildPriced }
   // The reason is given only where the warmth line draws the figure (rebuildDrawnOf): not on a warm cache, nor after /clear, which leaves the view known and no reading.
@@ -1473,9 +1497,10 @@ const drawStatus = async ($: Dollar) => {
     return next === k ? undefined : next
   })
   const held = (await $.state.get(KEEPALIVE)).value ?? INITIAL
+  const flying = inFlightFor(held, live)
   // The figure to rebuild an expired cache: what the next prompt pays to write it again, in the unit shown.
   const rebuildPriced = view.kind === 'known' ? rebuildSpendOf(view, money) : null
-  const reading = readingOf(view, live, cold, nowMs, rebuildPriced === null ? '' : uponOf(rebuildPriced, money.unit))
+  const reading = readingOf(view, live, cold, nowMs, rebuildPriced === null ? '' : uponOf(rebuildPriced, money.unit), pieSpanOf(held, counted, view, live, nowMs, flying))
   const pair = { warm: reading?.state === 'warm', rebuild: rebuildPriced }
   const figure = costOf(held, counted, money, pair)
   const hint: HintState = {
@@ -1669,6 +1694,7 @@ export const register: Register = (on, options) => {
   overnightOption = overnightOf(options.overnight)
   paneTickFailed = false
   paneDrawFailed = false
+  inFlight = null
   const defaults = defaultsOf(options)
   defaultRun = defaults
   defaultUnit = unitOf(options.cost_unit)

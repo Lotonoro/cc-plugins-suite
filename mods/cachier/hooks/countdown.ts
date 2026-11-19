@@ -34,12 +34,17 @@ export const expiredAt = (view: CacheView, liveMs: number | null, nowMs: number)
 export const touchedAt = (view: CacheView, nowMs: number): CacheView =>
   view.kind === 'known' && view.touchMs > nowMs ? { ...view, touchMs: nowMs } : view
 
-// The pie's quarter step: the quarters of the TTL left, rounded up, so a warm cache always shows at least the first.
-const quarterOf = (leftMs: number, ttlMs: number): number => Math.ceil((leftMs * 4) / ttlMs)
+// The stretch the pie's quarters are counted over while keepalive's planned refreshes extend the cache's time to staleness: the whole span, and how much of it lies beyond the
+// TTL now counted, the refreshes still to come. Plain numbers: the run's rules are not imported here (`setup.ts` imports the prices, which import the sections, which import this module).
+export type PieSpan = { spanMs: number; beyondMs: number }
+
+// The pie's quarter step: the quarters left of `spanMs`, rounded up, so a warm cache always shows at least the first, and never above the full pie.
+const quarterOf = (leftMs: number, spanMs: number): number => Math.min(4, Math.ceil((leftMs * 4) / spanMs))
 
 // What the countdown counts, or null for nothing to count: no cache yet, after a clear, or a TTL unknown or unread. `rebuild` is the
-// figure the next prompt pays to rebuild an expired cache. A cold mark outranks the reading: it holds until a touch after it.
-export const readingOf = (view: CacheView, liveMs: number | null, cold: ColdMark | null, nowMs: number, rebuild: string): Reading | null => {
+// figure the next prompt pays to rebuild an expired cache. A cold mark outranks the reading: it holds until a touch after it. The words and the
+// warning are the TTL's; so is the quarter, unless a `span` is given: then it is the quarters left of that span, the TTL time left plus the time beyond it.
+export const readingOf = (view: CacheView, liveMs: number | null, cold: ColdMark | null, nowMs: number, rebuild: string, span?: PieSpan): Reading | null => {
   if (cold !== null && cold.reason === 'cleared') return null
   if (view.kind === 'no-cache') return null
   if (cold !== null) return { words: '', state: 'cold', quarter: 0, warn: 'calm' }
@@ -49,7 +54,8 @@ export const readingOf = (view: CacheView, liveMs: number | null, cold: ColdMark
   const left = Math.min(view.ttlMs, (expiryOf(view, liveMs) ?? 0) - nowMs)
   const seconds = Math.ceil(left / 1000)
   const warn = left * 10 <= view.ttlMs ? 'tenth' : left * 4 <= view.ttlMs ? 'quarter' : 'calm'
-  return { words: `${Math.floor(seconds / 60)}:${pad(seconds % 60)}`, state: 'warm', quarter: quarterOf(left, view.ttlMs), warn }
+  const quarter = span === undefined ? quarterOf(left, view.ttlMs) : quarterOf(left + span.beyondMs, span.spanMs)
+  return { words: `${Math.floor(seconds / 60)}:${pad(seconds % 60)}`, state: 'warm', quarter, warn }
 }
 
 // The pie's tone: green whenever keepalive is on, in every state of the cache. With keepalive off the cache is left to the person: the normal
@@ -84,7 +90,7 @@ export const footerOf = (reading: Reading | null, on: boolean): Footer | null =>
   return { quarter: reading.quarter, words: reading.words, tone: on ? 'on' : WARN_TONE[reading.warn] }
 }
 
-// The pie's glyph by its quarter step: empty at 0 (cold, expired, or nothing to count), full above three quarters of the TTL left. The footer draws it, and
+// The pie's glyph by its quarter step: empty at 0 (cold, expired, or nothing to count), full above three quarters left. The footer draws it, and
 // the Cache line opens with it. The step is `Reading`'s, 0 to 4.
 const GLYPHS = ['○', '◔', '◑', '◕', '●']
 export const glyphOf = (quarter: number): string => GLYPHS[quarter]!

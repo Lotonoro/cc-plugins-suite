@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'claude-code/testing'
-import { notBelowTtl, refreshIntervalMs, SECONDS_SUFFIX, secs, secsTerse, setupToken } from './setup'
+import { notBelowTtl, refreshIntervalMs, runSpanMs, SECONDS_SUFFIX, secs, secsTerse, setupToken } from './setup'
 
 const S = 1000
 
@@ -34,6 +34,34 @@ describe('refreshIntervalMs: the TTL less the lead, or none where the run sends 
 
   test('the interval is the TTL less the lead', () => {
     expect(refreshIntervalMs(15 * S, 300 * S)).toBe(285 * S)
+  })
+})
+
+describe('runSpanMs: how long a run of refreshes keeps the cache warm from a pause\'s start, the TTL and one interval for each refresh', () => {
+  test('at the 5-minute TTL and a 15 s lead, each refresh adds 4:45: 33:30 for six refreshes, 24:00 for four and 5:00 for none', () => {
+    expect(runSpanMs(15 * S, 300 * S, 6)).toBe(2010 * S)
+    expect(runSpanMs(15 * S, 300 * S, 4)).toBe(1440 * S)
+    expect(runSpanMs(15 * S, 300 * S, 0)).toBe(300 * S)
+  })
+
+  test('a longer lead shortens each interval: 32:00 for six refreshes at a 30 s lead', () => {
+    expect(runSpanMs(30 * S, 300 * S, 6)).toBe(1920 * S)
+  })
+
+  test('at the 1-hour TTL and a 15 s lead, three refreshes add three intervals of 59:45 to the hour', () => {
+    expect(runSpanMs(15 * S, 3600 * S, 3)).toBe(3600 * S + 3 * 3585 * S)
+  })
+
+  test('a lead at or above the TTL sends no refresh, so the span is the TTL whatever the count', () => {
+    for (const lead of [300 * S, 400 * S]) {
+      for (const count of [0, 1, 6]) expect(runSpanMs(lead, 300 * S, count)).toBe(300 * S)
+    }
+  })
+
+  test('the span is the TTL plus the count of the interval refreshIntervalMs gives', () => {
+    for (const [lead, ttl] of [[15 * S, 300 * S], [60 * S, 300 * S], [15 * S, 3600 * S]] as const) {
+      expect(runSpanMs(lead, ttl, 5)).toBe(ttl + 5 * refreshIntervalMs(lead, ttl)!)
+    }
   })
 })
 

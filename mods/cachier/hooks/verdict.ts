@@ -10,7 +10,7 @@ import { clockOf, expiredAt, labelled } from './countdown'
 import type { Defaults } from './keepalive'
 import { dollars, DOLLARS_ONLY, NO_KINDS, spendOf, type Money } from './prices'
 import type { Line } from './sections'
-import { refreshIntervalMs } from './setup'
+import { refreshIntervalMs, runSpanMs } from './setup'
 
 export type Pause = {
   // Whether keepalive is on: the reality the session is in.
@@ -38,7 +38,7 @@ const wouldOnCost = (p: Pause): number => {
   const step = refreshIntervalMs(p.leadMs, p.ttlMs)
   if (step === null) return offCost(p)
   const pings = Math.min(p.count, Math.floor(p.pausedMs / step))
-  const alive = p.pausedMs < pings * step + p.ttlMs
+  const alive = p.pausedMs < runSpanMs(p.leadMs, p.ttlMs, pings)
   return pings * p.pingUsd + (alive ? 0 : p.lapseUsd)
 }
 
@@ -155,7 +155,7 @@ export const breakEvenLine = (k: KeepaliveState, view: CacheView, money: Money, 
   const step = refreshIntervalMs(run.leadMs, view.ttlMs)
   // The first ping whose sum reaches the rewrite, by the margin verdictOf counts as par.
   const even = Math.max(1, Math.ceil((rates.lapseUsd - EPSILON_USD) / rates.pingUsd))
-  const untilMs = step === null ? 0 : even <= run.count ? even * step : run.count * step + view.ttlMs
+  const untilMs = step === null ? 0 : even <= run.count ? even * step : runSpanMs(run.leadMs, view.ttlMs, run.count)
   if (untilMs <= view.ttlMs) return 'never pays off on this context'
   return `pays off if back in ${clockOf(view.ttlMs)}–${clockOf(untilMs)}`
 }

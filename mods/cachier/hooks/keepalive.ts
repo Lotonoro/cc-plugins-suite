@@ -286,12 +286,15 @@ const figuresOf = (view: CacheView, leadMs: number, money: Money, pair: Pair): L
 // The stop the user's daily rest gives: keepalive stops its refreshes for the rest, and resumes at the user's next prompt.
 export const OVERNIGHT_STOP = 'overnight'
 
+// The stop a run gives when its count is used: the refreshes of the pause are all sent, and it resumes at the user's next prompt.
+const COUNT_USED = 'count used'
+
 // Paused by design: keepalive is on and waits for the next user prompt, because its count, the cache's expiry or the user's rest ended it.
 export const armedOf = (k: KeepaliveState): boolean => k.config !== null && k.stop !== null && ENDED_BY_DESIGN.includes(k.stop)
 
 // Why a stop reads as a clause in the `/keepalive on` answer: the design stops in words, any other stop as it was given.
 const WHY: Record<string, string> = {
-  'count used': 'its refreshes for this pause are used up',
+  [COUNT_USED]: 'its refreshes for this pause are used up',
   'cache expired': 'the cache expired',
   [OVERNIGHT_STOP]: 'your daily rest began',
 }
@@ -367,7 +370,7 @@ const settledOf = (k: KeepaliveState, leadMs: number, view: CacheView, liveMs: n
   if (k.runCount === 0) {
     return { kind: 'wait', heading: 'paused', why: byDesignTerse('0 refreshes this pause (learned: pauses rarely outlast TTL)'), figure: figures }
   }
-  if (k.remaining <= 0) return { kind: 'stop', reason: 'count used', ...pausedBy(view, leadMs, money, 'count used', pair) }
+  if (k.remaining <= 0) return { kind: 'stop', reason: COUNT_USED, ...pausedBy(view, leadMs, money, COUNT_USED, pair) }
   // Here the cache is warm, a count is left and a refresh is wanted: a rest that has begun ends the run, ahead of a refresh due at the same moment.
   if (rest.kind === 'due' && gap) return { kind: 'stop', reason: OVERNIGHT_STOP, ...pausedBy(view, leadMs, money, OVERNIGHT_STOP, pair) }
   const refreshing = { heading: 'on, refreshing' as const, why: null }
@@ -455,11 +458,32 @@ const figureAt = (view: CacheView, leadMs: number, money: Money, pair: Pair): Fi
   return { label: usd === null ? `${readOf(view.promptTokens)}/refresh` : `${dollars(usd)}/refresh`, lines: [nextRefreshRow(view, money), row] }
 }
 
+// The lead a run's refreshes go at, whether or not a stop stands: null with keepalive off, a learned count of 0, no known cache, or a lead not below the cache's TTL, which sends none.
+const sendingLeadOf = (k: KeepaliveState, view: CacheView): number | null =>
+  k.config === null || k.runCount === 0 || view.kind !== 'known' || refreshIntervalMs(k.config.leadMs, view.ttlMs) === null ? null : k.config.leadMs
+
+// The lead a run refreshes at while it runs: its sending lead, with no stop standing. The refresh figure and the pie's counts are given exactly where this is not null.
+const refreshLeadOf = (k: KeepaliveState, view: CacheView): number | null => (k.stop === null ? sendingLeadOf(k, view) : null)
+
 // The figure keepalive's refreshes show while it runs: what each refresh costs, or the context it reads, and how often. Shown
 // while it runs, a refresh in flight included; null when it is off, stopped, paused, or learned no refreshes for this pause, so
 // over a warm cache the pie's hover names keepalive off or paused, not on.
-export const costOf = (k: KeepaliveState, view: CacheView, money: Money, pair: Pair): Figure | null =>
-  k.config === null || k.stop !== null || k.runCount === 0 ? null : figureAt(view, k.config.leadMs, money, pair)
+export const costOf = (k: KeepaliveState, view: CacheView, money: Money, pair: Pair): Figure | null => {
+  const lead = refreshLeadOf(k, view)
+  return lead === null ? null : figureAt(view, lead, money, pair)
+}
+
+// What the pie counts of a run's refreshes: the lead it sends at, its count, and how many of them are still to come.
+export type Planned = { leadMs: number; count: number; left: number }
+
+// The run's planned refreshes, where the refresh figure is given: its count and the refreshes left of it. A run that used its count keeps them through its last TTL, with none left, while the
+// cache it kept warm is still warm by the cache's one expiry owner. Every other state, stops included, gives none, and the pie counts the TTL alone.
+export const plannedOf = (k: KeepaliveState, view: CacheView, liveMs: number | null, nowMs: number): Planned | null => {
+  const running = refreshLeadOf(k, view)
+  if (running !== null) return { leadMs: running, count: k.runCount, left: k.remaining }
+  const sending = sendingLeadOf(k, view)
+  return k.stop === COUNT_USED && sending !== null && !expiredAt(view, liveMs, nowMs) ? { leadMs: sending, count: k.runCount, left: 0 } : null
+}
 
 // The figure of a run at the lead and count it would use: what a resume sends, and what a press would start. The hover above the time
 // shows its label, the Keepalive section its lines. Null where that run sends no refresh.
@@ -477,7 +501,7 @@ export const pressOfferOf = (view: CacheView, money: Money, leadMs: number, runC
 
 // Stops that end keepalive by design. Any other stop, and a pause from a lead at or above the TTL, is a failure the status
 // line names in one clause; the footer names neither.
-const ENDED_BY_DESIGN: readonly string[] = ['count used', 'cache expired', OVERNIGHT_STOP]
+const ENDED_BY_DESIGN: readonly string[] = [COUNT_USED, 'cache expired', OVERNIGHT_STOP]
 
 // What the status line says keepalive has failed at, as one clause with no refresh figures; null when it has not failed.
 export const failureOf = (k: KeepaliveState, view: CacheView): string | null => {

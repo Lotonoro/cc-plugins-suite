@@ -1,6 +1,6 @@
 // The keepalive rule with one owner: the refresh interval, the TTL less the lead, which is none where the lead is not below the TTL and
-// the run sends nothing; the words that say why; the seconds those words are written in; a setup's type; and the token a setup is named
-// by. Pure; milliseconds in.
+// the run sends nothing; the span a run's refreshes keep the cache warm for; the words that say why; the seconds those words are written in;
+// a setup's type; and the token a setup is named by. Pure; milliseconds in.
 import type { TtlLabel } from '../types'
 import { TTL_MS } from './prices'
 
@@ -8,6 +8,10 @@ export type Setup = { ttl: TtlLabel; keepalive: boolean }
 
 // The gap between a run's refreshes, or null where the run sends none.
 export const refreshIntervalMs = (leadMs: number, ttlMs: number): number | null => (leadMs < ttlMs ? ttlMs - leadMs : null)
+
+// How long from the start of a pause a run of `count` refreshes keeps the cache warm: the TTL, and the interval for each refresh. The TTL alone
+// where the run sends none.
+export const runSpanMs = (leadMs: number, ttlMs: number, count: number): number => ttlMs + count * (refreshIntervalMs(leadMs, ttlMs) ?? 0)
 
 export const secs = (ms: number) => `${ms / 1000} s`
 

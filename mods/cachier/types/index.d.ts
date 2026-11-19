@@ -38,8 +38,8 @@ export type Verdict = 'par' | 'saving' | 'wasting'
 // The pauses this session's prompts ended that the marker judged: the net its toggle saved over the other way, and how many.
 export type Judged = { netUsd: number; pauses: number }
 // What the countdown counts on the pie and its time: the time left, or the rebuild figure once expired, and empty when cold; whether it is
-// warm, expired or cold; the pie's quarter step (the quarters of the TTL left, rounded up; 0 when there is none); and how near the end it is:
-// `quarter` in the TTL's last quarter, `tenth` in its last tenth, else `calm`.
+// warm, expired or cold; the pie's quarter step (the quarters left, rounded up; 0 when there is none): of the TTL, or, while keepalive's planned refreshes extend the
+// time to staleness, of the whole span they cover; and how near the end of the TTL it is: `quarter` in its last quarter, `tenth` in its last tenth, else `calm`.
 export type Reading = { words: string; state: 'warm' | 'expired' | 'cold'; quarter: number; warn: 'calm' | 'quarter' | 'tenth' }
 
 // The footer line's state, written each tick. `reading` is what the countdown counts, null for nothing to count. `cost` is the

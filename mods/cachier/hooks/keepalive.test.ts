@@ -26,6 +26,7 @@ import {
   parseRequest,
   printRequest,
   pingLine,
+  plannedOf,
   pressOf,
   promptDropped,
   promptSubmitted,
@@ -1269,6 +1270,77 @@ describe('modeOf and recount: the mode a session starts in, and an unpinned coun
     const pinged = { ...fresh, remaining: 2 }
     expect(recount(pinged, 24)).toBe(pinged)
     expect(recount(INITIAL, 24)).toBe(INITIAL)
+  })
+})
+
+// The refreshes the pie counts: a run that refreshes gives its count and the refreshes left of it, exactly where the refresh figure is given, and a spent count on a
+// warm cache gives its count with none left. `known` is a 5 m cache touched at T, so T + 100000 is warm and T + 300000 is its expiry.
+describe('plannedOf: the run\'s count and the refreshes still to come, where the refresh figure is given, and through the last TTL of a spent count', () => {
+  const LEAD = 15000
+  const WARM = T + 100000
+  const refreshing = on(LEAD, 6, { remaining: 4 })
+  // The states that give no refresh figure, each with the cache it is judged on: keepalive off, a recorded failure stop, a learned count of 0, a lead at or above
+  // the TTL, and a view with no known cache.
+  const NO_FIGURE: [string, KeepaliveState, CacheView][] = [
+    ['keepalive off', INITIAL, known],
+    ['a recorded failure stop', on(LEAD, 6, { remaining: 4, stop: 'API error 529 (overloaded)' }), known],
+    ['a learned count of 0', on(LEAD, 6, { runCount: 0, remaining: 0 }), known],
+    ['a lead at the TTL', on(300000, 6), known],
+    ['a lead above the TTL', on(400000, 6), known],
+    ['no cache yet', refreshing, { kind: 'no-cache' }],
+    ['a TTL not known', refreshing, { kind: 'ttl-unknown' }],
+    ['a TTL not read', refreshing, { kind: 'unread' }],
+  ]
+
+  test('a refreshing run with a count of 6 and 4 left gives 6 and 4', () => {
+    expect(plannedOf(refreshing, known, null, WARM)).toEqual({ leadMs: LEAD, count: 6, left: 4 })
+  })
+
+  test('keepalive off, a recorded failure stop, a learned count of 0, a lead at or above the TTL and no known cache give none', () => {
+    for (const [name, k, view] of NO_FIGURE) expect([name, plannedOf(k, view, null, WARM)]).toEqual([name, null])
+  })
+
+  test('the counts are given exactly where the refresh figure is, in every one of those states and the refreshing one', () => {
+    expect(costOf(refreshing, known)).not.toBeNull()
+    for (const [name, k, view] of [['a refreshing run', refreshing, known] as const, ...NO_FIGURE]) {
+      expect([name, plannedOf(k, view, null, WARM) !== null]).toEqual([name, costOf(k, view) !== null])
+    }
+  })
+
+  test('the counts follow the run\'s count and the refreshes left of it, wherever the run stands', () => {
+    expect(plannedOf(on(LEAD, 6), known, null, WARM)).toEqual({ leadMs: LEAD, count: 6, left: 6 })
+    expect(plannedOf(on(LEAD, 6, { remaining: 1 }), known, null, WARM)).toEqual({ leadMs: LEAD, count: 6, left: 1 })
+    expect(plannedOf(on(LEAD, 6, { remaining: 0 }), known, null, WARM)).toEqual({ leadMs: LEAD, count: 6, left: 0 })
+    expect(plannedOf({ ...on(LEAD, 2), config: { leadMs: LEAD, count: null }, runCount: 24, remaining: 24 }, known, null, WARM)).toEqual({ leadMs: LEAD, count: 24, left: 24 })
+  })
+
+  test('a count-used stop on a warm cache gives the run\'s count and none still to come', () => {
+    expect(plannedOf(on(LEAD, 6, { remaining: 0, stop: 'count used' }), known, null, WARM)).toEqual({ leadMs: LEAD, count: 6, left: 0 })
+  })
+
+  test('a cache-expired stop, the overnight stop and a failure stop give none', () => {
+    for (const stop of ['cache expired', 'overnight', 'API error 529 (overloaded)']) {
+      expect([stop, plannedOf(on(LEAD, 6, { remaining: 0, stop }), known, null, WARM)]).toEqual([stop, null])
+    }
+  })
+
+  test('a count-used stop gives its counts only while the cache is warm, by the cache\'s one expiry owner', () => {
+    const spent = on(LEAD, 6, { remaining: 0, stop: 'count used' })
+    expect(plannedOf(spent, known, null, T + 299999)).toEqual({ leadMs: LEAD, count: 6, left: 0 })
+    expect(plannedOf(spent, known, null, T + 300000)).toBeNull()
+    // A live request start after the reply's moves the expiry on, and the cache is warm again.
+    expect(plannedOf(spent, known, T + 100000, T + 300000)).toEqual({ leadMs: LEAD, count: 6, left: 0 })
+    for (const view of [{ kind: 'no-cache' }, { kind: 'ttl-unknown' }, { kind: 'unread' }] as const) expect(plannedOf(spent, view, null, WARM)).toBeNull()
+  })
+
+  test('a count-used stop with keepalive off gives none', () => {
+    expect(plannedOf({ ...INITIAL, stop: 'count used' }, known, null, WARM)).toBeNull()
+  })
+
+  test('before the first refresh, a recount from 6 to 4 changes the counts given from 6 and 6 to 4 and 4', () => {
+    const fresh: KeepaliveState = { ...on(LEAD, 6), config: { leadMs: LEAD, count: null } }
+    expect(plannedOf(fresh, known, null, WARM)).toEqual({ leadMs: LEAD, count: 6, left: 6 })
+    expect(plannedOf(recount(fresh, 4), known, null, WARM)).toEqual({ leadMs: LEAD, count: 4, left: 4 })
   })
 })
 

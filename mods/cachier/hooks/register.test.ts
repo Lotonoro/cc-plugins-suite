@@ -2067,10 +2067,13 @@ describe('keepalive', () => {
 
 // A refusal the engine reports as a rate limit: the status it carries (null for no response) and the kind it classifies it with.
 const LIMITED = (status: number | null = 429) => ({ isAnswered: false, reason: 'api-error', status, error: 'rate_limit', usage: ZERO })
-// The last value each state key was written with, read by key: the count left, the stop, the lead and the touch.
-const watchState = (on: any) => {
+// The last value each state key was written with, read by key: the count left, the stop, the lead and the touch. `before` is asked of each write first and may hold it
+// by returning a promise; handed none, a write waits on nothing.
+const watchState = (on: any, before?: (e: any) => Promise<void> | undefined) => {
   const written = new Map<string, unknown>()
   on('state.set', async (_$: any, e: any, next: any) => {
+    const waiting = before?.(e)
+    if (waiting !== undefined) await waiting
     const result = await next(e)
     written.set(e.key, e.value === undefined ? undefined : JSON.parse(JSON.stringify(e.value)))
     return result
@@ -2078,20 +2081,20 @@ const watchState = (on: any) => {
   return (key: string): any => written.get(key)
 }
 // A keepalive run on the cache the main thread's request wrote at T0 (expiry 5 min on), turned on by `command`, whose sends get the queued
-// replies in turn, each after its own delay from the send.
-const armedRun = async ($: any, on: any, command: string, sends: { reply: unknown; delayMs: number }[]) => {
+// replies in turn, each after its own delay from the send. `before` holds a state write, as `watchState` reads it.
+const armedRun = async ($: any, on: any, command: string, sends: { reply: unknown; delayMs: number }[], before?: (e: any) => Promise<void> | undefined) => {
   const doc: any = cached()
   doc.forkSends = sends
   const rec = kaWorld(on, doc)
   const clock = mock.clock(on, { now: T0 })
   doc.clock = clock
-  const state = watchState(on)
+  const state = watchState(on, before)
   await $.classic.SessionStart({ source: 'startup', transcript_path: PATH })
   await clock.settle()
   await toggle($, command)
   await mainStep($)
   await turnEnd($)
-  return { rec, clock, state }
+  return { rec, clock, state, doc }
 }
 
 // Keepalive's refresh is due at the expiry less the lead: at T0 + 285 s for the 15 s lead of these tests, sent on the tick at that moment.
@@ -3931,7 +3934,7 @@ describe('the details pane draw: its state is read in its own hook, and an in-me
     await pane.redraw()
     expect(reads).toEqual([
       'hint', 'keepalive', 'touch', 'view', 'cold', 'unit', 'tally', 'stats', 'judged', 'cue',
-      'keepalive', 'touch', 'view', 'cold', 'unit', 'tally', 'stats', 'judged',
+      'touch', 'keepalive', 'view', 'cold', 'unit', 'tally', 'stats', 'judged',
     ])
     await pane.unmount()
   })
@@ -9222,7 +9225,7 @@ describe('the Keepalive section: the colour sentence and the offer while keepali
     try {
       expect(holding).toBe(true)
       const text = await toggle($, '')
-      expect(text).toContain('Cache ◔ warm · 0:50 left · 5m TTL')
+      expect(text).toContain('Cache ◕ warm · 0:50 left · 5m TTL')
       expect(text).toContain('Keepalive  paused recording cache reset')
       expect(text).not.toContain('pie: amber')
       expect((await pieDrawn($)).pie).toContain('"color":"success"')
@@ -11055,14 +11058,28 @@ describe('the Cache line opens with the pie: the footer\'s glyph in the bare ans
       },
     },
     {
-      name: 'keepalive refreshing, in the last quarter: green',
+      name: 'keepalive refreshing, in the TTL\'s last quarter with the refreshes still to come: the pie full over the span, green',
       word: 'warm',
-      glyph: '◔',
+      glyph: '●',
       props: { color: 'success' },
       reach: async ($, on) => {
         const clock = await startedWorld($, on)
         await toggle($, 'on 15')
         await clock.advance(240000)
+      },
+    },
+    {
+      name: 'keepalive with its count used, on a warm cache: the span\'s quarters through the last TTL, green',
+      word: 'warm',
+      glyph: '◕',
+      props: { color: 'success' },
+      reach: async ($, on) => {
+        const clock = await startedWorld($, on)
+        await toggle($, 'on 60 1')
+        await mainStep($)
+        await turnEnd($)
+        await clock.advance(240500)
+        await clock.advance(1000)
       },
     },
     {
@@ -11074,6 +11091,17 @@ describe('the Cache line opens with the pie: the footer\'s glyph in the bare ans
         const clock = await startedWorld($, on)
         await toggle($, 'on 300')
         await clock.advance(1000)
+      },
+    },
+    {
+      name: 'keepalive on with a lead at the TTL, so paused, in the TTL\'s last quarter: the TTL\'s own quarters, green',
+      word: 'warm',
+      glyph: '◔',
+      props: { color: 'success' },
+      reach: async ($, on) => {
+        const clock = await startedWorld($, on)
+        await toggle($, 'on 300')
+        await clock.advance(240000)
       },
     },
     { name: 'an expired cache, keepalive off: the empty pie, dim', word: 'expired', glyph: '○', props: { dimColor: true }, reach: async ($, on) => (await startedWorld($, on)).advance(310000) },
@@ -11187,6 +11215,191 @@ describe('the Cache line opens with the pie: the footer\'s glyph in the bare ans
       expect(JSON.stringify(tree)).not.toMatch(/[○◔◑◕●]/)
     })
   }
+})
+
+// The pie while keepalive refreshes: its quarters are what is left of the whole stretch the run's refreshes keep the cache warm for, one TTL and one interval for each planned
+// refresh, where the words beside it keep the TTL's countdown. At a 15 s lead each refresh adds 4:45, so a count of 2 spans 5:00 + 2 × 4:45 = 14:30 and a count of 6 spans 33:30.
+// The times in the comments are from the pause's start, the first request at 0:00; each run's refreshes are answered from the cache at once unless a test queues a reply.
+describe('keepalive on: the pie\'s quarters count the span the planned refreshes cover, in the footer and on the Cache line, and its words keep the TTL\'s countdown', () => {
+  const ON = { color: 'success' }
+  // The pie as the footer and the pane's Cache line draw it together: each one's glyph and props, and the words beside the footer's pie.
+  const seen = async ($: any) => {
+    const footer = await footerPie($)
+    const { words } = await pieDrawn($)
+    const pane = await mountPane($)
+    const pie = pieOfRow(cacheRow((await pane.drawn()) as any))
+    await pane.unmount()
+    return { footer, pane: { glyph: textOf(pie), props: propsOf(pie) }, words }
+  }
+  const drawn = (glyph: string, words: string, props: Record<string, string> = ON) => ({ footer: { glyph, props }, pane: { glyph, props }, words })
+  // The first state write that `matches` once `arm` is called, held on a gate until `release`: the commit of a refresh, or the tick's work after its reply, so that a draw lands while the
+  // refresh is in flight. `before` is `armedRun`'s hold.
+  const holdWrite = (matches: (e: any) => boolean) => {
+    let armed = false
+    let taken = false
+    let open: () => void = () => {}
+    const gate = new Promise<void>((resolve) => {
+      open = resolve
+    })
+    return {
+      arm: () => {
+        armed = true
+      },
+      release: () => open(),
+      before: (e: any): Promise<void> | undefined => {
+        if (!armed || taken || !matches(e)) return undefined
+        taken = true
+        return gate
+      },
+    }
+  }
+  const isTally = (e: any) => e.key === 'tally'
+  // A refresh that is not served from the cache, which stops keepalive in one status clause.
+  const NOT_SERVED = { isAnswered: false, reason: 'empty-reply', usage: { ...ZERO, cache_creation_input_tokens: 18000 } }
+
+  test('at a count of 6, two refreshes in with 4:00 of the TTL left, the pie is three quarters while the words read 4:00, and with keepalive off it is the TTL\'s full pie', async ($, on) => {
+    const { clock } = await armedRun($, on, 'on 15 6', [])
+    // The refreshes at 4:45 and 9:30 moved the touch to 9:30. At 10:30, 4:00 of the TTL and four refreshes of 4:45 are 23:00 of 33:30.
+    await clock.advance(630000)
+    expect(await seen($)).toEqual(drawn('◕', '4:00'))
+    expect(await toggle($, '')).toContain('Cache ◕ warm · 4:00 left · 5m TTL')
+    await toggle($, 'off')
+    await clock.advance(1000)
+    expect(await seen($)).toEqual(drawn('●', '3:59', {}))
+  })
+
+  test('a refresh in flight is counted as still to come from its commit until its reply moves the touch, so sending it does not raise the pie: ◑ before the commit, while the fork is held and after the reply', async ($, on) => {
+    const hold = holdWrite(isTally)
+    const { clock, doc } = await armedRun($, on, 'on 15 2', [], hold.before)
+    // The first refresh at 4:45 moves the touch there, so the cache expires at 9:45 and the second refresh is due at 9:30. Its fork is held three seconds, and the work after its reply is held.
+    await clock.advance(285000)
+    hold.arm()
+    doc.forkSends.push({ reply: ANSWERED, delayMs: 3000 })
+    // 9:29, before the commit: 0:16 of the TTL and one refresh of 4:45 are 5:01 of 14:30.
+    await clock.advance(284000)
+    expect(await seen($)).toEqual(drawn('◑', '0:16'))
+    // 9:31, the refresh committed and its fork held: 0:14 and the refresh in flight, still one refresh of 4:45.
+    await clock.advance(2000)
+    expect(await seen($)).toEqual(drawn('◑', '0:14'))
+    // 9:34, the reply landed at 9:33 and moved the touch to 9:30, with the work after it held: 4:56 of the TTL and no refresh left are 4:56 of 14:30.
+    await clock.advance(3000)
+    expect(await seen($)).toEqual(drawn('◑', '4:56'))
+    hold.release()
+    await clock.advance(2000)
+    expect(await seen($)).toEqual(drawn('◑', '4:54'))
+  })
+
+  test('a refresh whose commit has not landed is not counted: the pie holds ◑ with the commit held, and after it lands', async ($, on) => {
+    const hold = holdWrite((e) => e.key === 'keepalive' && e.value?.seq === 2)
+    const { clock } = await armedRun($, on, 'on 15 2', [], hold.before)
+    await clock.advance(285000)
+    hold.arm()
+    // The tick at 9:30 has looked at the state and waits on its commit. At 9:31 the state still holds both refreshes: 0:14 and one of 4:45 are 4:59 of 14:30.
+    await clock.advance(286000)
+    expect(await seen($)).toEqual(drawn('◑', '0:14'))
+    hold.release()
+    await clock.advance(2000)
+    // The commit landed and its fork was answered at once, which moved the touch to 9:30: 4:57 of the TTL and no refresh left.
+    expect(await seen($)).toEqual(drawn('◑', '4:57'))
+  })
+
+  test('a rate-limited refusal that is retried gives its refresh back, which the pie counts once, by the state alone: ◑ before the refusal, and after it with the work after it held', async ($, on) => {
+    const hold = holdWrite(isTally)
+    const { clock, doc, state } = await armedRun($, on, 'on 15 2', [], hold.before)
+    await clock.advance(285000)
+    hold.arm()
+    doc.forkSends.push({ reply: LIMITED(), delayMs: 1500 })
+    // The second refresh is sent at 9:30 and refused at 9:31.5, which gives its refresh back.
+    await clock.advance(288000)
+    expect(state('keepalive')).toMatchObject({ remaining: 1, seq: 2, stop: null })
+    // 9:33: 0:12 of the TTL and the one refresh given back are 4:57 of 14:30.
+    expect(await seen($)).toEqual(drawn('◑', '0:12'))
+    hold.release()
+    await clock.advance(2000)
+    // The retry at 9:34 was answered and moved the touch: 4:59 and no refresh left.
+    expect(await seen($)).toEqual(drawn('◑', '4:59'))
+  })
+
+  test('a user prompt alone, sent while a refresh is in flight, fills the pie at once, and the refresh its reply discards is not counted', async ($, on) => {
+    const hold = holdWrite(isTally)
+    const { clock, doc } = await armedRun($, on, 'on 15 2', [], hold.before)
+    await clock.advance(285000)
+    doc.forkSends.push({ reply: ANSWERED, delayMs: 3000 })
+    // The second refresh is sent at 9:30 and answered at 9:33. The prompt at 9:31 starts no request, so the touch stays at 4:45 and the count is filled again.
+    await clock.advance(286000)
+    await userPrompt($)
+    hold.arm()
+    await clock.advance(1000)
+    // 9:32: 0:13 of the TTL and two refreshes of 4:45 are 9:43 of 14:30.
+    expect(await seen($)).toEqual(drawn('◕', '0:13'))
+    // 9:34: the reply landed at 9:33 and was discarded, with the work after it held.
+    await clock.advance(2000)
+    expect(await seen($)).toEqual(drawn('◕', '0:11'))
+    hold.release()
+    await clock.advance(1000)
+    expect(await seen($)).toEqual(drawn('◕', '0:10'))
+  })
+
+  test('a toggle that gives the run a new count while a refresh is in flight does not leave that refresh counted, though the state holds its commit\'s seq and count', async ($, on) => {
+    const hold = holdWrite(isTally)
+    const { clock } = await armedRun($, on, 'on 15 2', [{ reply: ANSWERED, delayMs: 3000 }], hold.before)
+    // The first refresh is sent at 4:45 and answered at 4:48. The toggle at 4:46 pins a count of 1: one refresh left again, as the commit left, and a new generation.
+    await clock.advance(286000)
+    await toggle($, 'on 15 1')
+    hold.arm()
+    await clock.advance(1000)
+    // 4:47, the touch still at 0:00: 0:13 and one refresh of 4:45 are 4:58 of 9:45.
+    expect(await seen($)).toEqual(drawn('◕', '0:13'))
+    // 4:49, the reply landed at 4:48 and was discarded, with the work after it held.
+    await clock.advance(2000)
+    expect(await seen($)).toEqual(drawn('◕', '0:11'))
+    hold.release()
+    await clock.advance(1000)
+  })
+
+  test('a user prompt that starts a new pause fills the pie again: ◕ after two refreshes, ● after the prompt, and ● once its request has moved the touch', async ($, on) => {
+    const { clock } = await armedRun($, on, 'on 15 6', [])
+    await clock.advance(630000)
+    expect(await seen($)).toEqual(drawn('◕', '4:00'))
+    await userPrompt($)
+    await clock.advance(1000)
+    // The touch has not moved: 3:59 and six refreshes of 4:45 are 32:29 of 33:30, which rounds up to the full pie.
+    expect(await seen($)).toEqual(drawn('●', '3:59'))
+    await mainStep($)
+    await clock.advance(1000)
+    expect(await seen($)).toEqual(drawn('●', '4:59'))
+  })
+
+  test('at a count of 6 the pie keeps the span through the last TTL once the count is used, and is the TTL\'s own after a failure stop', { timeoutMs: 120000 }, async ($, on) => {
+    const { clock, doc, state } = await armedRun($, on, 'on 15 6', [])
+    // The sixth refresh went at 28:30 and the stop of the count was recorded at 28:31: at 28:32 4:58 of the TTL are 4:58 of 33:30, one quarter.
+    await clock.advance(1712000)
+    expect(state('keepalive')).toMatchObject({ remaining: 0, stop: 'count used' })
+    expect(await seen($)).toEqual(drawn('◔', '4:58'))
+    // A run that starts over at 28:32 sends its next refresh at 33:15, which is not served from the cache: it stops, its stop standing.
+    await toggle($, 'on 15 6')
+    doc.fork = NOT_SERVED
+    await clock.advance(284000)
+    expect(state('keepalive')).toMatchObject({ stop: 'reply not served from cache' })
+    // A request that is not a user prompt moves the touch to 33:16 and leaves the stop: at 34:16, 4:00 of the TTL are the TTL's own full pie.
+    await mainStep($)
+    await clock.advance(60000)
+    expect(state('keepalive')).toMatchObject({ stop: 'reply not served from cache' })
+    expect(await seen($)).toEqual(drawn('●', '4:00'))
+  })
+
+  test('a stop of the count that stands over a request that is not a user prompt shows the span on the fresh cache', { timeoutMs: 120000 }, async ($, on) => {
+    const { clock, state } = await armedRun($, on, 'on 15 6', [])
+    // The cache expired at 33:30 with the stop standing, and the pie is empty.
+    await clock.advance(2050000)
+    expect(state('keepalive')).toMatchObject({ stop: 'count used' })
+    expect((await seen($)).footer).toEqual({ glyph: '○', props: ON })
+    // A request at 34:10 gives a warm cache again: 4:59 of 33:30 at 34:11, the span through its last TTL.
+    await mainStep($)
+    await clock.advance(1000)
+    expect(state('keepalive')).toMatchObject({ stop: 'count used' })
+    expect(await seen($)).toEqual(drawn('◔', '4:59'))
+  })
 })
 
 describe('the pie line draws its label dim, amber in the warning colour and red in the error colour, in each state that shows it, and the bare answer states it as plain text', () => {

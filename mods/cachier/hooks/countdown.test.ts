@@ -75,6 +75,63 @@ describe('readingOf: the countdown the pie and its time show', () => {
   })
 })
 
+// A reading given a span: the whole stretch a run's planned refreshes keep the cache warm for, and how much of it lies beyond the TTL now counted. With a 5 m TTL, a
+// 15 s lead and six refreshes the span is 33:30, and with four refreshes still to come 19:00 of it lies beyond the TTL. The words and the warning stay the TTL's.
+describe('readingOf given a span: the pie\'s quarter step over the whole stretch the planned refreshes cover', () => {
+  const SPAN = { spanMs: 2_010_000, beyondMs: 1_140_000 }
+
+  test('4:00 of the TTL left with 19:00 beyond it is three quarters of 33:30, where the TTL alone would show four, and the words stay the TTL\'s', () => {
+    expect(readingOf(known, null, null, T + 60000, UPON, SPAN)).toEqual({ words: '4:00', state: 'warm', quarter: 3, warn: 'calm' })
+    expect(readingOf(known, null, null, T + 60000, UPON)).toEqual({ words: '4:00', state: 'warm', quarter: 4, warn: 'calm' })
+  })
+
+  test('the warning follows the TTL left, not the span: the last tenth of the TTL is `tenth` whatever quarter of the span is left', () => {
+    expect(readingOf(known, null, null, T + 280000, UPON, SPAN)).toEqual({ words: '0:20', state: 'warm', quarter: 3, warn: 'tenth' })
+    expect(readingOf(known, null, null, T + 280000, UPON)).toEqual({ words: '0:20', state: 'warm', quarter: 1, warn: 'tenth' })
+  })
+
+  // A span of 2000 s, whose quarters end at 500, 1000 and 1500 s: with the TTL time left and the time beyond it adding up to exactly such a moment the quarter is
+  // the one that ends there, and a millisecond more is the next.
+  test('the quarter steps at the span\'s quarter boundaries: each ends at its quarter of the span and the next begins a millisecond after', () => {
+    const at = (beyondMs: number, leftMs: number) => readingOf(known, null, null, T + 300000 - leftMs, UPON, { spanMs: 2_000_000, beyondMs })
+    for (const [beyondMs, quarter] of [[300_000, 1], [800_000, 2], [1_300_000, 3]] as const) {
+      expect([beyondMs, at(beyondMs, 200_000)?.quarter]).toEqual([beyondMs, quarter])
+      expect([beyondMs, at(beyondMs, 200_001)?.quarter]).toEqual([beyondMs, quarter + 1])
+    }
+  })
+
+  test('a warm cache shows at least the first quarter, however little of the span is left, and at most the fourth, where the time beyond the TTL and the TTL time left exceed the span', () => {
+    const quarterAt = (atMs: number, beyondMs: number) => readingOf(known, null, null, atMs, UPON, { spanMs: 2_000_000, beyondMs })?.quarter
+    // A millisecond of the TTL left, with nothing beyond it, and with a quarter of the span beyond it.
+    expect([quarterAt(T + 299_999, 0), quarterAt(T + 299_999, 500_000)]).toEqual([1, 2])
+    // The whole TTL left, with the whole span beyond it, and with a millisecond more than the rest of the span beyond it.
+    expect([quarterAt(T, 2_000_000), quarterAt(T, 1_700_001)]).toEqual([4, 4])
+  })
+
+  test('a live touch read after the time still counts the TTL left as the full TTL, the one clamp: its quarter is the one the full TTL gives', () => {
+    const span = { spanMs: 2_000_000, beyondMs: 1_200_000 }
+    expect(readingOf(known, T + 5000, null, T, UPON, span)).toEqual({ words: '5:00', state: 'warm', quarter: 3, warn: 'calm' })
+  })
+
+  test('the span moves only the quarter of a warm reading: an expired, a cold and a cleared cache keep the readings they have', () => {
+    expect(readingOf(known, null, null, T + 60000, UPON, SPAN)).toMatchObject({ state: 'warm', quarter: 3 })
+    expect(readingOf(known, null, null, T + 300000, UPON, SPAN)).toEqual({ words: '~$0.42 to rebuild', state: 'expired', quarter: 0, warn: 'calm' })
+    expect(readingOf(known, null, COLD, T + 1000, UPON, SPAN)).toEqual({ words: '', state: 'cold', quarter: 0, warn: 'calm' })
+    expect(readingOf(known, null, { reason: 'cleared', atMs: T }, T + 1000, UPON, SPAN)).toBeNull()
+    expect(readingOf({ kind: 'no-cache' }, null, null, T, UPON, SPAN)).toBeNull()
+  })
+
+  test('the footer\'s glyph and the Cache line\'s glyph both follow the reading\'s quarter: `◕` at quarter 3 with the span, `●` without it', () => {
+    const FIGURE = '$0.004/refresh'
+    const glyphsOf = (reading: ReturnType<typeof readingOf>) => [
+      glyphOf(footerOf(reading, true)!.quarter),
+      cacheLineOf(reading, '5m', UPON, pieOf(reading, true, FIGURE, false))![0]!.text,
+    ]
+    expect(glyphsOf(readingOf(known, null, null, T + 60000, UPON, SPAN))).toEqual(['◕', '◕'])
+    expect(glyphsOf(readingOf(known, null, null, T + 60000, UPON))).toEqual(['●', '●'])
+  })
+})
+
 describe('footerOf: the pie and its words, and the tone the pie is drawn in', () => {
   const warm = readingOf(known, null, null, T + 108000, UPON)
   const quarter = readingOf(known, null, null, T + 240000, UPON)
