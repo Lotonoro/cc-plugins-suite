@@ -135,7 +135,10 @@ const reviewerOf = (id: string, model: string, choice: string | undefined): NonN
 // The per-id record of resolved models with `model` for `id`; unchanged where the model is blank (a spawn result that has not landed) or already recorded.
 const withModel = (models: Conversation['reviewerModels'], id: string, model: string): Conversation['reviewerModels'] => (model === '' || models[id] === model ? models : { ...models, [id]: model })
 
-// Learns a reviewer spawn's id and its team name, as the spawn hook sees them. The id and the model the spawn resolved to are kept on the spawn's entry in `spawnsInFlight`, matched by brief, for the spawning dispatch, which has the last word on whether the spawn stays the reviewer (`land`), and the model is recorded for the id (`reviewerModels`). The spawn stands in as the reviewer at once while its review is open in its epoch and none is stored, with the choice its entry was spawned for, so its calls and turn end are the reviewer's before its dispatch resumes; a hook that matches no entry only marks the id, the name and the model.
+// The review with `id` recorded as the reviewer its brief reached: only where it has a route to record it for and holds no id for that route yet. The id a route already has is never overwritten, since it asks whom the brief reached and not who holds the review now, so a landing for the brief a stand-in already recorded leaves it; a route set replaces it (`withRoute` in register.ts).
+const withBriefed = (review: OpenReview, id: string): OpenReview => (review.briefTo === undefined || review.briefedId !== undefined ? review : { ...review, briefedId: id })
+
+// Learns a reviewer spawn's id and its team name, as the spawn hook sees them. The id and the model the spawn resolved to are kept on the spawn's entry in `spawnsInFlight`, matched by brief, for the spawning dispatch, which has the last word on whether the spawn stays the reviewer (`land`), and the model is recorded for the id (`reviewerModels`). The spawn stands in as the reviewer at once while its review is open in its epoch and none is stored, with the choice its entry was spawned for, so its calls and turn end are the reviewer's before its dispatch resumes, and its id is the one the review's brief reached, so a review whose spawn call never lands still names it; a hook that matches no entry only marks the id, the name and the model.
 export const learn = (c: Conversation, brief: string, agentId: string, model: string, name: string): Conversation => {
   const own = matchSpawn(c.spawnsInFlight, brief)
   const standsIn = !c.off && c.reviewer === undefined && own !== undefined && own.epoch === c.epoch && own.number === c.review?.number
@@ -143,6 +146,7 @@ export const learn = (c: Conversation, brief: string, agentId: string, model: st
     ...c,
     spawnsInFlight: c.spawnsInFlight.map(s => (s === own ? { ...s, id: agentId, model } : s)),
     ...(standsIn ? { reviewer: reviewerOf(agentId, model, own?.choice) } : {}),
+    ...(standsIn && c.review !== undefined ? { review: withBriefed(c.review, agentId) } : {}),
     reviewerIds: withMember(c.reviewerIds, agentId),
     reviewerNames: withMember(c.reviewerNames, name),
     reviewerModels: withModel(c.reviewerModels, agentId, model),
@@ -172,7 +176,7 @@ export const spawning = (c: Conversation, spawn: Spawn): Conversation => ({ ...c
 // What a spawn's landing did: the id it settled on, whether it landed under an older epoch than its dispatch's, and whether it stood in as the reviewer.
 export type Landing = { next: Conversation; id: string | undefined; stale: boolean; stood: boolean }
 
-// Lands a spawn under the dispatch's epoch (`epoch`): its id is the result's, else its entry's, else the stored reviewer's, which under the dispatch's epoch can only be this spawn, adopted by name before its hook stood it in. The id marks the spawn's traffic and rows even when the spawn hook never saw it, and its resolved model is recorded for it. A spawn that stands in carries the choice its entry was spawned for, else the one the reviewer stored under its id already holds. A spawn that is not stale stands in as the reviewer while its review is open; a review that already closed, with another reviewer or none stored, means this spawn was retired or replaced since, and it is not stood in again. Otherwise the stored reviewer stays as it is: a stale spawn stored as the reviewer was adopted by name in the current epoch and may hold a later review, which clearing it would leave open with no reviewer to settle it.
+// Lands a spawn under the dispatch's epoch (`epoch`): its id is the result's, else its entry's, else the stored reviewer's, which under the dispatch's epoch can only be this spawn, adopted by name before its hook stood it in. The id marks the spawn's traffic and rows even when the spawn hook never saw it, and its resolved model is recorded for it. A spawn that stands in carries the choice its entry was spawned for, else the one the reviewer stored under its id already holds, and its id is the one its review's brief reached when that review is the open one and its stand-in recorded none. A spawn that is not stale stands in as the reviewer while its review is open; a review that already closed, with another reviewer or none stored, means this spawn was retired or replaced since, and it is not stood in again. Otherwise the stored reviewer stays as it is: a stale spawn stored as the reviewer was adopted by name in the current epoch and may hold a later review, which clearing it would leave open with no reviewer to settle it.
 export const land = (c: Conversation, brief: string, number: number, epoch: number, started: { agentId?: string; model?: string }): Landing => {
   const kept = matchSpawn(c.spawnsInFlight, brief)
   const stale = c.epoch !== epoch
@@ -183,7 +187,7 @@ export const land = (c: Conversation, brief: string, number: number, epoch: numb
   const stood = !stale && (c.review?.number === number || c.reviewer?.id === id)
   if (!stood) return { next: known, id, stale, stood }
   const choice = kept?.choice ?? (c.reviewer?.id === id ? c.reviewer.choice : undefined)
-  return { next: { ...known, reviewer: reviewerOf(id, model, choice) }, id, stale, stood }
+  return { next: { ...known, reviewer: reviewerOf(id, model, choice), ...(c.review?.number === number ? { review: withBriefed(c.review, id) } : {}) }, id, stale, stood }
 }
 
 // How long an open review may go on before it is given up, by whether a reviewer is stored: a spawn that stood none in (`start`) or a stored reviewer that has not ended its turn (`finish`), each in milliseconds from the dispatch.

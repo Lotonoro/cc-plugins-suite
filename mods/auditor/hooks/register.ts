@@ -221,6 +221,8 @@ const logReview = async ($: Scope, sessionId: string, log: boolean, closed: Clos
       followed_up: review.followedUp === true,
       // Where the brief went: the stored reviewer, or a spawn and why. Null when no brief is known to have gone out.
       brief_to: review.briefTo ?? null,
+      // The reviewer the brief reached: the stored reviewer's id, or the spawn's once it stood in. Null when none is known, as it is whenever `brief_to` is null.
+      briefed_id: review.briefedId ?? null,
       // The reviewer turn ends that arrived while the review was open, after its dispatch, and closed nothing: counted by why (an agent the state knows as a reviewer it let go; the stored reviewer the settle found let go), with the latest two in full, newest last. A review stored before the counts existed logs none.
       unmatched_former: review.unmatched?.former ?? 0,
       unmatched_let_go: review.unmatched?.letGo ?? 0,
@@ -232,8 +234,8 @@ const logReview = async ($: Scope, sessionId: string, log: boolean, closed: Clos
   }
 }
 
-// A review as its log reads it when its brief is not known to have reached a reviewer: without its route.
-const withoutRoute = ({ briefTo: _route, ...review }: OpenReview): OpenReview => review
+// A review as its log reads it when its brief is not known to have reached a reviewer: without its route, and without the reviewer that route reached.
+const withoutRoute = ({ briefTo: _route, briefedId: _briefed, ...review }: OpenReview): OpenReview => review
 
 // Logs a review that closed with no reviewer turn end as incomplete.
 const logIncomplete = ($: Scope, sessionId: string, log: boolean, review: OpenReview, models: ReviewModels, reason: string): Promise<void> =>
@@ -874,17 +876,21 @@ const leaveFlight = ($: Pick<Scope, 'state' | 'ui'>, text: string): Promise<void
 // Where a brief goes when it is spawned for: the latest let-go's reason, or that no reviewer was ever let go. Read from the conversation after the let-go this delivery made (a refused brief's), so a spawn's route is the latest reason whichever delivery made it.
 const spawnRoute = (c: Conversation): BriefTo => (c.lastLetGo === undefined ? 'spawn: no reviewer yet' : `spawn: ${c.lastLetGo}`)
 
-// The conversation with its open review's brief going `route`; unchanged where no route is named or no review is open.
-const withRoute = (c: Conversation, route: BriefTo | undefined): Conversation => (c.review === undefined || route === undefined ? c : { ...c, review: { ...c.review, briefTo: route } })
+// The conversation with its open review's brief going `route`, to the reviewer `id` where it is known (the stored reviewer's); unchanged where no route is named or no review is open. A route set replaces the one the review had and the reviewer that route reached: a spawn's route has none until the spawn stands in (`learn`, `land`).
+const withRoute = (c: Conversation, route: BriefTo | undefined, id?: string): Conversation => {
+  if (c.review === undefined || route === undefined) return c
+  const { briefedId: _previous, ...review } = c.review
+  return { ...c, review: { ...review, briefTo: route, ...(id === undefined ? {} : { briefedId: id }) } }
+}
 
-// The route taken off review `number` at `epoch` when its brief is known not to have reached a reviewer (a send or a spawn that threw or was refused), so its log reads null. A review that failed after its brief went out keeps its route.
+// The route, and the reviewer it reached, taken off review `number` at `epoch` when its brief is known not to have reached a reviewer (a send or a spawn that threw or was refused), so its log reads null for both. A review that failed after its brief went out keeps its route and its reviewer.
 const unroute = ($: Scope, epoch: number, number: number): Promise<unknown> =>
   change($, c => (c.epoch === epoch && c.review?.number === number ? { ...c, review: withoutRoute(c.review) } : c)).catch((err: unknown) => recordFailed($, 'route bookkeeping', err))
 
-// The one step that sends a plugin message, a brief or a follow-up, to the stored reviewer `to`. A brief names its route (`briefTo`), which the same change that puts it in flight sets on the review. It goes out only while the conversation is still at the epoch (`epoch`) and open review `number` it was planned under, and is 'stale' otherwise. It is held in flight (`briefsInFlight`) until its call reaches the recorder, which takes it out and leaves the call out of the record; a refused or thrown send takes it out here. It carries no agent id, so the send gate passes it untouched. Each caller decides what a refusal means.
+// The one step that sends a plugin message, a brief or a follow-up, to the stored reviewer `to`. A brief names its route (`briefTo`), which the same change that puts it in flight sets on the review, with `to` as the reviewer it reached. It goes out only while the conversation is still at the epoch (`epoch`) and open review `number` it was planned under, and is 'stale' otherwise. It is held in flight (`briefsInFlight`) until its call reaches the recorder, which takes it out and leaves the call out of the record; a refused or thrown send takes it out here. It carries no agent id, so the send gate passes it untouched. Each caller decides what a refusal means.
 const sendToReviewer = async ($: Scope, to: string, text: string, epoch: number, number: number, route?: BriefTo): Promise<Delivery> => {
   const ours = (c: Conversation): boolean => c.epoch === epoch && c.review?.number === number
-  const queued = await change($, c => (ours(c) ? { ...withRoute(c, route), briefsInFlight: [...c.briefsInFlight, text] } : c))
+  const queued = await change($, c => (ours(c) ? { ...withRoute(c, route, to), briefsInFlight: [...c.briefsInFlight, text] } : c))
   if (!ours(queued)) return { status: 'stale' }
   const sent = await $.session.send({ to, text }).catch(async (err: unknown) => {
     await leaveFlight($, text)

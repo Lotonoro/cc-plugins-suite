@@ -228,6 +228,20 @@ describe('learn', () => {
     expect(c.reviewerNames).toEqual(['auditor-reviewer-2'])
     expect(learnName(c, 'auditor-reviewer-2')).toBe(c)
   })
+
+  // Review 4's brief is going to a spawn: its route is set, and no reviewer has stood in for it yet.
+  const routed = { number: 4, record: [], dispatchedAt: 1, nothingWakes: false, briefTo: 'spawn: no reviewer yet' as const }
+
+  test('a spawn that stands in records its id as the reviewer its review\'s brief reached', () => {
+    expect(learn(pending({ review: routed }), 'b', 'ag1', 'm', 'n').review?.briefedId).toBe('ag1')
+  })
+
+  test('the id is recorded for a review with a route and no id, and for no other: a spawn that stands in nothing, a review with no route and one holding an id are left as they are', () => {
+    expect(learn(pending({ review: routed, off: true }), 'b', 'ag1', 'm', 'n').review?.briefedId).toBeUndefined()
+    expect(learn(pending({ review: routed, spawnsInFlight: [spawn({ number: 3 })] }), 'b', 'ag1', 'm', 'n').review?.briefedId).toBeUndefined()
+    expect(learn(pending(), 'b', 'ag1', 'm', 'n').review?.briefedId).toBeUndefined()
+    expect(learn(pending({ review: { ...routed, briefedId: 'ag0' } }), 'b', 'ag1', 'm', 'n').review?.briefedId).toBe('ag0')
+  })
 })
 
 describe('adopt', () => {
@@ -325,6 +339,25 @@ describe('spawning, landing and ending a reviewer', () => {
   test('the markers a /clear keeps are the ids, the names and the models the reviewers ran on', () => {
     const c = conversation({ reviewer: { id: 'ag1', model: 'm' }, reviewerIds: ['ag1'], reviewerNames: ['n'], reviewerModels: { ag1: 'm' }, reviewerContext: 7 })
     expect(markers(c)).toEqual({ reviewerIds: ['ag1'], reviewerNames: ['n'], reviewerModels: { ag1: 'm' } })
+  })
+
+  // Review 4's brief is going to a spawn: its route is set, and no reviewer has stood in for it yet.
+  const routed = { number: 4, record: [], dispatchedAt: 1, nothingWakes: false, briefTo: 'spawn: no reviewer yet' as const }
+
+  test('a landing that stands in for the open review records its id as the reviewer its brief reached', () => {
+    expect(land(flying({ review: routed }), 'b', 4, 2, { agentId: 'ag1', model: 'haiku' }).next.review?.briefedId).toBe('ag1')
+  })
+
+  test('a landing leaves the id its review\'s route already has, since the id asks whom the brief reached and not who holds the review now', () => {
+    expect(land(flying({ review: { ...routed, briefedId: 'ag5' } }), 'b', 4, 2, { agentId: 'ag6', model: 'm' }).next.review?.briefedId).toBe('ag5')
+  })
+
+  test('a landing records no id for a review with no route, for a review other than its own, or when it stands in nothing', () => {
+    expect(land(flying(), 'b', 4, 2, { agentId: 'ag1' }).next.review?.briefedId).toBeUndefined()
+    const other = flying({ review: { ...routed, number: 5 }, reviewer: { id: 'ag1', model: 'm' }, reviewerIds: ['ag1'] })
+    expect(land(other, 'b', 4, 2, { agentId: 'ag1' }).next.review?.briefedId).toBeUndefined()
+    expect(land(flying({ review: routed }), 'b', 4, 1, { agentId: 'ag1' }).next.review?.briefedId).toBeUndefined()
+    expect(land(flying({ review: undefined }), 'b', 4, 2, { agentId: 'ag1' }).next.review).toBeUndefined()
   })
 })
 

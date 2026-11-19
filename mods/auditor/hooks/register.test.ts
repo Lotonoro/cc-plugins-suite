@@ -7787,6 +7787,179 @@ describe('the reviewer turn ends that closed no review', () => {
   })
 })
 
+// What a review's log says of the reviewer its brief reached.
+describe('the reviewer a review\'s brief reached', () => {
+  const REASON = 'reviewer did not finish in 10 minutes'
+  // Review 1 is briefed to a spawn and settles quiet; review 2 is then briefed, and settles when the test's next turn end says so.
+  const secondReview = async ($: any): Promise<void> => {
+    await workerTurn($)
+    await turnEnded($, 'ag1', 'Nothing to note.')
+    await workerTurn($, 'Second.')
+  }
+
+  test('a review briefed to the stored reviewer logs that reviewer\'s id, and one briefed to a spawn logs the spawn\'s', ON, async ($, on) => {
+    const seen = engine(on, { reviewerIds: ['ag1', 'ag2'] })
+    await secondReview($)
+    await turnEnded($, 'ag1', 'Nothing to note.')
+    expect(logOf(seen, LOG_1)).toMatchObject({ brief_to: 'spawn: no reviewer yet', briefed_id: 'ag1' })
+    expect(logOf(seen, LOG_2)).toMatchObject({ brief_to: 'stored', briefed_id: 'ag1' })
+    expect(seen.spawns.length).toBe(1)
+  })
+
+  test('a spawn that replaced a reviewer let go for a rotation is the reviewer the next review logs, not the one let go', ON, async ($, on) => {
+    const seen = engine(on, { reviewerIds: ['ag1', 'ag2'] })
+    await workerTurn($)
+    STEP_USAGE = { ...USAGE, input_tokens: 80_001 }
+    try {
+      await step($, '', 'ag1')
+    } finally {
+      STEP_USAGE = null
+    }
+    await turnEnded($, 'ag1', 'Nothing to note.')
+    await workerTurn($, 'Second.')
+    await turnEnded($, 'ag2', 'Nothing to note.')
+    expect(logOf(seen, LOG_2)).toMatchObject({ brief_to: 'spawn: rotation', briefed_id: 'ag2' })
+  })
+
+  test('a spawn that answers with no agent id never stood in, so its review logs its route and no id', ON, async ($, on) => {
+    const seen = engine(on, { spawnNoId: true })
+    await workerTurn($)
+    expect(logOf(seen, LOG_1)).toMatchObject({ status: 'incomplete', reason: 'reviewer spawn returned no agent id', brief_to: 'spawn: no reviewer yet', briefed_id: null })
+  })
+
+  test('a review whose spawn is still in flight, with nothing stood in for it, logs no id', ON, async ($, on) => {
+    const held = heldSpawn()
+    const seen = engine(on, { spawnHold: { ...held.hold, to: 1 }, reviewerIds: ['ag1', 'ag2'] })
+    await $.prompt.submit(COMPOSER('fix'))
+    const stopping = $.classic.Stop(stop)
+    await held.reached
+    expect(seen.conversation.review.briefedId).toBeUndefined()
+    seen.clock += TEN_MINUTES + 1
+    await $.prompt.submit(HELPER)
+    await $.classic.Stop(stop)
+    expect(logOf(seen, LOG_1)).toMatchObject({ status: 'incomplete', reason: 'reviewer spawn did not settle in 10 minutes', brief_to: 'spawn: no reviewer yet', briefed_id: null })
+    held.land()
+    await stopping
+    await drained()
+  })
+
+  test('a review whose spawn names no agent, after its reviewer was adopted by name, logs the id its landing stood in', ON, async ($, on) => {
+    const lands = gate()
+    const reached = gate()
+    // The spawn hook has no id to record, so the landing, which finds the adopted reviewer stored, is the one that records it.
+    const seen = engine(on, {
+      spawnHold: { to: 1, until: lands.until, reached: reached.open, result: { model: 'm' } },
+      agents: [{ id: 'ag1', name: 'auditor-reviewer', type: 'auditor:reviewer', spawnedBy: 'auditor' }],
+    })
+    const ending = workerTurn($)
+    await reached.until
+    expect(await $.tool.call({ tool: ENTRIES, agentId: 'ag1', which: 'record' })).not.toMatchObject({ deny: REFUSED })
+    expect(seen.conversation.reviewer).toMatchObject({ id: 'ag1' })
+    expect(seen.conversation.review.briefedId).toBeUndefined()
+    lands.open()
+    await ending
+    await drained()
+    expect(seen.conversation.review).toMatchObject({ number: 1, briefTo: 'spawn: no reviewer yet', briefedId: 'ag1' })
+    await turnEnded($, 'ag1', 'Nothing to note.')
+    expect(logOf(seen, LOG_1)).toMatchObject({ status: 'complete', brief_to: 'spawn: no reviewer yet', briefed_id: 'ag1' })
+  })
+
+  test('a stored send the session refuses without being stopped, whose brief then goes to a spawn, logs the spawn\'s id and not the refused reviewer\'s', ON, async ($, on) => {
+    const held = heldSpawn(2)
+    const seen = engine(on, { sendFails: 'ag1', reviewerIds: ['ag1', 'ag2'], spawnHold: held.hold })
+    await workerTurn($)
+    await turnEnded($, 'ag1', 'Nothing to note.')
+    const dispatching = workerTurn($, 'Second.')
+    await held.reached
+    // The refused reviewer's id went with its route, and the spawn has not stood in yet.
+    expect(seen.conversation.review).toMatchObject({ number: 2, briefTo: 'spawn: refused brief' })
+    expect(seen.conversation.review.briefedId).toBeUndefined()
+    held.land()
+    await dispatching
+    await turnEnded($, 'ag2', 'Nothing to note.')
+    expect(logOf(seen, LOG_2)).toMatchObject({ status: 'complete', brief_to: 'spawn: refused brief', briefed_id: 'ag2' })
+  })
+
+  test('a review whose spawn its hook stood in for, and whose spawn call never lands, logs the spawn\'s id when it lapses', ON, async ($, on) => {
+    const landing = gate()
+    const reached = gate()
+    // The landing's change is the first write after the hook stood the spawn in: it is held, so the spawn never lands.
+    const seen = engine(on, { holdWrite: { when: () => current.seen?.conversation?.spawnsInFlight?.[0]?.id === 'ag1', until: landing.until, reached: reached.open } })
+    await $.prompt.submit(COMPOSER('first'))
+    const dispatching = $.classic.Stop(stop)
+    await reached.until
+    expect(seen.conversation.review).toMatchObject({ number: 1, briefTo: 'spawn: no reviewer yet', briefedId: 'ag1' })
+    seen.clock += TEN_MINUTES + 1
+    await $.prompt.submit(HELPER)
+    await $.classic.Stop(stop)
+    expect(logOf(seen, LOG_1)).toMatchObject({ status: 'incomplete', reason: REASON, brief_to: 'spawn: no reviewer yet', briefed_id: 'ag1' })
+    landing.open()
+    await dispatching
+    await drained()
+  })
+
+  test('a review given back because the stopped session refused its brief logs no route and no id', ON, async ($, on) => {
+    const seen = engine(on, { sendFails: 'ag1', refusal: 'Teammate "auditor-reviewer" was not messaged: the session was stopped and nobody has sent input since.' })
+    await secondReview($)
+    expect(logOf(seen, LOG_2)).toMatchObject({ status: 'incomplete', reason: 'given back: the session was stopped', brief_to: null, briefed_id: null })
+  })
+
+  test('a review whose stored send threw logs no route and no id', ON, async ($, on) => {
+    const seen = engine(on, { sendThrows: 'ag1', stateSeed: { reviewer: { id: 'ag1', model: 'm' }, reviewerIds: ['ag1'] } })
+    await $.prompt.submit(COMPOSER('fix the parser'))
+    await $.classic.Stop(QUIET_STOP)
+    expect(logOf(seen, LOG_1)).toMatchObject({ status: 'incomplete', brief_to: null, briefed_id: null })
+  })
+
+  test('a review whose spawn the engine refused logs no route and no id', ON, async ($, on) => {
+    const seen = engine(on, { spawn: { deny: 'no' } })
+    await workerTurn($)
+    expect(logOf(seen, LOG_1)).toMatchObject({ status: 'incomplete', brief_to: null, briefed_id: null })
+  })
+
+  test('a review whose spawn was rejected after its hook learned its id logs no route and no id', ON, async ($, on) => {
+    const seen = engine(on, { spawnThrowsAfterLearning: 'spawn broke', reviewerIds: ['ag1', 'ag2'] })
+    await $.prompt.submit(COMPOSER('first'))
+    await $.classic.Stop(stop)
+    await drained()
+    expect(logOf(seen, LOG_1)).toMatchObject({ status: 'incomplete', brief_to: null, briefed_id: null })
+  })
+
+  test('a review that failed after its brief went out logs both its route and its id', ON, async ($, on) => {
+    const seen = engine(on)
+    await $.prompt.submit(COMPOSER('fix the parser'))
+    await $.classic.Stop(QUIET_STOP)
+    await turnFailed($, 'ag1')
+    expect(logOf(seen, LOG_1)).toMatchObject({ status: 'incomplete', brief_to: 'spawn: no reviewer yet', briefed_id: 'ag1' })
+  })
+
+  test('a review whose stored reviewer is let go while it is open still logs that reviewer\'s id', ON, async ($, on) => {
+    const seen = engine(on, { reviewerIds: ['ag1', 'ag2'] })
+    await secondReview($)
+    expect(seen.conversation.review).toMatchObject({ number: 2, briefTo: 'stored', briefedId: 'ag1' })
+    seen.clock += TEN_MINUTES + 1
+    await $.prompt.submit(HELPER)
+    await $.classic.Stop(stop)
+    await drained()
+    expect(seen.conversation.reviewer).toBeUndefined()
+    expect(seen.conversation.lastLetGo).toBe('lapsed')
+    expect(logOf(seen, LOG_2)).toMatchObject({ status: 'incomplete', reason: REASON, brief_to: 'stored', briefed_id: 'ag1' })
+  })
+
+  test('a review dropped by a switch off after its brief went out logs the reviewer that brief reached', ON, async ($, on) => {
+    const seen = engine(on, { reviewerIds: ['ag1', 'ag2'] })
+    await secondReview($)
+    await $.command.run({ command: 'auditor', args: 'off' } as any)
+    expect(logOf(seen, LOG_2)).toMatchObject({ status: 'incomplete', reason: 'the auditor was switched off', brief_to: 'stored', briefed_id: 'ag1' })
+  })
+
+  test('a state stored before the field existed loads, and its review logs no id', ON, async ($, on) => {
+    const seen = engine(on, { stateSeed: { dispatches: 1, reviewer: { id: 'ag1', model: 'm' }, reviewerIds: ['ag1'], review: { number: 1, record: ['USER: x'], dispatchedAt: 1, nothingWakes: false, briefTo: 'stored' } } })
+    await turnEnded($, 'ag1', 'Nothing to note.')
+    expect(logOf(seen, LOG_1)).toMatchObject({ status: 'complete', brief_to: 'stored', briefed_id: null })
+  })
+})
+
 // A reviewer spawn that rejects after its hook learned the agent's id: the id is let go and stopped. The engine skips a test hook that throws and rejects the call with this reason.
 const NO_SPAWN = 'no implementation for agent.spawn'
 describe('a rejected spawn', () => {
