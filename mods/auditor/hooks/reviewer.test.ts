@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'claude-code/testing'
 import type { AgentInfo } from 'claude-code'
 import type { Conversation } from '../types/index'
-import { adopt, compactionModel, idleTimerOf, isEndNotice, isHandBack, isNotice, isReviewerEntry, keeps, land, lapseOf, learn, learnName, letGo, letGoSwitched, letGoSwitchedIdle, markers, nameKnown, nameListed, needsIds, originOf, reapIdle, reviewModels, reviewerNameOf, spawnChoice, spawnName, spawning, standingOf, stopMissed, sweepable, withTurnEnd } from './reviewer'
+import { adopt, compactionModel, countUnmatched, idleTimerOf, isEndNotice, isHandBack, isNotice, isReviewerEntry, keeps, land, lapseOf, learn, learnName, letGo, letGoSwitched, letGoSwitchedIdle, markers, nameKnown, nameListed, needsIds, originOf, reapIdle, reviewModels, reviewerNameOf, spawnChoice, spawnName, spawning, standingOf, stopMissed, sweepable, withTurnEnd } from './reviewer'
 import type { Identity } from './reviewer'
 
 const ID: Identity = { plugin: 'auditor', name: 'auditor-reviewer', description: 'auditor review' }
@@ -637,6 +637,63 @@ describe('the reviewer\'s latest turn end', () => {
 
   test('goes with the reviewer when it is let go', () => {
     expect(letGo(withTurnEnd(conversation({ reviewer: { id: 'ag1', model: 'm' } }), 'ag1', 50), 'reaped idle', 'ag1').next.reviewer).toBeUndefined()
+  })
+})
+
+describe('the reviewer turn ends that closed nothing', () => {
+  const FORMER = 'former reviewer'
+  const LET_GO = 'let go during its settle'
+  // ag1 is stored and ag0 was let go; review 4 is open, dispatched by the fourth dispatch.
+  const held = (over: Partial<Conversation> = {}): Conversation => conversation({ reviewer: { id: 'ag1', model: 'm' }, reviewerIds: ['ag0', 'ag1'], ...over })
+
+  test('a former reviewer\'s turn end is counted on the open review with its agent and arrival time, and the review that took it is named', () => {
+    const c = held()
+    const counted = countUnmatched(c, 'ag0', FORMER, 7000, 4)
+    expect(counted).toMatchObject({ reason: FORMER, review: 4 })
+    expect(counted.next.review).toMatchObject({ number: 4, record: [], dispatchedAt: 1, nothingWakes: false })
+    expect(counted.next.review?.unmatched).toEqual({ former: 1, letGo: 0, last: [{ agentId: 'ag0', at: 7000 }] })
+    expect(c.review?.unmatched).toBeUndefined()
+  })
+
+  test('a reviewer let go during its settle is counted in a count of its own, beside the other', () => {
+    const first = countUnmatched(held(), 'ag0', LET_GO, 7000, 4)
+    expect(first).toMatchObject({ reason: LET_GO, review: 4 })
+    expect(first.next.review?.unmatched).toEqual({ former: 0, letGo: 1, last: [{ agentId: 'ag0', at: 7000 }] })
+    const second = countUnmatched(first.next, 'ag0', FORMER, 7001, 4)
+    expect(second.next.review?.unmatched).toEqual({ former: 1, letGo: 1, last: [{ agentId: 'ag0', at: 7000 }, { agentId: 'ag0', at: 7001 }] })
+  })
+
+  test('the stored reviewer\'s turn end, and one from an agent the state does not know, count nothing and name no reason', () => {
+    const c = held()
+    for (const id of ['ag1', 'sub1']) {
+      const counted = countUnmatched(c, id, FORMER, 7000, 4)
+      expect(counted.next).toBe(c)
+      expect(counted.reason).toBeUndefined()
+      expect(counted.review).toBeUndefined()
+    }
+  })
+
+  test('with no review open it names its reason, counts on none and leaves the conversation as it was', () => {
+    const c = held({ review: undefined })
+    const counted = countUnmatched(c, 'ag0', FORMER, 7000, 4)
+    expect(counted.next).toBe(c)
+    expect(counted.reason).toBe(FORMER)
+    expect(counted.review).toBeUndefined()
+  })
+
+  test('a review dispatched after the dispatch count the turn end read is newer than it and is not counted on; one dispatched by then is', () => {
+    const c = held()
+    const newer = countUnmatched(c, 'ag0', FORMER, 7000, 3)
+    expect(newer.next).toBe(c)
+    expect(newer).toMatchObject({ reason: FORMER, review: undefined })
+    expect(countUnmatched(c, 'ag0', FORMER, 7000, 4)).toMatchObject({ review: 4 })
+    expect(countUnmatched(c, 'ag0', FORMER, 7000, 9)).toMatchObject({ review: 4 })
+  })
+
+  test('only the latest two are kept in full, newest last, in the order they were recorded; the count covers every one', () => {
+    let c = held({ reviewerIds: ['ag0', 'ag1', 'agA', 'agB', 'agC', 'agE', 'agD'] })
+    for (const [id, at] of [['agA', 100], ['agB', 200], ['agC', 300], ['agE', 400], ['agD', 400]] as const) c = countUnmatched(c, id, FORMER, at, 4).next
+    expect(c.review?.unmatched).toEqual({ former: 5, letGo: 0, last: [{ agentId: 'agE', at: 400 }, { agentId: 'agD', at: 400 }] })
   })
 })
 

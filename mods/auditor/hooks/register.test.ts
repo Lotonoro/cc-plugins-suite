@@ -7560,6 +7560,233 @@ describe('the fields of the review log that audit the brief', () => {
 })
 
 
+// What a review's log and the debug log say of the reviewer turn ends that arrived while the review was open and closed nothing.
+describe('the reviewer turn ends that closed no review', () => {
+  const FORMER = 'former reviewer'
+  const LET_GO = 'let go during its settle'
+  const NO_REVIEW_OPEN = 'auditor: the reviewer ended a turn with no review in progress; not recorded'
+  // The debug line for a turn end that closed nothing: the agent, the reason, and the open review's number or none.
+  const closedNothing = (agent: string, reason: string, review: number | 'none') => `auditor: a turn end of reviewer ${agent} closed nothing (${reason}); open review: ${review}`
+  const closedLines = (seen: any): string[] => debugLines(seen, 'closed nothing')
+  // What a review that no such turn end reached logs.
+  const NONE_COUNTED = { unmatched_former: 0, unmatched_let_go: 0 }
+  // The reviewer ag1's request reports a context past the rotation limit, so the take of its review lets it go.
+  const pastLimit = async ($: any): Promise<void> => {
+    STEP_USAGE = { ...USAGE, input_tokens: 80_001 }
+    try {
+      await step($, '', 'ag1')
+    } finally {
+      STEP_USAGE = null
+    }
+  }
+  // Review 1 is briefed to ag1 and settles with ag1 past the rotation limit: ag1 is let go, no review is open, and the next brief goes to a spawn, ag2.
+  const rotated = async ($: any, on: any, opts: Opts = {}) => {
+    const seen = engine(on, { reviewerIds: ['ag1', 'ag2'], ...opts })
+    await workerTurn($)
+    await pastLimit($)
+    await turnEnded($, 'ag1', 'Nothing to note.')
+    expect(seen.conversation.reviewer).toBeUndefined()
+    expect(seen.conversation.review).toBeUndefined()
+    return seen
+  }
+  // A conversation stored before the counts existed: review 1 is open, briefed to ag1, with five reviewers let go before it.
+  const OLD_REVIEWERS = ['agA', 'agB', 'agC', 'agE', 'agD']
+  const seeded = { dispatches: 1, reviewer: { id: 'ag1', model: 'm' }, reviewerIds: ['ag1', ...OLD_REVIEWERS], review: { number: 1, record: ['USER: x'], dispatchedAt: 1, nothingWakes: false } }
+
+  test('a review that completes with no other reviewer turn end logs none counted, and writes no such line', ON, async ($, on) => {
+    const seen = engine(on)
+    await workerTurn($)
+    await turnEnded($, 'ag1', 'Nothing to note.')
+    expect(logOf(seen, LOG_1)).toMatchObject({ status: 'complete', ...NONE_COUNTED })
+    expect(logOf(seen, LOG_1).unmatched_last).toEqual([])
+    expect(closedLines(seen)).toEqual([])
+  })
+
+  test('a turn end from a reviewer let go by a rotation, while a review is open, is counted on that review as a former reviewer, read from no agent list, and the review then completes on its own reviewer', ON, async ($, on) => {
+    const seen = await rotated($, on)
+    await workerTurn($, 'Second.')
+    expect(seen.conversation.review).toMatchObject({ number: 2 })
+    const lists = seen.listCalls
+    seen.clock = 5000
+    await $.turn.complete(TURN_END('ag1', 'Nothing to note.'))
+    expect(seen.conversation.review.unmatched).toEqual({ former: 1, letGo: 0, last: [{ agentId: 'ag1', at: 5000 }] })
+    expect(closedLines(seen)).toEqual([closedNothing('ag1', FORMER, 2)])
+    expect(debugLines(seen, 'no review in progress')).toEqual([])
+    expect(seen.listCalls).toBe(lists)
+    expect(seen.conversation.review).toMatchObject({ number: 2 })
+    await turnEnded($, 'ag2', 'Nothing to note.')
+    const logged = logOf(seen, LOG_2)
+    expect(logged).toMatchObject({ status: 'complete', unmatched_former: 1, unmatched_let_go: 0 })
+    expect(logged.unmatched_last).toEqual([{ agent_id: 'ag1', at: 5000 }])
+  })
+
+  test('a former reviewer\'s turn end while no review is open adds nothing to the next review, and writes one line with the review given as none', ON, async ($, on) => {
+    const seen = await rotated($, on)
+    await $.turn.complete(TURN_END('ag1', 'Nothing to note.'))
+    expect(closedLines(seen)).toEqual([closedNothing('ag1', FORMER, 'none')])
+    await workerTurn($, 'Second.')
+    await turnEnded($, 'ag2', 'Nothing to note.')
+    expect(logOf(seen, LOG_2)).toMatchObject({ status: 'complete', ...NONE_COUNTED })
+    expect(logOf(seen, LOG_2).unmatched_last).toEqual([])
+  })
+
+  test('a stored reviewer\'s turn end whose settle finds it let go while its review is open is counted on that review as let go during its settle, and the no-review line is still written', ON, async ($, on) => {
+    const armed = { on: false }
+    const sent = gate()
+    const briefed = gate()
+    const taking = gate()
+    const takeReached = gate()
+    // Review 2's brief to the stored ag1 is held out until the take of ag1's turn end is held in turn.
+    const seen = engine(on, { reviewerIds: ['ag1', 'ag2'], sendFails: 'ag1', sendHold: { until: sent.until, reached: briefed.open }, holdWrite: { when: () => armed.on, until: taking.until, reached: takeReached.open } })
+    await workerTurn($)
+    await turnEnded($, 'ag1', 'Nothing to note.')
+    const dispatching = workerTurn($, 'Second.')
+    await briefed.until
+    expect(seen.conversation.review).toMatchObject({ number: 2, briefTo: 'stored' })
+    armed.on = true
+    const ending = $.turn.complete(TURN_END('ag1', 'Nothing to note.'))
+    await takeReached.until
+    // The refusal lets ag1 go and spawns for review 2, which stays open, while ag1's take waits.
+    sent.open()
+    await dispatching
+    await drained()
+    expect(seen.conversation).toMatchObject({ reviewer: { id: 'ag2' }, lastLetGo: 'refused brief' })
+    taking.open()
+    await ending
+    expect(seen.conversation.review.unmatched).toMatchObject({ former: 0, letGo: 1 })
+    expect(seen.conversation.review.unmatched.last.map((end: any) => end.agentId)).toEqual(['ag1'])
+    expect(debugLines(seen, 'no review in progress')).toEqual([NO_REVIEW_OPEN])
+    expect(closedLines(seen)).toEqual([closedNothing('ag1', LET_GO, 2)])
+    await turnEnded($, 'ag2', 'Nothing to note.')
+    expect(logOf(seen, LOG_2)).toMatchObject({ status: 'complete', unmatched_former: 0, unmatched_let_go: 1, brief_to: 'spawn: refused brief' })
+    expect(logOf(seen, LOG_2).unmatched_last.map((end: any) => end.agent_id)).toEqual(['ag1'])
+  })
+
+  test('a stored reviewer\'s turn end with no review open is counted on no review, and writes the existing line word for word and no other', ON, async ($, on) => {
+    const seen = engine(on)
+    await workerTurn($)
+    await turnEnded($, 'ag1', 'Nothing to note.')
+    await turnEnded($, 'ag1', 'Nothing to note.')
+    expect(debugLines(seen, 'no review in progress')).toEqual([NO_REVIEW_OPEN])
+    expect(closedLines(seen)).toEqual([])
+    await workerTurn($, 'Second.')
+    await turnEnded($, 'ag1', 'Nothing to note.')
+    expect(logOf(seen, LOG_2)).toMatchObject({ status: 'complete', ...NONE_COUNTED })
+  })
+
+  test('a former reviewer\'s turn end whose recording change runs after a new review was dispatched leaves that review\'s counts unchanged, and writes its line with the review given as none', ON, async ($, on) => {
+    const armed = { on: false }
+    const recorded = gate()
+    const reached = gate()
+    const seen = await rotated($, on, { holdWrite: { when: () => armed.on, until: recorded.until, reached: reached.open } })
+    armed.on = true
+    const late = $.turn.complete(TURN_END('ag1', 'Nothing to note.'))
+    await reached.until
+    await workerTurn($, 'Second.')
+    expect(seen.conversation.review).toMatchObject({ number: 2 })
+    recorded.open()
+    await late
+    expect(seen.conversation.review.unmatched).toBeUndefined()
+    expect(closedLines(seen)).toEqual([closedNothing('ag1', FORMER, 'none')])
+    await turnEnded($, 'ag2', 'Nothing to note.')
+    expect(logOf(seen, LOG_2)).toMatchObject({ status: 'complete', ...NONE_COUNTED })
+  })
+
+  test('a former reviewer\'s turn end whose first read comes after a review\'s dispatch, at the clock reading of that dispatch, is counted on that review', ON, async ($, on) => {
+    const seen = await rotated($, on)
+    await workerTurn($, 'Second.')
+    const dispatchedAt = seen.conversation.review.dispatchedAt
+    seen.clock = dispatchedAt
+    await $.turn.complete(TURN_END('ag1', 'Nothing to note.'))
+    expect(seen.conversation.review.unmatched).toEqual({ former: 1, letGo: 0, last: [{ agentId: 'ag1', at: dispatchedAt }] })
+    expect(closedLines(seen)).toEqual([closedNothing('ag1', FORMER, 2)])
+  })
+
+  test('a turn end from the worker\'s own subagent adds no count, no line and no write', ON, async ($, on) => {
+    const seen = await rotated($, on)
+    await workerTurn($, 'Second.')
+    const [lines, writes, clocks] = [seen.logs.length, seen.stateWriteAttempts, seen.clockCalls]
+    await $.turn.complete(TURN_END('sub1', 'Done.'))
+    expect(seen.logs.length).toBe(lines)
+    expect(seen.stateWriteAttempts).toBe(writes)
+    expect(seen.clockCalls).toBe(clocks)
+    expect(seen.conversation.review.unmatched).toBeUndefined()
+  })
+
+  test('a follow-up that cannot be sent settles its review once, and the re-entered settle adds no count and no line', ON, async ($, on) => {
+    const seen = engine(on, { sendFails: 'ag1' })
+    await workerTurn($)
+    await $.turn.complete(TURN_END('ag1', FRAMED(1, 'a.ts:4 swallows it.')))
+    expect(logOf(seen, LOG_1)).toMatchObject({ status: 'complete', followed_up: true, ...NONE_COUNTED })
+    expect(logOf(seen, LOG_1).unmatched_last).toEqual([])
+    expect(seen.sends.map(s => s.text)).toEqual([followUpText(1)])
+    expect(closedLines(seen)).toEqual([])
+  })
+
+  test('a follow-up whose review was reset while its send was out re-enters a settle that closes nothing and counts nothing, though its reviewer was let go', ON, async ($, on) => {
+    const release = gate()
+    const reached = gate()
+    const seen = engine(on, { sendFails: 'ag1', sendHold: { until: release.until, reached: reached.open } })
+    await workerTurn($)
+    const ending = $.turn.complete(TURN_END('ag1', FRAMED(1, 'a.ts:4 swallows it.')))
+    await reached.until
+    await $.command.run({ command: 'auditor', args: 'off' } as any)
+    release.open()
+    await ending
+    expect(debugLines(seen, 'no review in progress')).toEqual([NO_REVIEW_OPEN])
+    expect(closedLines(seen)).toEqual([])
+  })
+
+  test('after five former reviewers\' turn ends in one review, its log has the count of five and the last two, newest last, two at the same millisecond in the order they arrived', ON, async ($, on) => {
+    const seen = engine(on, { stateSeed: seeded })
+    for (const [id, at] of [['agA', 100], ['agB', 200], ['agC', 300], ['agE', 400], ['agD', 400]] as const) {
+      seen.clock = at
+      await $.turn.complete(TURN_END(id, 'Nothing to note.'))
+    }
+    await turnEnded($, 'ag1', 'Nothing to note.')
+    const logged = logOf(seen, LOG_1)
+    expect(logged).toMatchObject({ status: 'complete', unmatched_former: 5, unmatched_let_go: 0 })
+    expect(logged.unmatched_last).toEqual([{ agent_id: 'agE', at: 400 }, { agent_id: 'agD', at: 400 }])
+    expect(closedLines(seen).length).toBe(5)
+  })
+
+  test('a state stored before the counts existed loads, and its review logs none counted', ON, async ($, on) => {
+    const seen = engine(on, { stateSeed: seeded })
+    await turnEnded($, 'ag1', 'Nothing to note.')
+    expect(logOf(seen, LOG_1)).toMatchObject({ status: 'complete', ...NONE_COUNTED })
+    expect(logOf(seen, LOG_1).unmatched_last).toEqual([])
+  })
+
+  test('with the log option off no file is written, and the counted turn end is still named in the debug log', async ($, on) => {
+    const seen = await rotated($, on)
+    await workerTurn($, 'Second.')
+    await $.turn.complete(TURN_END('ag1', 'Nothing to note.'))
+    await turnEnded($, 'ag2', 'Nothing to note.')
+    expect(seen.writes).toEqual([])
+    expect(closedLines(seen)).toEqual([closedNothing('ag1', FORMER, 2)])
+  })
+
+  test('a review that lapses, and one the auditor is switched off on, log the turn ends counted on them', ON, async ($, on) => {
+    const seen = await rotated($, on, { reviewerIds: ['ag1', 'ag2', 'ag3'] })
+    await workerTurn($, 'Second.')
+    await $.turn.complete(TURN_END('ag1', 'Nothing to note.'))
+    seen.clock += TEN_MINUTES + 1
+    await $.prompt.submit(HELPER)
+    await $.classic.Stop(stop)
+    await drained()
+    expect(logOf(seen, LOG_2)).toMatchObject({ status: 'incomplete', reason: 'reviewer did not finish in 10 minutes', unmatched_former: 1, unmatched_let_go: 0 })
+    expect(logOf(seen, LOG_2).unmatched_last.map((end: any) => end.agent_id)).toEqual(['ag1'])
+    // The next review, after the failure, is dispatched at a turn the user started: a third reviewer takes it.
+    await $.prompt.submit(COMPOSER('third'))
+    await $.classic.Stop(stop)
+    await drained()
+    expect(seen.conversation.review).toMatchObject({ number: 3 })
+    await $.turn.complete(TURN_END('ag1', 'Nothing to note.'))
+    await $.command.run({ command: 'auditor', args: 'off' } as any)
+    expect(logOf(seen, `${DIR}/0003.json`)).toMatchObject({ status: 'incomplete', reason: 'the auditor was switched off', unmatched_former: 1, unmatched_let_go: 0 })
+  })
+})
+
 // A reviewer spawn that rejects after its hook learned the agent's id: the id is let go and stopped. The engine skips a test hook that throws and rejects the call with this reason.
 const NO_SPAWN = 'no implementation for agent.spawn'
 describe('a rejected spawn', () => {

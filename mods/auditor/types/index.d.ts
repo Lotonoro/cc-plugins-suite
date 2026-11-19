@@ -26,7 +26,15 @@ export type OpenReview = {
   followedUp?: boolean
   // Where the review's brief was decided to go, which the review's log reads: the stored reviewer, or a spawn and why (no reviewer yet, or the reason the last reviewer was let go). Set by the brief's delivery, when it decides; absent while it has not, as in a state stored before the field existed. The log of a review whose dispatch failed or was given back reads it as absent: its brief is not known to have reached a reviewer.
   briefTo?: BriefTo
+  // The reviewer turn ends that arrived while the review was open, after its dispatch, and closed nothing. Absent means none, as in a state stored before the field existed.
+  unmatched?: Unmatched
 }
+
+// A reviewer turn end that closed nothing, as the review that was open keeps it: the agent that ended the turn, and the clock's time it arrived.
+export type UnmatchedEnd = { agentId: string; at: number }
+
+// How many such turn ends a review had, by why each closed nothing: `former`, an agent the state knows as a reviewer it let go ended a turn; `letGo`, the stored reviewer ended a turn and the settle found it no longer stored. Every turn end is counted; `last` keeps the latest two in full, newest last, in the order they were recorded.
+export type Unmatched = { former: number; letGo: number; last: UnmatchedEnd[] }
 
 // Where a brief goes: the stored reviewer, or a spawn because none was ever let go (`no reviewer yet`) or because of the latest let-go's reason.
 export type BriefTo = 'stored' | 'spawn: no reviewer yet' | `spawn: ${LetGoReason}`

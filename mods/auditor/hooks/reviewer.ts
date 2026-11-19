@@ -1,5 +1,5 @@
 import type { AgentInfo } from 'claude-code'
-import type { Conversation, FailCause, LetGoReason } from '../types/index'
+import type { Conversation, FailCause, LetGoReason, OpenReview } from '../types/index'
 import { DEFAULT_MODEL, canonicalOf, idOf, isFullId, sameModel } from './models'
 import type { ModelIds } from './models'
 
@@ -26,6 +26,30 @@ export const standingOf = (c: Conversation, agentId: string | undefined): Standi
   if (agentId === undefined) return 'neither'
   if (c.reviewer?.id === agentId) return 'current'
   return c.reviewerIds.includes(agentId) ? 'former' : 'neither'
+}
+
+// Why a reviewer's turn end closed nothing, in the words the debug log uses: the agent is one the state knows as a reviewer it let go (`former reviewer`), or it was the stored reviewer when its turn end was first read and the settle's take found it no longer stored (`let go during its settle`).
+export type UnmatchedReason = 'former reviewer' | 'let go during its settle'
+
+// How many of a review's latest turn ends that closed nothing are kept in full: two are enough to compare their ids with the stored reviewer's, and the conversation is one state value rewritten on every change.
+const UNMATCHED_KEPT = 2
+
+// The review with one more turn end counted under `reason`: its count raised, and the turn end appended to the latest ones, the oldest dropped past UNMATCHED_KEPT.
+const withUnmatched = (review: OpenReview, reason: UnmatchedReason, agentId: string, at: number): OpenReview => {
+  const held = review.unmatched ?? { former: 0, letGo: 0, last: [] }
+  const former = reason === 'former reviewer'
+  return { ...review, unmatched: { former: held.former + (former ? 1 : 0), letGo: held.letGo + (former ? 0 : 1), last: [...held.last, { agentId, at }].slice(-UNMATCHED_KEPT) } }
+}
+
+// What a reviewer turn end that closed nothing did: the conversation after it, the reason it counts under (absent where the agent is not one the state knows as let go), and the number of the review that took it (absent where none did).
+export type Counted = { next: Conversation; reason: UnmatchedReason | undefined; review: number | undefined }
+
+// Counts the turn end of `agentId`, which arrived at `at`, on the open review under `reason`. It is judged on the conversation a change reads, never on the one the hook first read: only an agent the state knows as a reviewer it let go counts (the stored reviewer and the worker's own agents never do), and the open review takes it only when that review was dispatched by the time of the first read (`dispatched`, the dispatch count there). A review's number is its dispatch's count, so a newer review is not counted on; a clock reading could not say this exactly, since a dispatch in the window can carry a later time and a same-millisecond one ties.
+export const countUnmatched = (c: Conversation, agentId: string, reason: UnmatchedReason, at: number, dispatched: number): Counted => {
+  if (standingOf(c, agentId) !== 'former') return { next: c, reason: undefined, review: undefined }
+  const open = c.review
+  if (open === undefined || open.number > dispatched) return { next: c, reason, review: undefined }
+  return { next: { ...c, review: withUnmatched(open, reason, agentId, at) }, reason, review: open.number }
 }
 
 // What an event's origin says: this plugin's own hook (`own`), an agent this plugin spawned (`spawned`), or neither.
