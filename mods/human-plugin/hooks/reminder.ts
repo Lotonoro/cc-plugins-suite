@@ -19,7 +19,7 @@ export async function resetCount($: EngineInterface): Promise<void> {
   }
 }
 
-// A main-loop batch ended: adds its calls, those of the Claude list's tool (named by `listTool`) left out, to the count, and returns the reminder
+// A main-loop batch ended: adds its calls, those of the list's tool (named by `listTool`) left out, to the count, and returns the reminder
 // when the batch took the count across a multiple of the threshold, else null. A count that cannot be read or written is logged and gives no reminder.
 export async function countBatch($: EngineInterface, calls: readonly { tool_name: string }[], listTool: string): Promise<string | null> {
   const added = calls.filter(call => call.tool_name !== listTool).length

@@ -5,7 +5,7 @@ import { TODO_TOOL } from './todo'
 import { TOOL } from './items'
 
 // The mod's batch-end hook over a base that answers `base` as the rest of the chain's context, with the list's engine stand-ins.
-const wire = (on: On, base: string[] | undefined = undefined) => {
+const session = (on: On, base: string[] | undefined = undefined) => {
   mock.clock(on)
   mock.store(on)
   on('ui.panes', () => ({ value: [] }))
@@ -33,26 +33,26 @@ test('the reminder asks for the list to be brought up to date with an ETA on eve
 })
 
 test('49 calls carry no reminder, the batch that takes the count to 50 carries it, and the batch\'s notices hand over as before', async ($, on) => {
-  wire(on)
+  session(on)
   await $.tool.call({ tool: TOOL, action: 'add', title: 'Pick a db' })
   expect(await batch($, 49)).toEqual([])
   expect(await batch($, 1)).toEqual([REMINDER_TEXT])
 })
 
 test('a batch that takes the count from 48 to 52 carries exactly one reminder', async ($, on) => {
-  wire(on)
+  session(on)
   expect(await batch($, 48)).toEqual([])
   expect(await batch($, 4)).toEqual([REMINDER_TEXT])
 })
 
 test('after the reminder, the calls up to the next multiple of 50 carry none', async ($, on) => {
-  wire(on)
+  session(on)
   expect(await batch($, 50)).toEqual([REMINDER_TEXT])
   for (const n of [30, 19]) expect(await batch($, n)).toEqual([])
 })
 
 test('with no write, the reminder comes again at 100 calls, not before', async ($, on) => {
-  wire(on)
+  session(on)
   expect(await batch($, 49)).toEqual([])
   expect(await batch($, 1)).toEqual([REMINDER_TEXT])
   expect(await batch($, 49)).toEqual([])
@@ -60,18 +60,18 @@ test('with no write, the reminder comes again at 100 calls, not before', async (
 })
 
 test('a batch of 120 calls from zero carries exactly one reminder', async ($, on) => {
-  wire(on)
+  session(on)
   expect(await batch($, 120)).toEqual([REMINDER_TEXT])
 })
 
 test('a batch that takes the count from 99 to 101 carries one reminder', async ($, on) => {
-  wire(on)
+  session(on)
   expect(await batch($, 99)).toEqual([REMINDER_TEXT])
   expect(await batch($, 2)).toEqual([REMINDER_TEXT])
 })
 
 test('after a batch holding only a successful write, 49 further calls carry no reminder and the 50th call\'s batch carries one', async ($, on) => {
-  wire(on)
+  session(on)
   expect(await batch($, 50)).toEqual([REMINDER_TEXT])
   await write($)
   expect(await batch($, 0, [todoCall([{ title: 'Build it', state: 'in_flight' }])])).toEqual([])
@@ -80,13 +80,13 @@ test('after a batch holding only a successful write, 49 further calls carry no r
 })
 
 test('a batch holding a successful write and 50 other calls carries the reminder', async ($, on) => {
-  wire(on)
+  session(on)
   await write($)
   expect(await batch($, 50, [todoCall([{ title: 'Build it', state: 'in_flight' }])])).toEqual([REMINDER_TEXT])
 })
 
 test('after a write, the reminders come every 50 calls counted from the write', async ($, on) => {
-  wire(on)
+  session(on)
   expect(await batch($, 60)).toEqual([REMINDER_TEXT])
   await write($)
   expect(await batch($, 40)).toEqual([])
@@ -97,7 +97,7 @@ test('after a write, the reminders come every 50 calls counted from the write', 
 })
 
 test('a refused write and a read of the list neither reset the count nor add to it', async ($, on) => {
-  wire(on)
+  session(on)
   expect(await batch($, 49)).toEqual([])
   expect((await $.tool.call({ tool: TODO_TOOL, entries: [{ title: '', state: 'queued' }] })).deny).toContain('the title is empty')
   expect((await $.tool.call({ tool: TODO_TOOL, entries: [{ title: 'Sub step', state: 'queued' }], agentId: 'sub-1' })).deny).toContain('only the main agent')
@@ -107,14 +107,14 @@ test('a refused write and a read of the list neither reset the count nor add to 
 })
 
 test('calls of the list tool never count toward the reminder, however many', async ($, on) => {
-  wire(on)
+  session(on)
   expect(await batch($, 0, Array.from({ length: 120 }, () => todoCall()))).toEqual([])
   expect(await batch($, 49)).toEqual([])
   expect(await batch($, 1)).toEqual([REMINDER_TEXT])
 })
 
 test('a list that is never written is reminded when its batches reach 50 calls', async ($, on) => {
-  wire(on)
+  session(on)
   const seen: string[][] = []
   for (let i = 0; i < 12; i++) seen.push(await batch($, 5))
   expect(seen.filter(context => context.length > 0)).toEqual([[REMINDER_TEXT]])
@@ -122,20 +122,20 @@ test('a list that is never written is reminded when its batches reach 50 calls',
 })
 
 test('a subagent\'s batches neither count nor carry the reminder', async ($, on) => {
-  wire(on)
+  session(on)
   expect(await batch($, 60, [], 'sub-1')).toEqual([])
   expect(await batch($, 49)).toEqual([])
   expect(await batch($, 1)).toEqual([REMINDER_TEXT])
 })
 
 test('the context the rest of the chain gives the batch is kept, and the reminder follows it', async ($, on) => {
-  wire(on, ['another plugin\'s context'])
+  session(on, ['another plugin\'s context'])
   expect(await batch($, 10)).toEqual(['another plugin\'s context'])
   expect(await batch($, 40)).toEqual(['another plugin\'s context', REMINDER_TEXT])
 })
 
 test('after a /clear the count starts at zero', async ($, on) => {
-  wire(on)
+  session(on)
   on('session.end', (_$, e) => ({ sessionId: e.sessionId }))
   expect(await batch($, 49)).toEqual([])
   await $.session.end({ reason: 'clear', sessionId: 's1', resume: { id: 's1' } })
@@ -144,7 +144,7 @@ test('after a /clear the count starts at zero', async ($, on) => {
 })
 
 test('no reminder draws a sent-to-Claude line', async ($, on) => {
-  const logs = wire(on)
+  const logs = session(on)
   expect(await batch($, 50)).toEqual([REMINDER_TEXT])
   expect(logs.filter(line => line.startsWith('sent to Claude'))).toEqual([])
   expect(logs.some(line => line.includes('Reminder'))).toBe(false)
