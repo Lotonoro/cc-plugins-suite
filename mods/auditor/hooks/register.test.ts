@@ -101,6 +101,8 @@ type Opts = {
   // The first agent list call made while `when` holds for the conversation last written rejects (`listFailsWhen`), or calls reached and then waits for until before the engine answers it (`listHoldWhen`): a way to reach the one read a step makes, whatever reads came before it.
   listFailsWhen?: (c: any) => boolean
   listHoldWhen?: { when: (c: any) => boolean; until: Promise<void>; reached?: () => void }
+  // The first agent list call made while `when` holds for the conversation last written answers `agents`, whatever the engine would otherwise answer: the answer only that one read sees.
+  listAnswerWhen?: { when: (c: any) => boolean; agents: unknown[] }
   // A spawn a hold covers calls its `reached`, then waits for `until` before its result lands (`result` when given, else the reviewer's id). A single hold covers the spawns numbered `from` (1-based, 1 by default) through `to` when given; an array holds the spawn numbered i + 1 by its entry i, and an undefined entry holds none.
   spawnHold?: (SpawnHold & { from?: number; to?: number }) | (SpawnHold | undefined)[]
   // From the reviewer spawn numbered `spawnThrowsFrom` (1-based) on, the spawn throws; from `spawnDeniesFrom` on, it is refused.
@@ -229,6 +231,7 @@ const engine = (on: any, opts: Opts = {}) => {
   let firstListHeld = false
   let listFailedWhen = false
   let listHeldWhen = false
+  let listAnsweredWhen = false
   on('agent.list', () => {
     seen.listCalls++
     if (opts.listFailsWith !== undefined) throw new Error(opts.listFailsWith)
@@ -237,6 +240,10 @@ const engine = (on: any, opts: Opts = {}) => {
     if (opts.listFailsWhen !== undefined && !listFailedWhen && opts.listFailsWhen(seen.conversation)) {
       listFailedWhen = true
       throw new Error('agent list unavailable')
+    }
+    if (opts.listAnswerWhen !== undefined && !listAnsweredWhen && opts.listAnswerWhen.when(seen.conversation)) {
+      listAnsweredWhen = true
+      return { value: opts.listAnswerWhen.agents }
     }
     const answer = { value: opts.agentsAfterStops?.(seen.stops.length) ?? opts.agents ?? [] }
     if (opts.listHoldWhen !== undefined && !listHeldWhen && opts.listHoldWhen.when(seen.conversation)) {
@@ -7718,6 +7725,17 @@ describe('the reviewer turn ends that closed no review', () => {
     expect(logOf(seen, LOG_2)).toMatchObject({ status: 'complete', ...NONE_COUNTED })
   })
 
+  test('a stored reviewer\'s turn end with no review open still writes the existing line where the change that would count it fails, beside the failure of the settle', ON, async ($, on) => {
+    const seen = engine(on)
+    await workerTurn($)
+    await turnEnded($, 'ag1', 'Nothing to note.')
+    // The settle's take writes first, and the change that counts the turn end second.
+    seen.stateWritesFailAt = seen.stateWriteAttempts + 2
+    await $.turn.complete(TURN_END('ag1', 'Nothing to note.'))
+    expect(debugLines(seen, 'review settlement failed')).toHaveLength(1)
+    expect(debugLines(seen, 'no review in progress')).toEqual([NO_REVIEW_OPEN])
+  })
+
   test('a former reviewer\'s turn end whose recording change runs after a new review was dispatched leaves that review\'s counts unchanged, and writes its line naming that review as open and not counted on', ON, async ($, on) => {
     const armed = { on: false }
     const recorded = gate()
@@ -8438,6 +8456,42 @@ describe('the record of a review that lapses', () => {
     await drained()
     expect(debugLines(seen, 'agent list read at a lapse')).toHaveLength(1)
     expect(seen.stops.length).toBe(1)
+  })
+
+  test('a lapse whose list holds an entry its facts cannot be read from still logs the review as failed, with the age and the held reviewer and the list unread, stops the reviewer and dispatches the next brief, and writes one line for the record that failed', ON, async ($, on) => {
+    const seen = await stuck($, on, { listAnswerWhen: { when: c => c?.failing === 'no finish', agents: [null, listedReviewer('ag9')] } })
+    await nextTurn($)
+    expect(logOf(seen, LOG_1)).toMatchObject({ status: 'incomplete', reason: REASON, lapse_age_ms: 600_001, lapse_held_id: 'ag1', lapse_held_status: 'unread', lapse_unknown_spawns: null, lapse_unknown_spawns_total: null })
+    expect(logOf(seen, LOG_1).lapse_detected_at).toBe(seen.conversation.review.dispatchedAt)
+    expect(debugLines(seen, 'lapse record failed')).toHaveLength(1)
+    expect(debugLines(seen, 'lapse record failed')[0]).toContain('TypeError')
+    expect(debugLines(seen, 'review failed')).toEqual(['auditor: review failed: reviewer did not finish in 10 minutes'])
+    expect(lapseLines(seen)).toEqual([])
+    expect(seen.stops.map(s => s.task_id)).toEqual(['ag1'])
+    expect(seen.conversation.failing).toBe('no finish')
+    expect(seen.conversation.review).toMatchObject({ number: 2 })
+    expect(seen.conversation.review.record.join('')).toContain('USER: first')
+    expect(seen.spawns.length).toBe(2)
+  })
+
+  test('a lapse whose debug line cannot be built (a stored count of another shape) still logs the review with its whole record, stops the reviewer and dispatches the next brief, and writes one line for the record that failed', ON, async ($, on) => {
+    const seen = engine(on, {
+      reviewerIds: ['ag2'],
+      ...shows(listedReviewer('ag1', 'idle'), listedReviewer('ag9')),
+      stateSeed: { dispatches: 1, reviewer: { id: 'ag1', model: 'm' }, reviewerIds: ['ag1'], review: { number: 1, record: ['USER: x'], dispatchedAt: 1, nothingWakes: false, briefTo: 'stored', briefedId: 'ag1', unmatched: { former: 1, letGo: 0, last: null } } },
+    })
+    seen.clock = 1 + TEN_MINUTES + 1
+    await nextTurn($)
+    expect(logOf(seen, LOG_1)).toMatchObject({ status: 'incomplete', reason: REASON, lapse_age_ms: 600_001, lapse_held_id: 'ag1', lapse_held_status: 'idle', lapse_unknown_spawns_total: 1 })
+    expect(logOf(seen, LOG_1).lapse_unknown_spawns).toEqual([{ agent_id: 'ag9', status: 'running' }])
+    expect(debugLines(seen, 'lapse record failed')).toHaveLength(1)
+    expect(debugLines(seen, 'lapse record failed')[0]).toContain('TypeError')
+    expect(debugLines(seen, 'review failed')).toEqual(['auditor: review failed: reviewer did not finish in 10 minutes'])
+    expect(lapseLines(seen)).toEqual([])
+    expect(seen.stops.map(s => s.task_id)).toEqual(['ag1'])
+    expect(seen.conversation.failing).toBe('no finish')
+    expect(seen.conversation.review).toMatchObject({ number: 2 })
+    expect(seen.spawns.length).toBe(1)
   })
 
   test('the lapsed reviewer\'s stop is issued after the log entry is written and before the next brief goes out', ON, async ($, on) => {

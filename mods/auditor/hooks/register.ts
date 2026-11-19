@@ -620,7 +620,7 @@ const recordUnmatched = async ($: Pick<Scope, 'state' | 'clock' | 'ui'>, agentId
 }
 
 // The reviewer's turn end settles its open review, with the outcome the gate saw (`settleOutcome`): the take computes it in its own change, which takes the review, so the entries go back exactly when it fails, or marks it for its one follow-up (`followUp`) and leaves it open.
-// The review is taken or marked only while `agentId` is still the stored reviewer, in the take's own change: a reviewer a switch or a /clear let go after its turn end was matched must not close the next run's review. Where the take finds none, the turn end of a reviewer let go since it was read is counted on the review then open, in a change of its own (`recordUnmatched`), never in the take, whose other caller, the dispatch failure, has no turn end to count. That change writes the line that names the turn end and the review open; the line that says no review is in progress is written only for a turn end nothing else names, so the two never describe one turn end.
+// The review is taken or marked only while `agentId` is still the stored reviewer, in the take's own change: a reviewer a switch or a /clear let go after its turn end was matched must not close the next run's review. Where the take finds none, the turn end of a reviewer let go since it was read is counted on the review then open, in a change of its own (`recordUnmatched`), never in the take, whose other caller, the dispatch failure, has no turn end to count. That change writes the line that names the turn end and the review open. The line that says no review is in progress is written for a turn end nothing names, and where counting it fails (the caller records that failure), so the two lines never describe one counted turn end.
 // `dispatched`: the conversation's dispatch count when the hook first read it for this turn end.
 // `unsent`: this settle follows a follow-up that could not be sent, whose attempt already put the answer in the debug log, and whose turn end the settle before it already matched, so it counts none.
 const settle = async ($: Scope, log: boolean, agentId: string, done: Finished, dispatched: number, unsent = false): Promise<void> => {
@@ -628,8 +628,11 @@ const settle = async ($: Scope, log: boolean, agentId: string, done: Finished, d
   // An incomplete review lets its reviewer go unless its turn was aborted: an abort is the user's Esc, and a cold respawn after it is what the stopped-session refusal already costs.
   const taken = await takeReview($, (_r, c) => standingOf(c, agentId) === 'current', r => outcomeOf(r).status === 'incomplete', r => outcomeOf(r).status === 'follow-up', r => outcomeOf(r).status === 'incomplete' && !done.isAborted)
   if (taken === undefined) {
-    if (unsent || !(await recordUnmatched($, agentId, 'let go during its settle', dispatched))) {
-      $.ui.log(`${PLUGIN}: the reviewer ended a turn with no review in progress; not recorded`, { to: 'debug' })
+    let named = false
+    try {
+      named = !unsent && (await recordUnmatched($, agentId, 'let go during its settle', dispatched))
+    } finally {
+      if (!named) $.ui.log(`${PLUGIN}: the reviewer ended a turn with no review in progress; not recorded`, { to: 'debug' })
     }
     return
   }
@@ -760,6 +763,21 @@ const lapseLine = ({ review, cause }: Lapsed, record: LapseRecord): string => {
   return `${PLUGIN}: review ${review.number} lapsed (${cause}) after ${Math.round(record.ageMs / 1000)} s; held reviewer ${held}; turn ends counted on it: former reviewer ${former}, let go during its settle ${letGo}, last counted agent ${last.at(-1)?.agentId ?? 'none'}; briefed reviewer ${review.briefedId ?? 'none'}; unknown plugin spawns, possibly another conversation's: ${record.unknownTotal ?? 'unread'}`
 }
 
+// What a lapse adds to its log entry and its debug log: the record (`LapseRecord`) and the debug line (`lapseLine`). It never throws, since a diagnostic never holds back the dispatch it comes with. The agent list is read once, bounded, on the engine's own call and not through `listAgents`, which turns a rejection into an answer: a failed or late read is recorded once, by the bound, and the record gives the list as unread. Whatever then throws from the list's entries or the line (an entry that is not an object, a stored count of another shape) is recorded as the record's failure and costs the debug line, and the record keeps what the list does not give, the age and the held reviewer, with the list unread. The age is the decision's own clock reading (`now`) less the dispatch's, never a second reading.
+const lapseDiagnostics = async ($: Pick<Scope, 'agent' | 'clock' | 'ui'>, lapsed: Lapsed, now: number): Promise<{ record: LapseRecord; line: string | undefined }> => {
+  const listed = await within($, 'agent list read at a lapse', () => $.agent.list())
+  const known = { detectedAt: now, ageMs: now - lapsed.review.dispatchedAt }
+  let record: LapseRecord | undefined
+  let line: string | undefined
+  try {
+    record = { ...known, ...lapseListFacts(IDENTITY, lapsed.before, listed?.value) }
+    line = lapseLine(lapsed, record)
+  } catch (err) {
+    recordFailed($, 'lapse record', err)
+  }
+  return { record: record ?? { ...known, ...lapseListFacts(IDENTITY, lapsed.before, undefined) }, line }
+}
+
 // The reviewer gets one brief when it has no open review and turns since its last dispatch.
 // Eligibility is judged in the change alone: a get reads the dispatch's starting moment, so a settle's own take of the open review is invisible to it.
 const dispatchIdle = async ($: Scope, log: boolean): Promise<void> => {
@@ -799,14 +817,12 @@ const dispatchIdle = async ($: Scope, log: boolean): Promise<void> => {
   })
   const { plan, lapsed, bound } = planned
   if (lapsed !== undefined) {
-    // The stop is issued last whatever the log does: a reviewer let go is never left running by a throw.
+    // The stop is issued last whatever the log does: a reviewer let go is never left running by a throw. The agent list is read here, after the lapse is decided, so a dispatch that lapses nothing never reads it, and before the stop, so the status is the one the lapse found.
     try {
-      // The agent list is read once, here: after the lapse is decided, so a dispatch that lapses nothing never reads it, and before the stop, so the status is the one the lapse found. It is bounded and made on the engine's own call, not through `listAgents`, which turns a rejection into an answer: a failed or late read is recorded once, by the bound, and the lapse records its status as unread. The age is the decision's own clock reading (`now`) less the dispatch's, never a second reading.
-      const listed = await within($, 'agent list read at a lapse', () => $.agent.list())
-      const record: LapseRecord = { detectedAt: now, ageMs: now - lapsed.review.dispatchedAt, ...lapseListFacts(IDENTITY, lapsed.before, listed?.value) }
+      const { record, line } = await lapseDiagnostics($, lapsed, now)
       await logIncomplete($, sessionId, log, lapsed.review, lapsed.models, lapsed.reason, record)
       $.ui.log(`${PLUGIN}: review failed: ${lapsed.reason}`, { to: 'debug' })
-      $.ui.log(lapseLine(lapsed, record), { to: 'debug' })
+      if (line !== undefined) $.ui.log(line, { to: 'debug' })
     } finally {
       await stopReviewer($, lapsed.released, true)
     }
