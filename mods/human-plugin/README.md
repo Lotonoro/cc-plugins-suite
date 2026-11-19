@@ -65,8 +65,9 @@ nothing to click and the flow differs from the terminal’s. Slash commands and
 their output do draw, and they take the pane’s place. `/todo` and
 `/todo <n> <form>` work as they do at the prompt. `/todo answer` asks about
 each open request in turn, blocking first, one dialog per request, and writes
-each answer as you give it; it runs at the terminal too. The agent sees those
-answers with the next prompt you type.
+each answer as you give it; it runs at the terminal too. The agent gets those
+answers when the walk ends, as measured at the terminal. Whether the phone
+shows the agent’s reply without a prompt you type awaits a run on the phone.
 
 A prompt you type from the phone also carries the open requests to the agent
 as context, so you don’t have to ask what’s waiting. A blocking item can send

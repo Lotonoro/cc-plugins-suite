@@ -717,7 +717,8 @@ test('a press counts the pane open the moment it is made: a second press before 
 
 // An in-memory `$` for the list, the selection and the pane: the state holds what the hooks write, `open` is the pane's record,
 // `submitted` the prompts the mod submits, and `timers` the clock's callbacks, which the test fires.
-type Timer = { fn: () => unknown }
+// A timer the mod started: its wait, and whether it is a one-shot (`after`), which runs once and is gone, or a tick (`every`).
+type Timer = { fn: () => unknown; ms?: number; once?: boolean }
 type Render = { drawing: boolean; writes: string[] }
 const made = (id: number, extra: Record<string, unknown> = {}) => ({
   id,
@@ -757,9 +758,24 @@ const memEnv = (items: unknown[], open: string[], selection: unknown, submitted:
     command: { register: async () => ({ value: undefined }) },
     clock: {
       now: async () => clock.now,
-      after: (_ms: number, fn: () => unknown) => {
-        timers.push({ fn })
-        return { cancel: () => {} }
+      // A one-shot timer keeps its wait, runs once and is gone, and a cancel takes it out.
+      after: (ms: number, fn: () => unknown) => {
+        const timer: Timer = {
+          ms,
+          once: true,
+          fn: () => {
+            const at = timers.indexOf(timer)
+            if (at >= 0) timers.splice(at, 1)
+            return fn()
+          },
+        }
+        timers.push(timer)
+        return {
+          cancel: () => {
+            const at = timers.indexOf(timer)
+            if (at >= 0) timers.splice(at, 1)
+          },
+        }
       },
       // The undo countdown's tick: kept in `timers` while it runs, so a test fires it, and a cancel takes it out.
       every: (_ms: number, fn: () => unknown) => {
@@ -815,12 +831,15 @@ const band = (hooks: Record<string, Handler>, env: unknown) =>
 const paneTree = (hooks: Record<string, Handler>, env: unknown) =>
   drawn(env, () => hooks['ui.render {"component":"Pane","requestId":"human-items"}']?.(env as never, { props: { bodyColumns: 80 } } as never, next(false) as never))
 
-// The clock moves to `at`, and each tick the mod has started runs once there: a tick ends the undo windows whose time has run out.
-const tickAt = async (timers: Timer[], clock: { now: number }, at: number): Promise<void> => {
+// The clock moves to `at`, and each timer the mod has started runs once there, in the order they were armed: a tick ends the undo windows whose time has run
+// out, and a one-shot timer (the walk's release) runs and is gone. `only` runs the ticks or the one-shots alone.
+const tickAt = async (timers: Timer[], clock: { now: number }, at: number, only?: 'ticks' | 'one-shots'): Promise<void> => {
   clock.now = at
-  for (const timer of [...timers]) await timer.fn()
+  for (const timer of [...timers]) if (only === undefined || (timer.once === true) === (only === 'one-shots')) await timer.fn()
   await settle()
 }
+// The waits of the one-shot timers pending: the walk's release, one at most.
+const oneShotWaits = (timers: Timer[]): (number | undefined)[] => timers.filter(timer => timer.once === true).map(timer => timer.ms)
 
 test('the undo window is 3 s with no options: a tick before that sends nothing, the first tick at or after it sends', async () => {
   reset()
@@ -5061,7 +5080,7 @@ const turnStartRows = async (hooks: Record<string, Handler>, env: object, turnId
 }
 const waitingIds = (saved: unknown): number[] => (saved as { waiting: { id: number }[] }).waiting.map(notice => notice.id)
 
-test('/todo answer in an idle session tries no submit while it asks: each answer\'s notice waits, saved as waiting; its last answer\'s tick, after the walk, submits that notice alone, and the turn that starts appends the earlier ones once each', async () => {
+test('/todo answer in an idle session tries no submit while it asks: each answer\'s notice waits, saved as waiting; its end submits nothing, and its release, a second later, submits the earlier answers\' notices as one prompt, the last answer\'s tick, which falls after it, going to the turn that prompt starts', async () => {
   freshModule()
   const wired = wire()
   const submitted: unknown[] = []
@@ -5082,19 +5101,24 @@ test('/todo answer in an idle session tries no submit while it asks: each answer
   expect(between.map(seen => seen.submits)).toEqual([0, 0])
   expect(between.map(seen => waitingIds(seen.saved))).toEqual([[1], [1, 2]])
   expect(submitted).toEqual([])
+  expect(oneShotWaits(timers)).toEqual([1000])
   await tickAt(timers, clock, 1000)
   expect(submitted).toHaveLength(1)
-  expect((submitted[0] as { text: string }).text.startsWith('#3 is done: Item 3')).toBe(true)
+  const prompt = (submitted[0] as { text: string }).text
+  expect(prompt.startsWith('#1 is done: Item 1')).toBe(true)
+  expect(prompt).toContain('\n\n#2 is done: Item 2')
+  expect(prompt).not.toContain('#3 is done')
   expect(logs.filter(line => line.startsWith('human-plugin: sent #')).map(line => line.replace(/ for press -?\d+/, ''))).toEqual([
     'human-plugin: sent #1 kept for the next turn while a walk asks',
     'human-plugin: sent #2 kept for the next turn while a walk asks',
-    'human-plugin: sent #3 via submit',
+    'human-plugin: sent #3 to the running turn',
   ])
-  expect((await turnStartRows(wired.hooks, env, 't1')).map(row => row.split('\n')[0])).toEqual(['#1 is done: Item 1', '#2 is done: Item 2'])
+  expect(logs).toContain("human-plugin: released at the walk's end: notices for #1, #2")
+  expect((await turnStartRows(wired.hooks, env, 't1')).map(row => row.split('\n')[0])).toEqual(['#3 is done: Item 3'])
   expect(values.notices).toEqual({ held: [], waiting: [] })
 })
 
-test('/todo answer that ends on Stop in an idle session submits nothing at all: the notices wait, and the next turn appends the ones whose items are still on the list, once each', async () => {
+test('/todo answer that ends on Stop in an idle session submits nothing at its end: its release, a second later, submits the notices whose items are still on the list as one prompt', async () => {
   freshModule()
   const wired = wire()
   const submitted: unknown[] = []
@@ -5108,15 +5132,60 @@ test('/todo answer that ends on Stop in an idle session submits nothing at all: 
   }
   const text = await askText(wired.hooks, askingHost(wired.hooks, env, ['Done', 'Done', 'Stop'], { during: pause }), 'answer')
   expect(text).toContain('It ended on Stop.')
-  await tickAt(timers, clock, 1000)
+  await settle()
   expect(submitted).toEqual([])
   expect(waitingIds(values.notices)).toEqual([1, 2])
-  // The agent removes #1 before the human's prompt starts the next turn. The prompt carries no context, since the walk's notices are waiting ones, not held ones.
+  // The agent removes #1 before the release runs.
   const list = values.list as { items: { id: number }[] }
   values.list = { ...list, items: list.items.filter(it => it.id !== 1) }
-  expect((await entered(wired.hooks, env, { origin: { kind: 'composer' }, text: 'hi' }))[0]?.context).toBeUndefined()
-  expect((await turnStartRows(wired.hooks, env, 't1')).map(row => row.split('\n')[0])).toEqual(['#2 is done: Item 2'])
+  await tickAt(timers, clock, 1000)
+  expect(submitted).toHaveLength(1)
+  const prompt = (submitted[0] as { text: string }).text
+  expect(prompt.startsWith('#2 is done: Item 2')).toBe(true)
+  expect(prompt).not.toContain('#1 is done')
   expect(values.notices).toEqual({ held: [], waiting: [] })
+  // The notices were delivered: the human's prompt carries no context, and the turn that starts appends nothing.
+  expect((await entered(wired.hooks, env, { origin: { kind: 'composer' }, text: 'hi' }))[0]?.context).toBeUndefined()
+  expect(await turnStartRows(wired.hooks, env, 't1')).toEqual([])
+})
+
+test('a turn that starts after the walk\'s end and before its release takes the waiting notices at its first read point, and the release then submits nothing', async () => {
+  freshModule()
+  const wired = wire()
+  const submitted: unknown[] = []
+  const timers: Timer[] = []
+  const { env, values, clock } = memEnv([made(1, { detail: '' }), made(2, { detail: '' })], [], null, submitted, timers)
+  await endSession(wired.hooks, env)
+  await started(wired, env)
+  clock.now = 1000
+  const pause = async (position: number): Promise<void> => {
+    if (position > 0) await tickAt(timers, clock, 1000)
+  }
+  await askText(wired.hooks, askingHost(wired.hooks, env, ['Done', 'Stop'], { during: pause }), 'answer')
+  expect(oneShotWaits(timers)).toEqual([1000])
+  expect((await turnStartRows(wired.hooks, env, 't1')).map(row => row.split('\n')[0])).toEqual(['#1 is done: Item 1'])
+  await tickAt(timers, clock, 1000)
+  expect(submitted).toEqual([])
+  expect(values.notices).toEqual({ held: [], waiting: [] })
+})
+
+test('the session\'s end cancels the release a walk\'s end armed: nothing is submitted in either session, and a notice in the new session takes the idle path', async () => {
+  freshModule()
+  const wired = wire()
+  const submitted: unknown[] = []
+  const timers: Timer[] = []
+  const { env, clock } = memEnv([made(1, { detail: '' })], [], null, submitted, timers)
+  await endSession(wired.hooks, env)
+  await started(wired, env)
+  clock.now = 1000
+  await askText(wired.hooks, askingHost(wired.hooks, env, ['Done'], {}), 'answer')
+  await tickAt(timers, clock, 1000, 'ticks')
+  expect(oneShotWaits(timers)).toEqual([1000])
+  await endSession(wired.hooks, env)
+  expect(oneShotWaits(timers)).toEqual([])
+  await tickAt(timers, clock, 1000)
+  expect(submitted).toEqual([])
+  expect(offer({ id: 2, text: '#2 is done: in the new session' })).toBe('submit')
 })
 
 test('the session\'s end releases the hold of the walk that is asking: a notice in the new session takes the idle path while the old dialog is still open', async () => {
@@ -5136,13 +5205,14 @@ test('the session\'s end releases the hold of the walk that is asking: a notice 
   await old
 })
 
-test('a turn that ends while a walk is asking submits nothing and leaves its notice waiting, saved as waiting; a turn that was interrupted holds it for the human\'s next prompt', async () => {
+test('a turn that ends while a walk is asking submits nothing and leaves its notice waiting, saved as waiting; the walk\'s release submits it, and a turn that was interrupted holds it for the human\'s next prompt, which the release leaves alone', async () => {
   const notice = { id: 1, text: '#1 is done: Item 1' }
   for (const aborted of [false, true]) {
     freshModule()
     const wired = wire()
     const submitted: unknown[] = []
-    const { env, values } = memEnv([made(1, { detail: '' })], [], null, submitted)
+    const timers: Timer[] = []
+    const { env, values, clock } = memEnv([made(1, { detail: '' })], [], null, submitted, timers)
     await endSession(wired.hooks, env)
     await started(wired, env)
     await (wired.hooks['turn.start'] as Handler)(env as never, { turnId: 't1' } as never, next(false) as never)
@@ -5158,5 +5228,9 @@ test('a turn that ends while a walk is asking submits nothing and leaves its not
     expect([aborted, values.notices]).toEqual([aborted, aborted ? { held: [notice], waiting: [] } : { held: [], waiting: [notice] }])
     release()
     await running
+    expect([aborted, submitted]).toEqual([aborted, []])
+    await tickAt(timers, clock, 1000)
+    expect([aborted, submitted]).toEqual([aborted, aborted ? [] : [{ text: notice.text }]])
+    expect([aborted, values.notices]).toEqual([aborted, aborted ? { held: [notice], waiting: [] } : { held: [], waiting: [] }])
   }
 })

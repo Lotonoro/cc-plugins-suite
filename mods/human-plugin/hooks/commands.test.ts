@@ -773,7 +773,7 @@ test('/todo <n> keeps its newest turn at the floor and whole when it is joined e
 const optionsOf = (...labels: string[]): Item['options'] => labels.map(label => ({ label, description: '', recommended: false }))
 const decision = (id: number, labels: string[], extra: Partial<Item> = {}): Item => made(id, { options: optionsOf(...labels), ...extra })
 const SENTENCE =
-  'They are asked one at a time, blocking first, and each answer is written to the list as you give it and reaches the agent by your next prompt. Stop, or stop typed under Other, ends the walk; Skip, or closing the question, passes over an item. What you have not answered stays on the list.'
+  'They are asked one at a time, blocking first, and each answer is written to the list as you give it and reaches the agent when the walk ends. Stop, or stop typed under Other, ends the walk; Skip, or closing the question, passes over an item. What you have not answered stays on the list.'
 
 test('the word answer alone, in any case and with blanks around it, is the walk; anything after it or before it is the usage', () => {
   expect(WALK_WORD).toBe('answer')

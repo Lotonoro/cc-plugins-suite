@@ -1,22 +1,33 @@
-import type { EngineInterface } from 'claude-code'
+import type { EngineInterface, Timer } from 'claude-code'
 import type { Item } from '../types'
 import { ALREADY_ASKING, NOTHING_OPEN, openOf, outcomeLine, readAnswer, skippedLine, walkDialog, walkEnd, walkSummary, type Dialog, type Reason } from './commands'
+import { release } from './deliver'
 import { messageOf } from './done'
 import { markRead } from './pane'
-import { readList } from './shared'
+import { inBackground, readList } from './shared'
 import { setWalkAsking } from './turns'
 import { pressShown } from './windows'
 
 // The walk behind `/todo answer`: it asks about each open item in one dialog, writes each answer the person gives through the path `/todo <n> <form>` takes (a
 // guarded write, windows.ts), and ends with the text the command returns (commands.ts words every line). It runs inside the command's hook, so the plugin's own
 // `tool.call` hook sees each dialog's result before the dialog returns, which is how a walk tells an answer a person gave from one the engine made for them. The
-// state is the module's, and none of it is in `$.state`: a reload drops a walk (an accepted cost).
+// engine refuses a submit made while that hook is in flight, so the notices of the answers wait, and a timer the walk arms at its end, once the hook has
+// settled, submits them as one prompt (the release, deliver.ts). The state is the module's, and none of it is in `$.state`: a reload drops a walk and its
+// pending release (an accepted cost: the notices are in the saved state, and the reload's restore submits them).
 
 // The walk that is asking, if one is. A walk takes the flag in the step it starts, before it awaits anything, so two `/todo answer` cannot both start. The flag
 // is also the walk's tie to its session: a walk whose flag is no longer its own has lost its session (endWalk), and asks and writes nothing more. Only the walk
 // that took the flag clears it, so a walk that settles late leaves a newer walk's flag in place. The same step tells the turn-state module a walk is asking, so
-// no submit is tried for a notice meanwhile (turns.ts), and only the walk that took the flag tells it the walk is over; a session's end resets that module.
+// no submit is tried for a notice meanwhile (turns.ts). That hold goes on past the walk's end, until the release the walk arms ends it (armRelease); a session's
+// end resets that module.
 let walking: symbol | null = null
+
+// How long after a walk's end its release runs: one period of the tick in windows.ts, a wait after which a submit from a timer armed in a command hook enters.
+const RELEASE_MS = 1000
+
+// The latest release a walk's end armed. It stays here once its timer has fired, until a session's end or a newer walk's arm takes its place, so that a release
+// whose list read is in flight can tell it has been replaced (armRelease). At most one timer is pending, and its release carries every walk's notices.
+let releasing: Timer | null = null
 
 // What the observer saw of the plugin's own call: the question as the call carried it, and whether the result carried `afkTimeoutMs`, which only a dialog the
 // engine resolved for an absent person carries.
@@ -47,11 +58,32 @@ export function observeAsked($: EngineInterface, call: unknown, result: unknown)
   $.ui.log(`human-plugin: walk record for #${current.id}: afkTimeoutMs ${afk ? 'present' : 'absent'}`, { to: 'debug' })
 }
 
-// A session's end: the walk that is asking belongs to the session that ended, so its flag is released and its record dropped. Its open dialog may still return;
-// the walk then finds the flag is not its own, and asks and writes nothing more.
+// A session's end: the walk that is asking belongs to the session that ended, so its flag is released and its record dropped, and the release a walk's end armed is
+// cancelled (a release that has begun finds it is no longer the latest, and takes nothing). Its open dialog may still return; the walk then finds the flag is not its
+// own, and asks and writes nothing more.
 export function endWalk(): void {
   walking = null
   asking = null
+  const pending = releasing
+  releasing = null
+  pending?.cancel()
+}
+
+// A walk's end, once its end text is composed: arms the release in place of any earlier one that has not run, so one release is pending. A release takes nothing
+// when it finds a newer walk asking, or that it is no longer the latest (a session's end or a newer walk's arm replaced it), and the newer walk's own end releases
+// what is owed. An arm that fails is logged as one row, and the hold ends here: the owed notices wait for the next turn to start, a notice offered after the walk
+// takes the idle path, and an earlier release the arm took away is not restored.
+function armRelease($: EngineInterface): void {
+  const earlier = releasing
+  releasing = null
+  try {
+    earlier?.cancel()
+    const timer = $.clock.after(RELEASE_MS, () => inBackground($, release($, () => walking !== null || releasing !== timer)))
+    releasing = timer
+  } catch (err) {
+    $.ui.log(`human-plugin: the notices the walk left could not be released at its end, so they wait for the next turn: ${messageOf(err)}`)
+    setWalkAsking(false)
+  }
 }
 
 // Whether the walk `me` still owns its session: its flag is its own until the session ends (endWalk). It is the one test a walk makes of that: before each
@@ -172,7 +204,8 @@ function logWalkError($: EngineInterface, err: unknown): void {
 // `/todo answer`: the command's output. A walk already asking, or nothing open, ends it at once and asks nothing. Otherwise the walk asks about each open item
 // and returns its end text: the outcome no question showed, why it ended, and what it sent and what is still open. A throw ends it with the error reason and the
 // same counts, and the error is logged with its stack. So does a throw from the read of the list for those counts, which leaves the end text the count of what was
-// sent alone, since what is still open is unknown. The answers already written stay written, whatever ends the walk.
+// sent alone, since what is still open is unknown. The answers already written stay written, whatever ends the walk. A walk that still owns its session when it ends,
+// whatever ended it, arms the release; one told that a walk is already asking, and one that lost its session, arm nothing and clear nothing.
 export async function walk($: EngineInterface, windowMs: number): Promise<string> {
   if (walking !== null) return ALREADY_ASKING
   const me = Symbol('walk')
@@ -199,7 +232,7 @@ export async function walk($: EngineInterface, windowMs: number): Promise<string
   } finally {
     if (owns(me)) {
       walking = null
-      setWalkAsking(false)
+      armRelease($)
     }
   }
 }

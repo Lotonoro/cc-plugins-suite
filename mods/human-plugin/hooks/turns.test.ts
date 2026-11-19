@@ -1,5 +1,5 @@
 import { expect, test } from 'claude-code/testing'
-import { carried, carryHeld, carriesHeld, endTurn, giveBack, handOver, notEntered, offer, pending, reset, setOnChange, setWalkAsking, startTurn, takeHeld, unreadIds } from './turns'
+import { carried, carryHeld, carriesHeld, endHold, endTurn, giveBack, handOver, notEntered, offer, pending, reset, setOnChange, setWalkAsking, startTurn, takeHeld, unreadIds } from './turns'
 
 // The queue is module state: each test starts from an idle session with nothing held.
 // LIVE: every item is still on the list.
@@ -492,7 +492,7 @@ test('a notice offered while a turn runs goes to its read point when a walk is a
   expect(appended).toEqual(['#1 is done: a'])
 })
 
-test('the end of the walk ends the hold: the next notice takes the idle path, and the turn it starts appends the walk\'s earlier notice once', async () => {
+test('a walk that cannot arm its release ends the hold itself: the next notice takes the idle path, and the turn it starts appends the walk\'s earlier notice once', async () => {
   reset()
   setWalkAsking(true)
   offer({ id: 1, text: '#1 is done: a' })
@@ -520,7 +520,7 @@ test('the next turn to start appends the notices a walk kept, once each, and lea
   expect(pending()).toEqual({ held: [], waiting: [] })
 })
 
-test('a turn that ends, not interrupted, while a walk is asking submits nothing: its leftovers wait, the session is idle, and the pointer to a notice it appended is not sent', async () => {
+test('a turn that ends, not interrupted, while a walk is asking submits nothing: its leftovers wait with the pointer to a notice it appended, the session is idle, and the walk\'s release delivers both', async () => {
   reset()
   let told = 0
   setOnChange(() => {
@@ -537,10 +537,37 @@ test('a turn that ends, not interrupted, while a walk is asking submits nothing:
   expect(told).toBeGreaterThan(before)
   expect(pending()).toEqual({ held: [], waiting: [{ id: 2, text: '#2 is done: b' }] })
   expect(offer({ id: 4, text: '#4 is done: d' })).toBe('walk')
-  setWalkAsking(false)
-  startTurn()
-  expect(endTurn('t2', false, LIVE)?.text).toBe('#2 is done: b\n\n#4 is done: d')
+  expect(endHold(LIVE)).toEqual({
+    text: 'human-plugin: #1 was marked done while you worked; its notice is above.\n\n#2 is done: b\n\n#4 is done: d',
+    notices: [{ id: 2, text: '#2 is done: b' }, { id: 4, text: '#4 is done: d' }],
+    pointed: [1],
+  })
   setOnChange(() => {})
+})
+
+test('a request that starts before the walk\'s release carries the notices a turn appended, so the release does not point to them', async () => {
+  reset()
+  startTurn()
+  offer({ id: 1, text: '#1 is done: a' })
+  await handOver(kept([]), NOW)
+  setWalkAsking(true)
+  expect(endTurn('t1', false, LIVE)).toBe(null)
+  startTurn()
+  carried()
+  expect(endTurn('t2', false, LIVE)).toBe(null)
+  offer({ id: 2, text: '#2 is done: b' })
+  expect(endHold(LIVE)).toEqual({ text: '#2 is done: b', notices: [{ id: 2, text: '#2 is done: b' }], pointed: [] })
+})
+
+test('a pointer a turn kept for the walk\'s release is left out when the item of the notice it points to has gone', async () => {
+  reset()
+  startTurn()
+  offer({ id: 1, text: '#1 is done: a' })
+  offer({ id: 2, text: '#2 is done: b' })
+  await handOver(kept([]), NOW)
+  setWalkAsking(true)
+  expect(endTurn('t1', false, LIVE)).toBe(null)
+  expect(endHold(id => id !== 1)?.text).toBe('human-plugin: #2 was marked done while you worked; its notice is above.')
 })
 
 test('a turn that is interrupted while a walk is asking holds its leftovers for the human\'s next prompt, as it does without one', () => {
@@ -559,4 +586,166 @@ test('a /clear ends the hold: a notice offered afterwards takes the idle path', 
   expect(offer({ id: 1, text: '#1 is done: a' })).toBe('walk')
   reset()
   expect(offer({ id: 2, text: '#2 is done: b' })).toBe('submit')
+})
+
+// The walk's release (deliver.ts makes it a second after the walk's end): it ends the hold and takes what is owed, by the rule a turn's end uses.
+test('the release ends the hold and delivers the waiting notices whose items are still on the list as one prompt, each once, and the session is busy until that prompt enters', () => {
+  reset()
+  let told = 0
+  setOnChange(() => {
+    told += 1
+  })
+  setWalkAsking(true)
+  offer({ id: 1, text: '#1 is done: a' })
+  offer({ id: 2, text: '#2 is done: b' })
+  offer({ id: 3, text: '#3 is done: c' })
+  const before = told
+  expect(endHold(id => id !== 2)).toEqual({
+    text: '#1 is done: a\n\n#3 is done: c',
+    notices: [{ id: 1, text: '#1 is done: a' }, { id: 3, text: '#3 is done: c' }],
+    pointed: [],
+  })
+  expect(told).toBeGreaterThan(before)
+  expect(pending()).toEqual({ held: [], waiting: [] })
+  expect(endHold(LIVE)).toBe(null)
+  // The prompt is starting a turn: a notice that lands before it starts waits for it.
+  expect(offer({ id: 4, text: '#4 is done: d' })).toBe('queued')
+  setOnChange(() => {})
+})
+
+test('a release with nothing owed delivers nothing, tells the saved record of nothing, ends the hold and leaves the session idle: the next notice takes the idle path', () => {
+  reset()
+  let told = 0
+  setOnChange(() => {
+    told += 1
+  })
+  setWalkAsking(true)
+  expect(endHold(LIVE)).toBe(null)
+  expect(told).toBe(0)
+  expect(offer({ id: 1, text: '#1 is done: a' })).toBe('submit')
+  setOnChange(() => {})
+})
+
+test('a release whose only waiting notices are for items that have gone delivers nothing and ends the hold', () => {
+  reset()
+  setWalkAsking(true)
+  offer({ id: 1, text: '#1 is done: a' })
+  expect(endHold(() => false)).toBe(null)
+  expect(pending()).toEqual({ held: [], waiting: [] })
+  expect(offer({ id: 2, text: '#2 is done: b' })).toBe('submit')
+})
+
+test('a release whose prompt does not enter holds its notices for the human\'s next prompt, and the session is idle again', () => {
+  reset()
+  setWalkAsking(true)
+  offer({ id: 1, text: '#1 is done: a' })
+  const submit = endHold(LIVE)
+  notEntered(submit?.notices ?? [])
+  expect(takeHeld()).toEqual([{ id: 1, text: '#1 is done: a' }])
+  expect(offer({ id: 2, text: '#2 is done: b' })).toBe('submit')
+})
+
+test('a release with a turn running delivers nothing but ends the hold: that turn appends the waiting notices at its read point, and its end submits what it leaves', async () => {
+  reset()
+  setWalkAsking(true)
+  offer({ id: 1, text: '#1 is done: a' })
+  startTurn()
+  expect(endHold(LIVE)).toBe(null)
+  expect(pending()).toEqual({ held: [], waiting: [{ id: 1, text: '#1 is done: a' }] })
+  // A notice offered after the release goes to the running turn, and not to the walk.
+  expect(offer({ id: 2, text: '#2 is done: b' })).toBe('queued')
+  expect(endTurn('t1', false, LIVE)?.text).toBe('#1 is done: a\n\n#2 is done: b')
+})
+
+test('a release with a turn running leaves the notices for that turn\'s read point, which appends each once', async () => {
+  reset()
+  setWalkAsking(true)
+  offer({ id: 1, text: '#1 is done: a' })
+  startTurn()
+  expect(endHold(LIVE)).toBe(null)
+  const appended: string[] = []
+  await handOver(kept(appended), NOW)
+  await handOver(kept(appended), NOW)
+  expect(appended).toEqual(['#1 is done: a'])
+})
+
+test('a release while a submit is starting a turn delivers nothing: the notices wait for that turn', () => {
+  reset()
+  expect(offer({ id: 1, text: '#1 is done: a' })).toBe('submit')
+  setWalkAsking(true)
+  offer({ id: 2, text: '#2 is done: b' })
+  expect(endHold(LIVE)).toBe(null)
+  expect(pending()).toEqual({ held: [], waiting: [{ id: 2, text: '#2 is done: b' }] })
+})
+
+test('a turn that starts while the hold is on appends the notices a walk kept, and the release has nothing left to deliver', async () => {
+  reset()
+  setWalkAsking(true)
+  offer({ id: 1, text: '#1 is done: a' })
+  startTurn()
+  const appended: string[] = []
+  await handOver(kept(appended), NOW)
+  carried()
+  expect(appended).toEqual(['#1 is done: a'])
+  expect(endHold(LIVE)).toBe(null)
+  expect(endTurn('t1', false, LIVE)).toBe(null)
+})
+
+test('the release leaves the notices an interrupt held for the human\'s prompt, and a pointer to an interrupted turn\'s appended notices is not sent', async () => {
+  reset()
+  startTurn()
+  offer({ id: 1, text: '#1 is done: a' })
+  await handOver(kept([]), NOW)
+  offer({ id: 2, text: '#2 is done: b' })
+  setWalkAsking(true)
+  expect(endTurn('t1', true, LIVE)).toBe(null)
+  offer({ id: 3, text: '#3 is done: c' })
+  expect(endHold(LIVE)).toEqual({ text: '#3 is done: c', notices: [{ id: 3, text: '#3 is done: c' }], pointed: [] })
+  expect(takeHeld()).toEqual([{ id: 2, text: '#2 is done: b' }])
+})
+
+test('a release whose only owed notices are held ones delivers nothing, and they stay for the human\'s next prompt', async () => {
+  reset()
+  startTurn()
+  offer({ id: 1, text: '#1 is done: a' })
+  await handOver(kept([]), NOW)
+  offer({ id: 2, text: '#2 is done: b' })
+  endTurn('t0', true, LIVE)
+  setWalkAsking(true)
+  startTurn()
+  offer({ id: 3, text: '#3 is done: c' })
+  await handOver(kept([]), NOW)
+  expect(endTurn('t1', true, LIVE)).toBe(null)
+  expect(endHold(LIVE)).toBe(null)
+  expect(takeHeld()).toEqual([{ id: 2, text: '#2 is done: b' }])
+})
+
+test('a release delivers a pointer alone when a turn that ended during the walk left only appended notices no request carried', async () => {
+  reset()
+  startTurn()
+  offer({ id: 1, text: '#1 is done: a' })
+  await handOver(kept([]), NOW)
+  setWalkAsking(true)
+  expect(endTurn('t1', false, LIVE)).toBe(null)
+  expect(endHold(LIVE)).toEqual({
+    text: 'human-plugin: #1 was marked done while you worked; its notice is above.',
+    notices: [],
+    pointed: [1],
+  })
+})
+
+test('a release that has pointed to the appended notices has taken them: a turn that ends later does not point to them again', async () => {
+  reset()
+  startTurn()
+  offer({ id: 1, text: '#1 is done: a' })
+  await handOver(kept([]), NOW)
+  setWalkAsking(true)
+  expect(endTurn('t1', false, LIVE)).toBe(null)
+  const submit = endHold(LIVE)
+  expect(submit?.pointed).toEqual([1])
+  // The prompt did not enter, so no request carried the pointer; a turn that starts and ends afterwards leaves it unsaid.
+  notEntered(submit?.notices ?? [])
+  startTurn()
+  offer({ id: 2, text: '#2 is done: b' })
+  expect(endTurn('t2', false, LIVE)?.text).toBe('#2 is done: b')
 })
