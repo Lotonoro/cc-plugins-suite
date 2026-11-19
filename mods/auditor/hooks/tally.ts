@@ -1,15 +1,16 @@
 import type { ModelUsage } from 'claude-code'
 import type { Conversation, ReviewUsage } from '../types/index'
-import { isPriced, priceOf } from './pricing'
+import { entryOf, priceOf } from './pricing'
 
 // The tally's and the review counters' transitions as conversation-in, conversation-out functions: the auditor's reviewers' spend at API list prices, the reviews completed and the notes given, since the conversation began or the auditor was last switched on. register.ts keeps the state writes, and calls these inside the changes it already makes.
 
 // Adds `usage` priced as `model`. A model that is not priced makes the cost unknown, naming it, and it stays unknown until the tally restarts. Nothing is added while the auditor is off.
 const added = (c: Conversation, usage: ModelUsage, model: string): Conversation => {
   if (c.off || c.unpriced !== null) return c
-  if (!isPriced(model)) return { ...c, unpriced: model }
+  const entry = entryOf(model)
+  if (entry === undefined) return { ...c, unpriced: model }
   // A usage with a missing count prices as NaN, which would poison the tally for good: it adds nothing.
-  const price = priceOf(usage)
+  const price = priceOf(entry, usage)
   return Number.isFinite(price) ? { ...c, spent: c.spent + price } : c
 }
 
