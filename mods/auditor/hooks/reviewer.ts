@@ -1,5 +1,5 @@
 import type { AgentInfo } from 'claude-code'
-import type { Conversation, FailCause, LetGoReason } from '../types/index'
+import type { Conversation, FailCause, LetGoReason, OpenReview } from '../types/index'
 import { DEFAULT_MODEL, canonicalOf, idOf, isFullId, sameModel } from './models'
 import type { ModelIds } from './models'
 
@@ -26,6 +26,30 @@ export const standingOf = (c: Conversation, agentId: string | undefined): Standi
   if (agentId === undefined) return 'neither'
   if (c.reviewer?.id === agentId) return 'current'
   return c.reviewerIds.includes(agentId) ? 'former' : 'neither'
+}
+
+// Why a reviewer's turn end closed nothing, in the words the debug log uses: the agent is one the state knows as a reviewer it let go (`former reviewer`), or it was the stored reviewer when its turn end was first read and the settle's take found it no longer stored (`let go during its settle`).
+export type UnmatchedReason = 'former reviewer' | 'let go during its settle'
+
+// How many of a review's latest turn ends that closed nothing are kept in full: two are enough to compare their ids with the stored reviewer's, and the conversation is one state value rewritten on every change.
+const UNMATCHED_KEPT = 2
+
+// The review with one more turn end counted under `reason`: its count raised, and the turn end appended to the latest ones, the oldest dropped past UNMATCHED_KEPT.
+const withUnmatched = (review: OpenReview, reason: UnmatchedReason, agentId: string, at: number): OpenReview => {
+  const held = review.unmatched ?? { former: 0, letGo: 0, last: [] }
+  const former = reason === 'former reviewer'
+  return { ...review, unmatched: { former: held.former + (former ? 1 : 0), letGo: held.letGo + (former ? 0 : 1), last: [...held.last, { agentId, at }].slice(-UNMATCHED_KEPT) } }
+}
+
+// What a reviewer turn end that closed nothing did: the conversation after it, the reason it counts under (absent where the agent is not one the state knows as let go), and the number of the review that took it (absent where none did).
+export type Counted = { next: Conversation; reason: UnmatchedReason | undefined; review: number | undefined }
+
+// Counts the turn end of `agentId`, which arrived at `at`, on the open review under `reason`. It is judged on the conversation a change reads, never on the one the hook first read: only an agent the state knows as a reviewer it let go counts (the stored reviewer and the worker's own agents never do), and the open review takes it only when that review was dispatched by the time of the first read (`dispatched`, the dispatch count there). A review's number is its dispatch's count, so a newer review is not counted on; a clock reading could not say this exactly, since a dispatch in the window can carry a later time and a same-millisecond one ties.
+export const countUnmatched = (c: Conversation, agentId: string, reason: UnmatchedReason, at: number, dispatched: number): Counted => {
+  if (standingOf(c, agentId) !== 'former') return { next: c, reason: undefined, review: undefined }
+  const open = c.review
+  if (open === undefined || open.number > dispatched) return { next: c, reason, review: undefined }
+  return { next: { ...c, review: withUnmatched(open, reason, agentId, at) }, reason, review: open.number }
 }
 
 // What an event's origin says: this plugin's own hook (`own`), an agent this plugin spawned (`spawned`), or neither.
@@ -111,7 +135,10 @@ const reviewerOf = (id: string, model: string, choice: string | undefined): NonN
 // The per-id record of resolved models with `model` for `id`; unchanged where the model is blank (a spawn result that has not landed) or already recorded.
 const withModel = (models: Conversation['reviewerModels'], id: string, model: string): Conversation['reviewerModels'] => (model === '' || models[id] === model ? models : { ...models, [id]: model })
 
-// Learns a reviewer spawn's id and its team name, as the spawn hook sees them. The id and the model the spawn resolved to are kept on the spawn's entry in `spawnsInFlight`, matched by brief, for the spawning dispatch, which has the last word on whether the spawn stays the reviewer (`land`), and the model is recorded for the id (`reviewerModels`). The spawn stands in as the reviewer at once while its review is open in its epoch and none is stored, with the choice its entry was spawned for, so its calls and turn end are the reviewer's before its dispatch resumes; a hook that matches no entry only marks the id, the name and the model.
+// The review with `id` recorded as the reviewer its brief reached: only where it has a route to record it for and holds no id for that route yet. The id a route already has is never overwritten, since it asks whom the brief reached and not who holds the review now, so a landing for the brief a stand-in already recorded leaves it; a route set replaces it (`withRoute` in register.ts).
+const withBriefed = (review: OpenReview, id: string): OpenReview => (review.briefTo === undefined || review.briefedId !== undefined ? review : { ...review, briefedId: id })
+
+// Learns a reviewer spawn's id and its team name, as the spawn hook sees them. The id and the model the spawn resolved to are kept on the spawn's entry in `spawnsInFlight`, matched by brief, for the spawning dispatch, which has the last word on whether the spawn stays the reviewer (`land`), and the model is recorded for the id (`reviewerModels`). The spawn stands in as the reviewer at once while its review is open in its epoch and none is stored, with the choice its entry was spawned for, so its calls and turn end are the reviewer's before its dispatch resumes, and its id is the one the review's brief reached, so a review whose spawn call never lands still names it; a hook that matches no entry only marks the id, the name and the model.
 export const learn = (c: Conversation, brief: string, agentId: string, model: string, name: string): Conversation => {
   const own = matchSpawn(c.spawnsInFlight, brief)
   const standsIn = !c.off && c.reviewer === undefined && own !== undefined && own.epoch === c.epoch && own.number === c.review?.number
@@ -119,6 +146,7 @@ export const learn = (c: Conversation, brief: string, agentId: string, model: st
     ...c,
     spawnsInFlight: c.spawnsInFlight.map(s => (s === own ? { ...s, id: agentId, model } : s)),
     ...(standsIn ? { reviewer: reviewerOf(agentId, model, own?.choice) } : {}),
+    ...(standsIn && c.review !== undefined ? { review: withBriefed(c.review, agentId) } : {}),
     reviewerIds: withMember(c.reviewerIds, agentId),
     reviewerNames: withMember(c.reviewerNames, name),
     reviewerModels: withModel(c.reviewerModels, agentId, model),
@@ -148,7 +176,7 @@ export const spawning = (c: Conversation, spawn: Spawn): Conversation => ({ ...c
 // What a spawn's landing did: the id it settled on, whether it landed under an older epoch than its dispatch's, and whether it stood in as the reviewer.
 export type Landing = { next: Conversation; id: string | undefined; stale: boolean; stood: boolean }
 
-// Lands a spawn under the dispatch's epoch (`epoch`): its id is the result's, else its entry's, else the stored reviewer's, which under the dispatch's epoch can only be this spawn, adopted by name before its hook stood it in. The id marks the spawn's traffic and rows even when the spawn hook never saw it, and its resolved model is recorded for it. A spawn that stands in carries the choice its entry was spawned for, else the one the reviewer stored under its id already holds. A spawn that is not stale stands in as the reviewer while its review is open; a review that already closed, with another reviewer or none stored, means this spawn was retired or replaced since, and it is not stood in again. Otherwise the stored reviewer stays as it is: a stale spawn stored as the reviewer was adopted by name in the current epoch and may hold a later review, which clearing it would leave open with no reviewer to settle it.
+// Lands a spawn under the dispatch's epoch (`epoch`): its id is the result's, else its entry's, else the stored reviewer's, which under the dispatch's epoch can only be this spawn, adopted by name before its hook stood it in. The id marks the spawn's traffic and rows even when the spawn hook never saw it, and its resolved model is recorded for it. A spawn that stands in carries the choice its entry was spawned for, else the one the reviewer stored under its id already holds, and its id is the one its review's brief reached when that review is the open one and its stand-in recorded none. A spawn that is not stale stands in as the reviewer while its review is open; a review that already closed, with another reviewer or none stored, means this spawn was retired or replaced since, and it is not stood in again. Otherwise the stored reviewer stays as it is: a stale spawn stored as the reviewer was adopted by name in the current epoch and may hold a later review, which clearing it would leave open with no reviewer to settle it.
 export const land = (c: Conversation, brief: string, number: number, epoch: number, started: { agentId?: string; model?: string }): Landing => {
   const kept = matchSpawn(c.spawnsInFlight, brief)
   const stale = c.epoch !== epoch
@@ -159,7 +187,7 @@ export const land = (c: Conversation, brief: string, number: number, epoch: numb
   const stood = !stale && (c.review?.number === number || c.reviewer?.id === id)
   if (!stood) return { next: known, id, stale, stood }
   const choice = kept?.choice ?? (c.reviewer?.id === id ? c.reviewer.choice : undefined)
-  return { next: { ...known, reviewer: reviewerOf(id, model, choice) }, id, stale, stood }
+  return { next: { ...known, reviewer: reviewerOf(id, model, choice), ...(c.review?.number === number ? { review: withBriefed(c.review, id) } : {}) }, id, stale, stood }
 }
 
 // How long an open review may go on before it is given up, by whether a reviewer is stored: a spawn that stood none in (`start`) or a stored reviewer that has not ended its turn (`finish`), each in milliseconds from the dispatch.

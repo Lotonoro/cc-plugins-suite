@@ -13,8 +13,8 @@ import { REVIEWER_PROMPT } from './prompt'
 import { clip, editedLines, entryBlock, pageOf, renumberBlock, toolLine } from './record'
 import { DEFAULT_MODEL, FALLBACK_CHOICES, isFullId, offered, takeChoice } from './models'
 import type { Choices, ModelIds } from './models'
-import { adopt, compactionModel, idleTimerOf, isEndNotice, isHandBack, isNotice, isReviewerEntry, land, lapseOf, learn, learnName, letGo, letGoSwitched, letGoSwitchedIdle, markers, nameKnown, nameListed, needsIds, originOf, reapIdle, reviewModels, reviewerNameOf, spawnChoice, spawnName, spawning, standingOf, stopMissed, sweepable, WORKING, withTurnEnd } from './reviewer'
-import type { Identity, IdleTimer, Release, ReviewModels } from './reviewer'
+import { adopt, compactionModel, countUnmatched, idleTimerOf, isEndNotice, isHandBack, isNotice, isReviewerEntry, land, lapseOf, learn, learnName, letGo, letGoSwitched, letGoSwitchedIdle, markers, nameKnown, nameListed, needsIds, originOf, reapIdle, reviewModels, reviewerNameOf, spawnChoice, spawnName, spawning, standingOf, stopMissed, sweepable, WORKING, withTurnEnd } from './reviewer'
+import type { Counted, Identity, IdleTimer, Release, ReviewModels, UnmatchedReason } from './reviewer'
 import { readLastModel, readModelIds, storeModelId, writeLastModel } from './store'
 import { purged, withCompaction, withNoteGiven, withResponse, withReviewDone } from './tally'
 import { DIGEST_CHARS, LOOKUP_TIMEOUT_MS, SEARCH_TERM_CHARS, digestBlocks, digestOf, lineCommand, lookupOf, parseSearch, renderSearch, searchCommand } from './transcript'
@@ -221,6 +221,12 @@ const logReview = async ($: Scope, sessionId: string, log: boolean, closed: Clos
       followed_up: review.followedUp === true,
       // Where the brief went: the stored reviewer, or a spawn and why. Null when no brief is known to have gone out.
       brief_to: review.briefTo ?? null,
+      // The reviewer the brief reached: the stored reviewer's id, or the spawn's once it stood in. Null when none is known, as it is whenever `brief_to` is null.
+      briefed_id: review.briefedId ?? null,
+      // The reviewer turn ends that arrived while the review was open, after its dispatch, and closed nothing: counted by why (an agent the state knows as a reviewer it let go; the stored reviewer the settle found let go), with the latest two in full, newest last. A review stored before the counts existed logs none.
+      unmatched_former: review.unmatched?.former ?? 0,
+      unmatched_let_go: review.unmatched?.letGo ?? 0,
+      unmatched_last: (review.unmatched?.last ?? []).map(end => ({ agent_id: end.agentId, at: end.at })),
     }
     await $.fs.write(`${await sessionDir($, sessionId)}/${numbered(review.number)}.json`, JSON.stringify(body))
   } catch (err) {
@@ -228,8 +234,8 @@ const logReview = async ($: Scope, sessionId: string, log: boolean, closed: Clos
   }
 }
 
-// A review as its log reads it when its brief is not known to have reached a reviewer: without its route.
-const withoutRoute = ({ briefTo: _route, ...review }: OpenReview): OpenReview => review
+// A review as its log reads it when its brief is not known to have reached a reviewer: without its route, and without the reviewer that route reached.
+const withoutRoute = ({ briefTo: _route, briefedId: _briefed, ...review }: OpenReview): OpenReview => review
 
 // Logs a review that closed with no reviewer turn end as incomplete.
 const logIncomplete = ($: Scope, sessionId: string, log: boolean, review: OpenReview, models: ReviewModels, reason: string): Promise<void> =>
@@ -588,21 +594,36 @@ const holdOrRelease = async ($: Scope, refusal: Refusal): Promise<Decided | unde
   return got.decided
 }
 
+// Counts a reviewer turn end that closed nothing under `reason` in one change (`countUnmatched`), on the review open then when that review was dispatched by the time the turn end was first read (`dispatched`, the conversation's dispatch count there), and writes one debug line naming the agent, the reason and that review's number, or none, whatever the log option says. A turn end whose agent the state does not know as a reviewer it let go is not recorded, and writes nothing. The clock is read before the change, whose callback is synchronous. A failed read or write loses this one turn end's count and is the caller's to record.
+const recordUnmatched = async ($: Pick<Scope, 'state' | 'clock' | 'ui'>, agentId: string, reason: UnmatchedReason, dispatched: number): Promise<void> => {
+  const at = await $.clock.now()
+  const got: { counted?: Counted } = {}
+  await change($, c => {
+    got.counted = countUnmatched(c, agentId, reason, at, dispatched)
+    return got.counted.next
+  })
+  const counted = got.counted
+  if (counted?.reason === undefined) return
+  $.ui.log(`${PLUGIN}: a turn end of reviewer ${agentId} closed nothing (${counted.reason}); open review: ${counted.review ?? 'none'}`, { to: 'debug' })
+}
+
 // The reviewer's turn end settles its open review, with the outcome the gate saw (`settleOutcome`): the take computes it in its own change, which takes the review, so the entries go back exactly when it fails, or marks it for its one follow-up (`followUp`) and leaves it open.
-// The review is taken or marked only while `agentId` is still the stored reviewer, in the take's own change: a reviewer a switch or a /clear let go after its turn end was matched must not close the next run's review.
-// `unsent`: this settle follows a follow-up that could not be sent, whose attempt already put the answer in the debug log.
-const settle = async ($: Scope, log: boolean, agentId: string, done: Finished, unsent = false): Promise<void> => {
+// The review is taken or marked only while `agentId` is still the stored reviewer, in the take's own change: a reviewer a switch or a /clear let go after its turn end was matched must not close the next run's review. Where the take finds none, the turn end of a reviewer let go since it was read is counted on the review then open, in a change of its own (`recordUnmatched`), never in the take, whose other caller, the dispatch failure, has no turn end to count.
+// `dispatched`: the conversation's dispatch count when the hook first read it for this turn end.
+// `unsent`: this settle follows a follow-up that could not be sent, whose attempt already put the answer in the debug log, and whose turn end the settle before it already matched, so it counts none.
+const settle = async ($: Scope, log: boolean, agentId: string, done: Finished, dispatched: number, unsent = false): Promise<void> => {
   const outcomeOf = (r: OpenReview): Outcome => settleOutcome({ note: r.note, number: r.number, followedUp: r.followedUp === true, reason: done.reason, answer: done.answer })
   // An incomplete review lets its reviewer go unless its turn was aborted: an abort is the user's Esc, and a cold respawn after it is what the stopped-session refusal already costs.
   const taken = await takeReview($, (_r, c) => standingOf(c, agentId) === 'current', r => outcomeOf(r).status === 'incomplete', r => outcomeOf(r).status === 'follow-up', r => outcomeOf(r).status === 'incomplete' && !done.isAborted)
   if (taken === undefined) {
     $.ui.log(`${PLUGIN}: the reviewer ended a turn with no review in progress; not recorded`, { to: 'debug' })
+    if (!unsent) await recordUnmatched($, agentId, 'let go during its settle', dispatched)
     return
   }
   const { review, models, released, epoch } = taken
   const outcome = outcomeOf(review)
   if (outcome.status === 'follow-up') {
-    await followUp($, log, agentId, done, review.number, epoch)
+    await followUp($, log, agentId, done, review.number, epoch, dispatched)
     return
   }
   // The stop is issued last whatever the close or dispatch does: a reviewer let go is never left running by a throw.
@@ -635,7 +656,7 @@ const settle = async ($: Scope, log: boolean, agentId: string, done: Finished, u
 }
 
 // A review marked for its follow-up asks its reviewer once, through the step briefs use (`sendToReviewer`), to send the note it wrote as its answer. The answer goes to the debug log as the follow-up is attempted, so its text is kept whatever becomes of the follow-up. A follow-up the engine refuses in its stopped-session state (or refuses while the interrupt mark is set) has the note the reviewer wrote admitted and held by the shared hold-or-release step (`holdOrRelease`), which fills the review's slot. A follow-up that is not delivered, or whose send throws, then settles the review through the same settle, with this turn end's answer: the review is marked, so it completes quiet, or with the held note, and nothing is retried. One a reset made stale before it went out is not sent, and settles nothing.
-const followUp = async ($: Scope, log: boolean, agentId: string, done: Finished, number: number, epoch: number): Promise<void> => {
+const followUp = async ($: Scope, log: boolean, agentId: string, done: Finished, number: number, epoch: number, dispatched: number): Promise<void> => {
   $.ui.log(`${PLUGIN}: review ${number} wrote its note as its final answer, so its reviewer is asked once to send it; the answer was: ${done.answer}`, { to: 'debug' })
   let failure: string
   try {
@@ -648,7 +669,7 @@ const followUp = async ($: Scope, log: boolean, agentId: string, done: Finished,
     failure = err instanceof Error ? (err.stack ?? err.message) : String(err)
   }
   $.ui.log(`${PLUGIN}: review ${number}'s follow-up could not be sent: ${failure}`, { to: 'debug' })
-  await settle($, log, agentId, done, true)
+  await settle($, log, agentId, done, dispatched, true)
 }
 
 // A guard withholds the stall fact: the turn's last tool call asked the user; a stall note on a review dispatched since the user's last prompt was delivered; or the turn's main loop sent a broadcast (`"*"`), which names no listed agent, so the agent list cannot say what it wakes.
@@ -855,17 +876,21 @@ const leaveFlight = ($: Pick<Scope, 'state' | 'ui'>, text: string): Promise<void
 // Where a brief goes when it is spawned for: the latest let-go's reason, or that no reviewer was ever let go. Read from the conversation after the let-go this delivery made (a refused brief's), so a spawn's route is the latest reason whichever delivery made it.
 const spawnRoute = (c: Conversation): BriefTo => (c.lastLetGo === undefined ? 'spawn: no reviewer yet' : `spawn: ${c.lastLetGo}`)
 
-// The conversation with its open review's brief going `route`; unchanged where no route is named or no review is open.
-const withRoute = (c: Conversation, route: BriefTo | undefined): Conversation => (c.review === undefined || route === undefined ? c : { ...c, review: { ...c.review, briefTo: route } })
+// The conversation with its open review's brief going `route`, to the reviewer `id` where it is known (the stored reviewer's); unchanged where no route is named or no review is open. A route set replaces the one the review had and the reviewer that route reached: a spawn's route has none until the spawn stands in (`learn`, `land`).
+const withRoute = (c: Conversation, route: BriefTo | undefined, id?: string): Conversation => {
+  if (c.review === undefined || route === undefined) return c
+  const { briefedId: _previous, ...review } = c.review
+  return { ...c, review: { ...review, briefTo: route, ...(id === undefined ? {} : { briefedId: id }) } }
+}
 
-// The route taken off review `number` at `epoch` when its brief is known not to have reached a reviewer (a send or a spawn that threw or was refused), so its log reads null. A review that failed after its brief went out keeps its route.
+// The route, and the reviewer it reached, taken off review `number` at `epoch` when its brief is known not to have reached a reviewer (a send or a spawn that threw or was refused), so its log reads null for both. A review that failed after its brief went out keeps its route and its reviewer.
 const unroute = ($: Scope, epoch: number, number: number): Promise<unknown> =>
   change($, c => (c.epoch === epoch && c.review?.number === number ? { ...c, review: withoutRoute(c.review) } : c)).catch((err: unknown) => recordFailed($, 'route bookkeeping', err))
 
-// The one step that sends a plugin message, a brief or a follow-up, to the stored reviewer `to`. A brief names its route (`briefTo`), which the same change that puts it in flight sets on the review. It goes out only while the conversation is still at the epoch (`epoch`) and open review `number` it was planned under, and is 'stale' otherwise. It is held in flight (`briefsInFlight`) until its call reaches the recorder, which takes it out and leaves the call out of the record; a refused or thrown send takes it out here. It carries no agent id, so the send gate passes it untouched. Each caller decides what a refusal means.
+// The one step that sends a plugin message, a brief or a follow-up, to the stored reviewer `to`. A brief names its route (`briefTo`), which the same change that puts it in flight sets on the review, with `to` as the reviewer it reached. It goes out only while the conversation is still at the epoch (`epoch`) and open review `number` it was planned under, and is 'stale' otherwise. It is held in flight (`briefsInFlight`) until its call reaches the recorder, which takes it out and leaves the call out of the record; a refused or thrown send takes it out here. It carries no agent id, so the send gate passes it untouched. Each caller decides what a refusal means.
 const sendToReviewer = async ($: Scope, to: string, text: string, epoch: number, number: number, route?: BriefTo): Promise<Delivery> => {
   const ours = (c: Conversation): boolean => c.epoch === epoch && c.review?.number === number
-  const queued = await change($, c => (ours(c) ? { ...withRoute(c, route), briefsInFlight: [...c.briefsInFlight, text] } : c))
+  const queued = await change($, c => (ours(c) ? { ...withRoute(c, route, to), briefsInFlight: [...c.briefsInFlight, text] } : c))
   if (!ours(queued)) return { status: 'stale' }
   const sent = await $.session.send({ to, text }).catch(async (err: unknown) => {
     await leaveFlight($, text)
@@ -1052,9 +1077,6 @@ const toggle = async ($: Scope, log: boolean, off: (c: Conversation) => boolean)
 // Whether the caller is the reviewer: the one gate of the reviewer's tools. A caller no stored reviewer id names may be the reviewer whose spawn result has not landed yet, so it is looked up by name (`adoptByName`).
 const isReviewerCaller = async ($: Pick<Scope, 'agent' | 'state' | 'ui' | 'clock'>, c: Conversation, agentId: string | undefined): Promise<boolean> =>
   standingOf(c, agentId) === 'current' || (agentId !== undefined && (await adoptByName($, agentId)))
-
-const reviewerAgent = async ($: Pick<Scope, 'state'>, agentId: string | undefined): Promise<boolean> =>
-  standingOf(await readConversation($), agentId) === 'current'
 
 // The agent list names the caller by its spawn name and as this plugin's spawn (`reviewerNameOf`), and `adopt` stores its id. A failed list or clock read adopts nobody, so the caller is refused.
 const adoptByName = async ($: Pick<Scope, 'agent' | 'state' | 'ui' | 'clock'>, agentId: string): Promise<boolean> => {
@@ -1525,7 +1547,7 @@ export const register: Register = (on, options) => {
     return next(e)
   })
 
-  // A reviewer's turn end settles its review inline: it closes it, or gives it its one follow-up and leaves it open. The worker's own turn end, which every outcome reaches, ends its mid-turn and dispatches.
+  // A reviewer's turn end settles its review inline: it closes it, or gives it its one follow-up and leaves it open. The worker's own turn end, which every outcome reaches, ends its mid-turn and dispatches. A subagent's turn end reads the conversation once: that read says whose the turn end is, and gives the dispatch count a turn end that closes nothing is counted against (`recordUnmatched`). A reviewer the conversation let go has it counted on the review then open; any other agent's, the worker's own subagents included, is none of the auditor's.
   on('turn.complete', async ($, e, next) => {
     try {
       if (e.agentId === undefined) {
@@ -1536,8 +1558,11 @@ export const register: Register = (on, options) => {
         if (e.isAborted) await appendEntry($, INTERRUPTED)
         // Stop and this turn end both dispatch: a turn with no Stop, or a reviewer settling between Stop and this end, is dispatched nowhere else. An aborted turn's end dispatches nothing, since it has just set the interrupt mark (`eligible`).
         await atTurnEnd($, () => dispatchAtTurnEnd($, log))
-      } else if (await reviewerAgent($, e.agentId)) {
-        await settle($, log, e.agentId, e)
+      } else {
+        const c = await readConversation($)
+        const standing = standingOf(c, e.agentId)
+        if (standing === 'current') await settle($, log, e.agentId, e, c.dispatches)
+        else if (standing === 'former') await recordUnmatched($, e.agentId, 'former reviewer', c.dispatches)
       }
     } catch (err) {
       recordFailed($, 'review settlement', err)
