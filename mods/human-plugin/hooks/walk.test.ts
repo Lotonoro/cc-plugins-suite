@@ -858,7 +858,7 @@ test('a tick that ends an answer\'s window while the walk is still asking submit
   expect(itemOf(values, 1).state).toBe('done-pending')
   expect(submitted).toEqual([])
   expect(pending()).toEqual({ held: [], waiting: [{ id: 1, text: doneNotice(itemOf(values, 1)) }] })
-  expect(debug.filter(line => line.startsWith('human-plugin: sent #1 '))).toEqual([`human-plugin: sent #1 for press ${1000 - WINDOW} kept for the next turn while a walk asks`])
+  expect(debug.filter(line => line.startsWith('human-plugin: sent #1 '))).toEqual([`human-plugin: sent #1 for press ${1000 - WINDOW} kept for the walk's release or the next turn`])
   // The session is idle: a second notice is kept too, not queued for a turn that is not running.
   expect(offer({ id: 2, text: 'while asking' })).toBe('walk')
   release()
@@ -1002,6 +1002,10 @@ test('a walk that wrote answers arms one one-shot timer of one second at its end
   await tickAt(timers, clock, 1000, 'ticks')
   await until(() => pending().waiting.length === 3)
   expect(submitted).toEqual([])
+  // No walk is asking by then, and the debug line of each notice still says it is kept for the release.
+  expect(debug.filter(line => line.startsWith('human-plugin: sent #')).map(line => line.replace(/ for press -?\d+/, ''))).toEqual(
+    [1, 2, 3].map(id => `human-plugin: sent #${id} kept for the walk's release or the next turn`),
+  )
   without(values, 2)
   await tickAt(timers, clock, 1000, 'one-shots')
   expect(submitted).toEqual([{ text: [1, 3].map(id => doneNotice(itemOf(values, id))).join('\n\n') }])

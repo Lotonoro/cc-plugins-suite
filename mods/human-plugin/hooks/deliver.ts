@@ -63,7 +63,7 @@ export async function send($: EngineInterface, item: Item, token: number): Promi
     return
   }
   if (path === 'walk') {
-    $.ui.log(`human-plugin: sent #${item.id} for press ${token} kept for the next turn while a walk asks`, { to: 'debug' })
+    $.ui.log(`human-plugin: sent #${item.id} for press ${token} kept for the walk's release or the next turn`, { to: 'debug' })
     return
   }
   $.ui.log(`human-plugin: sent #${item.id} for press ${token} via submit`, { to: 'debug' })

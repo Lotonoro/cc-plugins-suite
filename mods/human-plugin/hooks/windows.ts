@@ -7,7 +7,8 @@ import { followSent } from './pane'
 import { pushBlocking } from './push'
 import { inBackground, readList, updateList } from './shared'
 
-const TICK_MS = 1000
+// The tick's period, which a walk's release (walk.ts) waits after the walk's end too.
+export const TICK_MS = 1000
 
 // The one-second tick: it redraws the undo countdowns and ends each window whose time has run out. It runs only while some item waits in its
 // window, so a window ends on the first tick at or after its time. Every write that leaves a window waiting starts it (keepTicker); only a

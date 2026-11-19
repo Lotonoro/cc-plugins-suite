@@ -5060,7 +5060,7 @@ test('a throw inside the AskUserQuestion hook\'s record is logged and leaves the
 })
 
 // While a walk asks, no submit is tried: the engine refuses one made while the walk's command hook is in flight. A notice that would have started a turn waits, saved as
-// waiting, for the next turn to start. The person's pause over a question is where the undo ticker's tick falls, so the walks below run the tick while a dialog is open.
+// waiting, for the walk's release or the next turn to start. The person's pause over a question is where the undo ticker's tick falls, so the walks below run the tick while a dialog is open.
 
 // The rows a turn that starts appends: its start hook appends each notice waiting then, one row each, which this records.
 const turnStartRows = async (hooks: Record<string, Handler>, env: object, turnId: string): Promise<string[]> => {
@@ -5109,8 +5109,8 @@ test('/todo answer in an idle session tries no submit while it asks: each answer
   expect(prompt).toContain('\n\n#2 is done: Item 2')
   expect(prompt).not.toContain('#3 is done')
   expect(logs.filter(line => line.startsWith('human-plugin: sent #')).map(line => line.replace(/ for press -?\d+/, ''))).toEqual([
-    'human-plugin: sent #1 kept for the next turn while a walk asks',
-    'human-plugin: sent #2 kept for the next turn while a walk asks',
+    "human-plugin: sent #1 kept for the walk's release or the next turn",
+    "human-plugin: sent #2 kept for the walk's release or the next turn",
     'human-plugin: sent #3 to the running turn',
   ])
   expect(logs).toContain("human-plugin: released at the walk's end: notices for #1, #2")

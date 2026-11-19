@@ -6,7 +6,7 @@ import { messageOf } from './done'
 import { markRead } from './pane'
 import { inBackground, readList } from './shared'
 import { setWalkAsking } from './turns'
-import { pressShown } from './windows'
+import { TICK_MS, pressShown } from './windows'
 
 // The walk behind `/todo answer`: it asks about each open item in one dialog, writes each answer the person gives through the path `/todo <n> <form>` takes (a
 // guarded write, windows.ts), and ends with the text the command returns (commands.ts words every line). It runs inside the command's hook, so the plugin's own
@@ -21,9 +21,6 @@ import { pressShown } from './windows'
 // no submit is tried for a notice meanwhile (turns.ts). That hold goes on past the walk's end, until the release the walk arms ends it (armRelease); a session's
 // end resets that module.
 let walking: symbol | null = null
-
-// How long after a walk's end its release runs: one period of the tick in windows.ts, a wait after which a submit from a timer armed in a command hook enters.
-const RELEASE_MS = 1000
 
 // The latest release a walk's end armed. It stays here once its timer has fired, until a session's end or a newer walk's arm takes its place, so that a release
 // whose list read is in flight can tell it has been replaced (armRelease). At most one timer is pending, and its release carries every walk's notices.
@@ -69,16 +66,17 @@ export function endWalk(): void {
   pending?.cancel()
 }
 
-// A walk's end, once its end text is composed: arms the release in place of any earlier one that has not run, so one release is pending. A release takes nothing
-// when it finds a newer walk asking, or that it is no longer the latest (a session's end or a newer walk's arm replaced it), and the newer walk's own end releases
-// what is owed. An arm that fails is logged as one row, and the hold ends here: the owed notices wait for the next turn to start, a notice offered after the walk
-// takes the idle path, and an earlier release the arm took away is not restored.
+// A walk's end, once its end text is composed: arms the release to run one tick period (windows.ts) later, a wait after which a submit from a timer armed in a
+// command hook enters, in place of any earlier one that has not run, so one release is pending. A release takes nothing when it finds a newer walk asking, or that
+// it is no longer the latest (a session's end or a newer walk's arm replaced it), and the newer walk's own end releases what is owed. An arm that fails is logged as
+// one row, and the hold ends here: the owed notices wait for the next turn to start, a notice offered after the walk takes the idle path, and an earlier release
+// the arm took away is not restored.
 function armRelease($: EngineInterface): void {
   const earlier = releasing
   releasing = null
   try {
     earlier?.cancel()
-    const timer = $.clock.after(RELEASE_MS, () => inBackground($, release($, () => walking !== null || releasing !== timer)))
+    const timer = $.clock.after(TICK_MS, () => inBackground($, release($, () => walking !== null || releasing !== timer)))
     releasing = timer
   } catch (err) {
     $.ui.log(`human-plugin: the notices the walk left could not be released at its end, so they wait for the next turn: ${messageOf(err)}`)
