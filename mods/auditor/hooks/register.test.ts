@@ -9696,6 +9696,15 @@ describe('the reviewer model each conversation chooses', () => {
       expect(seen.conversation.choice).toBeUndefined()
     })
 
+    test('a session end of another reason carries no choice across a clear start', ON, async ($, on) => {
+      const seen = engine(on)
+      await run($, 'model sonnet')
+      await $.session.end({ reason: 'resume', sessionId: 's1' } as any)
+      emptyConversation(seen)
+      await startOf($, 'clear')
+      expect(seen.conversation.choice).toBeUndefined()
+    })
+
     test('a /clear whose reset write is refused still carries the choice', ON, async ($, on) => {
       const seen = engine(on)
       await run($, 'model sonnet')
