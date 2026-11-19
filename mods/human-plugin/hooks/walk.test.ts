@@ -552,6 +552,30 @@ test('a rejected dialog whose record carries afkTimeoutMs writes nothing and is 
   ])
 })
 
+// The walk reads a rejected dialog before it reads the record of the call, so the record decides nothing about a rejection: the observer saw none, or one for another question.
+for (const [seen, state, what] of [
+  ['none', 'missing', 'the observer made no record of it'],
+  ['other', 'other question', "the observer's record is of another question"],
+] as const) {
+  test(`a rejected dialog is skipped when ${what}, not ended as one that cannot be confirmed: the walk goes on, and the ask line ends record ${state}; skipped`, async () => {
+    fresh()
+    const message = 'The user dismissed the question'
+    const { env, values, debug, asked } = walkEnv([made(1), made(2)], [{ gives: { rejects: message }, seen }, { gives: 'Done' }])
+    const text = await walk(env, WINDOW)
+    expect(asked.map(a => a.header)).toEqual(['#1', '#2'])
+    expect(lines(asked[1]?.question ?? '')[0]).toBe('skipped #1')
+    expect(values.list.items.map(it => it.state)).toEqual(['open', 'done-waiting'])
+    expect(text).toBe(
+      [
+        '  answered #2 with done',
+        '  It asked about every open item.',
+        '  The walk sent 1 answer; 1 item is still open. /todo answer asks about it again.',
+      ].join('\n'),
+    )
+    expect(debug).toContain(`human-plugin: walk ask #1: rejected: ${message}; record ${state}; skipped`)
+  })
+}
+
 test('an answer the observer saw no result for, or only a result for another question, writes nothing, ends as one that cannot be confirmed, and logs a line', async () => {
   for (const [seen, state] of [['none', 'missing'], ['other', 'other question']] as const) {
     fresh()
@@ -640,6 +664,21 @@ test('a throw from the read of the list for the end text, after an answer was wr
   expect(itemOf(values, 1).state).toBe('done-waiting')
   expect(shown.filter(line => line.startsWith('human-plugin: the walk stopped on an error: '))).toHaveLength(1)
   expect(shown.join('\n')).toContain('list unreadable')
+})
+
+test('a throw from the read of the list for the end text, after the last item was skipped, ends with the error reason: the skipped line and the sent count stand, and /todo shows what is still open', async () => {
+  for (const [how, gives] of [['a Skip', 'Skip'], ['a rejected dialog', { rejects: 'The user dismissed the question' }]] as const) {
+    fresh()
+    let armed = false
+    let reads = 0
+    const { env, values, shown, breakGet } = walkEnv([made(1)], [{ gives, during: () => void (armed = true) }])
+    // Two reads of the list follow the dialog: the loop's, which finds nothing left to ask about, and the end text's, which throws.
+    breakGet.when = () => armed && ++reads === 2
+    const text = await walk(env, WINDOW)
+    expect([how, text]).toEqual([how, ['  skipped #1', '  It stopped on an error, which was logged.', '  The walk sent nothing; /todo shows what is still open.'].join('\n')])
+    expect([how, itemOf(values, 1).state]).toEqual([how, 'open'])
+    expect(shown.filter(line => line.startsWith('human-plugin: the walk stopped on an error: '))).toHaveLength(1)
+  }
 })
 
 test('a walk whose session ended writes and asks nothing more, whatever its open dialog returns, and says so', async () => {

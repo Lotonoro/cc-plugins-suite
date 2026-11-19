@@ -791,7 +791,7 @@ test('the description, the usage and the argument hint name answer, and the poin
 })
 
 test('the lines a walk that does not start prints are indented', () => {
-  expect(ALREADY_ASKING).toBe('  A walk is already asking; answer or close its question first.')
+  expect(ALREADY_ASKING).toBe('  A walk is already asking; it goes on until every open item has been asked or you choose Stop on its question.')
   expect(NOTHING_OPEN).toBe('  Nothing is open to answer.')
 })
 

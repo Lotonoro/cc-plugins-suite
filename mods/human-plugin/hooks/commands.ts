@@ -302,7 +302,7 @@ const cutPrinted = (text: string, max: number): string => {
 // ---- the walk: `/todo answer` ----
 
 // What the command prints when the walk does not start: a walk is asking already, or no item is open.
-export const ALREADY_ASKING = `${INDENT}A walk is already asking; answer or close its question first.`
+export const ALREADY_ASKING = `${INDENT}A walk is already asking; it goes on until every open item has been asked or you choose Stop on its question.`
 export const NOTHING_OPEN = `${INDENT}Nothing is open to answer.`
 
 // The controls a question offers beside the item's answers, in the order they take the slots that are left, and the label a to-do's one answer takes when
