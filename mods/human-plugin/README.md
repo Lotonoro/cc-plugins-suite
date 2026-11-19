@@ -33,8 +33,8 @@ models. [Claude Code release notes](https://code.claude.com/docs/en/changelog#2-
 **Agent TODO** puts the agent’s active and queued work beside your requests,
 with ETAs when the agent can estimate them. You can see what’s coming up at a
 glance and decide whether to move work between sessions. The header reads
-**Agent TODO** until the agent names the session, and then `<name> TODO`; a long
-name is cut before the counts are.
+**Agent TODO** until the agent gives itself a call name for the session, and then
+`<name> TODO`; a long name is cut before the counts are.
 
 ## Get started
 
