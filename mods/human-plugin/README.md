@@ -52,20 +52,32 @@ from the repository root.
 - **Open an ask.** Click its title above the prompt to see its details, answers,
   and conversation. Items blocking the agent appear first. Buttons and typed
   replies give you a short undo window before they’re sent.
-- **Answer from the prompt or phone.** Run `/todo` to list requests and
+- **Answer from the prompt.** Run `/todo` to list requests and
   `/todo <n>` to see one item and its valid responses. For example, run
-  `/todo 4 done` or `/todo 4 reply Use the existing API`. `/todo answer` asks
-  about each open request in turn, blocking first.
+  `/todo 4 done` or `/todo 4 reply Use the existing API`.
 - **See what Claude is doing.** Look for **Agent TODO** beside your requests on a
   wide terminal, or run `/claude-todo` to read the same list as text.
+
+## On a Remote Control phone
+
+The panes and the list above the prompt don’t draw on the phone, so there is
+nothing to click and the flow differs from the terminal’s. Slash commands and
+their output do draw, and they take the pane’s place. `/todo` and
+`/todo <n> <form>` work as they do at the prompt. `/todo answer` asks about
+each open request in turn, blocking first, one dialog per request, and writes
+each answer as you give it; it runs at the terminal too. The agent sees those
+answers with the next prompt you type.
+
+A prompt you type from the phone also carries the open requests to the agent
+as context, so you don’t have to ask what’s waiting. A blocking item can send
+a push notification to the phone too.
 
 ## What to expect
 
 Both lists and their headers rebuild from the transcript when you resume a
 session. `/clear` empties them and resets both headers, and a rewind during a
 running session can leave the displayed lists out of sync until the agent
-updates them or you resume. On a Remote Control phone, use the slash commands
-to view and answer requests. Blocking items can also send a push notification.
+updates them or you resume.
 
 For implementation details, see [agent instructions](hooks/steering.ts),
 [request delivery](hooks/deliver.ts), and [slash commands](hooks/commands.ts).
