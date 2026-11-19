@@ -56,12 +56,12 @@ describe('priceOf for Haiku 5.5, whose price steps up past 100,000 tokens of pro
 // One response of a measured run: the id its run reported, its four token counts, and the dollars it prices at.
 type Row = { id: string; input: number; output: number; cacheRead: number; cacheWrite: number; dollars: number }
 
-// Two responses of each of 13 runs, one run on each of the 12 priced models and a second on Haiku 5.5, measured on engine 2.1.311 on 2026-11-15 and copied here on 2026-11-18. The dollars are what the session ledger grew by across the response, read to nine decimals just before it and just after, except on the one response where the ledger charged less than the list price: Sonnet 5.5's cache-reading response, whose dollars are the list price.
+// Two responses of each of 13 runs, one run on each of the 12 priced models and a second on Haiku 5.5, measured on engine 2.1.311 on 2026-11-15 and copied here on 2026-11-18. The dollars are what the session ledger grew by across the response, read to nine decimals just before it and just after.
 const LEDGER: readonly Row[] = [
   { id: 'claude-haiku-5-5', input: 2, output: 371, cacheRead: 18103, cacheWrite: 6604, dollars: 0.00119223 },
   { id: 'claude-haiku-5-5', input: 4, output: 14, cacheRead: 24707, cacheWrite: 552, dollars: 0.00032347 },
   { id: 'claude-sonnet-5-5', input: 2, output: 13, cacheRead: 0, cacheWrite: 24712, dollars: 0.061914 },
-  { id: 'claude-sonnet-5-5', input: 4, output: 13, cacheRead: 24151, cacheWrite: 751, dollars: 0.0068457 }, // the list price, $0.20 per million cache read tokens: the ledger charged $0.10
+  { id: 'claude-sonnet-5-5', input: 4, output: 13, cacheRead: 24151, cacheWrite: 751, dollars: 0.0044306 },
   { id: 'claude-haiku-5-5', input: 2, output: 347, cacheRead: 18103, cacheWrite: 6617, dollars: 0.001181855 },
   { id: 'claude-haiku-5-5', input: 4, output: 14, cacheRead: 24720, cacheWrite: 526, dollars: 0.00032035 },
   { id: 'claude-opus-5-5', input: 2, output: 136, cacheRead: 0, cacheWrite: 24721, dollars: 0.126333 },
@@ -88,14 +88,14 @@ const LEDGER: readonly Row[] = [
 
 const usageOf = (row: Row): ModelUsage => counts({ input_tokens: row.input, output_tokens: row.output, cache_read_input_tokens: row.cacheRead, cache_creation_input_tokens: row.cacheWrite })
 
-// The ids the catalog offers that the claude-api skill's model table names no price for.
+// The ids the catalog offers that the skill's model table names no price for.
 const NO_LIST_PRICE = ['claude-fable-5-2']
 
 // The one priced model whose price steps up with the prompt, and the prompt size above which it does.
 const BOUNDARIES: Readonly<Record<string, number>> = { [HAIKU_5_5]: 100_000 }
 
 describe('the price table', () => {
-  test('every measured response prices to the figure the ledger grew by, or to the list price where the ledger charged less', () => {
+  test('every measured response prices to the figure the ledger grew by', () => {
     expect(LEDGER).toHaveLength(26)
     const off = LEDGER.filter(row => !closeTo(priceOf(entryFor(row.id), usageOf(row)), row.dollars)).map(row => ({ ...row, priced: priceOf(entryFor(row.id), usageOf(row)) }))
     expect(off).toEqual([])
