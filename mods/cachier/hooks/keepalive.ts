@@ -237,9 +237,9 @@ export const enable = (
 // The word the bare command's Keepalive heading carries: keepalive's state, one of five.
 export type Heading = 'off' | 'on, refreshing' | 'on, no count' | 'paused' | 'stopped'
 
-// The tone the pane draws each heading word in, from the pie's vocabulary. It follows keepalive's state where the pie follows the cache's time, so the two
-// differ on purpose: `on, no count` is amber (a waiting state worth a glance) while the pie is green, and `paused` is amber whatever the pie shows. Total
-// over `Heading`, so a state added later fails `tsc` until it has a tone.
+// The tone the pane draws each heading word in, from the pie's vocabulary. It follows keepalive's state, which the pie's tone tells only as on or off: with
+// keepalive on the pie is green whatever the state, so `on, no count` (a waiting state worth a glance) and `paused` are amber and `stopped` red, beside a green
+// pie. Total over `Heading`, so a state added later fails `tsc` until it has a tone.
 export const HEADING_TONE: Record<Heading, Tone> = {
   off: 'gone',
   'on, refreshing': 'on',
@@ -457,7 +457,7 @@ const figureAt = (view: CacheView, leadMs: number, money: Money, pair: Pair): Fi
 
 // The figure keepalive's refreshes show while it runs: what each refresh costs, or the context it reads, and how often. Shown
 // while it runs, a refresh in flight included; null when it is off, stopped, paused, or learned no refreshes for this pause, so
-// the pie warns instead.
+// over a warm cache the pie's hover names keepalive off or paused, not on.
 export const costOf = (k: KeepaliveState, view: CacheView, money: Money, pair: Pair): Figure | null =>
   k.config === null || k.stop !== null || k.runCount === 0 ? null : figureAt(view, k.config.leadMs, money, pair)
 

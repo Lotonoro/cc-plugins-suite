@@ -1029,7 +1029,7 @@ const snapshotNow = async ($: Dollar): Promise<Snapshot> => {
   const rest = restInputsOf(held.config !== null, view, money, nowMs)
   const verdict = step(held, view, live, gapOpen(held), nowMs, money, rebuildPriced, restFactOf(rest))
   // The pie's own judgement, from the held state and the view under the cold mark, judged once: the Cache line's glyph and the Keepalive section's
-  // colour sentence both read it, so the sentence agrees with the heading above it and with the glyph.
+  // colour sentence both read it, so the sentence is shown exactly where the glyph can be amber or red.
   const pie = pieOf(reading, held.config !== null, costOf(held, view, money, pair)?.label ?? null, held.stop !== null)
   const cache = cacheLineOf(reading, raw.kind === 'known' ? raw.ttlLabel : '5m', rebuild, pie)
   // While keepalive is off, the offer a press would start: the same figure the tick writes, from the same inputs.

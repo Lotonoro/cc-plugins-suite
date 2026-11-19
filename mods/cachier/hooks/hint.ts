@@ -17,7 +17,7 @@ const TONE_PROPS: Record<Tone, Partial<TextProps>> = {
   quiet: {},
   warning: { color: 'warning' },
   alarm: { color: 'error' },
-  // Dim: the pie's expired or off state, the heading's `off` word and every row label, so a change here changes all three.
+  // Dim: the pie of an expired or cold cache with keepalive off, the heading's `off` word and every row label, so a change here changes all three.
   gone: { dimColor: true },
 }
 
@@ -28,7 +28,7 @@ const CUE_PROPS: Record<CueMark['tone'], Partial<TextProps>> = {
   warning: { color: 'warning' },
 }
 
-// The pie's hover popup words, by the keepalive state `pieOf` judges from the pie's tone.
+// The pie's hover popup words, by the keepalive state `pieOf` judges.
 const STATE_WORDS: Record<PieState, string> = { on: 'cache keepalive is on', paused: 'cache keepalive is paused', off: 'cache keepalive is off' }
 
 // A hover popup: dim text one row above its anchor, out of the flow, its right edge on the anchor's, shown only while the anchor is hovered.
@@ -46,8 +46,8 @@ const popup = (t: Table, text: string): RenderElement =>
 // The footer line: the pie, which a click switches keepalive with, and beside it the time, the rebuild figure, `reset` or `no count`, which a click
 // opens the details with. After them, the price read's cue when one stands (`cue`): `⟳` while it runs, `✓` once it landed, an amber `!` once it
 // failed; none without a line. The refresh cost shows on hover, in a popup above the time, for reference at any time, and the pie's hover names its
-// keepalive state, as `pieOf` judges it. `on` is whether keepalive is on, and `stopped` whether a recorded stop stands, which the pie's tone reads
-// (`footerOf`). Null when there is no line to show.
+// keepalive state, as `pieOf` judges it. `on` is whether keepalive is on, which makes the pie green, and `stopped` whether a recorded stop stands,
+// which the hover's state reads over a cold cache or nothing to count (`pieOf`). Null when there is no line to show.
 export const footerLine = (t: Table, state: HintState | null, on: boolean, onToggle: () => void, onDetails: () => void, cue: PriceCue | null = null, stopped = false): RenderElement | null => {
   const judged = pieOf(state?.reading ?? null, on, state?.cost?.label ?? null, stopped)
   if (judged.footer === null) return null

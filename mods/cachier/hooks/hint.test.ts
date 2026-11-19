@@ -118,17 +118,21 @@ describe('footerLine: the pie, and its words', () => {
     expect(toneOf(pieOf(footerLine(t, state({ reading: tenth }), false, noop, noop)))).toEqual({ color: 'error' })
   })
 
-  test('the pie is green in every warm quarter while keepalive refreshes, and warns while it is paused', () => {
+  test('with keepalive on the pie is green in the last quarter and the last tenth, with a refresh figure or without; with keepalive off it is amber and red', () => {
+    const quarter: Reading = { words: '1:00', state: 'warm', quarter: 1, warn: 'quarter' }
     const tenth: Reading = { words: '0:20', state: 'warm', quarter: 1, warn: 'tenth' }
-    expect(toneOf(pieOf(footerLine(t, state({ reading: tenth, cost: COST }), true, noop, noop)))).toEqual({ color: 'success' })
-    expect(toneOf(pieOf(footerLine(t, state({ reading: tenth }), true, noop, noop)))).toEqual({ color: 'error' })
+    for (const reading of [quarter, tenth]) {
+      for (const cost of [COST, null]) expect(toneOf(pieOf(footerLine(t, state({ reading, cost }), true, noop, noop)))).toEqual({ color: 'success' })
+    }
+    expect(toneOf(pieOf(footerLine(t, state({ reading: quarter }), false, noop, noop)))).toEqual({ color: 'warning' })
+    expect(toneOf(pieOf(footerLine(t, state({ reading: tenth }), false, noop, noop)))).toEqual({ color: 'error' })
   })
 
-  test('an expired cache is an empty pie and the rebuild figure, red with keepalive on and dim off', () => {
+  test('an expired cache is an empty pie and the rebuild figure, green with keepalive on and dim off', () => {
     const expired: Reading = { words: '~$0.42 to rebuild', state: 'expired', quarter: 0, warn: 'calm' }
     const on = footerLine(t, state({ reading: expired }), true, noop, noop) as any
     expect(glyphOf(pieOf(on))).toBe('○')
-    expect(toneOf(pieOf(on))).toEqual({ color: 'error' })
+    expect(toneOf(pieOf(on))).toEqual({ color: 'success' })
     expect(timeOf(on).children[0].props).toMatchObject({ children: ['~$0.42 to rebuild'], dimColor: true })
     expect(toneOf(pieOf(footerLine(t, state({ reading: expired }), false, noop, noop)))).toEqual({ dimColor: true })
   })
@@ -205,29 +209,27 @@ describe('footerLine: the pie, and its words', () => {
   })
 })
 
-describe('footerLine: a recorded stop standing with keepalive on draws the pie red beside reset or no count', () => {
+describe('footerLine: a recorded stop standing with keepalive on leaves the pie green beside reset or no count, and the hover reads paused', () => {
   const COLD_READING: Reading = { words: '', state: 'cold', quarter: 0, warn: 'calm' }
 
-  test('a cold cache is the empty pie in red with `reset` beside it, and the hover reads paused', () => {
+  test('a cold cache is the empty pie in green with `reset` beside it, and the hover reads paused; with keepalive off no stop stands, and the pie is dim', () => {
     const line = footerLine(t, state({ reading: COLD_READING }), true, noop, noop, null, true) as any
-    expect(toneOf(pieOf(line))).toEqual({ color: 'error' })
+    expect(toneOf(pieOf(line))).toEqual({ color: 'success' })
     expect(timeOf(line).children[0].props).toMatchObject({ key: 'details', children: ['reset'] })
     expect(pieBoxOf(line).children[1]).toMatchObject({ children: [{ children: ['cache keepalive is paused'] }] })
+    const off = footerLine(t, state({ reading: COLD_READING }), false, noop, noop, null, true) as any
+    expect(toneOf(pieOf(off))).toEqual({ dimColor: true })
   })
 
-  test('nothing to count is the empty pie in red beside `no count`', () => {
+  test('nothing to count is the empty pie in green beside `no count`, and the hover reads paused', () => {
     const line = footerLine(t, state({ reading: null }), true, noop, noop, null, true) as any
-    expect(toneOf(pieOf(line))).toEqual({ color: 'error' })
+    expect(toneOf(pieOf(line))).toEqual({ color: 'success' })
     expect(timeOf(line).children[0].props).toMatchObject({ key: 'details', children: ['no count'] })
-  })
-
-  test('with keepalive off no stop stands: a cold cache is dim beside reset', () => {
-    const line = footerLine(t, state({ reading: COLD_READING }), false, noop, noop, null, true) as any
-    expect(toneOf(pieOf(line))).toEqual({ dimColor: true })
+    expect(pieBoxOf(line).children[1]).toMatchObject({ children: [{ children: ['cache keepalive is paused'] }] })
   })
 })
 
-describe('footerLine: the pie\'s hover names the keepalive state its colour stands for', () => {
+describe('footerLine: the pie\'s hover names the keepalive state: on, paused or off', () => {
   const COLD_READING: Reading = { words: '', state: 'cold', quarter: 0, warn: 'calm' }
   const EXPIRED: Reading = { words: '~$0.42 to rebuild', state: 'expired', quarter: 0, warn: 'calm' }
   const QUARTER: Reading = { words: '1:00', state: 'warm', quarter: 1, warn: 'quarter' }
@@ -235,23 +237,23 @@ describe('footerLine: the pie\'s hover names the keepalive state its colour stan
   // The word the pie's hover reads, on a line that draws a pie.
   const hoverOf = (line: any): string => pieBoxOf(line).children[1].children[0].children[0]
 
-  test('a green pie reads on: a warm cache keepalive refreshes, and a cold cache or nothing to count does with keepalive on and no stop', () => {
+  test('the hover reads on for a warm cache keepalive refreshes, and for a cold cache or nothing to count with keepalive on and no stop', () => {
     expect(hoverOf(footerLine(t, state({ cost: COST }), true, noop, noop))).toBe('cache keepalive is on')
     expect(hoverOf(footerLine(t, state({ reading: COLD_READING }), true, noop, noop))).toBe('cache keepalive is on')
     expect(hoverOf(footerLine(t, state({ reading: null }), true, noop, noop))).toBe('cache keepalive is on')
   })
 
-  test('a red pie reads paused: an expired cache with keepalive on, and a recorded stop over nothing to count or a cold cache', () => {
+  test('the hover reads paused for an expired cache with keepalive on, and for a recorded stop over nothing to count or a cold cache', () => {
     expect(hoverOf(footerLine(t, state({ reading: EXPIRED }), true, noop, noop))).toBe('cache keepalive is paused')
     expect(hoverOf(footerLine(t, state({ reading: null }), true, noop, noop, null, true))).toBe('cache keepalive is paused')
     expect(hoverOf(footerLine(t, state({ reading: COLD_READING }), true, noop, noop, null, true))).toBe('cache keepalive is paused')
   })
 
-  test('with keepalive on and no refresh coming, the pie in its normal colour, amber or red reads paused', () => {
+  test('with keepalive on and no refresh coming, the hover reads paused over a warm cache at every step of its time left', () => {
     for (const reading of [WARM, QUARTER, TENTH]) expect(hoverOf(footerLine(t, state({ reading }), true, noop, noop))).toBe('cache keepalive is paused')
   })
 
-  test('with keepalive off, the pie in its normal colour, amber, red or dim reads off, with or without a refresh figure', () => {
+  test('with keepalive off, the hover reads off over every reading, with or without a refresh figure', () => {
     for (const reading of [WARM, QUARTER, TENTH, EXPIRED, COLD_READING]) {
       for (const cost of [null, COST]) expect(hoverOf(footerLine(t, state({ reading, cost }), false, noop, noop))).toBe('cache keepalive is off')
     }
@@ -333,7 +335,7 @@ describe('paneOf: the pane\'s rows, one element per row, wrapped by the engine, 
     const quarter: Reading = { words: '1:00', state: 'warm', quarter: 1, warn: 'quarter' }
     const tenth: Reading = { words: '0:20', state: 'warm', quarter: 1, warn: 'tenth' }
     const expired: Reading = { words: '~$0.42 to rebuild', state: 'expired', quarter: 0, warn: 'calm' }
-    // A footer whose pie is in each tone: keepalive refreshing, the normal colour, amber, red, and an expired cache with keepalive off.
+    // A footer whose pie is in each tone: green with keepalive on, then with keepalive off the normal colour, amber, red, and dim for an expired cache.
     const pies: Record<Tone, unknown> = {
       on: footerLine(t, state({ cost: COST }), true, noop, noop),
       quiet: footerLine(t, state(), false, noop, noop),

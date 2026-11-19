@@ -232,12 +232,14 @@ const debugOf = (rec: { logs: string[] }, marker: string): any[] =>
     .map((e) => JSON.parse(e.text.slice(marker.length + 1)))
 
 // Everything the footer line draws, as text: the pie and its time, and the details pane's lines. Off, paused or stopped the pie is still
-// drawn, and no refresh is drawn beyond its hover. The drawing cannot tell those states apart, so the bare command does.
+// drawn, and no refresh is drawn beyond its hover. The pie is green with keepalive on, paused or stopped as well as refreshing, and is not
+// green off. The drawing cannot tell paused from stopped, so the bare command does.
 const expectCountdownOnly = async ($: any, state: 'off' | 'stopped' | 'paused') => {
   const drawn = await drawnHint($)
   expect(drawn).toContain('"key":"pie"')
   expect(drawn).not.toContain('ping')
-  expect(drawn).not.toContain('"color":"success"')
+  if (state === 'off') expect(drawn).not.toContain('"color":"success"')
+  else expect(drawn).toContain('"color":"success"')
   expect(await toggle($, '')).toContain(`Keepalive  ${state}`)
 }
 // The details pane, as a click on the line opens it: its id and the props its mount takes, the title the plugin gives it.
@@ -1855,7 +1857,7 @@ describe('keepalive', () => {
     await $.classic.PostModelSwitch({ from_model: 'a', to_model: 'b', requested_model: 'b', source: 'command', prompt_cache_warm: true, cache_ttl: '5m', context_tokens: 1, estimated_cache_write_usd: 0, pricing: 'catalog' } as any)
     await clock.advance(240000)
     expect(rec.forks).toEqual([])
-    expect(await toggle($, '')).toContain('Keepalive  on, no count pie: amber ≤¼ TTL left, red ≤⅒ no live cache · nothing scheduled · cache from next reply')
+    expect(await toggle($, '')).toContain('Keepalive  on, no count no live cache · nothing scheduled · cache from next reply')
   })
 
   test('a compaction leaves the cache cold: no ping is sent until a main-thread write lands', async ($, on) => {
@@ -1869,7 +1871,7 @@ describe('keepalive', () => {
     await $.classic.PostCompact({ trigger: 'manual', compact_summary: 's' } as any)
     await clock.advance(240000)
     expect(rec.forks).toEqual([])
-    expect(await toggle($, '')).toContain('Keepalive  on, no count pie: amber ≤¼ TTL left, red ≤⅒ no live cache · nothing scheduled · cache from next reply')
+    expect(await toggle($, '')).toContain('Keepalive  on, no count no live cache · nothing scheduled · cache from next reply')
     await mainStep($)
     await turnEnd($)
     await clock.advance(240000)
@@ -1935,7 +1937,7 @@ describe('keepalive', () => {
     await clock.advance(1000)
   })
 
-  test('between the last refresh\'s count and its count-used stop being recorded, the heading reads paused while the pie is still green', async ($, on) => {
+  test('between the last refresh\'s count and its count-used stop being recorded, the heading reads paused and the pie is green, and recording the stop leaves the pie green', async ($, on) => {
     const rec = kaWorld(on, cached())
     let release: () => void = () => {}
     const gate = new Promise<void>((resolve) => {
@@ -1968,7 +1970,8 @@ describe('keepalive', () => {
     }
     await advancing
     await clock.advance(1000)
-    expect(await drawnHint($)).not.toContain('"color":"success"')
+    expect(await toggle($, '')).toContain('Keepalive  paused count used · resumes on next prompt')
+    expect((await pieDrawn($)).pie).toContain('"color":"success"')
   })
 
   test('a competing write to the keepalive state between a tick\'s read and its commit fails that commit: no fork then, and the next tick forks', async ($, on) => {
@@ -4266,8 +4269,15 @@ const cacheRow = (tree: any): any => {
   return at < 0 ? undefined : tree.children[at + 1]
 }
 const pieOfRow = (row: any): any => row.children[0].children[0]
+// The details pane as drawn now: its tree, read through a mount that is shut again.
+const paneTree = async ($: any): Promise<any> => {
+  const pane = await mountPane($)
+  const tree = await pane.drawn()
+  await pane.unmount()
+  return tree
+}
 const withoutPie = (row: any): any => ({ ...row, children: [{ ...row.children[0], children: row.children[0].children.slice(1) }] })
-// The pie line, which the Keepalive section words wherever no refresh is coming: its row in a drawing of the pane, or undefined where the pane shows none (a test
+// The pie line, which the Keepalive section words while keepalive is off: its row in a drawing of the pane, or undefined where the pane shows none (a test
 // finds the row by its words; the drawing reads none); and the row without its `amber` and `red`, for a negative that denies any other colour or dim. The helper
 // only strips the two words; their tones are pinned by the pie line describe block below and by the countdown tests.
 const PIE_LINE = 'pie: amber ≤¼ TTL left, red ≤⅒'
@@ -4345,8 +4355,9 @@ describe('the details pane draws the sections /keepalive answers with, built by 
   })
 
   // The five states the Keepalive heading names, each with how a session reaches it, the props its state word is drawn in, and the glyph and props the Cache
-  // line's pie is drawn in there, as the footer's pie is (`null` where the state has no Cache line). The pie follows the cache's time and keepalive's
-  // refreshing, not the heading: refreshing is green, a calm warm cache paused is the normal colour, and the stopped state's cache is in its last quarter, so amber.
+  // line's pie is drawn in there, as the footer's pie is (`null` where the state has no Cache line). The pie is green with keepalive on, in every state, and
+  // follows the cache's time with it off, so it does not follow the heading: the paused and stopped states, a calm warm cache and one in its last quarter, draw it
+  // green beside the heading's amber and red, and the off state draws the normal colour.
   type Pie = { glyph: string; props: Record<string, string | boolean> }
   const HEADING_STATES: { word: string; props: Record<string, string | boolean>; pie: Pie | null; reach: ($: any, on: any) => Promise<unknown> }[] = [
     { word: 'off', props: { dimColor: true }, pie: { glyph: '●', props: {} }, reach: ($, on) => startedWorld($, on) },
@@ -4373,7 +4384,7 @@ describe('the details pane draws the sections /keepalive answers with, built by 
     {
       word: 'paused',
       props: { color: 'warning' },
-      pie: { glyph: '●', props: {} },
+      pie: { glyph: '●', props: { color: 'success' } },
       reach: async ($, on) => {
         const clock = await startedWorld($, on)
         await toggle($, 'on 400')
@@ -4383,7 +4394,7 @@ describe('the details pane draws the sections /keepalive answers with, built by 
     {
       word: 'stopped',
       props: { color: 'error' },
-      pie: { glyph: '◔', props: { color: 'warning' } },
+      pie: { glyph: '◔', props: { color: 'success' } },
       reach: async ($, on) => {
         const doc: any = opusCached()
         doc.fork = { isAnswered: false, reason: 'empty-reply', usage: { ...ZERO, cache_creation_input_tokens: 18000 } }
@@ -4998,7 +5009,7 @@ describe('long pauses: the debug line, and the pane ping count from the lead in 
     await toggle($, 'on 60 2')
     await clock.advance(1000)
     expect(rec.forks).toEqual([])
-    expect(await toggle($, '')).toContain('Keepalive  paused cache expired · resumes on next prompt pie: amber ≤¼ TTL left, red ≤⅒ refresh ~19k cached every 4 min')
+    expect(await toggle($, '')).toContain('Keepalive  paused cache expired · resumes on next prompt refresh ~19k cached every 4 min')
   })
 
 })
@@ -7063,7 +7074,7 @@ describe('the rest stop reads the window the pane shows, and acts only where it 
     }
   })
 
-  test("during the stop the footer pie is drawn in the tone of the time left while the cache is warm, and red once it has lapsed; the heading and the overnight row say the step throughout, and the heading stops saying it at the prompt", { options: OVERNIGHT_ON }, async ($, on) => {
+  test("during the stop the footer pie is green throughout, with almost the whole hour left, in its last quarter and tenth, and once the cache has lapsed; the heading and the overnight row say the step throughout, and the heading stops saying it at the prompt", { options: OVERNIGHT_ON }, async ($, on) => {
     const { clk } = await nearNight($, on)
     await clk.to(NIGHT + 2000)
     const tones = async () => {
@@ -7074,17 +7085,18 @@ describe('the rest stop reads the window the pane shows, and acts only where it 
       expect(await toggle($, '')).toContain(STOPPED)
       expect(await keepaliveRows($)).toContain(`overnight: done ${hhmm(NIGHT)}`)
     }
-    // Calm, with almost the whole hour left: no colour.
-    expect(await tones()).toEqual([])
+    // Keepalive is on through the stop, so the pie is green at every step of the time left.
+    expect(await tones()).toEqual(['success'])
     await says()
     await clk.to(NIGHT + 48 * MIN)
-    expect(await tones()).toEqual(['warning'])
+    expect(await tones()).toEqual(['success'])
     await says()
     await clk.to(NIGHT + 56 * MIN)
-    expect(await tones()).toEqual(['error'])
+    expect(await tones()).toEqual(['success'])
+    expect(propsOf(pieOfRow(cacheRow(await paneTree($))))).toEqual({ color: 'success' })
     await says()
     await clk.to(NIGHT + 62 * MIN)
-    expect(await tones()).toEqual(['error'])
+    expect(await tones()).toEqual(['success'])
     expect(await toggle($, '')).toContain('Cache ○ expired')
     await says()
     await userPrompt($)
@@ -7702,7 +7714,7 @@ describe('the night compaction: a step on a conversation at the floor also compa
     ['the session start first', startFirst],
     ['the compaction hook first', hookFirst],
   ] as const) {
-    test(`a compaction that stands is marked cold once, by the existing compaction handler and not by the step, with ${order}: the Cache line and the footer read reset, the pie red while the stop holds`, { options: OVERNIGHT_ON }, async ($, on) => {
+    test(`a compaction that stands is marked cold once, by the existing compaction handler and not by the step, with ${order}: the Cache line and the footer read reset, the pie green while the stop holds`, { options: OVERNIGHT_ON }, async ($, on) => {
       const running = gateOf()
       const { rec, clk, colds, journal } = await compactNight($, on, COMPACT_FLOOR_TOKENS, async () => {
         await running.hold
@@ -7726,7 +7738,7 @@ describe('the night compaction: a step on a conversation at the floor also compa
       expect(text).toContain(STOPPED)
       const pie = await pieDrawn($)
       expect(pie.words).toBe('reset')
-      expect(pie.pie).toContain('"color":"error"')
+      expect(pie.pie).toContain('"color":"success"')
       // The step adds none later, nor does anything else: one mark for the one compaction.
       await clk.by(10 * MIN)
       expect(colds).toEqual(['compaction'])
@@ -7966,7 +7978,7 @@ describe('the bare command says how many refreshes a pause sends, and why', () =
 })
 
 describe("the pie's colour: keepalive's mode on the footer line", () => {
-  test('the pie is green while keepalive refreshes, takes the warning colours once it is paused, and is plain with keepalive off', { options: { keepalive_lead_s: 60 } }, async ($, on) => {
+  test('the pie is green while keepalive is on, refreshing or paused, and is not green with keepalive off', { options: { keepalive_lead_s: 60 } }, async ($, on) => {
     kaWorld(on, cached())
     const clock = mock.clock(on, { now: T0 })
     await $.classic.SessionStart({ source: 'startup', transcript_path: PATH })
@@ -7979,10 +7991,46 @@ describe("the pie's colour: keepalive's mode on the footer line", () => {
     await turnEnd($)
     await clock.advance(20 * MIN)
     expect(await drawnPane($)).toContain('Keepalive  paused ')
-    expect(await drawnHint($)).not.toContain('"color":"success"')
+    expect((await pieDrawn($)).pie).toContain('"color":"success"')
     await toggle($, 'off')
     await clock.advance(1000)
     expect(await drawnHint($)).not.toContain('"color":"success"')
+  })
+
+  test('a keepalive stopped by a failure on a warm cache draws the footer\'s pie and the Cache line\'s glyph green beside the red `stopped` heading and no colour sentence; turned off, both are amber and the sentence is there', async ($, on) => {
+    const doc: any = opusCached()
+    doc.fork = { isAnswered: false, reason: 'empty-reply', usage: { ...ZERO, cache_creation_input_tokens: 18000 } }
+    const clock = await startedWorld($, on, doc)
+    await toggle($, 'on 60 2')
+    await mainStep($)
+    await turnEnd($)
+    await clock.advance(241000)
+    const stopped = await paneTree($)
+    expect(textOf(keepaliveRow(stopped))).toBe('Keepalive  stopped')
+    expect(propsOf(keepaliveRow(stopped).children[1])).toEqual({ color: 'error' })
+    expect(textOf(pieOfRow(cacheRow(stopped)))).toBe('◔')
+    expect(propsOf(pieOfRow(cacheRow(stopped)))).toEqual({ color: 'success' })
+    expect((await pieDrawn($)).pie).toContain('"color":"success"')
+    expect(pieLineRow(stopped)).toBeUndefined()
+    await toggle($, 'off')
+    await clock.advance(1000)
+    const off = await paneTree($)
+    expect(propsOf(pieOfRow(cacheRow(off)))).toEqual({ color: 'warning' })
+    expect((await pieDrawn($)).pie).toContain('"color":"warning"')
+    expect(pieLineRow(off)).toBeDefined()
+  })
+
+  test('a keepalive paused by count used on a warm cache in the last tenth of its TTL draws the footer\'s pie and the Cache line\'s glyph green beside the `paused` heading', async ($, on) => {
+    const clock = await startedWorld($, on)
+    await countUsed($, clock)
+    await clock.advance(30000)
+    const tree = await paneTree($)
+    expect(textOf(keepaliveRow(tree))).toBe('Keepalive  paused')
+    expect(textOf(pieOfRow(cacheRow(tree)))).toBe('◔')
+    expect(propsOf(pieOfRow(cacheRow(tree)))).toEqual({ color: 'success' })
+    const footer = await pieDrawn($)
+    expect(footer.words).toBe('0:29')
+    expect(footer.pie).toContain('"color":"success"')
   })
 })
 
@@ -9014,10 +9062,10 @@ describe('the bare command reads each state it states once per call', () => {
   })
 })
 
-// The Keepalive section's colour sentence and offer. The sentence shows wherever no refresh is coming: not refreshing, and with keepalive off
-// or a reading held, whatever the pie's colour. The offer's explanation and figures show with keepalive off and an offer. The answer's rows
-// are joined, since the sentence wraps at 48 columns. A paused keepalive's refresh cost is followed by its interval row wherever the lead is below the TTL.
-describe('the Keepalive section: the colour sentence wherever no refresh is coming, the offer while keepalive is off, and the interval a paused keepalive names', () => {
+// The Keepalive section's colour sentence and offer. The sentence shows exactly while keepalive is off, with a reading held or none and whatever the
+// pie's colour; with keepalive on the pie is green and the sentence is absent. The offer's explanation and figures show with keepalive off and an offer.
+// The answer's rows are joined, since the sentence wraps at 48 columns. A paused keepalive's refresh cost is followed by its interval row wherever the lead is below the TTL.
+describe('the Keepalive section: the colour sentence and the offer while keepalive is off, and the interval a paused keepalive names', () => {
   const SENTENCE = 'pie: amber ≤¼ TTL left, red ≤⅒'
   const LONG = { 'pauses/old': Array.from({ length: 10 }, (_, i) => ({ startMs: 1000 + i, pausedMs: 3 * 3600000, hour: 10, weekday: 2, ratio: 24, ttlMs: 300000 })) }
   const started = async ($: any, on: any, doc: any = opusCached()) => {
@@ -9076,15 +9124,17 @@ describe('the Keepalive section: the colour sentence wherever no refresh is comi
     expect(text).not.toContain('pie: amber')
   })
 
-  test('keepalive on with a lead at the TTL, in the last quarter: the sentence follows the reason line', async ($, on) => {
+  test('keepalive on with a lead at the TTL, in the last quarter: the pie is green and the reason line is followed by the rebuild line, with no sentence', async ($, on) => {
     const clock = await started($, on)
     await toggle($, 'on 300')
     await clock.advance(240000)
-    expect(await drawnHint($)).not.toContain('"color":"success"')
-    expect(await toggle($, '')).toContain(`Keepalive  paused lead 300s ≥ 300s TTL · sends nothing ${SENTENCE} ${REBUILD}`)
+    expect((await pieDrawn($)).pie).toContain('"color":"success"')
+    const text = await toggle($, '')
+    expect(text).toContain(`Keepalive  paused lead 300s ≥ 300s TTL · sends nothing ${REBUILD}`)
+    expect(text).not.toContain(SENTENCE)
   })
 
-  test('keepalive stopped with its count used, in the last quarter: the sentence sits between the reason and the last-refresh line', async ($, on) => {
+  test('keepalive stopped with its count used, in the last quarter: the pie is green and the last-refresh line follows the reason, with no sentence between', async ($, on) => {
     const clock = await started($, on)
     await toggle($, 'on 60 1')
     await mainStep($)
@@ -9092,22 +9142,25 @@ describe('the Keepalive section: the colour sentence wherever no refresh is comi
     await clock.advance(240000 + 500)
     await clock.advance(1000)
     await clock.advance(240000)
-    expect(await drawnHint($)).not.toContain('"color":"success"')
+    expect((await pieDrawn($)).pie).toContain('"color":"success"')
     const text = await toggle($, '')
-    expect(text).toMatch(new RegExp(`Keepalive  paused count used · resumes on next prompt ${SENTENCE} \\S`))
+    expect(text).toMatch(/Keepalive  paused count used · resumes on next prompt \S/)
+    expect(text).not.toContain(SENTENCE)
   })
 
-  test('keepalive on with a learned count of none, in the last quarter: the sentence sits between the reason and the figure', async ($, on) => {
+  test('keepalive on with a learned count of none, in the last quarter: the pie is green and the figure follows the reason, with no sentence between', async ($, on) => {
     const clock = await started($, on, { ...opusCached(), store: LONG })
     await toggle($, 'on 60')
     await mainStep($)
     await turnEnd($)
     await clock.advance(250000)
-    expect(await drawnHint($)).not.toContain('"color":"success"')
-    expect(await toggle($, '')).toContain(`Keepalive  paused 0 refreshes this pause (learned: pauses rarely outlast TTL) · resumes on next prompt ${SENTENCE} refresh `)
+    expect((await pieDrawn($)).pie).toContain('"color":"success"')
+    const text = await toggle($, '')
+    expect(text).toContain('Keepalive  paused 0 refreshes this pause (learned: pauses rarely outlast TTL) · resumes on next prompt refresh ')
+    expect(text).not.toContain(SENTENCE)
   })
 
-  test('an expired cache with keepalive on: the pie is red, and the sentence follows the reason, once', async ($, on) => {
+  test('an expired cache with keepalive on: the pie is green, and the figure follows the reason, with no sentence', async ($, on) => {
     const clock = await started($, on)
     await toggle($, 'on 60 2')
     await mainStep($)
@@ -9116,9 +9169,9 @@ describe('the Keepalive section: the colour sentence wherever no refresh is comi
     await clock.advance(1000)
     const text = await toggle($, '')
     expect(text).toContain('Cache ○ expired · rebuild')
-    expect(text).toContain(`Keepalive  paused cache expired · resumes on next prompt ${SENTENCE}`)
-    expect(text.split(SENTENCE).length - 1).toBe(1)
-    expect((await pieDrawn($)).pie).toContain('"color":"error"')
+    expect(text).toContain(`Keepalive  paused cache expired · resumes on next prompt ${EXPIRED_REFRESH}`)
+    expect(text).not.toContain(SENTENCE)
+    expect((await pieDrawn($)).pie).toContain('"color":"success"')
   })
 
   test('an expired cache with keepalive off: the sentence is there once, as the pane has it', async ($, on) => {
@@ -9179,7 +9232,7 @@ describe('the Keepalive section: the colour sentence wherever no refresh is comi
     await switching
   })
 
-  test('a cold mark being written in the last quarter, after it is set and before its write finishes: the reading is cold, the pie green, and the sentence follows the reason, once', { options: { keepalive_lead_s: 20, keepalive_count: 2 } }, async ($, on) => {
+  test('a cold mark being written in the last quarter, after it is set and before its write finishes: the reading is cold, the pie green, and the section has no sentence', { options: { keepalive_lead_s: 20, keepalive_count: 2 } }, async ($, on) => {
     const doc: any = { text: '', exists: false }
     kaWorld(on, doc)
     let release: () => void = () => {}
@@ -9210,8 +9263,7 @@ describe('the Keepalive section: the colour sentence wherever no refresh is comi
       const text = await toggle($, '')
       expect(text).toContain('Cache ○ reset')
       expect(text).toContain('Keepalive  paused recording cache reset')
-      expect(text).toContain(`recording cache reset ${SENTENCE}`)
-      expect(text.split(SENTENCE).length - 1).toBe(1)
+      expect(text).not.toContain(SENTENCE)
       expect((await pieDrawn($)).pie).toContain('"color":"success"')
       await clock.advance(1000)
       expect(await hint($)).toBe('reset')
@@ -9221,7 +9273,7 @@ describe('the Keepalive section: the colour sentence wherever no refresh is comi
     await switching
   })
 
-  test('a cold mark being written at a lead at the TTL on a warm cache: the overlay reads the pending reason, the sentence, the lead reason, then the rebuild line', { options: { keepalive_lead_s: 300, keepalive_count: 2 } }, async ($, on) => {
+  test('a cold mark being written at a lead at the TTL on a warm cache: the overlay reads the pending reason, the lead reason, then the rebuild line', { options: { keepalive_lead_s: 300, keepalive_count: 2 } }, async ($, on) => {
     const doc: any = { text: '', exists: false }
     kaWorld(on, doc)
     let release: () => void = () => {}
@@ -9250,7 +9302,7 @@ describe('the Keepalive section: the colour sentence wherever no refresh is comi
     try {
       expect(holding).toBe(true)
       expect(await toggle($, '')).toContain(
-        `Keepalive  paused recording cache reset ${SENTENCE} lead 300s ≥ 300s TTL · sends nothing if cold: rebuild ~19k written`,
+        'Keepalive  paused recording cache reset lead 300s ≥ 300s TTL · sends nothing if cold: rebuild ~19k written',
       )
     } finally {
       release()
@@ -9258,7 +9310,7 @@ describe('the Keepalive section: the colour sentence wherever no refresh is comi
     await switching
   })
 
-  test('a cold mark from a model switch with its mark set and its write unrecorded, in the last quarter: the sentence is followed by the no-live-cache line', { options: { keepalive_lead_s: 20, keepalive_count: 2 } }, async ($, on) => {
+  test('a cold mark from a model switch with its mark set and its write unrecorded, in the last quarter: the pending reason is followed by the no-live-cache line', { options: { keepalive_lead_s: 20, keepalive_count: 2 } }, async ($, on) => {
     const doc: any = { text: '', exists: false }
     kaWorld(on, doc)
     let release: () => void = () => {}
@@ -9286,7 +9338,7 @@ describe('the Keepalive section: the colour sentence wherever no refresh is comi
     await clock.settle()
     try {
       expect(holding).toBe(true)
-      expect(await toggle($, '')).toContain(`Keepalive  paused recording cache reset ${SENTENCE} no live cache · nothing scheduled · cache from next reply`)
+      expect(await toggle($, '')).toContain('Keepalive  paused recording cache reset no live cache · nothing scheduled · cache from next reply')
     } finally {
       release()
     }
@@ -9365,14 +9417,14 @@ describe('the Keepalive section: the colour sentence wherever no refresh is comi
     expect(await once()).toBe(1)
   })
 
-  test('keepalive on and paused on a calm pie: the sentence follows the reason, once, and the pie is not green', async ($, on) => {
+  test('keepalive on and paused with a calm cache: the pie is green, and the reason line is followed by the rebuild line, with no sentence', async ($, on) => {
     const clock = await started($, on)
     await toggle($, 'on 300')
     await clock.advance(1000)
-    expect(await drawnHint($)).not.toContain('"color":"success"')
+    expect((await pieDrawn($)).pie).toContain('"color":"success"')
     const text = await toggle($, '')
-    expect(text).toContain(`Keepalive  paused lead 300s ≥ 300s TTL · sends nothing ${SENTENCE} ${REBUILD}`)
-    expect(text.split(SENTENCE).length - 1).toBe(1)
+    expect(text).toContain(`Keepalive  paused lead 300s ≥ 300s TTL · sends nothing ${REBUILD}`)
+    expect(text).not.toContain(SENTENCE)
   })
 
   test('keepalive on, paused after its count is used: the section gives the interval row, and no next-refresh line', async ($, on) => {
@@ -9398,7 +9450,7 @@ describe('the Keepalive section: the colour sentence wherever no refresh is comi
     expect(text).not.toMatch(/\) every \d/)
   })
 
-  test('keepalive on and refreshing on a calm pie: the sentence is absent', async ($, on) => {
+  test('keepalive on and refreshing on a calm cache: the sentence is absent', async ($, on) => {
     const clock = await started($, on)
     await toggle($, 'on 15')
     await clock.advance(1000)
@@ -10401,7 +10453,8 @@ describe('a model switch counts as a reset only on a cache cachier read as warm'
 // The old pane's lines as each state must still draw them, held as literals since the builders that gave them are retired: the cache's warmth, the
 // advice (its block of rows, joined with a space as a section is read), the status line (its status words are not compared; its reason and colour
 // sentence are the Keepalive section's rows), the refresh figure and the interval, the break-even line and the session line.
-// The pie-colour row the old pane ended its off and paused status lines with.
+// The pie-colour row the old pane ended its off and paused status lines with. The sections draw it with keepalive off only, so the paused rows below leave it
+// out of their status, and the check below finds it in the off rows and absent from every row with keepalive on.
 const COLOUR = 'pie: amber ≤¼ TTL left, red ≤⅒'
 type OldPane = { advice?: string; warmth?: string; status: string; explain?: string; figures?: string; breakEven?: string; session?: string }
 // How a state compares: `literal` finds the refresh row and the interval row, each of its own; `running` finds both in the one warm refresh row; `interval` finds the
@@ -10556,19 +10609,19 @@ const SCENARIOS: Scenario[] = [
     await clock.advance(1000)
     return paneRows($)
   } },
-  { name: 'keepalive on with a lead at the TTL', old: { warmth: 'warm · 4:58 left · 5m TTL', status: `Keepalive is paused: lead 300s ≥ 300s TTL · sends nothing. ${COLOUR}`, breakEven: 'never pays off on this context' }, reasonBy: ['lead 300s ≥ 300s TTL'], run: async ($, on) => {
+  { name: 'keepalive on with a lead at the TTL', old: { warmth: 'warm · 4:58 left · 5m TTL', status: 'Keepalive is paused: lead 300s ≥ 300s TTL · sends nothing.', breakEven: 'never pays off on this context' }, reasonBy: ['lead 300s ≥ 300s TTL'], run: async ($, on) => {
     const clock = await startedWorld($, on)
     await toggle($, 'on 300')
     await clock.advance(1000)
     return paneRows($)
   } },
-  { name: 'keepalive on with a lead above the TTL', old: { warmth: 'warm · 4:58 left · 5m TTL', status: `Keepalive is paused: lead 400s ≥ 300s TTL · sends nothing. ${COLOUR}`, breakEven: 'never pays off on this context' }, reasonBy: ['lead 400s ≥ 300s TTL'], run: async ($, on) => {
+  { name: 'keepalive on with a lead above the TTL', old: { warmth: 'warm · 4:58 left · 5m TTL', status: 'Keepalive is paused: lead 400s ≥ 300s TTL · sends nothing.', breakEven: 'never pays off on this context' }, reasonBy: ['lead 400s ≥ 300s TTL'], run: async ($, on) => {
     const clock = await startedWorld($, on)
     await toggle($, 'on 400')
     await clock.advance(1000)
     return paneRows($)
   } },
-  { name: 'keepalive stopped with its count used, the stop recorded', old: { warmth: 'warm · 0:59 left · 5m TTL', status: `Keepalive is paused: count used · resumes on next prompt. ${COLOUR}`, breakEven: 'pays off if back in 5:00–9:00', session: 'session: 1 refresh · $0.004' }, run: async ($, on) => {
+  { name: 'keepalive stopped with its count used, the stop recorded', old: { warmth: 'warm · 0:59 left · 5m TTL', status: 'Keepalive is paused: count used · resumes on next prompt.', breakEven: 'pays off if back in 5:00–9:00', session: 'session: 1 refresh · $0.004' }, run: async ($, on) => {
     const clock = await startedWorld($, on)
     await toggle($, 'on 60 1')
     await mainStep($)
@@ -10578,7 +10631,7 @@ const SCENARIOS: Scenario[] = [
     await clock.advance(240000)
     return paneRows($)
   } },
-  { name: 'keepalive stopped with its cache expired, the stop recorded', old: { warmth: 'expired · rebuild ~$0.09', status: `Keepalive is paused: cache expired · resumes on next prompt. ${COLOUR}`, breakEven: 'pays off if back in 5:00–13:00' }, run: async ($, on) => {
+  { name: 'keepalive stopped with its cache expired, the stop recorded', old: { warmth: 'expired · rebuild ~$0.09', status: 'Keepalive is paused: cache expired · resumes on next prompt.', breakEven: 'pays off if back in 5:00–13:00' }, run: async ($, on) => {
     const clock = await startedWorld($, on)
     await toggle($, 'on 60 2')
     await mainStep($)
@@ -10587,7 +10640,7 @@ const SCENARIOS: Scenario[] = [
     await clock.advance(1000)
     return paneRows($)
   } },
-  { name: 'keepalive on with a learned run count of 0', old: { warmth: 'warm · 4:59 left · 5m TTL', status: `Keepalive is paused: 0 refreshes this pause (learned: pauses rarely outlast TTL) · resumes on next prompt. ${COLOUR}` }, reasonBy: ['pauses rarely outlast TTL', 'resumes on next prompt'], run: async ($, on) => {
+  { name: 'keepalive on with a learned run count of 0', old: { warmth: 'warm · 4:59 left · 5m TTL', status: 'Keepalive is paused: 0 refreshes this pause (learned: pauses rarely outlast TTL) · resumes on next prompt.' }, reasonBy: ['pauses rarely outlast TTL', 'resumes on next prompt'], run: async ($, on) => {
     const clock = await startedWorld($, on, { ...opusCached(), store: LONG_PAUSES })
     await toggle($, 'on 60')
     await mainStep($)
@@ -10618,10 +10671,10 @@ const SCENARIOS: Scenario[] = [
   } },
   { name: 'a cold mark from a model switch whose write is begun and the mark not yet set', old: { warmth: 'warm · 3:19 left · 5m TTL', status: 'Keepalive is on and refreshing the cache.', explain: '$0.004 (~19k cached)', figures: 'every 4 min', breakEven: 'pays off if back in 5:00–13:00' }, figure: 'running', heading: 'paused', run: coldWrite(isColdWrite, SWITCH, false) },
   { name: 'a cold mark from a model switch whose write failed before the mark was set', old: { warmth: 'warm · 3:19 left · 5m TTL', status: 'Keepalive is on and refreshing the cache.', explain: '$0.004 (~19k cached)', figures: 'every 4 min', breakEven: 'pays off if back in 5:00–13:00' }, figure: 'running', heading: 'paused', run: coldWrite(isColdWrite, SWITCH, true) },
-  { name: 'a cold mark from a model switch set and its write not yet recorded', old: { warmth: 'reset · rebuild ~$0.09', status: `Keepalive is paused: cache from next reply. ${COLOUR}` }, run: coldWrite(isMarkedStats, SWITCH, false) },
-  { name: 'a cold mark from a model switch set and its write failed', old: { warmth: 'reset · rebuild ~$0.09', status: `Keepalive is paused: cache from next reply. ${COLOUR}` }, heading: 'on, no count', run: coldWrite(isMarkedStats, SWITCH, true) },
-  { name: 'a cold mark from a compaction set and its write not yet recorded', old: { warmth: 'reset · rebuild ~$0.09', status: `Keepalive is paused: cache from next reply. ${COLOUR}` }, run: coldWrite(isMarkedStats, COMPACT, false) },
-  { name: 'a cold mark from a compaction set and its write failed', old: { warmth: 'reset · rebuild ~$0.09', status: `Keepalive is paused: cache from next reply. ${COLOUR}` }, heading: 'on, no count', run: coldWrite(isMarkedStats, COMPACT, true) },
+  { name: 'a cold mark from a model switch set and its write not yet recorded', old: { warmth: 'reset · rebuild ~$0.09', status: 'Keepalive is paused: cache from next reply.' }, run: coldWrite(isMarkedStats, SWITCH, false) },
+  { name: 'a cold mark from a model switch set and its write failed', old: { warmth: 'reset · rebuild ~$0.09', status: 'Keepalive is paused: cache from next reply.' }, heading: 'on, no count', run: coldWrite(isMarkedStats, SWITCH, true) },
+  { name: 'a cold mark from a compaction set and its write not yet recorded', old: { warmth: 'reset · rebuild ~$0.09', status: 'Keepalive is paused: cache from next reply.' }, run: coldWrite(isMarkedStats, COMPACT, false) },
+  { name: 'a cold mark from a compaction set and its write failed', old: { warmth: 'reset · rebuild ~$0.09', status: 'Keepalive is paused: cache from next reply.' }, heading: 'on, no count', run: coldWrite(isMarkedStats, COMPACT, true) },
   { name: 'a /clear cold mark begun and the mark not yet set', old: { warmth: 'warm · 4:59 left · 5m TTL', status: 'Keepalive is on and refreshing the cache.', explain: '$0.004 (~19k cached)', figures: 'every 4 min', breakEven: 'pays off if back in 5:00–13:00' }, figure: 'running', heading: 'paused', run: clearWrite(isColdWrite, false) },
   { name: 'a /clear cold mark set and its write not yet recorded', old: { status: 'Keepalive is on, with no cache to count from yet.' }, run: clearWrite(isMarkedStats, false) },
   { name: 'a /clear cold mark set and its write failed', old: { status: 'Keepalive is on, with no cache to count from yet.' }, run: clearWrite(isMarkedStats, true) },
@@ -10634,7 +10687,7 @@ const SCENARIOS: Scenario[] = [
   { name: 'a /clear cold mark whose write failed before the mark was set', old: { warmth: 'warm · 4:59 left · 5m TTL', status: 'Keepalive is on and refreshing the cache.', explain: '$0.004 (~19k cached)', figures: 'every 4 min', breakEven: 'pays off if back in 5:00–13:00' }, figure: 'running', heading: 'paused', run: clearWrite(isColdWrite, true) },
   { name: 'keepalive turned off after a refresh, the session tally kept', old: { warmth: 'warm · 4:58 left · 5m TTL', status: `Keepalive is off. ${COLOUR}`, explain: '$0.004 (~19k cached)', figures: 'every 4 min', breakEven: 'pays off if back in 5:00–13:00', session: 'session: 1 refresh · $0.004' }, figure: 'literal', run: sessionRun(async ($, clock) => { await toggle($, 'off'); await clock.advance(1000) }) },
   { name: 'keepalive refreshing after a refresh, the session tally shown', old: { warmth: 'warm · 4:59 left · 5m TTL', status: 'Keepalive is on and refreshing the cache.', explain: '$0.004 (~19k cached)', figures: 'every 4 min', breakEven: 'pays off if back in 5:00–13:00', session: 'session: 1 refresh · $0.004' }, figure: 'running', heading: 'on, refreshing', run: sessionRun(async () => {}) },
-  { name: 'keepalive stopped with its cache expired after a refresh, the session tally shown', old: { warmth: 'expired · rebuild ~$0.09', status: `Keepalive is paused: cache expired · resumes on next prompt. ${COLOUR}`, breakEven: 'pays off if back in 5:00–13:00', session: 'session: 1 refresh · $0.004' }, run: sessionRun(async ($, clock) => { await mainStep($); await clock.advance(310000); await turnEnd($); await clock.advance(1000) }) },
+  { name: 'keepalive stopped with its cache expired after a refresh, the session tally shown', old: { warmth: 'expired · rebuild ~$0.09', status: 'Keepalive is paused: cache expired · resumes on next prompt.', breakEven: 'pays off if back in 5:00–13:00', session: 'session: 1 refresh · $0.004' }, run: sessionRun(async ($, clock) => { await mainStep($); await clock.advance(310000); await turnEnd($); await clock.advance(1000) }) },
   { name: 'keepalive off before any session has started', old: { status: `Keepalive is off. ${COLOUR}` }, run: noStateRun('off') },
   { name: 'keepalive on before any session has started', old: { status: 'Keepalive is on, with no cache to count from yet.' }, run: noStateRun('on 60') },
 ]
@@ -10657,7 +10710,7 @@ const sectionsOf = (rows: string[]): Map<string, { heading: string; text: string
 }
 const occurrences = (text: string, part: string) => text.split(part).length - 1
 
-describe('the pane\'s sections hold every line the old pane drew, in each state it drew them', () => {
+describe('the pane\'s sections hold every line the old pane drew, in each state it drew them, the colour sentence only while keepalive is off', () => {
   for (const s of SCENARIOS) {
     test(s.name, { options: s.options }, async ($, on) => {
       const sections = sectionsOf(await s.run($, on))
@@ -10673,24 +10726,25 @@ describe('the pane\'s sections hold every line the old pane drew, in each state 
       const old = s.old
       if (old.advice !== undefined) found(advice, old.advice)
       if (old.warmth !== undefined) found(cache, old.warmth)
-      // The status words move to the heading, and are not compared. What follows them is: the colour sentence, and the paused reason.
+      // The status words move to the heading, and are not compared. What follows them is: the paused reason, and the colour sentence, which only
+      // the keepalive-off states draw.
       const paused = 'Keepalive is paused: '
       if (old.status.startsWith(paused)) {
-        const tail = `. ${COLOUR}`
-        expect(old.status.endsWith(tail)).toBe(true)
-        const reason = old.status.slice(paused.length, old.status.length - tail.length)
+        expect(old.status.endsWith('.')).toBe(true)
+        const reason = old.status.slice(paused.length, old.status.length - 1)
         if (s.reasonBy === undefined) found(keepalive?.text, reason)
         else
           for (const part of s.reasonBy) {
             expect(old.status).toContain(part)
             found(keepalive?.text, part)
           }
-        found(keepalive?.text, COLOUR)
+        expect(keepalive?.text).not.toContain(COLOUR)
       } else if (old.status.startsWith('Keepalive is off. ')) {
         expect(old.status).toBe(`Keepalive is off. ${COLOUR}`)
         found(keepalive?.text, COLOUR)
       } else {
         expect(['Keepalive is on and refreshing the cache.', 'Keepalive is on, with no cache to count from yet.']).toContain(old.status)
+        expect(keepalive?.text).not.toContain(COLOUR)
       }
       if (old.explain !== undefined) {
         expect(old.figures).toBeDefined()
@@ -10739,20 +10793,20 @@ const countUsed = async ($: any, clock: any) => {
   await clock.advance(240000)
 }
 
-describe('the pie follows a standing stop: red beside reset or no count with keepalive on, until the next prompt', () => {
-  test('a count-used stop stands over a model switch: the pie is red beside reset, its hover reads paused, and the heading reads paused', async ($, on) => {
+describe('a standing stop leaves the pie green beside reset or no count with keepalive on, and its hover reads paused until the next prompt', () => {
+  test('a count-used stop stands over a model switch: the pie is green beside reset, its hover reads paused, and the heading reads paused', async ($, on) => {
     const clock = await startedWorld($, on)
     await countUsed($, clock)
     await SWITCH($)
     await clock.advance(1000)
     const pie = await pieDrawn($)
     expect(pie.words).toBe('reset')
-    expect(pie.pie).toContain('"color":"error"')
+    expect(pie.pie).toContain('"color":"success"')
     expect(pie.drawn).toContain('cache keepalive is paused')
     expect(await toggle($, '')).toContain('Keepalive  paused')
   })
 
-  test('a cache-expired stop stands over a compaction: the pie is red beside reset, and the heading reads paused', async ($, on) => {
+  test('a cache-expired stop stands over a compaction: the pie is green beside reset, and the heading reads paused', async ($, on) => {
     const clock = await startedWorld($, on)
     await toggle($, 'on 60 2')
     await mainStep($)
@@ -10764,11 +10818,11 @@ describe('the pie follows a standing stop: red beside reset or no count with kee
     await clock.advance(1000)
     const pie = await pieDrawn($)
     expect(pie.words).toBe('reset')
-    expect(pie.pie).toContain('"color":"error"')
+    expect(pie.pie).toContain('"color":"success"')
     expect(pie.drawn).toContain('cache keepalive is paused')
   })
 
-  test('a failure stop stands over a model switch: the pie is red beside reset, and the heading reads stopped', async ($, on) => {
+  test('a failure stop stands over a model switch: the pie is green beside reset, and the heading reads stopped', async ($, on) => {
     const doc: any = opusCached()
     doc.fork = { isAnswered: false, reason: 'empty-reply', usage: { ...ZERO, cache_creation_input_tokens: 18000 } }
     const clock = await startedWorld($, on, doc)
@@ -10781,11 +10835,11 @@ describe('the pie follows a standing stop: red beside reset or no count with kee
     await clock.advance(1000)
     const pie = await pieDrawn($)
     expect(pie.words).toBe('reset')
-    expect(pie.pie).toContain('"color":"error"')
+    expect(pie.pie).toContain('"color":"success"')
     expect(pie.drawn).toContain('cache keepalive is paused')
   })
 
-  test('a stop standing, then a failed transcript read that leaves the TTL unread: the pie is red beside no count', async ($, on) => {
+  test('a stop standing, then a failed transcript read that leaves the TTL unread: the pie is green beside no count, and its hover reads paused', async ($, on) => {
     const doc: any = opusCached()
     const clock = await startedWorld($, on, doc)
     await countUsed($, clock)
@@ -10795,7 +10849,8 @@ describe('the pie follows a standing stop: red beside reset or no count with kee
     await clock.advance(1000)
     const pie = await pieDrawn($)
     expect(pie.words).toBe('no count')
-    expect(pie.pie).toContain('"color":"error"')
+    expect(pie.pie).toContain('"color":"success"')
+    expect(pie.drawn).toContain('cache keepalive is paused')
   })
 
   test('with no stop, a cold cache whose stats write is refused and the heading on, no count: the pie is green beside reset', async ($, on) => {
@@ -10843,19 +10898,22 @@ describe('the pie follows a standing stop: red beside reset or no count with kee
     }
   })
 
-  test('a prompt over a stop, after a model switch, draws the pie green again beside reset before the turn touches the cache', async ($, on) => {
+  test('a prompt over a stop, after a model switch, turns the pie\'s hover from paused to on beside reset before the turn touches the cache, the pie green throughout', async ($, on) => {
     const clock = await startedWorld($, on)
     await countUsed($, clock)
     await SWITCH($)
     await clock.advance(1000)
-    expect((await pieDrawn($)).pie).toContain('"color":"error"')
+    const before = await pieDrawn($)
+    expect(before.pie).toContain('"color":"success"')
+    expect(before.drawn).toContain('cache keepalive is paused')
     await userPrompt($)
     const pie = await pieDrawn($)
     expect(pie.words).toBe('reset')
     expect(pie.pie).toContain('"color":"success"')
+    expect(pie.drawn).toContain('cache keepalive is on')
   })
 
-  test('a prompt over a stop with no reading draws the pie green again beside no count', async ($, on) => {
+  test('a prompt over a stop with no reading turns the pie\'s hover from paused to on beside no count, the pie green throughout', async ($, on) => {
     const doc: any = opusCached()
     const clock = await startedWorld($, on, doc)
     await countUsed($, clock)
@@ -10863,14 +10921,17 @@ describe('the pie follows a standing stop: red beside reset or no count with kee
     await mainStep($)
     await turnEnd($)
     await clock.advance(1000)
-    expect((await pieDrawn($)).pie).toContain('"color":"error"')
+    const before = await pieDrawn($)
+    expect(before.pie).toContain('"color":"success"')
+    expect(before.drawn).toContain('cache keepalive is paused')
     await userPrompt($)
     const pie = await pieDrawn($)
     expect(pie.words).toBe('no count')
     expect(pie.pie).toContain('"color":"success"')
+    expect(pie.drawn).toContain('cache keepalive is on')
   })
 
-  test('with keepalive_default on, a /clear over a lapsed cache carrying its session state starts under a cache expired stop: the pie is red beside no count, heading paused', { options: { keepalive_lead_s: 60, keepalive_default: 'on' } }, async ($, on) => {
+  test('with keepalive_default on, a /clear over a lapsed cache carrying its session state starts under a cache expired stop: the pie is green beside no count, its hover reads paused, heading paused', { options: { keepalive_lead_s: 60, keepalive_default: 'on' } }, async ($, on) => {
     kaWorld(on, cached())
     const clock = mock.clock(on, { now: T0 })
     await $.classic.SessionStart({ source: 'startup', transcript_path: PATH })
@@ -10883,10 +10944,11 @@ describe('the pie follows a standing stop: red beside reset or no count with kee
     expect(await toggle($, '')).toContain('Keepalive  paused')
     const pie = await pieDrawn($)
     expect(pie.words).toBe('no count')
-    expect(pie.pie).toContain('"color":"error"')
+    expect(pie.pie).toContain('"color":"success"')
+    expect(pie.drawn).toContain('cache keepalive is paused')
   })
 
-  test('a held footer over no reading under a stop is drawn green by the next prompt, with no hint write between', async ($, on) => {
+  test('a held footer over no reading under a stop has its hover turned from paused to on by the next prompt, with no hint write between, the pie green throughout', async ($, on) => {
     const doc: any = opusCached()
     const hintWrites: unknown[] = []
     on('state.set', (_$: any, e: any, next: any) => {
@@ -10900,11 +10962,13 @@ describe('the pie follows a standing stop: red beside reset or no count with kee
     await turnEnd($)
     await clock.advance(1000)
     const m = await mountHint($)
-    expect(JSON.stringify(await m.find({ type: 'Button', key: 'pie' }))).toContain('"color":"error"')
+    expect(JSON.stringify(await m.find({ type: 'Button', key: 'pie' }))).toContain('"color":"success"')
+    expect(JSON.stringify(await m.drawn())).toContain('cache keepalive is paused')
     hintWrites.length = 0
     await userPrompt($)
     expect(hintWrites).toEqual([])
     expect(JSON.stringify(await m.find({ type: 'Button', key: 'pie' }))).toContain('"color":"success"')
+    expect(JSON.stringify(await m.drawn())).toContain('cache keepalive is on')
     await m.unmount()
   })
 
@@ -10913,13 +10977,13 @@ describe('the pie follows a standing stop: red beside reset or no count with kee
     await countUsed($, clock)
     await SWITCH($)
     await clock.advance(1000)
-    expect((await pieDrawn($)).pie).toContain('"color":"error"')
+    expect((await pieDrawn($)).pie).toContain('"color":"success"')
     await toggle($, 'off')
     await clock.advance(1000)
     const pie = await pieDrawn($)
     expect(pie.words).toBe('reset')
     expect(pie.pie).toContain('"dimColor":true')
-    expect(pie.pie).not.toContain('"color":"error"')
+    expect(pie.pie).not.toContain('"color":"success"')
   })
 
   test('keepalive turned off after a stop over no reading draws no footer', async ($, on) => {
@@ -10930,7 +10994,7 @@ describe('the pie follows a standing stop: red beside reset or no count with kee
     await mainStep($)
     await turnEnd($)
     await clock.advance(1000)
-    expect((await pieDrawn($)).pie).toContain('"color":"error"')
+    expect((await pieDrawn($)).pie).toContain('"color":"success"')
     await toggle($, 'off')
     await clock.advance(1000)
     const m = await mountHint($)
@@ -11002,10 +11066,10 @@ describe('the Cache line opens with the pie: the footer\'s glyph in the bare ans
       },
     },
     {
-      name: 'keepalive on with a lead at the TTL, so paused, on a fresh cache: the normal colour',
+      name: 'keepalive on with a lead at the TTL, so paused, on a fresh cache: green',
       word: 'warm',
       glyph: '●',
-      props: {},
+      props: { color: 'success' },
       reach: async ($, on) => {
         const clock = await startedWorld($, on)
         await toggle($, 'on 300')
@@ -11014,10 +11078,10 @@ describe('the Cache line opens with the pie: the footer\'s glyph in the bare ans
     },
     { name: 'an expired cache, keepalive off: the empty pie, dim', word: 'expired', glyph: '○', props: { dimColor: true }, reach: async ($, on) => (await startedWorld($, on)).advance(310000) },
     {
-      name: 'an expired cache, keepalive on: the empty pie, red',
+      name: 'an expired cache, keepalive on: the empty pie, green',
       word: 'expired',
       glyph: '○',
-      props: { color: 'error' },
+      props: { color: 'success' },
       reach: async ($, on) => {
         const clock = await startedWorld($, on)
         await toggle($, 'on 60 2')
@@ -11051,10 +11115,10 @@ describe('the Cache line opens with the pie: the footer\'s glyph in the bare ans
       },
     },
     {
-      name: 'a reset cache over a recorded stop, keepalive on: the empty pie, red',
+      name: 'a reset cache over a recorded stop, keepalive on: the empty pie, green',
       word: 'reset',
       glyph: '○',
-      props: { color: 'error' },
+      props: { color: 'success' },
       reach: async ($, on) => {
         const clock = await startedWorld($, on)
         await countUsed($, clock)
@@ -11126,7 +11190,7 @@ describe('the Cache line opens with the pie: the footer\'s glyph in the bare ans
 })
 
 describe('the pie line draws its label dim, amber in the warning colour and red in the error colour, in each state that shows it, and the bare answer states it as plain text', () => {
-  // The states that show the line, each with how a session reaches it. The line shows wherever no refresh is coming, whatever the pie's colour: a calm pie, an amber
+  // The states that show the line, each with how a session reaches it. The line shows with keepalive off, whatever the pie's colour: a calm pie, an amber
   // one, a red one and a dim one stand beside the same two colour words.
   const STATES: { name: string; reach: ($: any, on: any) => Promise<unknown> }[] = [
     { name: 'keepalive off, a fresh warm cache: the pie in the normal colour', reach: ($, on) => startedWorld($, on) },
@@ -11142,35 +11206,6 @@ describe('the pie line draws its label dim, amber in the warning colour and red 
       },
     },
     { name: 'keepalive off with nothing to count', reach: ($, on) => startedWorld($, on, { text: '', exists: false }) },
-    {
-      name: 'keepalive on with a lead at the TTL, so paused: the pie in the normal colour',
-      reach: async ($, on) => {
-        const clock = await startedWorld($, on)
-        await toggle($, 'on 300')
-        await clock.advance(1000)
-      },
-    },
-    { name: 'keepalive stopped with its count used', reach: async ($, on) => countUsed($, await startedWorld($, on)) },
-    {
-      name: 'keepalive on, an expired cache: the pie red',
-      reach: async ($, on) => {
-        const clock = await startedWorld($, on)
-        await toggle($, 'on 60 2')
-        await mainStep($)
-        await clock.advance(310000)
-        await turnEnd($)
-        await clock.advance(1000)
-      },
-    },
-    {
-      name: 'keepalive on, a reset cache: the pie green',
-      reach: async ($, on) => {
-        const clock = await startedWorld($, on)
-        await toggle($, 'on 60 2')
-        await SWITCH($)
-        await clock.advance(1000)
-      },
-    },
   ]
   for (const s of STATES) {
     test(s.name, async ($, on) => {
@@ -11188,6 +11223,60 @@ describe('the pie line draws its label dim, amber in the warning colour and red 
       // The bare answer states the line once, as plain text in its one row.
       const answer = (await commandText($, '')).split('\n')
       expect(answer.filter((row) => row.includes(PIE_LINE))).toEqual([`  ${PIE_LINE}`])
+    })
+  }
+})
+
+describe('the pie line is absent while keepalive is on, in every state, beside a green pie: the pane and the bare answer draw none', () => {
+  // Each state has keepalive on, and how a session reaches it: paused by design, stopped by its count, by a lapsed cache and by a reset, and with nothing to count.
+  const STATES: { name: string; reach: ($: any, on: any) => Promise<unknown> }[] = [
+    {
+      name: 'keepalive on with a lead at the TTL, so paused',
+      reach: async ($, on) => {
+        const clock = await startedWorld($, on)
+        await toggle($, 'on 300')
+        await clock.advance(1000)
+      },
+    },
+    { name: 'keepalive stopped with its count used', reach: async ($, on) => countUsed($, await startedWorld($, on)) },
+    {
+      name: 'keepalive on, an expired cache',
+      reach: async ($, on) => {
+        const clock = await startedWorld($, on)
+        await toggle($, 'on 60 2')
+        await mainStep($)
+        await clock.advance(310000)
+        await turnEnd($)
+        await clock.advance(1000)
+      },
+    },
+    {
+      name: 'keepalive on, a reset cache',
+      reach: async ($, on) => {
+        const clock = await startedWorld($, on)
+        await toggle($, 'on 60 2')
+        await SWITCH($)
+        await clock.advance(1000)
+      },
+    },
+    {
+      name: 'keepalive on with nothing to count',
+      reach: async ($, on) => {
+        const clock = await startedWorld($, on, { text: '', exists: false })
+        await toggle($, 'on 15')
+        await clock.advance(1000)
+      },
+    },
+  ]
+  for (const s of STATES) {
+    test(s.name, async ($, on) => {
+      await s.reach($, on)
+      expect((await pieDrawn($)).pie).toContain('"color":"success"')
+      const pane = await mountPane($)
+      const tree = (await pane.drawn()) as any
+      await pane.unmount()
+      expect(pieLineRow(tree)).toBeUndefined()
+      expect(await commandText($, '')).not.toContain(PIE_LINE)
     })
   }
 })
