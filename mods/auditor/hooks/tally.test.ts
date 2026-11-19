@@ -70,7 +70,7 @@ describe('withCompaction', () => {
   })
 
   test('a model that is not priced leaves the cost unknown, naming it', () => {
-    expect(withCompaction(conversation(), counts, 'claude-opus-4-6')).toMatchObject({ spent: 0, unpriced: 'claude-opus-4-6' })
+    expect(withCompaction(conversation(), counts, 'claude-unpriced-1-1')).toMatchObject({ spent: 0, unpriced: 'claude-unpriced-1-1' })
   })
 
   test('no model at all leaves the cost unknown for a named model, not a blank', () => {
