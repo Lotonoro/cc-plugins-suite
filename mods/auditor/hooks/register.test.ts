@@ -3273,7 +3273,7 @@ describe('the session mode button', () => {
   test('the band above the prompt draws nothing from this mod', ON, async ($, on) => {
     engine(on)
     otherMods(on, 'human-plugin: 2 open')
-    const ui = await $.ui.mount({ plugin: 'auditor', surface: 'terminal', component: 'AbovePrompt', props: { hasSurvey: false, isCollapsed: false, isWorking: false, maxRows: 20, bodyColumns: 80, scroll: { offset: 0, bodyRows: 20 }, view: {} } })
+    const ui = await $.ui.mount({ plugin: 'auditor', surface: 'terminal', component: 'AbovePrompt', props: { hasSurvey: false, isWorking: false, maxRows: 20, bodyColumns: 80, scroll: { offset: 0, bodyRows: 20 }, view: {} } })
     expect(await ui.find({ key: 'auditor-toggle' })).toBeUndefined()
     expect(await ui.find({ type: 'Text', text: 'auditor reviewer: on' })).toBeUndefined()
     expect(await ui.find({ type: 'Text', text: 'human-plugin: 2 open' })).toBeDefined()
