@@ -52,6 +52,7 @@ export const normalizeItem = (raw: unknown): Item | null => {
     note: typeof r.note === 'string' ? noteOf(r.note) : null,
     agent: typeof r.agent === 'string' ? r.agent : null,
     unread: r.unread === true,
+    posed: r.posed === true,
     options: Array.isArray(r.options) ? r.options.map(optionOf).filter((o): o is ItemOption => o !== null) : [],
     yesno: r.yesno === true,
     answer: typeof r.answer === 'string' ? r.answer : null,
@@ -81,6 +82,16 @@ export const normalizeStore = (raw: unknown): Store => {
   const saved = typeof r.next === 'number' && Number.isInteger(r.next) && r.next >= 1 ? r.next : 1
   return { items, next: Math.max(saved, highest + 1), term: termStored(r.term) }
 }
+
+// The ranking, the one order of the list: an item no walk has shown above one a walk has (`posed`), then a blocking item above a non-blocking one, then the
+// oldest filed first. So the tiers run unposed blocking, unposed non-blocking, posed blocking, posed non-blocking, and an item a walk skipped, or closed, is asked
+// again after the ones it has not shown. The band, `/todo`, the phone block, the walk and the pane's picks (selectedItem, nextItem) all rank by it, each time over the
+// whole current list, so none keeps a position. An item's number comes from a counter that only goes up and is carried across /clear (clearAll, carryNext), so number
+// order is filing order; the filing time is 0 for an item an older release wrote, so it breaks no tie.
+export const rankOrder = (a: Item, b: Item): number => Number(a.posed) - Number(b.posed) || Number(b.blocking) - Number(a.blocking) || a.id - b.id
+
+// The open items of a list in the ranking: what `/todo`, the phone block and the walk take, and what the pane's next item is the first of.
+export const openRanked = (items: readonly Item[]): Item[] => items.filter(it => it.state === 'open').sort(rankOrder)
 
 // A term as the input check reads it: one line, or the reason it is refused. A blank term is `ok` with the empty text, which clears the term.
 type TermCheck = { ok: true; value: string } | { ok: false; reason: string }
@@ -267,11 +278,13 @@ const unchanged = (before: Item, after: Item): boolean => FIELDS.every(field => 
 const asks = (before: Item, after: Item): boolean => FIELDS.some(field => field(after) !== field(before) && field(after) !== '')
 
 // An agent's change to `target`, written as `after`. One that leaves the item as it was is no change. One that asks the human something
-// (asks) puts a sent item back to open, with its reply field (done.ts); an item in its undo window keeps the window, and reopens when it ends.
+// (asks) puts a sent item back to open, with its reply field (done.ts); an item in its undo window keeps the window, and reopens when it ends. Whatever it changes,
+// and whatever the item's state, it leaves the item unposed: its new content is new to the person.
 const change = (store: Store, target: Item, after: Item, reply: string): Applied => {
   if (unchanged(target, after)) return { store, reply: `no change to #${target.id}`, added: null, changed: null }
   const asked = asks(target, after)
-  const marked = asked && target.state === 'done-waiting' ? { ...after, windowChanged: true } : after
+  const unposed = { ...after, posed: false }
+  const marked = asked && target.state === 'done-waiting' ? { ...unposed, windowChanged: true } : unposed
   const written = { ...store, items: store.items.map(it => (it.id === target.id ? marked : it)) }
   const out = asked ? reopen(written, target.id) : { store: written, reopened: false }
   const promoted = target.state === 'open' && !target.blocking && after.blocking
@@ -280,11 +293,13 @@ const change = (store: Store, target: Item, after: Item, reply: string): Applied
 
 // An agent addition to an item the human has answered is a turn after the answer, not a change to the brief. A sent answer is archived first, so
 // the turn follows it, and the item reopens; an answer in its undo window keeps the window, and the turn waits in it for the window's end (done.ts).
-// A turn outside a window is unread, as a reopen is: the person may have read the item since its last turn.
+// A turn outside a window is unread, as a reopen is: the person may have read the item since its last turn. The turn leaves the item unposed, in a window or not, as
+// every change does (change).
 const appendTurn = (store: Store, target: Item, text: string): Outcome => {
   const turn: Turn = { speaker: 'agent', words: text }
   const base = target.state === 'done-pending' ? archive(target) : target
-  const after = target.state === 'done-waiting' ? { ...base, windowTurns: [...base.windowTurns, turn] } : { ...base, unread: true, thread: [...base.thread, turn] }
+  const added = target.state === 'done-waiting' ? { ...base, windowTurns: [...base.windowTurns, turn] } : { ...base, unread: true, thread: [...base.thread, turn] }
+  const after = { ...added, posed: false }
   return {
     store: { ...store, items: store.items.map(it => (it.id === target.id ? after : it)) },
     reply: `appended to #${target.id}`,
@@ -327,6 +342,7 @@ export const act = (store: Store, input: ToolInput, ctx: Ctx): Outcome => {
       note: null,
       agent: ctx.agent,
       unread: true,
+      posed: false,
       options: input.options,
       answer: null,
       replied: false,
@@ -370,17 +386,19 @@ export const act = (store: Store, input: ToolInput, ctx: Ctx): Outcome => {
   }, `updated #${target.id}`), input.term, ctx)
 }
 
-// The item the pane shows: the selected one, or with no selection the first. A selection that names the Claude list names no human item, and neither does
-// one whose item is gone; the pane moves on when its item is removed (successorOf), and that move writes the selection, so the lookup stays exact.
+// The item the pane shows: the selected one, or with no selection the first of the whole list in the ranking, the band's first row. A selection
+// that names the Claude list names no human item, and neither does one whose item is gone; the pane moves on when its item is removed (nextItem), and
+// that move writes the selection, so the lookup stays exact.
 export const selectedItem = (items: readonly Item[], selected: Selection): Item | undefined =>
-  selected === null ? items[0] : items.find(it => it.id === selected)
+  selected === null ? [...items].sort(rankOrder)[0] : items.find(it => it.id === selected)
 
-// The item the pane moves to when the one it shows leaves the actionable set (removed, or its press's window ended and it was sent): the
-// first open item with a higher id, else the last open one. Undefined when none is open.
-export const successorOf = (items: readonly Item[], removed: number): Item | undefined => {
-  const open = items.filter(it => it.state === 'open')
-  return open.find(it => it.id > removed) ?? open[open.length - 1]
-}
+// The item the pane moves to when the one it shows is removed: the first open item in the ranking, the first of `/todo`'s open items. The removed
+// item is gone from the list, so it needs no excluding. Undefined when none is open.
+export const nextItem = (items: readonly Item[]): Item | undefined => openRanked(items)[0]
+
+// The list with the item `id` marked posed: a walk has shown the person its question. Whether the walk may mark it, its session still its own and the item still as
+// shown, is the guard of pane.ts's markPosed.
+export const poseItem = (store: Store, id: number): Store => ({ ...store, items: store.items.map(it => (it.id === id ? { ...it, posed: true } : it)) })
 
 // Empties the list and keeps the id counter: an id is never handed out twice, even across /clear. The term goes with the items.
 export const clearAll = (store: Store): Store => ({ items: [], next: store.next, term: null })

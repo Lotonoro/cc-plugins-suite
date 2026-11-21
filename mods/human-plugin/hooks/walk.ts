@@ -1,22 +1,30 @@
-import type { EngineInterface } from 'claude-code'
+import type { EngineInterface, Timer } from 'claude-code'
 import type { Item } from '../types'
 import { ALREADY_ASKING, NOTHING_OPEN, openOf, outcomeLine, readAnswer, skippedLine, walkDialog, walkEnd, walkSummary, type Dialog, type Reason } from './commands'
+import { release } from './deliver'
 import { messageOf } from './done'
-import { markRead } from './pane'
-import { readList } from './shared'
+import { markPosed, markRead } from './pane'
+import { inBackground, readList } from './shared'
 import { setWalkAsking } from './turns'
-import { pressShown } from './windows'
+import { TICK_MS, pressShown } from './windows'
 
 // The walk behind `/todo answer`: it asks about each open item in one dialog, writes each answer the person gives through the path `/todo <n> <form>` takes (a
 // guarded write, windows.ts), and ends with the text the command returns (commands.ts words every line). It runs inside the command's hook, so the plugin's own
 // `tool.call` hook sees each dialog's result before the dialog returns, which is how a walk tells an answer a person gave from one the engine made for them. The
-// state is the module's, and none of it is in `$.state`: a reload drops a walk (an accepted cost).
+// engine refuses a submit made while that hook is in flight, so the notices of the answers wait, and a timer the walk arms at its end, once the hook has
+// settled, submits them as one prompt (the release, deliver.ts). The state is the module's, and none of it is in `$.state`: a reload drops a walk and its
+// pending release (an accepted cost: the notices are in the saved state, and the reload's restore submits them).
 
 // The walk that is asking, if one is. A walk takes the flag in the step it starts, before it awaits anything, so two `/todo answer` cannot both start. The flag
 // is also the walk's tie to its session: a walk whose flag is no longer its own has lost its session (endWalk), and asks and writes nothing more. Only the walk
 // that took the flag clears it, so a walk that settles late leaves a newer walk's flag in place. The same step tells the turn-state module a walk is asking, so
-// no submit is tried for a notice meanwhile (turns.ts), and only the walk that took the flag tells it the walk is over; a session's end resets that module.
+// no submit is tried for a notice meanwhile (turns.ts). That hold goes on past the walk's end, until the release the walk arms ends it (armRelease); a session's
+// end resets that module.
 let walking: symbol | null = null
+
+// The latest release a walk's end armed. It stays here once its timer has fired, until a session's end or a newer walk's arm takes its place, so that a release
+// whose list read is in flight can tell it has been replaced (armRelease). At most one timer is pending, and its release carries every walk's notices.
+let releasing: Timer | null = null
 
 // What the observer saw of the plugin's own call: the question as the call carried it, and whether the result carried `afkTimeoutMs`, which only a dialog the
 // engine resolved for an absent person carries.
@@ -47,15 +55,37 @@ export function observeAsked($: EngineInterface, call: unknown, result: unknown)
   $.ui.log(`human-plugin: walk record for #${current.id}: afkTimeoutMs ${afk ? 'present' : 'absent'}`, { to: 'debug' })
 }
 
-// A session's end: the walk that is asking belongs to the session that ended, so its flag is released and its record dropped. Its open dialog may still return;
-// the walk then finds the flag is not its own, and asks and writes nothing more.
+// A session's end: the walk that is asking belongs to the session that ended, so its flag is released and its record dropped, and the release a walk's end armed is
+// cancelled (a release that has begun finds it is no longer the latest, and takes nothing). Its open dialog may still return; the walk then finds the flag is not its
+// own, and asks and writes nothing more.
 export function endWalk(): void {
   walking = null
   asking = null
+  const pending = releasing
+  releasing = null
+  pending?.cancel()
+}
+
+// A walk's end, once its end text is composed: arms the release to run one tick period (windows.ts) later, a wait after which a submit from a timer armed in a
+// command hook enters, in place of any earlier one that has not run, so one release is pending. A release takes nothing when it finds a newer walk asking, or that
+// it is no longer the latest (a session's end or a newer walk's arm replaced it), and the newer walk's own end releases what is owed. An arm that fails is logged as
+// one row, and the hold ends here: the owed notices wait for the next turn to start, a notice offered after the walk takes the idle path, and an earlier release
+// the arm took away is not restored.
+function armRelease($: EngineInterface): void {
+  const earlier = releasing
+  releasing = null
+  try {
+    earlier?.cancel()
+    const timer = $.clock.after(TICK_MS, () => inBackground($, release($, () => walking !== null || releasing !== timer)))
+    releasing = timer
+  } catch (err) {
+    $.ui.log(`human-plugin: the notices the walk left could not be released at its end, so they wait for the next turn: ${messageOf(err)}`)
+    setWalkAsking(false)
+  }
 }
 
 // Whether the walk `me` still owns its session: its flag is its own until the session ends (endWalk). It is the one test a walk makes of that: before each
-// question, after each dialog, and, handed to the guarded write, inside the list update that carries its answer.
+// question, after each dialog, and, handed to a guarded write (the posed mark's, the answer's), inside the list update that carries it.
 const owns = (me: symbol): boolean => walking === me
 
 // How far a walk has got: the items it has asked about (an item is asked at most once per walk), the answers it has written, and the outcome line of the last
@@ -66,7 +96,7 @@ type Progress = { asked: Set<number>; sent: number; pending: string | null }
 type Returned = { kind: 'text'; text: string } | { kind: 'rejected'; message: string }
 
 // How the walk's ask line ends: what became of the answer.
-type Outcome = 'written' | 'refused as changed' | 'left the list' | 'skipped' | 'stopped' | 'not written' | 'session ended'
+type Outcome = 'written' | 'refused as changed' | 'left the list' | 'skipped' | 'stopped' | 'closed' | 'not written' | 'session ended'
 
 // The record the observer made of the dialog's call: none, one for the question the walk asked, or one for another question.
 const recordState = (slot: Asking): 'matched' | 'missing' | 'other question' =>
@@ -90,11 +120,24 @@ async function clearMark($: EngineInterface, item: Item): Promise<void> {
   }
 }
 
-// One question: the dialog is asked, and what it gave back is read in this order. A walk that lost its session ends, and a rejected dialog ends the walk. An answer
-// the observer saw no result for, or only one for another question, ends it as one that cannot be confirmed as the person's, and so does one whose result carries
-// `afkTimeoutMs`. Only then is the answer read against the item: Stop ends the walk, Skip goes on, and any other answer is written through the guarded write, which
-// is handed the walk's test of its session and writes nothing once it fails, so a session that ends after the test above and before the write's list update ends
-// the walk the same way. Every ask leaves its line in the debug log, a throw included. Returns the reason the walk ended, or null to go on with the next item.
+// An item whose question was shown is posed, and only while this walk still owns its session and the item is still as shown (pane.ts). A mark that cannot be written is
+// logged, and the walk goes on, as with the unread mark: the item stays unposed, which is the direction that asks it again.
+async function markShown($: EngineInterface, item: Item, me: symbol): Promise<void> {
+  try {
+    await markPosed($, item, () => owns(me))
+  } catch (err) {
+    $.ui.log(`human-plugin: the posed mark of #${item.id} was not set: ${String(err)}`)
+  }
+}
+
+// One question: the dialog is asked, and what it gave back is read in this order. A walk that lost its session ends. Unless the result carries `afkTimeoutMs`, which
+// only a dialog the engine resolved for an absent person has, the item is then marked posed, whatever the dialog gave back: the person saw the question, and the mark is
+// written before the answer is read or written, while the item is open and as shown. A rejected dialog ends the walk, whatever the observer saw of it: a close, an
+// expiry that rejects and an engine refusal cannot be told apart, and read alike. An answer the observer saw no result for, or only one for another question, ends the
+// walk as one that cannot be confirmed as the person's, and so does one whose result carries `afkTimeoutMs`. Only then is the answer read against the item: Stop ends
+// the walk, Skip goes on, and any other answer is written through the guarded write, which is handed the walk's test of its session and writes nothing once it fails,
+// so a session that ends after the test above and before the write's list update ends the walk the same way. Every ask leaves its line in the debug log, a throw
+// included. Returns the reason the walk ended, or null to go on with the next item.
 async function askOne($: EngineInterface, windowMs: number, me: symbol, progress: Progress, item: Item, dialog: Dialog): Promise<Reason | null> {
   const slot: Asking = { id: item.id, question: dialog.question, seen: null }
   asking = slot
@@ -113,9 +156,19 @@ async function askOne($: EngineInterface, windowMs: number, me: symbol, progress
     outcome = 'session ended'
     return { kind: 'session' }
   }
+  // The item is passed over, by Skip or by blank text: nothing is written for it, and its outcome line opens the next question.
+  const skipped = (): null => {
+    outcome = 'skipped'
+    progress.pending = skippedLine(item)
+    return null
+  }
   try {
     if (!owns(me)) return sessionEnded()
-    if (returned.kind === 'rejected') return { kind: 'closed', id: item.id }
+    if (slot.seen?.afk !== true) await markShown($, item, me)
+    if (returned.kind === 'rejected') {
+      outcome = 'closed'
+      return { kind: 'closed', id: item.id }
+    }
     if (state !== 'matched') return { kind: 'unconfirmed', id: item.id }
     if (slot.seen?.afk === true) return { kind: 'auto', id: item.id }
     const reading = readAnswer(item, returned.text)
@@ -123,11 +176,7 @@ async function askOne($: EngineInterface, windowMs: number, me: symbol, progress
       outcome = 'stopped'
       return { kind: 'stop' }
     }
-    if (reading.kind === 'skip') {
-      outcome = 'skipped'
-      progress.pending = skippedLine(item)
-      return null
-    }
+    if (reading.kind === 'skip') return skipped()
     const written = await pressShown($, item, reading.form, windowMs, () => owns(me))
     if (written.kind === 'session') return sessionEnded()
     progress.pending = outcomeLine(item, written)
@@ -139,9 +188,10 @@ async function askOne($: EngineInterface, windowMs: number, me: symbol, progress
   }
 }
 
-// The walk's loop. Before each question the list is read again, and the first open item in the band's order that this walk has not asked about is asked: an item
-// filed meanwhile is asked in its place, one removed is not, and none is asked twice. The first question opens with the summary, each later one with the outcome
-// line of the item before it. Returns why the walk ended, or null when nothing was open to ask about.
+// The walk's loop. Before each question the list is read again, and the first open item in the ranking that this walk has not asked about is asked: an item
+// filed meanwhile is asked in its place, one removed is not, and none is asked twice. The set of items asked is no position: it is what ends the walk, for Skip
+// leaves an item open and still first in the ranking, and without the set it would be asked again at once. The first question opens with the summary, each later
+// one with the outcome line of the item before it. Returns why the walk ended, or null when nothing was open to ask about.
 async function askEach($: EngineInterface, windowMs: number, me: symbol, progress: Progress): Promise<Reason | null> {
   for (;;) {
     const { items } = await readList($)
@@ -169,7 +219,8 @@ function logWalkError($: EngineInterface, err: unknown): void {
 // `/todo answer`: the command's output. A walk already asking, or nothing open, ends it at once and asks nothing. Otherwise the walk asks about each open item
 // and returns its end text: the outcome no question showed, why it ended, and what it sent and what is still open. A throw ends it with the error reason and the
 // same counts, and the error is logged with its stack. So does a throw from the read of the list for those counts, which leaves the end text the count of what was
-// sent alone, since what is still open is unknown. The answers already written stay written, whatever ends the walk.
+// sent alone, since what is still open is unknown. The answers already written stay written, whatever ends the walk. A walk that still owns its session when it ends,
+// whatever ended it, arms the release; one told that a walk is already asking, and one that lost its session, arm nothing and clear nothing.
 export async function walk($: EngineInterface, windowMs: number): Promise<string> {
   if (walking !== null) return ALREADY_ASKING
   const me = Symbol('walk')
@@ -196,7 +247,7 @@ export async function walk($: EngineInterface, windowMs: number): Promise<string
   } finally {
     if (owns(me)) {
       walking = null
-      setWalkAsking(false)
+      armRelease($)
     }
   }
 }

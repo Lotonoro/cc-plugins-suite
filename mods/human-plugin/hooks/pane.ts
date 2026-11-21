@@ -1,6 +1,6 @@
 import { atom, read, update, type EngineInterface, type PaneCloseOrigin, type PaneOpenArgs } from 'claude-code'
 import type { Item, Selection, TodoItem } from '../types'
-import { successorOf, type Outcome } from './items'
+import { nextItem, poseItem, selectedItem, type Outcome } from './items'
 import { inBackground, readList, updateList } from './shared'
 import { HEADING, headingOf, readName, readTodo } from './todo'
 import { backlogRows, paneRows } from './ui'
@@ -8,7 +8,7 @@ import { backlogRows, paneRows } from './ui'
 export const PANE = 'human-items'
 // The pane has one id and two views: a human item, or the Claude list (the backlog). The stored selection says which, and a press sets it.
 export const CLAUDE_VIEW = 'claude-todo'
-// What the pane shows: an item's number, the Claude list, or null for none, which shows the first human item (selectedItem). A drawing reads it, so it lives in the state, not a module variable.
+// What the pane shows: an item's number, the Claude list, or null for none, which shows the first human item in the ranking (selectedItem). A drawing reads it, so it lives in the state, not a module variable.
 const SELECTION = { plugin: 'human-plugin', key: 'selection' } as const
 const selection = atom(SELECTION, null as Selection)
 // Read here, beside its atom: the engine's scan reads a state source only from the file that declares it. Every stored value reads: an item number or the Claude list as it is,
@@ -128,12 +128,12 @@ function switchPane($: EngineInterface, id: number, items: readonly Item[]): Pro
   return Promise.all([$.ui.open(paneRequest(id, items)), markRead($, id)])
 }
 
-// The pane shows one item and follows it. It moves to the item's successor (successorOf, an open item only), with that item's rows, and
-// the selection moves with it so the band and the pane agree; with no open item left, the pane closes. Two triggers: a tool call that
-// removes the shown item (followShown), and a window that ends by sending the shown item (followSent). A sent item the person views stays
-// shown until one of those. Never from a draw, since a draw may not write state (the host refuses it).
-function moveOn($: EngineInterface, items: readonly Item[], leaving: number): void {
-  const next = successorOf(items, leaving)
+// The pane shows one item and follows it. When the shown item is removed, the pane moves to the next item (nextItem, an open item only), with that item's rows, and the
+// selection moves with it so the band and the pane agree; with no open item left, the pane closes. A tool call that removes the item makes the move (followShown), and so
+// does a window's end that finds the item it sent already gone (followSent). A window that ends by sending the shown item closes the pane instead (followSent). A sent item
+// the person views stays shown until it is removed. Never from a draw, since a draw may not write state (the host refuses it).
+function moveOn($: EngineInterface, items: readonly Item[]): void {
+  const next = nextItem(items)
   if (next === undefined) inBackground($, closePane($))
   else inBackground($, Promise.all([switchPane($, next.id, items), select($, next.id)]))
 }
@@ -160,14 +160,14 @@ export async function shownSelection($: EngineInterface): Promise<Selection> {
   return shownPick ?? lastRead
 }
 
-// What the pane shows, for a follow-up, which reads it afresh: the Claude list, an item's number, or with no selection the first item of the human list last drawn, as the
-// draw picks it (selectedItem). It is read at a tool call or a window's end, which may not draw, so the list drawn last is the one the pane was made from.
+// What the pane shows, for a follow-up, which reads it afresh: the Claude list, an item's number, or with no selection the first item in the ranking of the human list last drawn,
+// as the draw picks it (selectedItem). It is read at a tool call or a window's end, which may not draw, so the list drawn last is the one the pane was made from.
 async function shownView($: EngineInterface): Promise<Shown | undefined> {
-  return (await shownSelection($)) ?? drawnItems[0]?.id
+  return (await shownSelection($)) ?? selectedItem(drawnItems, null)?.id
 }
 
 // What a press decides on, with no await: the view the mod last set, else the stored selection its draws last read. The same fall back as shownView.
-const shownNow = (): Shown | undefined => shownPick ?? lastRead ?? drawnItems[0]?.id
+const shownNow = (): Shown | undefined => shownPick ?? lastRead ?? selectedItem(drawnItems, null)?.id
 
 // After a tool call on the human list: an empty list closes the pane, whatever item it last showed. Otherwise the pane moves on only when its item has left
 // the list. A sent item the person is viewing stays. A change to the item shown re-asks its rows as a switch does, and reads it: its rows
@@ -184,22 +184,24 @@ export async function followShown($: EngineInterface, out: Exclude<Outcome, { de
     return
   }
   if (shown === undefined) return
-  if (!items.some(it => it.id === shown)) moveOn($, items, shown)
+  if (!items.some(it => it.id === shown)) moveOn($, items)
   else if (out.changed?.id === shown) inBackground($, switchPane($, shown, items))
 }
 
-// After a window ends and sends `id`, the pane stays on that item when the item is open again (an agent turn or an update the window took
-// reopened it: done.ts, expire). It re-asks the item's rows then, as a change does. Otherwise it moves on, whatever kind of answer was sent.
-// The list is read here, after the shown item, since an agent change made after the end wrote the item sent may have reopened or removed it.
-// A pane on the Claude list is on no item, so it stays.
+// After a window ends and sends `id`, the pane that shows that item closes, whatever kind of answer was sent and whatever other items are open. The list is read here, after
+// the shown item, since a change made after the end wrote the item sent may have changed what the item is: an item open again (an agent turn or an update the window took
+// reopened it: done.ts, expire) keeps the pane on it, with its rows asked again as a change asks them; an item the agent removed moves the pane on, as a removal does; an
+// item back in an undo window (reopened, then pressed again) leaves the pane as it is, for that window's own end to decide. A pane on another item, or on the Claude list, is
+// left alone.
 export async function followSent($: EngineInterface, id: number): Promise<void> {
   const shown = await shownView($)
   const { items } = await readList($)
   // Checked after the reads: the person may have closed the pane meanwhile, and a move would then reopen it.
   if (!paneOpen || shown !== id) return
   const current = items.find(it => it.id === id)
-  if (current?.state === 'open') inBackground($, switchPane($, id, items))
-  else moveOn($, items, id)
+  if (current === undefined) moveOn($, items)
+  else if (current.state === 'open') inBackground($, switchPane($, id, items))
+  else if (current.state === 'done-pending') inBackground($, closePane($))
 }
 
 // After a call that writes the Claude list or its name, while the pane shows the list: it reads the list and the heading as stored now. An empty list closes the pane, as an empty
@@ -234,9 +236,10 @@ function showBacklog($: EngineInterface): Promise<unknown> {
   return Promise.all([followed, select($, CLAUDE_VIEW)])
 }
 
-// The item as printed, against the item now: the same content, the unread mark aside (a clear changes that, and a print does not show it).
-// Both are normalized (normalizeItem), so their keys come in one order and the JSON compares the content.
-const sameContent = (now: Item, printed: Item): boolean => JSON.stringify({ ...now, unread: false }) === JSON.stringify({ ...printed, unread: false })
+// The item as printed, against the item now: the same content, the unread and posed marks aside (a clear changes the first and a walk's mark the second, and a print
+// shows neither). Both are normalized (normalizeItem), so their keys come in one order and the JSON compares the content.
+const sameContent = (now: Item, printed: Item): boolean =>
+  JSON.stringify({ ...now, unread: false, posed: false }) === JSON.stringify({ ...printed, unread: false, posed: false })
 
 // Marks one item read: an item the pane switches to is shown, so its unread mark goes. `/todo <n>` passes the item as it printed it, and the mark
 // goes only while the item is still that one: a change made since the print is not in the text, so the mark it raised stays.
@@ -245,6 +248,13 @@ export function markRead($: EngineInterface, id: number, printed?: Item): Promis
     ...store,
     items: store.items.map(it => (it.id === id && (printed === undefined || sameContent(it, printed)) ? { ...it, unread: false } : it)),
   }))
+}
+
+// Marks the item a walk showed posed (items.ts), in a write of its own. The mark goes only while the walk still owns its session and the item is still the one shown,
+// both tested in the list update itself: a session that ends before the update runs leaves the list another session's, where an item of the same number and content
+// would take the mark, and an item the agent changed meanwhile was not shown as it now reads, so it stays unposed. `shown` is the item as the walk read it.
+export function markPosed($: EngineInterface, shown: Item, owns: () => boolean): Promise<unknown> {
+  return updateList($, store => (owns() && store.items.some(it => it.id === shown.id && sameContent(it, shown)) ? poseItem(store, shown.id) : store))
 }
 
 // The flag clears before the close is awaited: an open made while the close is in flight counts as open, and the close's settling

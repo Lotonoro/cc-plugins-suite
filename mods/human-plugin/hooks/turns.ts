@@ -1,19 +1,21 @@
 import type { Notice, OwedNotices } from '../types'
 import { pointerText } from './done'
 
-// What the turn's end submits: the prompt's text, and the notices it carries (the ones a refused submit holds again).
-export type Submit = { text: string; notices: Notice[] }
+// What a prompt the mod submits for the notices it is owed carries: its text, the notices it carries (the ones a refused submit holds again), and the ids of the
+// notices appended that no request carried, which its text points to.
+export type Submit = { text: string; notices: Notice[]; pointed: number[] }
 
 // The done notices of the running main-loop turn, and whether one runs (a subagent's turn does not count). A notice
 // offered while a turn runs waits for a read point: the end of a tool batch, or the start of a turn (a notice that
 // came in while the turn was starting), which the engine holds before its next request. There it is appended, and it is
 // unread until that request, which carries it, starts. Each notice moves on once, so the agent reads it once. The turn's
 // end takes whatever is left: a turn of its own; after an interrupt, the human's next prompt (see takeHeld); and, while a walk
-// is asking, the next turn to start.
+// is asking, the walk's release (see endHold) or the next turn to start, whichever comes first.
 let busy = false
-// Whether a walk is asking (walk.ts switches it). The engine refuses a submit made while the walk's command hook is in flight, so
-// none is tried: a notice that would have started a turn of its own waits instead, with the session left idle, and the next turn
-// to start, whoever starts it, appends it at its first read point. A turn that ends takes what it left the same way.
+// Whether the hold is on: a walk is asking, or has ended and its release is still to come (walk.ts switches it on, and its release ends it: endHold). The engine
+// refuses a submit made while the walk's command hook is in flight, so none is tried: a notice that would have started a turn of its own waits instead, with the
+// session left idle, and the next turn to start, whoever starts it, appends it at its first read point, unless the walk's release delivers it first. A turn that
+// ends takes what it left the same way.
 let walkAsking = false
 let waiting: Notice[] = []
 let unread: Notice[] = []
@@ -37,14 +39,15 @@ export const startTurn = (): void => {
   busy = true
 }
 
-// The walk that is asking switches this on in the step it starts and off when it ends; a session's end (reset) switches it off too.
+// The walk that is asking switches this on in the step it starts. It goes off with the walk's release (endHold), or, when the walk could not arm its release, in the
+// walk's own code; a session's end (reset) switches it off too.
 export const setWalkAsking = (on: boolean): void => {
   walkAsking = on
 }
 
 // Decides a notice's path in one synchronous step. The first notice of an idle session takes the turn: busy is set here,
 // not when the turn starts, so a notice that lands before the turn starts waits for it instead of starting a second one.
-// While a walk is asking an idle session is not taken: the notice waits ('walk') and busy stays unset.
+// While the hold is on an idle session is not taken: the notice waits ('walk') and busy stays unset.
 export const offer = (notice: Notice): 'queued' | 'submit' | 'walk' => {
   if (busy || walkAsking) {
     waiting = [...waiting, notice]
@@ -130,20 +133,27 @@ export const carryHeld = async <E extends { origin: { kind: string }; context?: 
   }
 }
 
+// The one prompt that delivers what a turn's end or a walk's release found left: a pointer to the notices appended that no request carried (their rows are in the
+// conversation already), then the waiting ones. It keeps the session busy until it enters (its turn starts) or is refused (notEntered). Null when nothing is left.
+const promptFor = (appended: readonly Notice[], left: Notice[]): Submit | null => {
+  const pointed = appended.map(notice => notice.id)
+  const parts = [...(pointed.length > 0 ? [pointerText(pointed)] : []), ...left.map(notice => notice.text)]
+  busy = parts.length > 0
+  return parts.length === 0 ? null : { text: parts.join('\n\n'), notices: left, pointed }
+}
+
 // The turn has ended. `isLive` says whether an item is still on the list: a notice for an item the agent has removed is
-// dropped, so it starts no turn. The end of a turn is taken once: a later end for the same turn changes nothing. Not interrupted: returns the one prompt that delivers what is left, or null. It is
-// a pointer to the notices appended that no request carried (their rows are in the conversation already), then the
-// waiting ones. That prompt keeps the session busy until it enters (its turn starts) or is refused (notEntered).
-// Interrupted: the waiting ones are held for the human's next prompt, and nothing is submitted, so an interrupt starts
+// dropped, so it starts no turn. The end of a turn is taken once: a later end for the same turn changes nothing. Not interrupted: returns the one prompt that delivers
+// what is left, or null (promptFor). Interrupted: the waiting ones are held for the human's next prompt, and nothing is submitted, so an interrupt starts
 // no turn. The appended ones are not held: their rows are in the conversation, and the next request, the human's, reads
-// them with the rest. While a walk is asking, a turn that was not interrupted submits nothing either: the waiting ones keep
-// waiting for the next turn to start, the session is idle, and the pointer to the appended ones is not sent (the next
-// request reads their rows all the same).
+// them with the rest. While the hold is on, a turn that was not interrupted submits nothing either: the waiting ones keep
+// waiting, and so do the appended ones that no request carried, for the walk's release (endHold) or the next turn to start. The session is idle, and a request that
+// starts first carries the appended ones.
 export const endTurn = (turnId: string, interrupted: boolean, isLive: (id: number) => boolean): Submit | null => {
   if (turnId === ended) return null
   ended = turnId
   turnEnds += 1
-  const pointed = unread.filter(notice => isLive(notice.id)).map(notice => notice.id)
+  const appended = unread.filter(notice => isLive(notice.id))
   const left = waiting.filter(notice => isLive(notice.id))
   waiting = []
   unread = []
@@ -156,13 +166,27 @@ export const endTurn = (turnId: string, interrupted: boolean, isLive: (id: numbe
   if (walkAsking) {
     busy = false
     waiting = left
+    unread = appended
     onChange()
     return null
   }
   onChange()
-  const parts = [...(pointed.length > 0 ? [pointerText(pointed)] : []), ...left.map(notice => notice.text)]
-  busy = parts.length > 0
-  return parts.length === 0 ? null : { text: parts.join('\n\n'), notices: left }
+  return promptFor(appended, left)
+}
+
+// The walk's release: the hold ends, and what is owed goes by the rule a turn's end uses (promptFor). `isLive` is as in endTurn. With a turn running, nothing is
+// taken: that turn's read points append the waiting notices, and its end submits what it leaves, as any turn's end does once no walk is asking. The notices an
+// interrupt held are not touched: they stay for the human's next prompt.
+export const endHold = (isLive: (id: number) => boolean): Submit | null => {
+  walkAsking = false
+  if (busy) return null
+  const owed = waiting.length > 0
+  const appended = unread.filter(notice => isLive(notice.id))
+  const left = waiting.filter(notice => isLive(notice.id))
+  waiting = []
+  unread = []
+  if (owed) onChange()
+  return promptFor(appended, left)
 }
 
 // Takes the notices held over an interrupt or a refused submit, once: the human's prompt carries them as context.

@@ -719,13 +719,18 @@ test('a correction the engine refuses is logged, and the turn end still submits 
   expect(logs.some(line => line.includes('a notice was refused') && line.includes('refused by the test'))).toBe(true)
 })
 
-test('a reply typed in the pane moves the pane on to the next open item once sent, and the agent\'s next append to the reply\'s item leaves the pane there, the item open and unread', async ($, on) => {
+test('a reply typed in the pane closes the pane once sent, and the agent\'s next append to the reply\'s item leaves the pane closed, the item open and unread', async ($, on) => {
   const opened: string[] = []
   const shown = new Set<string>()
   on('ui.open', (_$, e) => {
     opened.push(e.id)
     shown.add(e.id)
     return { value: { isPlaced: true } }
+  })
+  // The engine drops a pane it is told to close, as it lists the panes: without this the close would leave the pane listed, and the test could not tell it was asked.
+  on('ui.close', (_$, e) => {
+    shown.delete(e.id)
+    return { value: undefined }
   })
   on('ui.panes', () => ({ value: [...shown].map(id => ({ id, title: id, isShown: true, hasKeyboard: false, isFocused: false, isPlaced: true }) as UiPane) }))
   on('prompt.submit', (_$, e) => ({ text: e.text }))
@@ -738,18 +743,15 @@ test('a reply typed in the pane moves the pane on to the next open item once sen
   const pane = await $.ui.mount({ plugin: 'human-plugin', surface: 'terminal', component: 'Pane', requestId: 'human-items', props: { title: 'Items for you', isFocused: true, bodyColumns: 80, placement: 'inline', scroll: { offset: 0, bodyRows: 20 }, view: {} } })
   await pane.input({ key: 'reply-1', text: 'Use sqlite' })
   opened.length = 0
+  expect([...shown]).toEqual(['human-items'])
   await clock.advance(5000)
-  const moved = JSON.stringify(await pane.drawn())
-  expect(moved).toContain('#2 non-blocking, open: Pick a cache')
-  expect(moved).not.toContain('Pick a db')
-  expect(opened).toEqual(['human-items'])
+  expect([...shown]).toEqual([])
+  expect(opened).toEqual([])
   await $.tool.call({ tool: TOOL, action: 'append', id: 1, text: 'more' })
-  const after = JSON.stringify(await pane.drawn())
-  expect(after).toContain('#2 non-blocking, open: Pick a cache')
-  expect(after).not.toContain('Pick a db')
+  expect([...shown]).toEqual([])
   expect(String((await $.tool.call({ tool: TOOL, action: 'list' })).result)).toContain('#1 non-blocking, open: Pick a db')
   expect(JSON.stringify(await band.drawn())).toContain('• #1')
-  expect(opened).toEqual(['human-items'])
+  expect(opened).toEqual([])
 })
 
 test('a reply typed into the terminal pane is sent through the undo window, and the agent is told it', async ($, on) => {
@@ -1222,7 +1224,7 @@ test('beside the docked pane the band drawn through the terminal\'s table in ban
   const clock = mock.clock(on)
   mock.store(on)
   paneRecord(on)
-  // An item that stays open, so the pane has an item to move on to as the sweep's windows end and its items are removed, and so stays open in the dock.
+  // An item that stays open, and the one the pane rests on while the sweep's windows end, so the pane stays open in the dock.
   await $.tool.call({ tool: TOOL, action: 'add', title: 'Anchor' })
   await $.tool.call({ tool: TODO_TOOL, entries: [{ title: 'Build it', state: 'in_flight' }, { title: 'Test it', state: 'queued' }] })
   const tall = { ...BAND_PROPS, maxRows: 400, scroll: { offset: 0, bodyRows: 400 } }
@@ -1286,6 +1288,9 @@ test('beside the docked pane the band drawn through the terminal\'s table in ban
     await band.press({ key: `done-${decision}` })
     await pane.input({ key: `reply-${decision}`, text: 'Not yet' })
     await check('replied')
+    // The pane moves to the anchor before the windows end: a window that ends on the item the pane shows closes the pane, and the engine would then draw the sent rows
+    // beside no docked pane. The pane's record keeps a pane it is told to close, so the sweep would pass without this press, which keeps it what the engine runs.
+    await band.press({ key: 'title-1' })
     await clock.advance(3000)
     await check('sent')
     for (let id = first; id < next; id++) await $.tool.call({ tool: TOOL, action: 'remove', id })

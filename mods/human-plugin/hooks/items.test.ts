@@ -1,5 +1,6 @@
 import { expect, test } from 'claude-code/testing'
-import { DONE_MAX, EMPTY, act, carryNext, clearAll, listText, mergeRestored, normalizeItem, normalizeStore, parseInput, selectedItem, successorOf, type Ctx, type ToolInput } from './items'
+import { DONE_MAX, EMPTY, act, carryNext, clearAll, listText, mergeRestored, nextItem, normalizeItem, normalizeStore, openRanked, parseInput, poseItem, rankOrder, selectedItem, type Ctx, type ToolInput } from './items'
+import { openOf } from './commands'
 import { expire, press, reply, turnsOf } from './done'
 import type { Item, Store } from '../types'
 
@@ -14,9 +15,12 @@ const input = (raw: unknown): ToolInput => {
 const MAIN: Ctx = { agent: null, now: 1000 }
 const SUB: Ctx = { agent: 'sub-1', now: 1000 }
 const withState = (id: number, state: Item['state']): Item => ({
-  id, title: `Item ${id}`, detail: '', blocking: false, createdAt: 0, state, pressedAt: null, note: null, agent: null, unread: false,
+  id, title: `Item ${id}`, detail: '', blocking: false, createdAt: 0, state, pressedAt: null, note: null, agent: null, unread: false, posed: false,
   options: [], answer: null, yesno: false, replied: false, doneLabel: null, thread: [], windowTurns: [], windowChanged: false,
 })
+const blockingItem = (id: number, state: Item['state'] = 'open'): Item => ({ ...withState(id, state), blocking: true })
+// An item a walk has shown the person: the same item, posed.
+const posedItem = (item: Item): Item => ({ ...item, posed: true })
 
 const added =(store: Store, title: string, ctx: Ctx = MAIN) => {
   const out = act(store, input({ action: 'add', title }), ctx)
@@ -85,11 +89,14 @@ test('act stores a done label on a plain to-do, and refuses one on a yes/no or a
   })
 })
 
-test('add numbers items from 1, replies with the id only, and marks the item unread', () => {
+test('add numbers items from 1, replies with the id only, and marks the item unread and unposed', () => {
   const first = added(EMPTY, 'Pick a db')
   expect(first.reply).toBe('added #1')
   expect(first.added?.id).toBe(1)
   expect(first.added?.unread).toBe(true)
+  expect(first.added?.posed).toBe(false)
+  expect(added(EMPTY, 'Pick a db', SUB).added?.posed).toBe(false)
+  expect(act(EMPTY, input({ action: 'add', title: 'Approve it', blocking: true, yesno: true }), MAIN)).toMatchObject({ added: { posed: false } })
   expect(first.added?.state).toBe('open')
   expect(first.added?.agent).toBe(null)
   expect(first.store.next).toBe(2)
@@ -242,6 +249,89 @@ test('an update that makes an open item blocking says it promoted it; an unmark,
   expect(changed(sentList({ state: 'done-waiting', pressedAt: 500 }), { action: 'update', blocking: true }).changed).toEqual({ id: 1, reopened: false, promoted: false })
 })
 
+// A list whose one item is posed: a walk has shown the person its question. `extra` sets what else the item is.
+const posedList = (extra: Partial<Item> = {}): Store => {
+  const { store } = added(EMPTY, 'Pick a db')
+  return { ...store, items: store.items.map(it => ({ ...it, posed: true, unread: false, ...extra })) }
+}
+
+test('an append to a posed item leaves it unposed, whatever the item is: an unanswered one, one the person answered before, an answer in its undo window, a sent answer', () => {
+  const kinds: [string, Partial<Item>][] = [
+    ['an unanswered item', {}],
+    ['an item the person answered before', { thread: [{ speaker: 'human', words: 'Use sqlite' }] }],
+    ['an answer in its undo window', { state: 'done-waiting', pressedAt: 500, answer: 'Use sqlite', replied: true }],
+    ['a sent answer', { state: 'done-pending', answer: 'Use sqlite', replied: true }],
+  ]
+  for (const [name, extra] of kinds) {
+    const before = posedList(extra)
+    expect([name, before.items[0]?.posed]).toEqual([name, true])
+    expect([name, changed(before, { action: 'append', text: 'more context' }).store.items[0]?.posed]).toEqual([name, false])
+  }
+})
+
+test('an update that changes a posed item leaves it unposed, whatever it sets or clears and whatever the item\'s state', () => {
+  const updates: Record<string, unknown>[] = [
+    { title: 'Pick a cache' },
+    { detail: 'postgres' },
+    { detail: '' },
+    { blocking: true },
+    { note: 'still open' },
+    { note: '' },
+    { done: 'Go with postgres' },
+    { done: '' },
+  ]
+  for (const kind of [{}, { state: 'done-waiting', pressedAt: 500, answer: 'Use sqlite' }, { state: 'done-pending', answer: 'Use sqlite' }] as Partial<Item>[]) {
+    const before = posedList({ detail: 'which store?', note: 'recheck', doneLabel: 'Go with sqlite', ...kind })
+    for (const raw of updates) {
+      expect([kind, raw, changed(before, { action: 'update', ...raw }).store.items[0]?.posed]).toEqual([kind, raw, false])
+    }
+  }
+  const options = [{ label: 'Use sqlite' }, { label: 'Use postgres' }]
+  expect(changed(posedList(), { action: 'update', options }).store.items[0]?.posed).toBe(false)
+  // A change that also states a term still clears the mark, and sets the term.
+  const termed = changed(posedList(), { action: 'update', title: 'Pick a cache', term: 'Boss' })
+  expect(termed.store.items[0]?.posed).toBe(false)
+  expect(termed.store.term).toBe('Boss')
+})
+
+test('an update that changes nothing leaves a posed item posed and the list as it was: an equal field, a whitespace-only edit, an unmarking of a mark not set', () => {
+  const before = posedList({ detail: 'which store?', note: 'recheck' })
+  for (const raw of [{ title: 'Pick a db' }, { note: 'recheck' }, { note: 'recheck ' }, { detail: 'which store?' }, { detail: ' which store?\n' }, { blocking: false }]) {
+    expect([raw, changed(before, { action: 'update', ...raw })]).toEqual([raw, { store: before, reply: 'no change to #1', added: null, changed: null }])
+  }
+})
+
+test('a term-only update leaves a posed item posed, from the main agent, which sets the term, and from a subagent, whose term is not used', () => {
+  const before = posedList()
+  const main = changed(before, { action: 'update', term: 'Boss' })
+  expect(main.store.items[0]?.posed).toBe(true)
+  expect(main.store.term).toBe('Boss')
+  const sub = act(before, input({ action: 'update', id: 1, term: 'Boss' }), SUB)
+  if ('deny' in sub) throw new Error(sub.deny)
+  expect(sub.store.items[0]?.posed).toBe(true)
+  expect(sub.store.term).toBe(null)
+})
+
+test('a change to one item leaves the mark of every other item as it was, and a remove or a list leaves every mark as it was', () => {
+  const [one, two] = [posedItem(withState(1, 'open')), posedItem(withState(2, 'open'))]
+  const before: Store = { items: [one, two], next: 3, term: null }
+  const out = changed(before, { id: 2, action: 'append', text: 'more context' })
+  expect(out.store.items.map(it => it.posed)).toEqual([true, false])
+  expect(changed(before, { id: 2, action: 'update', title: 'Another' }).store.items.map(it => it.posed)).toEqual([true, false])
+  expect(changed(before, { id: 2, action: 'remove' }).store.items.map(it => it.posed)).toEqual([true])
+  expect(changed(before, { action: 'list' }).store).toBe(before)
+})
+
+test('poseItem marks the item it names posed and nothing else: another item, the counter and the term stay as they were', () => {
+  const before: Store = { items: [withState(1, 'open'), blockingItem(2), withState(3, 'done-pending')], next: 9, term: 'Boss' }
+  const out = poseItem(before, 2)
+  expect(out).toEqual({ ...before, items: [before.items[0], posedItem(blockingItem(2)), before.items[2]] })
+  expect(poseItem(out, 2)).toEqual(out)
+  expect(poseItem(before, 3).items.map(it => it.posed)).toEqual([false, false, true])
+  expect(poseItem(before, 7)).toEqual(before)
+  expect(before.items.map(it => it.posed)).toEqual([false, false, false])
+})
+
 test('update and remove of an unknown id are denied', () => {
   expect(act(EMPTY, input({ action: 'update', id: 9, title: 'x' }), MAIN)).toEqual({ deny: 'no item #9' })
   expect(act(EMPTY, input({ action: 'remove', id: 9 }), MAIN)).toEqual({ deny: 'no item #9' })
@@ -303,6 +393,13 @@ test('a rebuilt list keeps an item added after the transcript was read, drops on
   expect(merged.next).toBe(8)
   expect(mergeRestored(EMPTY, { items: [], next: 4, term: null }, [1, 2, 3]).next).toBe(4)
   expect(mergeRestored({ items: [], next: 9, term: null }, { items: [], next: 4, term: null }, [1, 2, 3]).next).toBe(9)
+})
+
+test('a rebuilt list is unposed for every item the transcript knows, which holds no record of a walk\'s dialogs; an item added after the transcript was read keeps its flag', () => {
+  const replayed = added(added(EMPTY, 'from the transcript').store, 'also replayed').store
+  const live: Store = { items: [...replayed.items.map(posedItem), posedItem(withState(7, 'open'))], next: 8, term: null }
+  const merged = mergeRestored(live, replayed, [1, 2])
+  expect(merged.items.map(it => [it.id, it.posed])).toEqual([[1, false], [2, false], [7, true]])
 })
 
 test('append adds a section to the end of the detail, after a blank line, and replies with the id', () => {
@@ -406,7 +503,7 @@ test('an option description edited only by spaces is no change, and a real descr
   expect(real.changed).toEqual({ id: 1, reopened: true, promoted: false })
 })
 
-test('the pane\'s item is the selected one, with none selected the first; a selection whose item is gone names none', () => {
+test('the pane\'s item is the selected one, with none selected the first in the ranking; a selection whose item is gone names none', () => {
   let store = EMPTY
   for (const title of ['a', 'b', 'c']) store = added(store, title).store
   expect(selectedItem(store.items, 2)?.id).toBe(2)
@@ -415,6 +512,25 @@ test('the pane\'s item is the selected one, with none selected the first; a sele
   expect(selectedItem(without2, 2)).toBe(undefined)
   expect(selectedItem(store.items, 9)).toBe(undefined)
   expect(selectedItem([], 1)).toBe(undefined)
+})
+
+test('with none selected the pane\'s item is the first of the whole list in the ranking: a blocking item filed after a non-blocking one, whatever its state', () => {
+  expect(selectedItem([withState(1, 'open'), blockingItem(2)], null)?.id).toBe(2)
+  expect(selectedItem([blockingItem(2), withState(1, 'open')], null)?.id).toBe(2)
+  // The band ranks the items of every state, so the pane's item with none selected is its first row, a sent one included.
+  expect(selectedItem([withState(1, 'open'), blockingItem(2, 'done-pending')], null)?.id).toBe(2)
+  expect(selectedItem([withState(3, 'open'), withState(2, 'done-waiting')], null)?.id).toBe(2)
+  // A selection is the item it names, whatever the ranking puts first.
+  expect(selectedItem([withState(1, 'open'), blockingItem(2)], 1)?.id).toBe(1)
+})
+
+test('with none selected the pane\'s item is an answered item no walk has shown before an open item a walk has, though the open one has the lower number', () => {
+  expect(selectedItem([posedItem(withState(1, 'open')), withState(2, 'done-waiting')], null)?.id).toBe(2)
+  expect(selectedItem([posedItem(blockingItem(1)), withState(2, 'done-pending')], null)?.id).toBe(2)
+  expect(selectedItem([withState(2, 'done-pending'), posedItem(withState(1, 'open'))], null)?.id).toBe(2)
+  // Among items of one tier the ranking goes on as before, and a selection is the item it names whatever the tiers say.
+  expect(selectedItem([posedItem(blockingItem(1)), posedItem(withState(2, 'done-pending')), withState(3, 'open')], null)?.id).toBe(3)
+  expect(selectedItem([posedItem(withState(1, 'open')), withState(2, 'done-pending')], 1)?.id).toBe(1)
 })
 
 test('the Claude list\'s view names no human item, whatever the list holds, while no selection still names the first', () => {
@@ -429,13 +545,69 @@ test('an added item is not a reply', () => {
   expect(added(EMPTY, 'Pick a db').store.items[0]?.replied).toBe(false)
 })
 
-test('successorOf takes the next open item above, skipping items in a press or sent, else the last open item, and none when none is open', () => {
+test('the ranking puts a blocking item above a non-blocking one whatever their numbers, and the lower number first between two of a kind, in every state', () => {
+  const items = [withState(1, 'open'), blockingItem(2), withState(3, 'open'), blockingItem(4)]
+  expect([...items].sort(rankOrder).map(it => it.id)).toEqual([2, 4, 1, 3])
+  expect([...items].reverse().sort(rankOrder).map(it => it.id)).toEqual([2, 4, 1, 3])
+  const states = [withState(1, 'done-waiting'), withState(2, 'open'), blockingItem(3, 'done-pending'), withState(4, 'done-pending')]
+  expect([...states].sort(rankOrder).map(it => it.id)).toEqual([3, 1, 2, 4])
+})
+
+test('the ranking puts an item no walk has shown above one a walk has, then a blocking item above a non-blocking one, then the lower number first, whatever the numbers and the state', () => {
+  // Unposed blocking, unposed non-blocking, posed blocking, posed non-blocking: each kind twice, the numbers against the order.
+  const kinds = [posedItem(withState(1, 'open')), posedItem(blockingItem(2)), withState(3, 'open'), blockingItem(4), posedItem(withState(5, 'open')), posedItem(blockingItem(6)), withState(7, 'open'), blockingItem(8)]
+  expect([...kinds].sort(rankOrder).map(it => it.id)).toEqual([4, 8, 3, 7, 2, 6, 1, 5])
+  expect([...kinds].reverse().sort(rankOrder).map(it => it.id)).toEqual([4, 8, 3, 7, 2, 6, 1, 5])
+  // A posed item of any state ranks below an unposed one of any state: an answer given from the pane never put the item in a walk.
+  const states = [posedItem(blockingItem(1)), withState(2, 'done-waiting'), posedItem(withState(3, 'done-pending')), blockingItem(4, 'done-pending')]
+  expect([...states].sort(rankOrder).map(it => it.id)).toEqual([4, 2, 1, 3])
+})
+
+test('openRanked and nextItem give the open items in that order, and the pane\'s next item after a removal is the first of the open ones left', () => {
+  const kinds = [posedItem(withState(1, 'open')), posedItem(blockingItem(2)), withState(3, 'open'), blockingItem(4), blockingItem(5, 'done-pending'), withState(6, 'done-waiting')]
+  expect(openRanked(kinds).map(it => it.id)).toEqual([4, 3, 2, 1])
+  let left = kinds
+  const next: number[] = []
+  for (let item = nextItem(left); item !== undefined; item = nextItem(left)) {
+    next.push(item.id)
+    left = left.filter(it => it.id !== item?.id)
+  }
+  expect(next).toEqual([4, 3, 2, 1])
+  expect(left.map(it => it.id)).toEqual([5, 6])
+})
+
+test('openRanked gives the open items in the ranking, those in a press or sent left out', () => {
+  const items = [withState(1, 'open'), blockingItem(2, 'done-pending'), blockingItem(3), withState(4, 'done-waiting'), withState(5, 'open'), blockingItem(6, 'done-waiting')]
+  expect(openRanked(items).map(it => it.id)).toEqual([3, 1, 5])
+  expect(openRanked([withState(1, 'done-pending')])).toEqual([])
+  expect(openRanked([])).toEqual([])
+})
+
+test('nextItem takes the first open item in the ranking, skipping items in a press or sent, and none when none is open', () => {
+  // The open items are 1 and 4: the first of them, whichever item has left (3, say, in its press).
   const items = [withState(1, 'open'), withState(2, 'done-pending'), withState(3, 'done-waiting'), withState(4, 'open'), withState(5, 'done-pending')]
-  expect(successorOf(items, 1)?.id).toBe(4)
-  // Item 3 has just been sent (its press's window ended): the open items below it are 1 and nothing above.
-  const sent = [withState(1, 'open'), withState(2, 'done-pending'), withState(3, 'done-pending')]
-  expect(successorOf(sent, 3)?.id).toBe(1)
-  expect(successorOf([withState(2, 'done-pending'), withState(3, 'done-pending')], 2)).toBeUndefined()
+  expect(nextItem(items)?.id).toBe(1)
+  // Item 1 has just been sent (its press's window ended): the first open item is the one above it.
+  const sent = [withState(1, 'done-pending'), withState(2, 'done-pending'), withState(3, 'open'), withState(4, 'open')]
+  expect(nextItem(sent)?.id).toBe(3)
+  // A blocking item comes first whatever its number, when it is open.
+  expect(nextItem([withState(1, 'open'), blockingItem(2)])?.id).toBe(2)
+  expect(nextItem([withState(1, 'open'), blockingItem(2, 'done-pending')])?.id).toBe(1)
+  expect(nextItem([withState(2, 'done-pending'), withState(3, 'done-pending')])).toBeUndefined()
+  expect(nextItem([])).toBeUndefined()
+})
+
+test('the pane\'s next item and /todo\'s first open item are the same item, for every list of three items in any state, blocking or not, posed or not', () => {
+  const kinds = (['open', 'done-waiting', 'done-pending'] as const).flatMap(state => [false, true].flatMap(blocking => [false, true].map(posed => ({ state, blocking, posed }))))
+  for (const [a, b, c] of kinds.flatMap(a => kinds.flatMap(b => kinds.map(c => [a, b, c] as const)))) {
+    const items = [a, b, c].map((kind, k) => ({ ...withState(k + 1, kind.state), blocking: kind.blocking, posed: kind.posed }))
+    // The ranking's first among the open items: the first unposed blocking one, else the first unposed one, else the first posed blocking one, else the first (the
+    // numbers rise down the list).
+    const open = items.filter(it => it.state === 'open')
+    const first = open.find(it => !it.posed && it.blocking) ?? open.find(it => !it.posed) ?? open.find(it => it.blocking) ?? open[0]
+    expect(nextItem(items)?.id, JSON.stringify([a, b, c])).toBe(first?.id)
+    expect(openOf(items)[0]?.id, JSON.stringify([a, b, c])).toBe(first?.id)
+  }
 })
 
 // An item as release 0.1 wrote it: only these six fields.
@@ -444,8 +616,18 @@ const legacy = { id: 1, title: 'Pick a db', detail: 'Which store?', blocking: tr
 test('an item an older release wrote is filled with the defaults of every field added since', () => {
   expect(normalizeItem(legacy)).toEqual({
     id: 1, title: 'Pick a db', detail: 'Which store?', blocking: true, createdAt: 5, state: 'open', pressedAt: null, note: null,
-    agent: null, unread: false, options: [], yesno: false, answer: null, replied: false, doneLabel: null, thread: [], windowTurns: [], windowChanged: false,
+    agent: null, unread: false, posed: false, options: [], yesno: false, answer: null, replied: false, doneLabel: null, thread: [], windowTurns: [], windowChanged: false,
   })
+})
+
+test('a stored posed flag is kept when it is true, and an item stored with no flag, or one of another type, is unposed', () => {
+  expect(normalizeItem({ ...legacy, posed: true })?.posed).toBe(true)
+  for (const stored of [false, 'true', 1, null, undefined, {}, []]) expect([stored, normalizeItem({ ...legacy, posed: stored })?.posed]).toEqual([stored, false])
+  expect(normalizeStore({ items: [{ ...legacy, posed: true }, { ...legacy, id: 2 }], next: 3 }).items.map(it => it.posed)).toEqual([true, false])
+  // The flag survives every state an item is stored in.
+  for (const state of ['open', 'done-waiting', 'done-pending']) expect(normalizeItem({ ...legacy, state, pressedAt: 7, posed: true })?.posed).toBe(true)
+  // A window with no press time is cancelled as the item loads, and the flag is not part of what that undoes.
+  expect(normalizeItem({ ...legacy, state: 'done-waiting', answer: 'Use sqlite', posed: true })).toMatchObject({ state: 'open', posed: true })
 })
 
 test('a stored window\'s update mark is kept while the window runs, and dropped from an item in no window or one never pressed', () => {

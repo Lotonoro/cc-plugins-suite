@@ -14,6 +14,7 @@ const item: Item = {
   note: null,
   agent: null,
   unread: false,
+  posed: false,
   options: [], answer: null, yesno: false, replied: false, doneLabel: null, thread: [], windowTurns: [], windowChanged: false,
 }
 const store: Store = { items: [item], next: 4, term: null }

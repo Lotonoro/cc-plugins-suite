@@ -1,8 +1,7 @@
 import type { Item, TodoItem, Turn } from '../types'
 import { cutLine, cutText } from './cut'
 import { formsOf, humanTurn, isNumbered, labelOf, orderedOptions, replyText, turnsOf, type AnswerOutcome, type Form, type ShownOutcome } from './done'
-import { LINE_BREAK } from './items'
-import { bandOrder } from './layout'
+import { LINE_BREAK, openRanked, rankOrder } from './items'
 import { GLYPH, countsText, etaTail, headingOf, inDisplayOrder } from './todo'
 
 // The bounds the answers keep, in UTF-16 units. `cap` is the most `/todo <n>` prints, the cut line included, and the most a walk's question holds;
@@ -39,6 +38,12 @@ export const CLAUDE_DESCRIPTION = 'Print the Claude TODO list: the steps the age
 export const CLAUDE_USAGE = `${INDENT}Usage: /${CLAUDE_COMMAND} takes no argument.`
 export const CLAUDE_REBUILDING = `${INDENT}The list is still being rebuilt from the transcript; run /${CLAUDE_COMMAND} again in a moment.`
 export const CLAUDE_FAILED = `${INDENT}/${CLAUDE_COMMAND} failed: the error was logged.`
+// `/do` starts the walk, as `/todo answer` does, and takes no argument. Its lines name no pointer and claim no order: the order the walk asks in is stated once, in the walk's summary (walkSummary).
+export const DO_COMMAND = 'do'
+export const DO_DESCRIPTION = 'Answer every open item on the to-do list, one question at a time.'
+export const DO_USAGE = `${INDENT}Usage: /${DO_COMMAND} takes no argument.`
+export const DO_REBUILDING = `${INDENT}The list is still being rebuilt from the transcript; run /${DO_COMMAND} again in a moment.`
+export const DO_FAILED = `${INDENT}/${DO_COMMAND} failed: the error was logged.`
 const NOTHING = `${INDENT}Nothing is on the list.`
 const NO_SUCH = `${INDENT}There is no such item.`
 const CUT = `${INDENT}The rest was cut.`
@@ -49,10 +54,10 @@ const ON_PHONE = 'The user is on their phone and cannot see the list.'
 const indented = (lines: readonly string[]): string => lines.map(line => `${INDENT}${line}`).join('\n')
 export const PHONE_REBUILDING = indented([ON_PHONE, `The list is still being rebuilt from the transcript; /${COMMAND} lists it once the rebuild is done.`])
 
-// The open items in the band's order, which `/todo`, the phone block and the walk all take.
-export const openOf = (items: readonly Item[]): Item[] => items.filter(it => it.state === 'open').sort(bandOrder)
+// The open items in the ranking (items.ts), which `/todo`, the phone block and the walk all take.
+export const openOf = openRanked
 
-// The block for the agent: the open items on one line, `#<n> <title>` each, in the band's order. The first PHONE_ITEMS are named, each title on
+// The block for the agent: the open items on one line, `#<n> <title>` each, in the ranking. The first PHONE_ITEMS are named, each title on
 // that line and cut to PHONE_TITLE, and the count of the rest follows. The agent ends its reply with that line, which names items by their
 // numbers, so the restatement check passes it, and which ends with the walk's pointer, the one thing the person on the phone can type to answer
 // them. Null when no item is open.
@@ -70,10 +75,10 @@ export const phoneBlock = (items: readonly Item[]): string | null => {
   ])
 }
 
-// An argument without the ASCII spaces and tabs around it: the blanks both commands read an argument by.
+// An argument without the ASCII spaces and tabs around it: the blanks every command reads an argument by.
 const trimmed = (args: string): string => args.replace(/^[ \t]+|[ \t]+$/g, '')
 
-// Whether the argument holds anything: `/claude-todo` takes none.
+// Whether the argument holds anything: `/claude-todo` and `/do` take none.
 export const hasArgument = (args: string): boolean => trimmed(args) !== ''
 
 // The Claude TODO list as `/claude-todo` prints it: a line that counts it, then the in-flight entries and the queued ones, each group in written
@@ -156,12 +161,12 @@ export const answerLine = (outcome: AnswerOutcome): string => {
   }
 }
 
-// The list: the open items, then the answered ones (state done-waiting or done-pending), each group in the band's order. The first
+// The list: the open items, then the answered ones (state done-waiting or done-pending), each group in the ranking. The first
 // LIMITS.listItems are named; the rest fold into one line of their numbers, in id order.
 const answerList = (items: readonly Item[]): string => {
   if (items.length === 0) return NOTHING
   const open = openOf(items)
-  const answered = items.filter(it => it.state !== 'open').sort(bandOrder)
+  const answered = items.filter(it => it.state !== 'open').sort(rankOrder)
   const listed = [...open, ...answered]
   const lines = listed.slice(0, LIMITS.listItems).map(listLine)
   const folded = listed.slice(LIMITS.listItems).map(it => it.id).sort((a, b) => a - b)
@@ -299,10 +304,10 @@ const cutPrinted = (text: string, max: number): string => {
   return best
 }
 
-// ---- the walk: `/todo answer` ----
+// ---- the walk: `/do` and `/todo answer` ----
 
-// What the command prints when the walk does not start: a walk is asking already, or no item is open.
-export const ALREADY_ASKING = `${INDENT}A walk is already asking; answer or close its question first.`
+// What `/do` and `/todo answer` print when the walk does not start: a walk is asking already, or no item is open. Neither line names a command, so each is right for both.
+export const ALREADY_ASKING = `${INDENT}A walk is already asking; it goes on until every open item has been asked, you choose Stop on its question, or its question is closed.`
 export const NOTHING_OPEN = `${INDENT}Nothing is open to answer.`
 
 // The controls a question offers beside the item's answers, in the order they take the slots that are left, and the label a to-do's one answer takes when
@@ -363,7 +368,7 @@ export const walkSummary = (open: readonly Item[]): string[] => {
   const counts = [...(blocking > 0 ? [`${blocking} blocking`] : []), ...(rest > 0 ? [`${rest} non-blocking`] : [])]
   return [
     `${counts.join(' and ')} ${open.length === 1 ? 'item is' : 'items are'} open.`,
-    'They are asked one at a time, blocking first, and each answer is written to the list as you give it and reaches the agent by your next prompt. Stop, or stop typed under Other, or closing the question ends this; what you have not answered stays on the list.',
+    'They are asked one at a time: items a walk has not yet shown you, or that have changed since, come first, and blocking items first within each group. Each answer is written to the list as you give it and reaches the agent when the walk ends. Stop, stop typed under Other, or closing the question ends the walk; Skip passes over an item. What you have not answered stays on the list.',
   ]
 }
 
@@ -400,6 +405,7 @@ const fitWalk = (parts: WalkParts): string => {
 // the summary on the first question, the previous item's outcome line on every later one. `k` counts the questions asked so far, this one included, and `n`
 // is `k` plus the open items not yet asked about. The body is the note, the agent's newest turn when it is the thread's newest, and the raw brief, each under
 // the heading `/todo <n>` gives it. The tail is a decision's numbered options, the line that says what Other takes, and the closing line.
+// The question's position line, `k` of `n`, opens with `▶ `, so an item's own question stands out on a phone, which shows the text unstyled.
 export type Dialog = { header: string; question: string; options: string[] }
 
 export const walkDialog = (item: Item, k: number, n: number, lead: readonly string[]): Dialog => {
@@ -408,7 +414,7 @@ export const walkDialog = (item: Item, k: number, n: number, lead: readonly stri
   const newest = turns[turns.length - 1]
   const question = fitWalk({
     id: item.id,
-    head: [...lead, `${k} of ${n} — #${item.id} ${blockingWord(item)}: ${cutLine(item.title, LIMITS.title)}`],
+    head: [...lead, `▶ ${k} of ${n} — #${item.id} ${blockingWord(item)}: ${cutLine(item.title, LIMITS.title)}`],
     note: item.note === null ? null : sectionOf('note', item.note),
     turn: newest === undefined || newest.speaker !== 'agent' ? null : turnOf(newest),
     brief: item.detail.trim() === '' ? null : sectionOf('brief', item.detail),
@@ -504,7 +510,7 @@ const countLine = (sent: number, open: number | null): string => {
   return `The walk sent ${sentWords}; ${openWords}`
 }
 
-// The command's output when the walk has ended, each line indented as the command's other prints are: the outcome line no question showed (`pending`, the
+// The output of `/do` and `/todo answer` when the walk has ended, each line indented as the commands' other prints are: the outcome line no question showed (`pending`, the
 // last item's, when it has one), why the walk ended, and the count of what it sent and what is still open (`open`, null when the list could not be read).
 export const walkEnd = (pending: string | null, reason: Reason, sent: number, open: number | null): string =>
   [...(pending === null ? [] : [pending]), reasonLine(reason), countLine(sent, open)].map(line => `${INDENT}${line}`).join('\n')

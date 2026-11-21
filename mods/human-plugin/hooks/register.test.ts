@@ -7,7 +7,10 @@ import { REMINDER_TEXT } from './reminder'
 import { TODO_SPEC, TOOL_SPEC } from './steering'
 import { paneRows } from './ui'
 import { correctionText } from './restatement'
-import { ALREADY_ASKING, ARG_HINT, CLAUDE_COMMAND, CLAUDE_DESCRIPTION, CLAUDE_FAILED, CLAUDE_REBUILDING, CLAUDE_USAGE, COMMAND, DESCRIPTION, FAILED, NOTHING_OPEN, PHONE_REBUILDING, REBUILDING, USAGE } from './commands'
+import {
+  ALREADY_ASKING, ARG_HINT, CLAUDE_COMMAND, CLAUDE_DESCRIPTION, CLAUDE_FAILED, CLAUDE_REBUILDING, CLAUDE_USAGE, COMMAND, DESCRIPTION, DO_COMMAND, DO_DESCRIPTION, DO_FAILED, DO_REBUILDING,
+  DO_USAGE, FAILED, NOTHING_OPEN, PHONE_REBUILDING, REBUILDING, USAGE,
+} from './commands'
 import { resetRebuild, setForkedTranscript, startRestore } from './rebuild'
 import { pressAnswer, pressDone, stopTicker } from './windows'
 import type { Item } from '../types'
@@ -717,7 +720,8 @@ test('a press counts the pane open the moment it is made: a second press before 
 
 // An in-memory `$` for the list, the selection and the pane: the state holds what the hooks write, `open` is the pane's record,
 // `submitted` the prompts the mod submits, and `timers` the clock's callbacks, which the test fires.
-type Timer = { fn: () => unknown }
+// A timer the mod started: its wait, and whether it is a one-shot (`after`), which runs once and is gone, or a tick (`every`).
+type Timer = { fn: () => unknown; ms?: number; once?: boolean }
 type Render = { drawing: boolean; writes: string[] }
 const made = (id: number, extra: Record<string, unknown> = {}) => ({
   id,
@@ -757,9 +761,24 @@ const memEnv = (items: unknown[], open: string[], selection: unknown, submitted:
     command: { register: async () => ({ value: undefined }) },
     clock: {
       now: async () => clock.now,
-      after: (_ms: number, fn: () => unknown) => {
-        timers.push({ fn })
-        return { cancel: () => {} }
+      // A one-shot timer keeps its wait, runs once and is gone, and a cancel takes it out.
+      after: (ms: number, fn: () => unknown) => {
+        const timer: Timer = {
+          ms,
+          once: true,
+          fn: () => {
+            const at = timers.indexOf(timer)
+            if (at >= 0) timers.splice(at, 1)
+            return fn()
+          },
+        }
+        timers.push(timer)
+        return {
+          cancel: () => {
+            const at = timers.indexOf(timer)
+            if (at >= 0) timers.splice(at, 1)
+          },
+        }
       },
       // The undo countdown's tick: kept in `timers` while it runs, so a test fires it, and a cancel takes it out.
       every: (_ms: number, fn: () => unknown) => {
@@ -815,12 +834,15 @@ const band = (hooks: Record<string, Handler>, env: unknown) =>
 const paneTree = (hooks: Record<string, Handler>, env: unknown) =>
   drawn(env, () => hooks['ui.render {"component":"Pane","requestId":"human-items"}']?.(env as never, { props: { bodyColumns: 80 } } as never, next(false) as never))
 
-// The clock moves to `at`, and each tick the mod has started runs once there: a tick ends the undo windows whose time has run out.
-const tickAt = async (timers: Timer[], clock: { now: number }, at: number): Promise<void> => {
+// The clock moves to `at`, and each timer the mod has started runs once there, in the order they were armed: a tick ends the undo windows whose time has run
+// out, and a one-shot timer (the walk's release) runs and is gone. `only` runs the ticks or the one-shots alone.
+const tickAt = async (timers: Timer[], clock: { now: number }, at: number, only?: 'ticks' | 'one-shots'): Promise<void> => {
   clock.now = at
-  for (const timer of [...timers]) await timer.fn()
+  for (const timer of [...timers]) if (only === undefined || (timer.once === true) === (only === 'one-shots')) await timer.fn()
   await settle()
 }
+// The waits of the one-shot timers pending: the walk's release, one at most.
+const oneShotWaits = (timers: Timer[]): (number | undefined)[] => timers.filter(timer => timer.once === true).map(timer => timer.ms)
 
 test('the undo window is 3 s with no options: a tick before that sends nothing, the first tick at or after it sends', async () => {
   reset()
@@ -968,7 +990,7 @@ test('a band title press on an item the pane already shows reads it: its unread 
   expect(values.selection).toBe(2)
 })
 
-test('removing the shown item moves the pane to the next item (higher id), with its rows, and the selection follows', async () => {
+test('removing the shown item moves the pane to the first open item in the ranking, with its rows, and the selection follows', async () => {
   reset()
   const { hooks } = wire()
   const open: string[] = []
@@ -978,25 +1000,41 @@ test('removing the shown item moves the pane to the next item (higher id), with 
   findButton(await band(hooks, env), 'title-2')?.onPress()
   await settle()
   expect(open).toEqual(['human-items'])
-  // Item 3 is unread after the open, so only the switch to it can read it.
+  // Item 1 is unread after the open, so only the switch to it can read it.
   const listOf = () => values.list as { items: (Item & { unread: boolean })[] }
-  const shownNext = listOf().items.find(it => it.id === 3)
+  const shownNext = listOf().items.find(it => it.id === 1)
   if (shownNext) shownNext.unread = true
   opened.length = 0
   await (hooks['tool.call'] as Handler)(env as never, { tool: TOOL, action: 'remove', id: 2 } as never, next(false) as never)
   await settle()
   expect(open).toEqual(['human-items'])
-  const three = listOf().items.find(it => it.id === 3)
-  expect(opened).toEqual([{ id: 'human-items', rows: paneRows(three) }])
-  expect(values.selection).toBe(3)
-  expect(three?.unread).toBe(false)
+  const one = listOf().items.find(it => it.id === 1)
+  expect(opened).toEqual([{ id: 'human-items', rows: paneRows(one) }])
+  expect(values.selection).toBe(1)
+  expect(one?.unread).toBe(false)
   const shown = JSON.stringify(await paneTree(hooks, env))
-  expect(shown).toContain('#3 non-blocking, open: Item 3')
-  expect(shown).not.toContain('Item 1')
+  expect(shown).toContain('#1 non-blocking, open: Item 1')
   expect(shown).not.toContain('Item 2')
+  expect(shown).not.toContain('Item 3')
 })
 
-test('removing the shown highest-id item moves the pane to the last remaining item', async () => {
+test('removing the shown item moves the pane to a blocking open item before any other, whatever its number', async () => {
+  for (const removed of [1, 2]) {
+    reset()
+    const { hooks } = wire()
+    const open: string[] = []
+    const { env, values } = memEnv([made(1), made(2), made(3, { blocking: true })], open, null)
+    findButton(await band(hooks, env), `title-${removed}`)?.onPress()
+    await settle()
+    await (hooks['tool.call'] as Handler)(env as never, { tool: TOOL, action: 'remove', id: removed } as never, next(false) as never)
+    await settle()
+    expect(open, `#${removed}`).toEqual(['human-items'])
+    expect(values.selection, `#${removed}`).toBe(3)
+    expect(JSON.stringify(await paneTree(hooks, env)), `#${removed}`).toContain('#3 blocking, open: Item 3')
+  }
+})
+
+test('removing the shown highest-id item moves the pane to the first remaining item in the ranking', async () => {
   reset()
   const { hooks } = wire()
   const open: string[] = []
@@ -1007,9 +1045,9 @@ test('removing the shown highest-id item moves the pane to the last remaining it
   await (hooks['tool.call'] as Handler)(env as never, { tool: TOOL, action: 'remove', id: 3 } as never, next(false) as never)
   await settle()
   expect(open).toEqual(['human-items'])
-  expect(values.selection).toBe(2)
+  expect(values.selection).toBe(1)
   const shown = JSON.stringify(await paneTree(hooks, env))
-  expect(shown).toContain('#2 non-blocking, open: Item 2')
+  expect(shown).toContain('#1 non-blocking, open: Item 1')
   expect(shown).not.toContain('Item 3')
 })
 
@@ -1018,6 +1056,19 @@ test('removing the last item closes the pane too', async () => {
   const { hooks } = wire()
   const open: string[] = []
   const { env } = memEnv([made(1)], open, null)
+  findButton(await band(hooks, env), 'title-1')?.onPress()
+  await settle()
+  expect(open).toEqual(['human-items'])
+  await (hooks['tool.call'] as Handler)(env as never, { tool: TOOL, action: 'remove', id: 1 } as never, next(false) as never)
+  await settle()
+  expect(open).toEqual([])
+})
+
+test('removing the shown item closes the pane when no open item is left, though sent items are', async () => {
+  reset()
+  const { hooks } = wire()
+  const open: string[] = []
+  const { env } = memEnv([made(1), made(2, { state: 'done-pending' })], open, null)
   findButton(await band(hooks, env), 'title-1')?.onPress()
   await settle()
   expect(open).toEqual(['human-items'])
@@ -1285,39 +1336,28 @@ test('an empty or blank reply sends nothing and opens no undo window', async () 
   expect(submitted).toEqual([])
 })
 
-test('when the window ends on the item the pane shows, the pane moves to the next open item, skipping one already sent', async () => {
-  reset()
-  const { hooks } = wire()
-  const open: string[] = []
-  const timers: Timer[] = []
-  const { env, values, clock } = memEnv([made(1), made(2, { state: 'done-pending' }), made(3)], open, null, [], timers)
-  await (hooks['session.end'] as Handler)(env as never, { reason: 'exit' } as never, next(false) as never)
-  findButton(await band(hooks, env), 'title-1')?.onPress()
-  await settle()
-  expect(open).toEqual(['human-items'])
-  findButton(await band(hooks, env), 'done-1')?.onPress()
-  await settle()
-  await tickAt(timers, clock, 3000)
-  expect(open).toEqual(['human-items'])
-  expect(values.selection).toBe(3)
-  const shown = JSON.stringify(await paneTree(hooks, env))
-  expect(shown).toContain('#3 non-blocking, open: Item 3')
-  expect(shown).not.toContain('Item 1')
-})
-
-test('when the window ends on the item the pane shows and no open item is left, the pane closes', async () => {
-  reset()
-  const { hooks } = wire()
-  const open: string[] = []
-  const timers: Timer[] = []
-  const { env, clock } = memEnv([made(1), made(2, { state: 'done-pending' })], open, null, [], timers)
-  await (hooks['session.end'] as Handler)(env as never, { reason: 'exit' } as never, next(false) as never)
-  findButton(await band(hooks, env), 'title-1')?.onPress()
-  await settle()
-  findButton(await band(hooks, env), 'done-1')?.onPress()
-  await settle()
-  await tickAt(timers, clock, 3000)
-  expect(open).toEqual([])
+test('when the window ends on the item the pane shows, the pane closes, whatever other items are open', async () => {
+  const lists: [string, unknown[]][] = [
+    ['another item open, one sent', [made(1), made(2, { state: 'done-pending' }), made(3)]],
+    ['no other item open, one sent', [made(1), made(2, { state: 'done-pending' })]],
+  ]
+  for (const [name, items] of lists) {
+    reset()
+    const { hooks } = wire()
+    const open: string[] = []
+    const timers: Timer[] = []
+    const { env, clock } = memEnv(items, open, null, [], timers)
+    await (hooks['session.end'] as Handler)(env as never, { reason: 'exit' } as never, next(false) as never)
+    findButton(await band(hooks, env), 'title-1')?.onPress()
+    await settle()
+    expect(open, name).toEqual(['human-items'])
+    findButton(await band(hooks, env), 'done-1')?.onPress()
+    await settle()
+    // The pane stays open through the undo window, and closes when it ends.
+    expect(open, name).toEqual(['human-items'])
+    await tickAt(timers, clock, 3000)
+    expect(open, name).toEqual([])
+  }
 })
 
 test('the window ending on an item the pane does not show leaves the pane where it is', async () => {
@@ -1342,12 +1382,12 @@ const recordingOpens = <E extends { ui: { open: (args: { id: string; rows: numbe
   ui: { ...plain.ui, open: async (args: { id: string; rows: number }) => { opened.push({ id: args.id, rows: args.rows }); return plain.ui.open(args) } },
 })
 
-test('a reply\'s window ending moves the pane on to the next open item, as an option press\'s does: the selection follows, and the pane asks for that item\'s rows', async () => {
+test('a reply\'s window ending closes the pane, as an option press\'s does, and the pane asks for no rows', async () => {
   reset()
   const { hooks } = wire()
   const open: string[] = []
   const timers: Timer[] = []
-  const { env: plain, values, clock } = replyEnv([made(1, { detail: '' }), made(2, { detail: 'a\nb\nc\nd\ne' })], open, null, [], timers)
+  const { env: plain, values, clock } = replyEnv([made(1, { detail: '' }), made(2)], open, null, [], timers)
   await (hooks['session.end'] as Handler)(plain as never, { reason: 'exit' } as never, next(false) as never)
   const opened: { id: string; rows: number }[] = []
   const env = recordingOpens(plain, opened)
@@ -1357,14 +1397,9 @@ test('a reply\'s window ending moves the pane on to the next open item, as an op
   await settle()
   opened.length = 0
   await tickAt(timers, clock, 3000)
-  const items = (values.list as { items: Item[] }).items
-  expect(items.find(it => it.id === 1)).toMatchObject({ state: 'done-pending', answer: 'Use sqlite', replied: true })
-  expect(open).toEqual(['human-items'])
-  expect(values.selection).toBe(2)
-  expect(opened).toEqual([{ id: 'human-items', rows: paneRows(items.find(it => it.id === 2)) }])
-  const shown = JSON.stringify(await paneTree(hooks, env))
-  expect(shown).toContain('#2 non-blocking, open: Item 2')
-  expect(shown).not.toContain('Item 1')
+  expect((values.list as { items: Item[] }).items.find(it => it.id === 1)).toMatchObject({ state: 'done-pending', answer: 'Use sqlite', replied: true })
+  expect(open).toEqual([])
+  expect(opened).toEqual([])
 })
 
 test('a reply undone within its window leaves the pane on its item, open with its reply field, and the pane asks for nothing', async () => {
@@ -1395,57 +1430,194 @@ test('a reply undone within its window leaves the pane on its item, open with it
   expect(findInput(shown, 'reply-1')).toBeDefined()
 })
 
-test('an option press\'s window ending moves the pane on to the next open item, as a done press\'s does', async () => {
+test('an option press\'s window ending closes the pane, as a done press\'s does', async () => {
   reset()
   const { hooks } = wire()
   const open: string[] = []
   const timers: Timer[] = []
   const decision = made(1, { detail: '', options: [{ label: 'Use sqlite', description: '', recommended: false }, { label: 'Use postgres', description: '', recommended: true }] })
-  const { env, values, clock } = memEnv([decision, made(2)], open, null, [], timers)
+  const { env, clock } = memEnv([decision, made(2)], open, null, [], timers)
   await (hooks['session.end'] as Handler)(env as never, { reason: 'exit' } as never, next(false) as never)
   findButton(await band(hooks, env), 'title-1')?.onPress()
   await settle()
   findButton(await paneTree(hooks, env), 'answer-1-1')?.onPress()
   await settle()
   await tickAt(timers, clock, 3000)
-  expect(open).toEqual(['human-items'])
-  expect(values.selection).toBe(2)
-  expect(JSON.stringify(await paneTree(hooks, env))).toContain('#2 non-blocking, open: Item 2')
+  expect(open).toEqual([])
 })
 
-test('a window that ends on the item the pane shows, with an agent append reopening it before the pane decides, leaves the pane on it, open', async () => {
-  reset()
-  const { hooks } = wire()
-  const open: string[] = []
-  const timers: Timer[] = []
-  const { env, values, clock } = memEnv([made(1, { detail: '' })], open, null, [], timers)
-  await (hooks['session.end'] as Handler)(env as never, { reason: 'exit' } as never, next(false) as never)
-  findButton(await band(hooks, env), 'title-1')?.onPress()
-  await settle()
-  findButton(await band(hooks, env), 'done-1')?.onPress()
-  await settle()
-  // The first read of the selection after the window's end is the pane's own, made once the end has written the item sent. It is held
-  // until an agent append has reopened the item.
+test('a yes or no press on the item the pane shows closes the pane when its window ends', async () => {
+  for (const key of ['yes-1', 'no-1']) {
+    reset()
+    const { hooks } = wire()
+    const open: string[] = []
+    const timers: Timer[] = []
+    const { env, clock } = memEnv([made(1, { detail: '', yesno: true }), made(2)], open, null, [], timers)
+    await (hooks['session.end'] as Handler)(env as never, { reason: 'exit' } as never, next(false) as never)
+    findButton(await band(hooks, env), 'title-1')?.onPress()
+    await settle()
+    findButton(await band(hooks, env), key)?.onPress()
+    await settle()
+    expect(open, key).toEqual(['human-items'])
+    await tickAt(timers, clock, 3000)
+    expect(open, key).toEqual([])
+  }
+})
+
+// The first read of the selection after a window's end is the pane's own, made once the end has written the item sent. It is held, so that something can happen to the
+// item between the end's write and the pane's decision: `reached` says the pane has made the read, and `release` lets it go on to read the list as it stands then.
+const holdSelectionRead = (env: { state: { get: (ref: { key: string }) => Promise<unknown> } }) => {
   let release: () => void = () => {}
   let holding = true
   const get = env.state.get
-  env.state.get = (async (ref: { key: string }) => {
+  env.state.get = async (ref: { key: string }) => {
     if (ref.key === 'selection' && holding) {
       holding = false
       await new Promise<void>(done => (release = done))
     }
     return get(ref)
-  }) as typeof env.state.get
+  }
+  return { reached: () => !holding, release: () => release() }
+}
+
+test('a window that ends on the item the pane shows, with an agent append reopening it before the pane decides, leaves the pane on it, open, and asks for its rows again', async () => {
+  reset()
+  const { hooks } = wire()
+  const open: string[] = []
+  const timers: Timer[] = []
+  const { env: plain, values, clock } = memEnv([made(1, { detail: '' })], open, null, [], timers)
+  await (hooks['session.end'] as Handler)(plain as never, { reason: 'exit' } as never, next(false) as never)
+  const opened: { id: string; rows: number }[] = []
+  const env = recordingOpens(plain, opened)
+  findButton(await band(hooks, env), 'title-1')?.onPress()
+  await settle()
+  findButton(await band(hooks, env), 'done-1')?.onPress()
+  await settle()
+  const hold = holdSelectionRead(plain)
+  opened.length = 0
   await tickAt(timers, clock, 3000)
-  expect(holding).toBe(false)
+  expect(hold.reached()).toBe(true)
   await (hooks['tool.call'] as Handler)(env as never, { tool: TOOL, action: 'append', id: 1, text: 'It needs a file.' } as never, next(false) as never)
   await settle()
-  release()
+  // The append's own follow-up has asked for the reopened item's rows; the window's end decides after the append, and asks once more.
+  const appended = opened.length
+  hold.release()
   await settle()
-  expect((values.list as { items: Item[] }).items[0]).toMatchObject({ state: 'open' })
+  const one = (values.list as { items: Item[] }).items[0] as Item
+  expect(one).toMatchObject({ state: 'open' })
+  expect(opened.slice(appended)).toEqual([{ id: 'human-items', rows: paneRows(one) }])
   expect(open).toEqual(['human-items'])
   expect(values.selection).toBe(1)
   expect(JSON.stringify(await paneTree(hooks, env))).toContain('#1 non-blocking, open: Item 1')
+})
+
+test('a window that ends on the item the pane shows, with the item removed before the pane reads the list, moves the pane on to the first open item in the ranking', async () => {
+  reset()
+  const { hooks } = wire()
+  const open: string[] = []
+  const timers: Timer[] = []
+  const { env: plain, values, clock } = memEnv([made(1, { detail: '' }), made(2)], open, null, [], timers)
+  await (hooks['session.end'] as Handler)(plain as never, { reason: 'exit' } as never, next(false) as never)
+  const opened: { id: string; rows: number }[] = []
+  const env = recordingOpens(plain, opened)
+  findButton(await band(hooks, env), 'title-1')?.onPress()
+  await settle()
+  findButton(await band(hooks, env), 'done-1')?.onPress()
+  await settle()
+  const hold = holdSelectionRead(plain)
+  opened.length = 0
+  await tickAt(timers, clock, 3000)
+  expect(hold.reached()).toBe(true)
+  // The item leaves the list in the state itself: a tool call that removes it would move the pane at once with its own follow-up, and the window's end would find the
+  // pane already elsewhere. Here the window's end alone decides.
+  const list = values.list as { items: { id: number }[] }
+  values.list = { ...list, items: list.items.filter(it => it.id !== 1) }
+  hold.release()
+  await settle()
+  expect(open).toEqual(['human-items'])
+  expect(values.selection).toBe(2)
+  expect(opened).toEqual([{ id: 'human-items', rows: paneRows((values.list as { items: Item[] }).items.find(it => it.id === 2)) }])
+  expect(JSON.stringify(await paneTree(hooks, env))).toContain('#2 non-blocking, open: Item 2')
+})
+
+test('a window that ends on the item the pane shows, with the item reopened and pressed again before the pane decides, leaves the pane as it is until that second window ends', async () => {
+  reset()
+  const { hooks } = wire()
+  const open: string[] = []
+  const timers: Timer[] = []
+  const { env: plain, values, clock } = memEnv([made(1, { detail: '' }), made(2)], open, null, [], timers)
+  await (hooks['session.end'] as Handler)(plain as never, { reason: 'exit' } as never, next(false) as never)
+  const opened: { id: string; rows: number }[] = []
+  const env = recordingOpens(plain, opened)
+  findButton(await band(hooks, env), 'title-1')?.onPress()
+  await settle()
+  findButton(await band(hooks, env), 'done-1')?.onPress()
+  await settle()
+  const hold = holdSelectionRead(plain)
+  await tickAt(timers, clock, 3000)
+  expect(hold.reached()).toBe(true)
+  // The agent's append reopens the sent item, and a second press on it opens a new undo window.
+  await (hooks['tool.call'] as Handler)(env as never, { tool: TOOL, action: 'append', id: 1, text: 'It needs a file.' } as never, next(false) as never)
+  await settle()
+  findButton(await band(hooks, env), 'done-1')?.onPress()
+  await settle()
+  expect((values.list as { items: Item[] }).items[0]).toMatchObject({ state: 'done-waiting', pressedAt: 3000 })
+  const asked = opened.length
+  hold.release()
+  await settle()
+  expect(opened.length).toBe(asked)
+  expect(open).toEqual(['human-items'])
+  expect(values.selection).toBe(1)
+  // The second window's end is the one that sends the item, and it closes the pane.
+  await tickAt(timers, clock, 6000)
+  expect((values.list as { items: Item[] }).items[0]).toMatchObject({ state: 'done-pending' })
+  expect(open).toEqual([])
+})
+
+test('a zero undo window with the pane open on the pressed item closes the pane and sends the notice before the press returns, and leaves no tick running', async () => {
+  reset()
+  const { hooks } = wire()
+  const open: string[] = []
+  const submitted: unknown[] = []
+  const timers: Timer[] = []
+  const { env } = memEnv([made(1, { detail: '' }), made(2)], open, null, submitted, timers)
+  await (hooks['session.end'] as Handler)(env as never, { reason: 'exit' } as never, next(false) as never)
+  findButton(await band(hooks, env), 'title-1')?.onPress()
+  await settle()
+  expect(open).toEqual(['human-items'])
+  await pressDone(env as never, 1, null, 0)
+  expect(open).toEqual([])
+  expect(submitted).toHaveLength(1)
+  expect((submitted[0] as { text: string }).text.startsWith('#1 is done: Item 1\nThe human marked it done.')).toBe(true)
+  expect(timers.length).toBe(0)
+})
+
+test('a close the window\'s end asks for and the pane refuses is logged and leaves the pane counted open, and the item\'s notice is still submitted', async () => {
+  reset()
+  const { hooks } = wire()
+  const open: string[] = []
+  const submitted: unknown[] = []
+  const timers: Timer[] = []
+  const logs: string[] = []
+  const { env: plain, clock } = memEnv([made(1, { detail: '' }), made(2)], open, null, submitted, timers)
+  let refuse = false
+  const env = { ...plain, ui: { ...plain.ui, log: (text: string) => void logs.push(text), close: (e: { id: string }) => (refuse ? Promise.reject(new Error('close refused')) : plain.ui.close(e)) } }
+  await (hooks['session.end'] as Handler)(env as never, { reason: 'exit' } as never, next(false) as never)
+  findButton(await band(hooks, env), 'title-1')?.onPress()
+  await settle()
+  findButton(await band(hooks, env), 'done-1')?.onPress()
+  await settle()
+  refuse = true
+  await tickAt(timers, clock, 3000)
+  expect(logs.filter(line => line.includes('close refused'))).toEqual(['human-plugin: Error: close refused'])
+  expect(open).toEqual(['human-items'])
+  expect(submitted).toHaveLength(1)
+  expect((submitted[0] as { text: string }).text.startsWith('#1 is done: Item 1\nThe human marked it done.')).toBe(true)
+  // The pane is still counted open: a press on the title of the item it shows closes it, where a pane counted shut would open it again.
+  refuse = false
+  findButton(await band(hooks, env), 'title-1')?.onPress()
+  await settle()
+  expect(open).toEqual([])
 })
 
 test('removing the shown item moves the pane to the next open item, skipping one already sent', async () => {
@@ -1461,7 +1633,7 @@ test('removing the shown item moves the pane to the next open item, skipping one
   expect(values.selection).toBe(3)
 })
 
-test('a sent item the person views is left alone by a tool call; a tool call that removes it moves the pane on', async () => {
+test('a sent item the person views is left alone by a tool call; a tool call that removes it moves the pane to the first open item in the ranking', async () => {
   reset()
   const { hooks } = wire()
   const open: string[] = []
@@ -1473,9 +1645,10 @@ test('a sent item the person views is left alone by a tool call; a tool call tha
   await settle()
   expect(open).toEqual(['human-items'])
   expect(values.selection).toBe(2)
+  // Items 1 and 3 are open: the ranking's first is 1, the lower number, not the next one above the removed item.
   await (hooks['tool.call'] as Handler)(env as never, { tool: TOOL, action: 'remove', id: 2 } as never, next(false) as never)
   await settle()
-  expect(values.selection).toBe(3)
+  expect(values.selection).toBe(1)
 })
 
 test('an append that reopens the sent item the pane shows re-asks its rows with the reply field, and the item is not unread', async () => {
@@ -1548,15 +1721,15 @@ const reloaded = async (open: string[], items: unknown[], selection: unknown, su
   return { hooks, env, values, clock }
 }
 
-test('after a reload, removing the shown item moves the pane to the next open item, the selection following', async () => {
+test('after a reload, removing the shown item moves the pane to the first open item in the ranking, the selection following', async () => {
   const open = ['human-items']
   const { hooks, env, values } = await reloaded(open, [made(1), made(2), made(3)], 2)
   await (hooks['tool.call'] as Handler)(env as never, { tool: TOOL, action: 'remove', id: 2 } as never, next(false) as never)
   await settle()
   expect(open).toEqual(['human-items'])
-  expect(values.selection).toBe(3)
+  expect(values.selection).toBe(1)
   const shown = JSON.stringify(await paneTree(hooks, env))
-  expect(shown).toContain('#3 non-blocking, open: Item 3')
+  expect(shown).toContain('#1 non-blocking, open: Item 1')
   expect(shown).not.toContain('Item 2')
 })
 
@@ -1568,18 +1741,15 @@ test('after a reload, removing the last item closes the pane', async () => {
   expect(open).toEqual([])
 })
 
-test('after a reload, the expiry of a press on the shown item moves the pane on to the next open item', async () => {
+test('after a reload, the expiry of a press on the shown item closes the pane', async () => {
   const open = ['human-items']
   const timers: Timer[] = []
-  const { hooks, env, values, clock } = await reloaded(open, [made(1), made(2), made(3)], 2, [], timers)
+  const { hooks, env, clock } = await reloaded(open, [made(1), made(2), made(3)], 2, [], timers)
   findButton(await band(hooks, env), 'done-2')?.onPress()
   await settle()
   expect(timers.length).toBe(1)
   await tickAt(timers, clock, 3000)
-  expect(open).toEqual(['human-items'])
-  expect(values.selection).toBe(3)
-  const shown = JSON.stringify(await paneTree(hooks, env))
-  expect(shown).toContain('#3 non-blocking, open: Item 3')
+  expect(open).toEqual([])
 })
 
 test('with no selection the open pane shows the first item, so removing that item moves the pane on to the next', async () => {
@@ -1594,6 +1764,32 @@ test('with no selection the open pane shows the first item, so removing that ite
   expect(open).toEqual(['human-items'])
   expect(values.selection).toBe(2)
   expect(JSON.stringify(await paneTree(hooks, env))).toContain('#2 non-blocking, open: Item 2')
+})
+
+test('with no selection the open pane draws the first item in the ranking, a blocking item filed after a non-blocking one', async () => {
+  const open = ['human-items']
+  const { hooks, env } = await reloaded(open, [made(1), made(2, { blocking: true })], null)
+  const shown = JSON.stringify(await paneTree(hooks, env))
+  expect(shown).toContain('#2 blocking, open: Item 2')
+  expect(shown).not.toContain('Item 1')
+})
+
+test('with no selection a press on the title of the ranking\'s first item, a blocking one filed after a non-blocking one, closes the open pane: the pane shows that item', async () => {
+  const open = ['human-items']
+  const { hooks, env } = await reloaded(open, [made(1), made(2, { blocking: true })], null)
+  findButton(await band(hooks, env), 'title-2')?.onPress()
+  await settle()
+  expect(open).toEqual([])
+})
+
+test('with no selection the open pane shows the first item in the ranking, so removing that blocking item moves the pane on to the next one in the ranking', async () => {
+  const open = ['human-items']
+  const { hooks, env, values } = await reloaded(open, [made(1), made(2, { blocking: true }), made(3)], null)
+  await (hooks['tool.call'] as Handler)(env as never, { tool: TOOL, action: 'remove', id: 2 } as never, next(false) as never)
+  await settle()
+  expect(open).toEqual(['human-items'])
+  expect(values.selection).toBe(1)
+  expect(JSON.stringify(await paneTree(hooks, env))).toContain('#1 non-blocking, open: Item 1')
 })
 
 test('a press whose selection write is still in flight holds the pane on the pressed item when the item shown before it is removed', async () => {
@@ -2163,6 +2359,7 @@ const commandKey = (name: string): string => `command.run ${JSON.stringify({ com
 // The `/todo` command: registered at session start, answered by its command hook, and waiting for a rebuild as the tool does.
 const todoOf = (hooks: Record<string, Handler>): Handler => hooks[commandKey(COMMAND)] as Handler
 const claudeTodoOf = (hooks: Record<string, Handler>): Handler => hooks[commandKey(CLAUDE_COMMAND)] as Handler
+const doOf = (hooks: Record<string, Handler>): Handler => hooks[commandKey(DO_COMMAND)] as Handler
 
 test('/todo is registered at session start with the flag that runs it mid-turn, under the name its hook\'s matcher spells out', async () => {
   freshModule()
@@ -2180,11 +2377,31 @@ test('/claude-todo is registered at session start with the flag that runs it mid
   const { env } = memEnv([], [], null)
   const registered: Record<string, unknown>[] = []
   await started(wired, { ...env, command: { register: async (spec: Record<string, unknown>) => void registered.push(spec) } })
+  expect(registered).toContainEqual({ name: CLAUDE_COMMAND, description: CLAUDE_DESCRIPTION, immediate: true })
+  expect(typeof claudeTodoOf(wired.hooks)).toBe('function')
+})
+
+test('/do is registered at session start with the flag that runs it mid-turn and no argument hint, under the name its hook\'s matcher spells out', async () => {
+  freshModule()
+  const wired = wire()
+  const { env } = memEnv([], [], null)
+  const registered: Record<string, unknown>[] = []
+  await started(wired, { ...env, command: { register: async (spec: Record<string, unknown>) => void registered.push(spec) } })
+  expect(registered).toContainEqual({ name: DO_COMMAND, description: DO_DESCRIPTION, immediate: true })
+  expect(typeof doOf(wired.hooks)).toBe('function')
+})
+
+test('the session start registers three commands and no other: /todo, /claude-todo and /do, each with its own spec', async () => {
+  freshModule()
+  const wired = wire()
+  const { env } = memEnv([], [], null)
+  const registered: Record<string, unknown>[] = []
+  await started(wired, { ...env, command: { register: async (spec: Record<string, unknown>) => void registered.push(spec) } })
   expect(registered).toEqual([
     { name: COMMAND, description: DESCRIPTION, argumentHint: ARG_HINT, immediate: true },
     { name: CLAUDE_COMMAND, description: CLAUDE_DESCRIPTION, immediate: true },
+    { name: DO_COMMAND, description: DO_DESCRIPTION, immediate: true },
   ])
-  expect(typeof claudeTodoOf(wired.hooks)).toBe('function')
 })
 
 test('a failed /todo registration is logged, and the rest of the session start still delivers an owed notice', async () => {
@@ -2207,12 +2424,14 @@ test('a failed /todo registration is logged, and the rest of the session start s
   expect(logs).toEqual([
     'human-plugin: the /todo command was not registered: Error: no room for the command',
     'human-plugin: the /claude-todo command was not registered: Error: no room for the command',
+    'human-plugin: the /do command was not registered: Error: no room for the command',
   ])
   expect(submitted).toEqual([{ text: '#1 is done: Item 1' }])
 })
 
-test('a failed registration of one command leaves the other registered: /todo failing keeps /claude-todo, and the reverse', async () => {
-  for (const failing of [COMMAND, CLAUDE_COMMAND]) {
+test('a failed registration of one command leaves the other two registered and logs only its own line, whichever of /todo, /claude-todo and /do fails', async () => {
+  const names = [COMMAND, CLAUDE_COMMAND, DO_COMMAND]
+  for (const failing of names) {
     freshModule()
     const logs: string[] = []
     const registered: string[] = []
@@ -2228,8 +2447,8 @@ test('a failed registration of one command leaves the other registered: /todo fa
       },
     })
     await settle()
-    expect(registered).toEqual([failing === COMMAND ? CLAUDE_COMMAND : COMMAND])
-    expect(logs).toEqual([`human-plugin: the /${failing} command was not registered: Error: no room for the command`])
+    expect([failing, registered]).toEqual([failing, names.filter(name => name !== failing)])
+    expect([failing, logs]).toEqual([failing, [`human-plugin: the /${failing} command was not registered: Error: no room for the command`]])
   }
 })
 
@@ -2745,24 +2964,24 @@ test('a failure after an answer form\'s write leaves the item answered, and the 
   expect(logs.filter(line => line.includes('no clock')).length).toBe(1)
 })
 
-test('with the pane open on the item, a phone reply moves the pane on to the next open item once its window has ended, as a reply from the pane does', async () => {
-  reset()
-  stopTicker()
-  const { hooks } = wire()
-  const open: string[] = []
-  const timers: Timer[] = []
-  const { env, values, clock } = replyEnv([made(1, { detail: '' }), made(2)], open, null, [], timers)
-  await (hooks['session.end'] as Handler)(env as never, { reason: 'exit' } as never, next(false) as never)
-  findButton(await band(hooks, env), 'title-1')?.onPress()
-  await settle()
-  clock.now = 1000
-  expect(await askText(hooks, env, '1 reply Use sqlite')).toBe('  answered #1 with Use sqlite')
-  await tickAt(timers, clock, 1000)
-  expect(open).toEqual(['human-items'])
-  expect(values.selection).toBe(2)
-  const shown = JSON.stringify(await paneTree(hooks, env))
-  expect(shown).toContain('#2 non-blocking, open: Item 2')
-  expect(shown).not.toContain('Item 1')
+test('with the pane open on the item, a phone reply or done closes the pane once its window has ended, not when the command writes it, as a reply from the pane does', async () => {
+  const forms: [string, string][] = [['1 reply Use sqlite', '  answered #1 with Use sqlite'], ['1 done', '  answered #1 with done']]
+  for (const [args, confirmation] of forms) {
+    reset()
+    stopTicker()
+    const { hooks } = wire()
+    const open: string[] = []
+    const timers: Timer[] = []
+    const { env, clock } = replyEnv([made(1, { detail: '' }), made(2)], open, null, [], timers)
+    await (hooks['session.end'] as Handler)(env as never, { reason: 'exit' } as never, next(false) as never)
+    findButton(await band(hooks, env), 'title-1')?.onPress()
+    await settle()
+    clock.now = 1000
+    expect(await askText(hooks, env, args)).toBe(confirmation)
+    expect(open, args).toEqual(['human-items'])
+    await tickAt(timers, clock, 1000)
+    expect(open, args).toEqual([])
+  }
 })
 
 test('a reply sent by /todo leaves a human turn with its words on the item once the agent reopens it, under the reply notice', async () => {
@@ -4915,8 +5134,8 @@ test('/todo answer asks about each open item through the hooks, blocking first, 
   clock.now = 1000
   const answered = await todoOf(hooks)(askingHost(hooks, env, ['Done', 'Skip'], { asked, through }) as never, { args: ' Answer ' } as never, next(false) as never)
   expect(asked).toHaveLength(2)
-  expect(asked[0]?.split('\n')[2]).toBe('1 of 2 — #2 blocking: Item 2')
-  expect(asked[1]?.split('\n').slice(0, 2)).toEqual(['answered #2 with done', '2 of 2 — #1 non-blocking: Item 1'])
+  expect(asked[0]?.split('\n')[2]).toBe('▶ 1 of 2 — #2 blocking: Item 2')
+  expect(asked[1]?.split('\n').slice(0, 2)).toEqual(['answered #2 with done', '▶ 2 of 2 — #1 non-blocking: Item 1'])
   expect(through).toEqual([true, true])
   expect(answered).toEqual({
     text: ['  skipped #1', '  It asked about every open item.', '  The walk sent 1 answer; 1 item is still open. /todo answer asks about it again.'].join('\n'),
@@ -4926,6 +5145,25 @@ test('/todo answer asks about each open item through the hooks, blocking first, 
   await tickAt(timers, clock, 1000)
   expect(submitted).toHaveLength(1)
   expect((submitted[0] as { text: string }).text.startsWith('#2 is done: Item 2')).toBe(true)
+})
+
+test('/todo answer\'s answer to the item the open pane shows closes the pane once its window has ended, not when the walk writes it', async () => {
+  freshModule()
+  const { hooks } = wire()
+  const open: string[] = []
+  const timers: Timer[] = []
+  const { env, values, clock } = memEnv([made(1, { detail: '' }), made(2, { detail: '' })], open, null, [], timers)
+  await endSession(hooks, env)
+  findButton(await band(hooks, env), 'title-1')?.onPress()
+  await settle()
+  expect(open).toEqual(['human-items'])
+  clock.now = 1000
+  // The walk asks #1, the first in the ranking and the item the pane shows, and writes its answer; it skips #2.
+  await todoOf(hooks)(askingHost(hooks, env, ['Done', 'Skip']) as never, { args: ' Answer ' } as never, next(false) as never)
+  expect(values.list).toMatchObject({ items: [{ id: 1, state: 'done-waiting' }, { id: 2, state: 'open' }] })
+  expect(open).toEqual(['human-items'])
+  await tickAt(timers, clock, 1000)
+  expect(open).toEqual([])
 })
 
 test('/todo answer with anything after it answers the usage and asks nothing', async () => {
@@ -4977,6 +5215,163 @@ test('/todo answer with nothing open says so and asks nothing, and one started w
   expect(asked).toHaveLength(1)
   release()
   expect(await first).toContain('It asked about every open item.')
+})
+
+// `/do` through the hooks: the same walk as `/todo answer`, started by a command of its own with its own usage, rebuilding and failure lines. The walk is walk.test.ts's and the `/todo answer`
+// tests' above; these drive what `/do` adds: its argument check, its wait for a rebuild, the one walk the two commands share, its failure line, and the source its walks' writes are logged by.
+
+// The text `/do` answers with, as its hook returns it.
+const doText = async (hooks: Record<string, Handler>, env: object, args = ''): Promise<string> =>
+  ((await doOf(hooks)(env as never, { args } as never, next(false) as never)) as { text: string }).text
+
+// The two commands that start the walk, each run as its hook runs it.
+const starters = {
+  '/do': (hooks: Record<string, Handler>, env: object): Promise<string> => doText(hooks, env),
+  '/todo answer': (hooks: Record<string, Handler>, env: object): Promise<string> => askText(hooks, env, 'answer'),
+}
+
+test('/do asks the questions /todo answer asks about the same list, writes the answer it is given, and returns the walk\'s end text, which still points to /todo answer', async () => {
+  const ran: { asked: string[]; text: string; list: unknown }[] = []
+  for (const start of Object.values(starters)) {
+    freshModule()
+    const { hooks } = wire()
+    const { env, values, clock } = memEnv([made(1, { detail: '' }), made(2, { detail: '', blocking: true })], [], null)
+    await endSession(hooks, env)
+    const asked: string[] = []
+    clock.now = 1000
+    const text = await start(hooks, askingHost(hooks, env, ['Done', 'Skip'], { asked }))
+    ran.push({ asked, text, list: values.list })
+  }
+  const [byDo, byTodo] = ran
+  expect(byDo).toEqual(byTodo)
+  expect(byDo?.asked).toHaveLength(2)
+  expect(byDo?.asked[0]?.split('\n')[2]).toBe('▶ 1 of 2 — #2 blocking: Item 2')
+  expect(byDo?.asked[1]?.split('\n').slice(0, 2)).toEqual(['answered #2 with done', '▶ 2 of 2 — #1 non-blocking: Item 1'])
+  expect(byDo?.text).toBe(['  skipped #1', '  It asked about every open item.', '  The walk sent 1 answer; 1 item is still open. /todo answer asks about it again.'].join('\n'))
+  expect(byDo?.list).toMatchObject({ items: [{ id: 1, state: 'open' }, { id: 2, state: 'done-waiting' }] })
+})
+
+test('/do with anything after it answers its usage and asks nothing, and blanks alone are no argument: each starts the walk', async () => {
+  freshModule()
+  const { hooks } = wire()
+  const { env, values } = memEnv([made(1, { detail: '' })], [], null)
+  await endSession(hooks, env)
+  const asked: string[] = []
+  for (const args of ['x', '3', 'answer', ' Answer ', '3 done', String.fromCodePoint(0xa0)]) {
+    expect([args, await doText(hooks, askingHost(hooks, env, ['Done'], { asked }), args)]).toEqual([args, DO_USAGE])
+  }
+  expect(asked).toEqual([])
+  expect(values.list).toMatchObject({ items: [{ id: 1, state: 'open' }] })
+  for (const args of [' ', '\t', ' \t ']) {
+    expect([args, (await doText(hooks, askingHost(hooks, env, ['Skip'], { asked }), args)).includes('It asked about every open item.')]).toEqual([args, true])
+  }
+  expect(asked).toHaveLength(3)
+})
+
+test('/do with nothing open says so and asks nothing', async () => {
+  freshModule()
+  const { hooks } = wire()
+  const { env } = memEnv([made(1, { state: 'done-pending', answer: 'done' })], [], null)
+  await endSession(hooks, env)
+  const asked: string[] = []
+  expect(await doText(hooks, askingHost(hooks, env, ['Done'], { asked }))).toBe(NOTHING_OPEN)
+  expect(asked).toEqual([])
+})
+
+test('/do while a /todo answer walk asks, and /todo answer while a /do walk asks, are each told a walk is already asking and ask nothing', async () => {
+  for (const [first, second] of [['/do', '/todo answer'], ['/todo answer', '/do']] as const) {
+    freshModule()
+    const { hooks } = wire()
+    const { env } = memEnv([made(1, { detail: '' })], [], null)
+    await endSession(hooks, env)
+    const asked: string[] = []
+    let release = (): void => {}
+    const hold = new Promise<void>(resolve => (release = resolve))
+    const running = starters[first](hooks, askingHost(hooks, env, ['Skip'], { asked, hold }))
+    await until(() => asked.length === 1)
+    expect(asked, first).toHaveLength(1)
+    expect([first, await starters[second](hooks, askingHost(hooks, env, ['Skip'], { asked }))]).toEqual([first, ALREADY_ASKING])
+    expect(asked, first).toHaveLength(1)
+    release()
+    expect([first, (await running).includes('It asked about every open item.')]).toEqual([first, true])
+  }
+})
+
+test('/do while the list is being rebuilt answers its own rebuilding line, which names /do, and asks nothing; once the rebuild has finished it starts the walk', async () => {
+  freshModule()
+  const wired = wire()
+  const timers: Timer[] = []
+  const { env, clock } = memEnv([], [], null, [], timers)
+  const { host, finish } = rebuilding(env)
+  const asked: string[] = []
+  setForkedTranscript('/sessions/s.jsonl')
+  try {
+    await started(wired, host)
+    const waiting = doText(wired.hooks, askingHost(wired.hooks, host, ['Skip'], { asked }))
+    await tickAt(timers, clock, 5000)
+    expect(await waiting).toBe(DO_REBUILDING)
+    expect(asked).toEqual([])
+    finish()
+    expect(await doText(wired.hooks, askingHost(wired.hooks, host, ['Skip'], { asked }))).toContain('It asked about every open item.')
+    expect(asked).toHaveLength(1)
+  } finally {
+    resetRebuild()
+  }
+})
+
+test('a /do whose hook throws answers its failure line and logs the throw', async () => {
+  freshModule()
+  const wired = wire()
+  const timers: Timer[] = []
+  const { env } = memEnv([], [], null, [], timers)
+  const { host, finish } = rebuilding(env)
+  // The host refuses the timer the wait for the rebuild arms, so the hook throws before the walk starts.
+  const refusing = {
+    ...host,
+    clock: {
+      ...env.clock,
+      after: () => {
+        throw new Error('no timer')
+      },
+    },
+  }
+  setForkedTranscript('/sessions/s.jsonl')
+  try {
+    await started(wired, host)
+    let thrown: unknown = null
+    try {
+      await doOf(wired.hooks)(refusing as never, { args: '' } as never, next(false) as never)
+    } catch (err) {
+      thrown = err
+    }
+    expect(String(thrown)).toContain('no timer')
+    const logs: string[] = []
+    const handler = wired.catches[commandKey(DO_COMMAND)] as Handler
+    expect(await handler({ ui: { log: (text: string) => void logs.push(text) } } as never, { args: '' } as never, next(false, 'no timer') as never)).toEqual({ text: DO_FAILED })
+    expect(logs).toEqual(['human-plugin: the command.run hook throw: no timer'])
+    finish()
+  } finally {
+    resetRebuild()
+  }
+})
+
+test('a walk\'s applied answer logs its window as a dialog answer, whichever command started the walk and with no command named, and a /todo <n> <form> answer logs it as /todo', async () => {
+  const cases = [
+    ['/do', 'dialog answer', starters['/do']],
+    ['/todo answer', 'dialog answer', starters['/todo answer']],
+    ['/todo 1 done', '/todo', (hooks: Record<string, Handler>, env: object) => askText(hooks, env, '1 done')],
+  ] as const
+  for (const [command, source, run] of cases) {
+    freshModule()
+    const { hooks } = wire()
+    const { env, clock } = memEnv([made(1, { detail: '' })], [], null)
+    await endSession(hooks, env)
+    clock.now = 1000
+    const logs: string[] = []
+    await run(hooks, askingHost(hooks, env, ['Done'], { logs }))
+    // A walk's and a command's write count from one window back (3000 ms), so the window it leaves is due at once.
+    expect([command, logs.filter(line => / #1 at /.test(line))]).toEqual([command, [`human-plugin: ${source} #1 at -2000: open -> done-waiting`]])
+  }
 })
 
 test('the session\'s end releases the walk that is asking: the next /todo answer asks while the old dialog is still open, and the old walk ends with its session when that dialog returns', async () => {
@@ -5041,7 +5436,7 @@ test('a throw inside the AskUserQuestion hook\'s record is logged and leaves the
 })
 
 // While a walk asks, no submit is tried: the engine refuses one made while the walk's command hook is in flight. A notice that would have started a turn waits, saved as
-// waiting, for the next turn to start. The person's pause over a question is where the undo ticker's tick falls, so the walks below run the tick while a dialog is open.
+// waiting, for the walk's release or the next turn to start. The person's pause over a question is where the undo ticker's tick falls, so the walks below run the tick while a dialog is open.
 
 // The rows a turn that starts appends: its start hook appends each notice waiting then, one row each, which this records.
 const turnStartRows = async (hooks: Record<string, Handler>, env: object, turnId: string): Promise<string[]> => {
@@ -5061,7 +5456,7 @@ const turnStartRows = async (hooks: Record<string, Handler>, env: object, turnId
 }
 const waitingIds = (saved: unknown): number[] => (saved as { waiting: { id: number }[] }).waiting.map(notice => notice.id)
 
-test('/todo answer in an idle session tries no submit while it asks: each answer\'s notice waits, saved as waiting; its last answer\'s tick, after the walk, submits that notice alone, and the turn that starts appends the earlier ones once each', async () => {
+test('/todo answer in an idle session tries no submit while it asks: each answer\'s notice waits, saved as waiting; its end submits nothing, and its release, a second later, submits the earlier answers\' notices as one prompt, the last answer\'s tick, which falls after it, going to the turn that prompt starts', async () => {
   freshModule()
   const wired = wire()
   const submitted: unknown[] = []
@@ -5082,19 +5477,24 @@ test('/todo answer in an idle session tries no submit while it asks: each answer
   expect(between.map(seen => seen.submits)).toEqual([0, 0])
   expect(between.map(seen => waitingIds(seen.saved))).toEqual([[1], [1, 2]])
   expect(submitted).toEqual([])
+  expect(oneShotWaits(timers)).toEqual([1000])
   await tickAt(timers, clock, 1000)
   expect(submitted).toHaveLength(1)
-  expect((submitted[0] as { text: string }).text.startsWith('#3 is done: Item 3')).toBe(true)
+  const prompt = (submitted[0] as { text: string }).text
+  expect(prompt.startsWith('#1 is done: Item 1')).toBe(true)
+  expect(prompt).toContain('\n\n#2 is done: Item 2')
+  expect(prompt).not.toContain('#3 is done')
   expect(logs.filter(line => line.startsWith('human-plugin: sent #')).map(line => line.replace(/ for press -?\d+/, ''))).toEqual([
-    'human-plugin: sent #1 kept for the next turn while a walk asks',
-    'human-plugin: sent #2 kept for the next turn while a walk asks',
-    'human-plugin: sent #3 via submit',
+    "human-plugin: sent #1 kept for the walk's release or the next turn",
+    "human-plugin: sent #2 kept for the walk's release or the next turn",
+    'human-plugin: sent #3 to the running turn',
   ])
-  expect((await turnStartRows(wired.hooks, env, 't1')).map(row => row.split('\n')[0])).toEqual(['#1 is done: Item 1', '#2 is done: Item 2'])
+  expect(logs).toContain("human-plugin: released at the walk's end: notices for #1, #2")
+  expect((await turnStartRows(wired.hooks, env, 't1')).map(row => row.split('\n')[0])).toEqual(['#3 is done: Item 3'])
   expect(values.notices).toEqual({ held: [], waiting: [] })
 })
 
-test('/todo answer that ends on Stop in an idle session submits nothing at all: the notices wait, and the next turn appends the ones whose items are still on the list, once each', async () => {
+test('/todo answer that ends on Stop in an idle session submits nothing at its end: its release, a second later, submits the notices whose items are still on the list as one prompt', async () => {
   freshModule()
   const wired = wire()
   const submitted: unknown[] = []
@@ -5108,15 +5508,60 @@ test('/todo answer that ends on Stop in an idle session submits nothing at all: 
   }
   const text = await askText(wired.hooks, askingHost(wired.hooks, env, ['Done', 'Done', 'Stop'], { during: pause }), 'answer')
   expect(text).toContain('It ended on Stop.')
-  await tickAt(timers, clock, 1000)
+  await settle()
   expect(submitted).toEqual([])
   expect(waitingIds(values.notices)).toEqual([1, 2])
-  // The agent removes #1 before the human's prompt starts the next turn. The prompt carries no context, since the walk's notices are waiting ones, not held ones.
+  // The agent removes #1 before the release runs.
   const list = values.list as { items: { id: number }[] }
   values.list = { ...list, items: list.items.filter(it => it.id !== 1) }
-  expect((await entered(wired.hooks, env, { origin: { kind: 'composer' }, text: 'hi' }))[0]?.context).toBeUndefined()
-  expect((await turnStartRows(wired.hooks, env, 't1')).map(row => row.split('\n')[0])).toEqual(['#2 is done: Item 2'])
+  await tickAt(timers, clock, 1000)
+  expect(submitted).toHaveLength(1)
+  const prompt = (submitted[0] as { text: string }).text
+  expect(prompt.startsWith('#2 is done: Item 2')).toBe(true)
+  expect(prompt).not.toContain('#1 is done')
   expect(values.notices).toEqual({ held: [], waiting: [] })
+  // The notices were delivered: the human's prompt carries no context, and the turn that starts appends nothing.
+  expect((await entered(wired.hooks, env, { origin: { kind: 'composer' }, text: 'hi' }))[0]?.context).toBeUndefined()
+  expect(await turnStartRows(wired.hooks, env, 't1')).toEqual([])
+})
+
+test('a turn that starts after the walk\'s end and before its release takes the waiting notices at its first read point, and the release then submits nothing', async () => {
+  freshModule()
+  const wired = wire()
+  const submitted: unknown[] = []
+  const timers: Timer[] = []
+  const { env, values, clock } = memEnv([made(1, { detail: '' }), made(2, { detail: '' })], [], null, submitted, timers)
+  await endSession(wired.hooks, env)
+  await started(wired, env)
+  clock.now = 1000
+  const pause = async (position: number): Promise<void> => {
+    if (position > 0) await tickAt(timers, clock, 1000)
+  }
+  await askText(wired.hooks, askingHost(wired.hooks, env, ['Done', 'Stop'], { during: pause }), 'answer')
+  expect(oneShotWaits(timers)).toEqual([1000])
+  expect((await turnStartRows(wired.hooks, env, 't1')).map(row => row.split('\n')[0])).toEqual(['#1 is done: Item 1'])
+  await tickAt(timers, clock, 1000)
+  expect(submitted).toEqual([])
+  expect(values.notices).toEqual({ held: [], waiting: [] })
+})
+
+test('the session\'s end cancels the release a walk\'s end armed: nothing is submitted in either session, and a notice in the new session takes the idle path', async () => {
+  freshModule()
+  const wired = wire()
+  const submitted: unknown[] = []
+  const timers: Timer[] = []
+  const { env, clock } = memEnv([made(1, { detail: '' })], [], null, submitted, timers)
+  await endSession(wired.hooks, env)
+  await started(wired, env)
+  clock.now = 1000
+  await askText(wired.hooks, askingHost(wired.hooks, env, ['Done'], {}), 'answer')
+  await tickAt(timers, clock, 1000, 'ticks')
+  expect(oneShotWaits(timers)).toEqual([1000])
+  await endSession(wired.hooks, env)
+  expect(oneShotWaits(timers)).toEqual([])
+  await tickAt(timers, clock, 1000)
+  expect(submitted).toEqual([])
+  expect(offer({ id: 2, text: '#2 is done: in the new session' })).toBe('submit')
 })
 
 test('the session\'s end releases the hold of the walk that is asking: a notice in the new session takes the idle path while the old dialog is still open', async () => {
@@ -5136,13 +5581,14 @@ test('the session\'s end releases the hold of the walk that is asking: a notice 
   await old
 })
 
-test('a turn that ends while a walk is asking submits nothing and leaves its notice waiting, saved as waiting; a turn that was interrupted holds it for the human\'s next prompt', async () => {
+test('a turn that ends while a walk is asking submits nothing and leaves its notice waiting, saved as waiting; the walk\'s release submits it, and a turn that was interrupted holds it for the human\'s next prompt, which the release leaves alone', async () => {
   const notice = { id: 1, text: '#1 is done: Item 1' }
   for (const aborted of [false, true]) {
     freshModule()
     const wired = wire()
     const submitted: unknown[] = []
-    const { env, values } = memEnv([made(1, { detail: '' })], [], null, submitted)
+    const timers: Timer[] = []
+    const { env, values, clock } = memEnv([made(1, { detail: '' })], [], null, submitted, timers)
     await endSession(wired.hooks, env)
     await started(wired, env)
     await (wired.hooks['turn.start'] as Handler)(env as never, { turnId: 't1' } as never, next(false) as never)
@@ -5158,5 +5604,148 @@ test('a turn that ends while a walk is asking submits nothing and leaves its not
     expect([aborted, values.notices]).toEqual([aborted, aborted ? { held: [notice], waiting: [] } : { held: [], waiting: [notice] }])
     release()
     await running
+    expect([aborted, submitted]).toEqual([aborted, []])
+    await tickAt(timers, clock, 1000)
+    expect([aborted, submitted]).toEqual([aborted, aborted ? [] : [{ text: notice.text }]])
+    expect([aborted, values.notices]).toEqual([aborted, aborted ? { held: [notice], waiting: [] } : { held: [], waiting: [] }])
   }
+})
+
+// The posed flag: a walk has shown the person an item's question since the agent last changed it, and such an item ranks below those no walk has shown. One open item of each
+// of the four kinds, the numbers running against the ranking: shown non-blocking, shown blocking, not shown non-blocking, not shown blocking.
+const FOUR = (): Record<string, unknown>[] => [made(1, { posed: true }), made(2, { posed: true, blocking: true }), made(3), made(4, { blocking: true })]
+// The numbers of the title buttons a drawn tree holds, in the order the tree draws them.
+const titleOrder = (tree: unknown): number[] => [...JSON.stringify(tree).matchAll(/"key":"title-(\d+)"/g)].map(match => Number(match[1]))
+// The posed flags the list holds, in list order, as the mod reads them.
+const posedFlags = (values: Record<string, unknown>): boolean[] => normalizeStore(values.list).items.map(it => it.posed)
+// The position line of a walk's question.
+const positionOf = (question: string): string => question.split('\n').find(line => line.startsWith('▶')) ?? ''
+
+test('the band, the pane\'s default item, /todo and the phone block put the items no walk has shown first, blocking first within each group, whatever the numbers', async () => {
+  const open = ['human-items']
+  const { hooks, env } = await reloaded(open, FOUR(), null)
+  expect(titleOrder(await band(hooks, env))).toEqual([4, 3, 2, 1])
+  expect(JSON.stringify(await paneTree(hooks, env))).toContain('#4 blocking, open: Item 4')
+  expect(await askText(hooks, env, '')).toBe(['  #4 blocking: Item 4', '  #3 non-blocking: Item 3', '  #2 blocking: Item 2', '  #1 non-blocking: Item 1'].join('\n'))
+  const [block = ''] = (await entered(hooks, env, { origin: { kind: 'bridge' }, text: 'hi' }))[0]?.context ?? []
+  expect(block).toContain('  #4 Item 4, #3 Item 3, #2 Item 2, #1 Item 1')
+})
+
+test('with no selection the pane moves on, as each item it shows is removed, to the first open item left in the ranking, the items no walk has shown first', async () => {
+  const open = ['human-items']
+  const { hooks, env, values } = await reloaded(open, FOUR(), null)
+  const moves: unknown[] = []
+  for (const id of [4, 3, 2]) {
+    await (hooks['tool.call'] as Handler)(env as never, { tool: TOOL, action: 'remove', id } as never, next(false) as never)
+    await settle()
+    moves.push(values.selection)
+  }
+  expect(moves).toEqual([3, 2, 1])
+  expect(open).toEqual(['human-items'])
+  expect(JSON.stringify(await paneTree(hooks, env))).toContain('#1 non-blocking, open: Item 1')
+})
+
+test('with no selection the pane draws an item answered from the pane, which no walk showed, before an open item a walk showed that has a lower number, and the band\'s first row is that item', async () => {
+  const open = ['human-items']
+  const { hooks, env } = await reloaded(open, [made(1, { posed: true }), made(2, { state: 'done-pending', answer: 'Use sqlite' })], null)
+  expect(JSON.stringify(await paneTree(hooks, env))).toContain('#2 non-blocking, done-pending: Item 2')
+  expect(titleOrder(await band(hooks, env))).toEqual([2, 1])
+})
+
+test('/todo <n>, an answer form, opening the pane and switching it to another item leave every item\'s posed flag as it was', async () => {
+  const open: string[] = []
+  const { hooks, env, values } = await reloaded(open, [made(1, { posed: true, unread: true }), made(2, { unread: true }), made(3, { posed: true })], null)
+  expect(posedFlags(values)).toEqual([true, false, true])
+  await askText(hooks, env, '1')
+  expect(posedFlags(values)).toEqual([true, false, true])
+  findButton(await band(hooks, env), 'title-3')?.onPress()
+  await settle()
+  expect(open).toEqual(['human-items'])
+  findButton(await band(hooks, env), 'title-2')?.onPress()
+  await settle()
+  expect(values.selection).toBe(2)
+  expect(posedFlags(values)).toEqual([true, false, true])
+  await askText(hooks, env, '3 done')
+  expect(normalizeStore(values.list).items.map(it => [it.state, it.posed])).toEqual([['open', true], ['open', false], ['done-waiting', true]])
+})
+
+test('/todo <n> clears the unread mark of an item a walk marked posed after the read that printed it, since the mark is no change to what was printed', async () => {
+  freshModule()
+  const { hooks } = wire()
+  const { env, values } = memEnv([made(1, { unread: true })], [], null)
+  // A walk's mark lands between /todo's read of the list and its clear of the unread mark: the first read returns the list as it was.
+  const getState = env.state.get
+  let marked = false
+  env.state.get = async ref => {
+    const got = await getState(ref)
+    if (ref.key === 'list' && !marked) {
+      marked = true
+      const stored = normalizeStore(values.list)
+      values.list = { ...stored, items: stored.items.map(it => ({ ...it, posed: true })) }
+    }
+    return got
+  }
+  expect(await askText(hooks, env, '1')).toBe('  #1 non-blocking: Item 1\n  brief:\n  Brief 1.\n  /todo 1 done\n  /todo 1 reply <text>')
+  expect(values.list).toMatchObject({ items: [{ id: 1, unread: false, posed: true }] })
+})
+
+test('an agent\'s append or update through the tool leaves the item unposed, while an update that changes nothing and a term-only one leave it posed', async () => {
+  reset()
+  const { hooks } = wire()
+  const { env, values } = memEnv([made(1, { posed: true }), made(2, { posed: true }), made(3, { posed: true }), made(4, { posed: true })], [], null)
+  expect(await runTool(hooks, env, { action: 'append', id: 1, text: 'Which version?' })).toEqual({ result: 'appended to #1' })
+  expect(await runTool(hooks, env, { action: 'update', id: 2, title: 'Retitled' })).toEqual({ result: 'updated #2' })
+  expect(await runTool(hooks, env, { action: 'update', id: 3, title: 'Item 3' })).toEqual({ result: 'no change to #3' })
+  expect(await runTool(hooks, env, { action: 'update', id: 4, term: 'Boss' })).toEqual({ result: 'no change to #4 (term set to "Boss")' })
+  expect(posedFlags(values)).toEqual([false, false, true, true])
+})
+
+test('a hot reload keeps every item\'s posed flag, so the band keeps its order, and a /clear leaves no item to carry one', async () => {
+  freshModule()
+  const before = wire()
+  const { env, values } = memEnv(FOUR(), [], null)
+  await started(before, env)
+  expect(titleOrder(await band(before.hooks, env))).toEqual([4, 3, 2, 1])
+  // The reload: the module's variables start over, and the state keeps what it held.
+  freshModule()
+  const after = wire()
+  await started(after, env)
+  await settle()
+  expect(posedFlags(values)).toEqual([true, true, false, false])
+  expect(titleOrder(await band(after.hooks, env))).toEqual([4, 3, 2, 1])
+  await (after.hooks['session.end'] as Handler)(env as never, { reason: 'clear' } as never, next(false) as never)
+  expect(normalizeStore(values.list).items).toEqual([])
+})
+
+test('/todo answer through the hooks marks each item whose question it showed, the one the person closed included, and the next walk asks every item it did not reach before them', async () => {
+  freshModule()
+  const { hooks } = wire()
+  const { env, values } = memEnv([made(1, { blocking: true }), made(2), made(3), made(4, { blocking: true })], [], null)
+  await endSession(hooks, env)
+  const asked: string[] = []
+  await askText(hooks, askingHost(hooks, env, ['Skip', { rejects: 'The user dismissed the question' }], { asked }), 'answer')
+  expect(asked.map(positionOf)).toEqual(['▶ 1 of 4 — #1 blocking: Item 1', '▶ 2 of 4 — #4 blocking: Item 4'])
+  expect(posedFlags(values)).toEqual([true, false, false, true])
+  asked.length = 0
+  await askText(hooks, askingHost(hooks, env, ['Skip', 'Skip', 'Skip', 'Skip'], { asked }), 'answer')
+  expect(asked.map(positionOf)).toEqual([
+    '▶ 1 of 4 — #2 non-blocking: Item 2',
+    '▶ 2 of 4 — #3 non-blocking: Item 3',
+    '▶ 3 of 4 — #1 blocking: Item 1',
+    '▶ 4 of 4 — #4 blocking: Item 4',
+  ])
+  expect(posedFlags(values)).toEqual([true, true, true, true])
+})
+
+test('a walk that shows the item the open pane draws by default moves the pane to the next item in the ranking, and one the pane was opened on by a press stays where it is', async () => {
+  const open = ['human-items']
+  const { hooks, env } = await reloaded(open, [made(1), made(2), made(3)], null)
+  expect(JSON.stringify(await paneTree(hooks, env))).toContain('#1 non-blocking, open: Item 1')
+  await askText(hooks, askingHost(hooks, env, ['Stop']), 'answer')
+  expect(JSON.stringify(await paneTree(hooks, env))).toContain('#2 non-blocking, open: Item 2')
+  findButton(await band(hooks, env), 'title-3')?.onPress()
+  await settle()
+  expect(JSON.stringify(await paneTree(hooks, env))).toContain('#3 non-blocking, open: Item 3')
+  await askText(hooks, askingHost(hooks, env, ['Stop']), 'answer')
+  expect(JSON.stringify(await paneTree(hooks, env))).toContain('#3 non-blocking, open: Item 3')
 })

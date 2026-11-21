@@ -1,6 +1,7 @@
 import { expect, test } from 'claude-code/testing'
 import {
-  ALREADY_ASKING, ARG_HINT, CLAUDE_COMMAND, CLAUDE_DESCRIPTION, CLAUDE_FAILED, CLAUDE_REBUILDING, CLAUDE_USAGE, DESCRIPTION, LIMITS, NOTHING_OPEN,
+  ALREADY_ASKING, ARG_HINT, CLAUDE_COMMAND, CLAUDE_DESCRIPTION, CLAUDE_FAILED, CLAUDE_REBUILDING, CLAUDE_USAGE, DESCRIPTION, DO_COMMAND, DO_DESCRIPTION, DO_FAILED,
+  DO_REBUILDING, DO_USAGE, LIMITS, NOTHING_OPEN,
   PHONE_ITEMS, PHONE_REBUILDING, PHONE_TITLE, PUSH_POINTER, USAGE, WALK_POINTER, WALK_WORD, answerLine, answerTo, claudeTodoText, hasArgument,
   openOf, outcomeLine, parseAsk, phoneBlock, readAnswer, skippedLine, walkDialog, walkEnd, walkSummary, type Reason,
 } from './commands'
@@ -12,7 +13,7 @@ import type { Item, TodoItem, Turn } from '../types'
 
 // The `/todo` answers, parsed and worded. The expectations spell out each layout, so a change to a line shows here.
 const base: Item = {
-  id: 0, title: '', detail: '', blocking: false, createdAt: 0, state: 'open', pressedAt: null, note: null, agent: null, unread: false,
+  id: 0, title: '', detail: '', blocking: false, createdAt: 0, state: 'open', pressedAt: null, note: null, agent: null, unread: false, posed: false,
   options: [], answer: null, yesno: false, replied: false, doneLabel: null, thread: [], windowTurns: [], windowChanged: false,
 }
 const made = (id: number, extra: Partial<Item> = {}): Item => ({ ...base, id, title: `Item ${id}`, ...extra })
@@ -127,6 +128,27 @@ test('the list gives the open items first, a reopened one among them, then the a
     '  #5 non-blocking: Item 5',
     '  #2 blocking: Item 2 — you: Use sqlite (still undoable)',
     '  #4 non-blocking: Item 4 — you: Use postgres',
+  ])
+})
+
+test('the list orders each group by the ranking: the items no walk has shown first, blocking first within each, then by id; the answered group is in the same order', () => {
+  // One item of each of the four kinds, open and answered, the numbers against the order: shown non-blocking, shown blocking, not shown non-blocking, not shown blocking.
+  const kinds = (first: number, extra: Partial<Item>): Item[] => [
+    made(first, { ...extra, posed: true }),
+    made(first + 1, { ...extra, posed: true, blocking: true }),
+    made(first + 2, extra),
+    made(first + 3, { ...extra, blocking: true }),
+  ]
+  const items = [...kinds(5, { state: 'done-pending', answer: 'yes' }), ...kinds(1, {})]
+  expect(lineList(list(items))).toEqual([
+    '  #4 blocking: Item 4',
+    '  #3 non-blocking: Item 3',
+    '  #2 blocking: Item 2',
+    '  #1 non-blocking: Item 1',
+    '  #8 blocking: Item 8 — you: yes',
+    '  #7 non-blocking: Item 7 — you: yes',
+    '  #6 blocking: Item 6 — you: yes',
+    '  #5 non-blocking: Item 5 — you: yes',
   ])
 })
 
@@ -730,6 +752,21 @@ test('the usage, rebuilding and failure lines each name /claude-todo, none names
   expect(CLAUDE_DESCRIPTION).not.toContain('/todo')
 })
 
+test('the /do lines: its description claims no order and names no pointer, and its usage, rebuilding and failure lines each name /do alone and are indented', () => {
+  expect(DO_COMMAND).toBe('do')
+  expect(DO_DESCRIPTION).toBe('Answer every open item on the to-do list, one question at a time.')
+  expect(DO_USAGE).toBe('  Usage: /do takes no argument.')
+  expect(DO_REBUILDING).toBe('  The list is still being rebuilt from the transcript; run /do again in a moment.')
+  expect(DO_FAILED).toBe('  /do failed: the error was logged.')
+  for (const text of [DO_USAGE, DO_REBUILDING, DO_FAILED]) {
+    expect(text).not.toContain('/todo')
+    expect(text).not.toContain('/claude-todo')
+    for (const line of text.split('\n')) expect(line.startsWith('  ')).toBe(true)
+  }
+  expect(DO_DESCRIPTION).not.toContain('blocking')
+  expect(DO_DESCRIPTION).not.toContain('/todo')
+})
+
 // A text with only whole copies of `unit` left, once the plain letters, the indent, the heading and the ellipsis are taken off.
 const onlyWhole = (text: string, unit: string): boolean => text.replace(/[a\s…]|you:/g, '').split(unit).join('') === ''
 
@@ -773,7 +810,7 @@ test('/todo <n> keeps its newest turn at the floor and whole when it is joined e
 const optionsOf = (...labels: string[]): Item['options'] => labels.map(label => ({ label, description: '', recommended: false }))
 const decision = (id: number, labels: string[], extra: Partial<Item> = {}): Item => made(id, { options: optionsOf(...labels), ...extra })
 const SENTENCE =
-  'They are asked one at a time, blocking first, and each answer is written to the list as you give it and reaches the agent by your next prompt. Stop, or stop typed under Other, or closing the question ends this; what you have not answered stays on the list.'
+  'They are asked one at a time: items a walk has not yet shown you, or that have changed since, come first, and blocking items first within each group. Each answer is written to the list as you give it and reaches the agent when the walk ends. Stop, stop typed under Other, or closing the question ends the walk; Skip passes over an item. What you have not answered stays on the list.'
 
 test('the word answer alone, in any case and with blanks around it, is the walk; anything after it or before it is the usage', () => {
   expect(WALK_WORD).toBe('answer')
@@ -791,13 +828,31 @@ test('the description, the usage and the argument hint name answer, and the poin
 })
 
 test('the lines a walk that does not start prints are indented', () => {
-  expect(ALREADY_ASKING).toBe('  A walk is already asking; answer or close its question first.')
+  expect(ALREADY_ASKING).toBe('  A walk is already asking; it goes on until every open item has been asked, you choose Stop on its question, or its question is closed.')
   expect(NOTHING_OPEN).toBe('  Nothing is open to answer.')
+})
+
+test('the lines a walk that does not start prints name no command, so they are right for /do as for /todo answer', () => {
+  for (const line of [ALREADY_ASKING, NOTHING_OPEN]) expect(line).not.toContain('/')
 })
 
 test('the open items are those in the state open, blocking first and then by id', () => {
   const items = [made(1), made(2, { blocking: true }), made(3, { state: 'done-pending', answer: 'yes' }), made(4, { blocking: true }), made(5, { state: 'done-waiting', answer: 'no' })]
   expect(openOf(items).map(it => it.id)).toEqual([2, 4, 1])
+})
+
+test('the open items come in the ranking: those no walk has shown first, blocking first within each group, then by id', () => {
+  const items = [made(1, { posed: true }), made(2, { posed: true, blocking: true }), made(3), made(4, { blocking: true }), made(5, { state: 'done-pending', answer: 'yes' })]
+  expect(openOf(items).map(it => it.id)).toEqual([4, 3, 2, 1])
+})
+
+test('the phone block names the open items in the ranking, those no walk has shown first, and keeps its pointer', () => {
+  const items = [made(1, { posed: true }), made(2, { posed: true, blocking: true }), made(3), made(4, { blocking: true })]
+  expect(lastLine(phoneBlock(items) ?? '')).toBe('  #4 Item 4, #3 Item 3, #2 Item 2, #1 Item 1; /todo answer asks them one by one')
+  // The count of the rest folds in the ranking too: the first ten are named, those no walk has shown among them.
+  const crowd = [...Array.from({ length: PHONE_ITEMS }, (_, k) => made(k + 1, { posed: true })), made(PHONE_ITEMS + 1)]
+  expect(lastLine(phoneBlock(crowd) ?? '').startsWith(`  #${PHONE_ITEMS + 1} Item ${PHONE_ITEMS + 1}, #1 Item 1, `)).toBe(true)
+  expect(lastLine(phoneBlock(crowd) ?? '')).toContain(', and 1 more is open;')
 })
 
 test('the phone block\'s /todo line names /todo answer, the block keeps its four lines, and the line the agent ends its reply with ends with the pointer', () => {
@@ -830,7 +885,7 @@ test('a to-do\'s question is its head, its brief under its heading, the line for
     header: '#3',
     question: [
       'Lead.',
-      '1 of 4 — #3 non-blocking: Item 3',
+      '▶ 1 of 4 — #3 non-blocking: Item 3',
       '  brief:',
       '  Brief 3.',
       'Under Other: type a reply, or skip to pass, or stop to end.',
@@ -855,7 +910,7 @@ test('a decision\'s question holds the note, the brief, its options numbered in 
     header: '#4',
     question: [
       'Lead.',
-      '2 of 5 — #4 blocking: Pick a db',
+      '▶ 2 of 5 — #4 blocking: Pick a db',
       '  note:',
       '  A note.',
       '  brief:',
@@ -952,8 +1007,12 @@ test('the position line cuts the title at 300 units on one line, and a label and
     [],
   )
   const [position, first] = lineList(dialog.question)
-  expect(position).toBe(`1 of 1 — #2 non-blocking: ${`${'t'.repeat(150)} ${'u'.repeat(300)}`.slice(0, 299)}…`)
+  expect(position).toBe(`▶ 1 of 1 — #2 non-blocking: ${`${'t'.repeat(150)} ${'u'.repeat(300)}`.slice(0, 299)}…`)
   expect(first).toBe(`1. ${'l'.repeat(199)}… — ${'d'.repeat(199)}…`)
+})
+
+test('a question with no lead opens with its position line under the marker', () => {
+  expect(lineList(walkDialog(made(1), 1, 1, []).question)[0]).toBe('▶ 1 of 1 — #1 non-blocking: Item 1')
 })
 
 // A question of the given item with a note, a newest agent turn and a brief of the given sizes (0 for none).
@@ -1171,4 +1230,16 @@ test('each reason has its line: closed names the item and how to answer it, auto
   expect(reasonOf({ kind: 'unconfirmed', id: 9 })).toBe('  It ended because the answer to #9 could not be confirmed as yours; nothing was sent, and this was logged.')
   expect(reasonOf({ kind: 'error' })).toBe('  It stopped on an error, which was logged.')
   expect(reasonOf({ kind: 'session' })).toBe('  It ended with its session; nothing more was asked or sent.')
+})
+
+test('no end text says refused, declined, timed out or closed, whichever reason but closed ends the walk, whichever outcome line it opens with and whether or not the open items could be counted', () => {
+  // The closed reason's line words those causes on purpose, so it is the one reason left out.
+  const reasons: Reason[] = [{ kind: 'every' }, { kind: 'stop' }, { kind: 'error' }, { kind: 'session' }, { kind: 'auto', id: 7 }, { kind: 'unconfirmed', id: 7 }]
+  // An applied outcome line carries the person's own answer, which the rule leaves out.
+  const outcomes = [null, skippedLine(made(7)), outcomeLine(made(7), { kind: 'changed' }), outcomeLine(made(7), { kind: 'missing' })]
+  for (const reason of reasons) {
+    for (const outcome of outcomes) {
+      for (const open of [null, 0, 1, 4]) expect(walkEnd(outcome, reason, 2, open)).not.toMatch(/refused|declined|timed out|closed/)
+    }
+  }
 })
