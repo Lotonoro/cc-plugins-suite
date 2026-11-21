@@ -1,5 +1,6 @@
 import { expect, test } from 'claude-code/testing'
-import { DONE_MAX, EMPTY, act, carryNext, clearAll, listText, mergeRestored, normalizeItem, normalizeStore, parseInput, selectedItem, successorOf, type Ctx, type ToolInput } from './items'
+import { DONE_MAX, EMPTY, act, carryNext, clearAll, listText, mergeRestored, nextItem, normalizeItem, normalizeStore, openRanked, parseInput, rankOrder, selectedItem, type Ctx, type ToolInput } from './items'
+import { openOf } from './commands'
 import { expire, press, reply, turnsOf } from './done'
 import type { Item, Store } from '../types'
 
@@ -17,6 +18,7 @@ const withState = (id: number, state: Item['state']): Item => ({
   id, title: `Item ${id}`, detail: '', blocking: false, createdAt: 0, state, pressedAt: null, note: null, agent: null, unread: false,
   options: [], answer: null, yesno: false, replied: false, doneLabel: null, thread: [], windowTurns: [], windowChanged: false,
 })
+const blockingItem = (id: number, state: Item['state'] = 'open'): Item => ({ ...withState(id, state), blocking: true })
 
 const added =(store: Store, title: string, ctx: Ctx = MAIN) => {
   const out = act(store, input({ action: 'add', title }), ctx)
@@ -406,7 +408,7 @@ test('an option description edited only by spaces is no change, and a real descr
   expect(real.changed).toEqual({ id: 1, reopened: true, promoted: false })
 })
 
-test('the pane\'s item is the selected one, with none selected the first; a selection whose item is gone names none', () => {
+test('the pane\'s item is the selected one, with none selected the first in the ranking; a selection whose item is gone names none', () => {
   let store = EMPTY
   for (const title of ['a', 'b', 'c']) store = added(store, title).store
   expect(selectedItem(store.items, 2)?.id).toBe(2)
@@ -415,6 +417,16 @@ test('the pane\'s item is the selected one, with none selected the first; a sele
   expect(selectedItem(without2, 2)).toBe(undefined)
   expect(selectedItem(store.items, 9)).toBe(undefined)
   expect(selectedItem([], 1)).toBe(undefined)
+})
+
+test('with none selected the pane\'s item is the first of the whole list in the ranking: a blocking item filed after a non-blocking one, whatever its state', () => {
+  expect(selectedItem([withState(1, 'open'), blockingItem(2)], null)?.id).toBe(2)
+  expect(selectedItem([blockingItem(2), withState(1, 'open')], null)?.id).toBe(2)
+  // The band ranks the items of every state, so the pane's item with none selected is its first row, a sent one included.
+  expect(selectedItem([withState(1, 'open'), blockingItem(2, 'done-pending')], null)?.id).toBe(2)
+  expect(selectedItem([withState(3, 'open'), withState(2, 'done-waiting')], null)?.id).toBe(2)
+  // A selection is the item it names, whatever the ranking puts first.
+  expect(selectedItem([withState(1, 'open'), blockingItem(2)], 1)?.id).toBe(1)
 })
 
 test('the Claude list\'s view names no human item, whatever the list holds, while no selection still names the first', () => {
@@ -429,13 +441,45 @@ test('an added item is not a reply', () => {
   expect(added(EMPTY, 'Pick a db').store.items[0]?.replied).toBe(false)
 })
 
-test('successorOf takes the next open item above, skipping items in a press or sent, else the last open item, and none when none is open', () => {
+test('the ranking puts a blocking item above a non-blocking one whatever their numbers, and the lower number first between two of a kind, in every state', () => {
+  const items = [withState(1, 'open'), blockingItem(2), withState(3, 'open'), blockingItem(4)]
+  expect([...items].sort(rankOrder).map(it => it.id)).toEqual([2, 4, 1, 3])
+  expect([...items].reverse().sort(rankOrder).map(it => it.id)).toEqual([2, 4, 1, 3])
+  const states = [withState(1, 'done-waiting'), withState(2, 'open'), blockingItem(3, 'done-pending'), withState(4, 'done-pending')]
+  expect([...states].sort(rankOrder).map(it => it.id)).toEqual([3, 1, 2, 4])
+})
+
+test('openRanked gives the open items in the ranking, those in a press or sent left out', () => {
+  const items = [withState(1, 'open'), blockingItem(2, 'done-pending'), blockingItem(3), withState(4, 'done-waiting'), withState(5, 'open'), blockingItem(6, 'done-waiting')]
+  expect(openRanked(items).map(it => it.id)).toEqual([3, 1, 5])
+  expect(openRanked([withState(1, 'done-pending')])).toEqual([])
+  expect(openRanked([])).toEqual([])
+})
+
+test('nextItem takes the first open item in the ranking, skipping items in a press or sent, and none when none is open', () => {
+  // The open items are 1 and 4: the first of them, whichever item has left (3, say, in its press).
   const items = [withState(1, 'open'), withState(2, 'done-pending'), withState(3, 'done-waiting'), withState(4, 'open'), withState(5, 'done-pending')]
-  expect(successorOf(items, 1)?.id).toBe(4)
-  // Item 3 has just been sent (its press's window ended): the open items below it are 1 and nothing above.
-  const sent = [withState(1, 'open'), withState(2, 'done-pending'), withState(3, 'done-pending')]
-  expect(successorOf(sent, 3)?.id).toBe(1)
-  expect(successorOf([withState(2, 'done-pending'), withState(3, 'done-pending')], 2)).toBeUndefined()
+  expect(nextItem(items)?.id).toBe(1)
+  // Item 1 has just been sent (its press's window ended): the first open item is the one above it.
+  const sent = [withState(1, 'done-pending'), withState(2, 'done-pending'), withState(3, 'open'), withState(4, 'open')]
+  expect(nextItem(sent)?.id).toBe(3)
+  // A blocking item comes first whatever its number, when it is open.
+  expect(nextItem([withState(1, 'open'), blockingItem(2)])?.id).toBe(2)
+  expect(nextItem([withState(1, 'open'), blockingItem(2, 'done-pending')])?.id).toBe(1)
+  expect(nextItem([withState(2, 'done-pending'), withState(3, 'done-pending')])).toBeUndefined()
+  expect(nextItem([])).toBeUndefined()
+})
+
+test('the pane\'s next item and /todo\'s first open item are the same item, for every list of three items in any state, blocking or not', () => {
+  const kinds = (['open', 'done-waiting', 'done-pending'] as const).flatMap(state => [false, true].map(blocking => ({ state, blocking })))
+  for (const [a, b, c] of kinds.flatMap(a => kinds.flatMap(b => kinds.map(c => [a, b, c] as const)))) {
+    const items = [a, b, c].map((kind, k) => ({ ...withState(k + 1, kind.state), blocking: kind.blocking }))
+    // The ranking's first among the open items: the first blocking one, else the first (the numbers rise down the list).
+    const open = items.filter(it => it.state === 'open')
+    const first = open.find(it => it.blocking) ?? open[0]
+    expect(nextItem(items)?.id, JSON.stringify([a, b, c])).toBe(first?.id)
+    expect(openOf(items)[0]?.id, JSON.stringify([a, b, c])).toBe(first?.id)
+  }
 })
 
 // An item as release 0.1 wrote it: only these six fields.

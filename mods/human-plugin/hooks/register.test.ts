@@ -990,7 +990,7 @@ test('a band title press on an item the pane already shows reads it: its unread 
   expect(values.selection).toBe(2)
 })
 
-test('removing the shown item moves the pane to the next item (higher id), with its rows, and the selection follows', async () => {
+test('removing the shown item moves the pane to the first open item in the ranking, with its rows, and the selection follows', async () => {
   reset()
   const { hooks } = wire()
   const open: string[] = []
@@ -1000,25 +1000,41 @@ test('removing the shown item moves the pane to the next item (higher id), with 
   findButton(await band(hooks, env), 'title-2')?.onPress()
   await settle()
   expect(open).toEqual(['human-items'])
-  // Item 3 is unread after the open, so only the switch to it can read it.
+  // Item 1 is unread after the open, so only the switch to it can read it.
   const listOf = () => values.list as { items: (Item & { unread: boolean })[] }
-  const shownNext = listOf().items.find(it => it.id === 3)
+  const shownNext = listOf().items.find(it => it.id === 1)
   if (shownNext) shownNext.unread = true
   opened.length = 0
   await (hooks['tool.call'] as Handler)(env as never, { tool: TOOL, action: 'remove', id: 2 } as never, next(false) as never)
   await settle()
   expect(open).toEqual(['human-items'])
-  const three = listOf().items.find(it => it.id === 3)
-  expect(opened).toEqual([{ id: 'human-items', rows: paneRows(three) }])
-  expect(values.selection).toBe(3)
-  expect(three?.unread).toBe(false)
+  const one = listOf().items.find(it => it.id === 1)
+  expect(opened).toEqual([{ id: 'human-items', rows: paneRows(one) }])
+  expect(values.selection).toBe(1)
+  expect(one?.unread).toBe(false)
   const shown = JSON.stringify(await paneTree(hooks, env))
-  expect(shown).toContain('#3 non-blocking, open: Item 3')
-  expect(shown).not.toContain('Item 1')
+  expect(shown).toContain('#1 non-blocking, open: Item 1')
   expect(shown).not.toContain('Item 2')
+  expect(shown).not.toContain('Item 3')
 })
 
-test('removing the shown highest-id item moves the pane to the last remaining item', async () => {
+test('removing the shown item moves the pane to a blocking open item before any other, whatever its number', async () => {
+  for (const removed of [1, 2]) {
+    reset()
+    const { hooks } = wire()
+    const open: string[] = []
+    const { env, values } = memEnv([made(1), made(2), made(3, { blocking: true })], open, null)
+    findButton(await band(hooks, env), `title-${removed}`)?.onPress()
+    await settle()
+    await (hooks['tool.call'] as Handler)(env as never, { tool: TOOL, action: 'remove', id: removed } as never, next(false) as never)
+    await settle()
+    expect(open, `#${removed}`).toEqual(['human-items'])
+    expect(values.selection, `#${removed}`).toBe(3)
+    expect(JSON.stringify(await paneTree(hooks, env)), `#${removed}`).toContain('#3 blocking, open: Item 3')
+  }
+})
+
+test('removing the shown highest-id item moves the pane to the first remaining item in the ranking', async () => {
   reset()
   const { hooks } = wire()
   const open: string[] = []
@@ -1029,9 +1045,9 @@ test('removing the shown highest-id item moves the pane to the last remaining it
   await (hooks['tool.call'] as Handler)(env as never, { tool: TOOL, action: 'remove', id: 3 } as never, next(false) as never)
   await settle()
   expect(open).toEqual(['human-items'])
-  expect(values.selection).toBe(2)
+  expect(values.selection).toBe(1)
   const shown = JSON.stringify(await paneTree(hooks, env))
-  expect(shown).toContain('#2 non-blocking, open: Item 2')
+  expect(shown).toContain('#1 non-blocking, open: Item 1')
   expect(shown).not.toContain('Item 3')
 })
 
@@ -1040,6 +1056,19 @@ test('removing the last item closes the pane too', async () => {
   const { hooks } = wire()
   const open: string[] = []
   const { env } = memEnv([made(1)], open, null)
+  findButton(await band(hooks, env), 'title-1')?.onPress()
+  await settle()
+  expect(open).toEqual(['human-items'])
+  await (hooks['tool.call'] as Handler)(env as never, { tool: TOOL, action: 'remove', id: 1 } as never, next(false) as never)
+  await settle()
+  expect(open).toEqual([])
+})
+
+test('removing the shown item closes the pane when no open item is left, though sent items are', async () => {
+  reset()
+  const { hooks } = wire()
+  const open: string[] = []
+  const { env } = memEnv([made(1), made(2, { state: 'done-pending' })], open, null)
   findButton(await band(hooks, env), 'title-1')?.onPress()
   await settle()
   expect(open).toEqual(['human-items'])
@@ -1483,7 +1512,7 @@ test('removing the shown item moves the pane to the next open item, skipping one
   expect(values.selection).toBe(3)
 })
 
-test('a sent item the person views is left alone by a tool call; a tool call that removes it moves the pane on', async () => {
+test('a sent item the person views is left alone by a tool call; a tool call that removes it moves the pane to the first open item in the ranking', async () => {
   reset()
   const { hooks } = wire()
   const open: string[] = []
@@ -1495,9 +1524,10 @@ test('a sent item the person views is left alone by a tool call; a tool call tha
   await settle()
   expect(open).toEqual(['human-items'])
   expect(values.selection).toBe(2)
+  // Items 1 and 3 are open: the ranking's first is 1, the lower number, not the next one above the removed item.
   await (hooks['tool.call'] as Handler)(env as never, { tool: TOOL, action: 'remove', id: 2 } as never, next(false) as never)
   await settle()
-  expect(values.selection).toBe(3)
+  expect(values.selection).toBe(1)
 })
 
 test('an append that reopens the sent item the pane shows re-asks its rows with the reply field, and the item is not unread', async () => {
@@ -1570,15 +1600,15 @@ const reloaded = async (open: string[], items: unknown[], selection: unknown, su
   return { hooks, env, values, clock }
 }
 
-test('after a reload, removing the shown item moves the pane to the next open item, the selection following', async () => {
+test('after a reload, removing the shown item moves the pane to the first open item in the ranking, the selection following', async () => {
   const open = ['human-items']
   const { hooks, env, values } = await reloaded(open, [made(1), made(2), made(3)], 2)
   await (hooks['tool.call'] as Handler)(env as never, { tool: TOOL, action: 'remove', id: 2 } as never, next(false) as never)
   await settle()
   expect(open).toEqual(['human-items'])
-  expect(values.selection).toBe(3)
+  expect(values.selection).toBe(1)
   const shown = JSON.stringify(await paneTree(hooks, env))
-  expect(shown).toContain('#3 non-blocking, open: Item 3')
+  expect(shown).toContain('#1 non-blocking, open: Item 1')
   expect(shown).not.toContain('Item 2')
 })
 
@@ -1590,7 +1620,7 @@ test('after a reload, removing the last item closes the pane', async () => {
   expect(open).toEqual([])
 })
 
-test('after a reload, the expiry of a press on the shown item moves the pane on to the next open item', async () => {
+test('after a reload, the expiry of a press on the shown item moves the pane on to the first open item in the ranking', async () => {
   const open = ['human-items']
   const timers: Timer[] = []
   const { hooks, env, values, clock } = await reloaded(open, [made(1), made(2), made(3)], 2, [], timers)
@@ -1599,9 +1629,9 @@ test('after a reload, the expiry of a press on the shown item moves the pane on 
   expect(timers.length).toBe(1)
   await tickAt(timers, clock, 3000)
   expect(open).toEqual(['human-items'])
-  expect(values.selection).toBe(3)
+  expect(values.selection).toBe(1)
   const shown = JSON.stringify(await paneTree(hooks, env))
-  expect(shown).toContain('#3 non-blocking, open: Item 3')
+  expect(shown).toContain('#1 non-blocking, open: Item 1')
 })
 
 test('with no selection the open pane shows the first item, so removing that item moves the pane on to the next', async () => {
@@ -1616,6 +1646,32 @@ test('with no selection the open pane shows the first item, so removing that ite
   expect(open).toEqual(['human-items'])
   expect(values.selection).toBe(2)
   expect(JSON.stringify(await paneTree(hooks, env))).toContain('#2 non-blocking, open: Item 2')
+})
+
+test('with no selection the open pane draws the first item in the ranking, a blocking item filed after a non-blocking one', async () => {
+  const open = ['human-items']
+  const { hooks, env } = await reloaded(open, [made(1), made(2, { blocking: true })], null)
+  const shown = JSON.stringify(await paneTree(hooks, env))
+  expect(shown).toContain('#2 blocking, open: Item 2')
+  expect(shown).not.toContain('Item 1')
+})
+
+test('with no selection a press on the title of the ranking\'s first item, a blocking one filed after a non-blocking one, closes the open pane: the pane shows that item', async () => {
+  const open = ['human-items']
+  const { hooks, env } = await reloaded(open, [made(1), made(2, { blocking: true })], null)
+  findButton(await band(hooks, env), 'title-2')?.onPress()
+  await settle()
+  expect(open).toEqual([])
+})
+
+test('with no selection the open pane shows the first item in the ranking, so removing that blocking item moves the pane on to the next one in the ranking', async () => {
+  const open = ['human-items']
+  const { hooks, env, values } = await reloaded(open, [made(1), made(2, { blocking: true }), made(3)], null)
+  await (hooks['tool.call'] as Handler)(env as never, { tool: TOOL, action: 'remove', id: 2 } as never, next(false) as never)
+  await settle()
+  expect(open).toEqual(['human-items'])
+  expect(values.selection).toBe(1)
+  expect(JSON.stringify(await paneTree(hooks, env))).toContain('#1 non-blocking, open: Item 1')
 })
 
 test('a press whose selection write is still in flight holds the pane on the pressed item when the item shown before it is removed', async () => {

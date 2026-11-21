@@ -175,9 +175,10 @@ async function askOne($: EngineInterface, windowMs: number, me: symbol, progress
   }
 }
 
-// The walk's loop. Before each question the list is read again, and the first open item in the band's order that this walk has not asked about is asked: an item
-// filed meanwhile is asked in its place, one removed is not, and none is asked twice. The first question opens with the summary, each later one with the outcome
-// line of the item before it. Returns why the walk ended, or null when nothing was open to ask about.
+// The walk's loop. Before each question the list is read again, and the first open item in the ranking that this walk has not asked about is asked: an item
+// filed meanwhile is asked in its place, one removed is not, and none is asked twice. The set of items asked is no position: it is what ends the walk, for Skip
+// leaves an item open and still first in the ranking, and without the set it would be asked again at once. The first question opens with the summary, each later
+// one with the outcome line of the item before it. Returns why the walk ended, or null when nothing was open to ask about.
 async function askEach($: EngineInterface, windowMs: number, me: symbol, progress: Progress): Promise<Reason | null> {
   for (;;) {
     const { items } = await readList($)

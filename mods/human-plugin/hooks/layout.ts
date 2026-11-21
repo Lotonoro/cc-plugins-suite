@@ -1,23 +1,20 @@
 import type { Item, TodoItem } from '../types'
 import { displayColumns, isCutPoint, unitsOf } from './columns'
-import { DONE_MAX } from './items'
+import { DONE_MAX, rankOrder } from './items'
 import { etaTail, inDisplayOrder } from './todo'
 
 export type BandRow = { kind: 'item'; item: Item } | { kind: 'more'; blocking: number; more: number; first: Item }
-
-// The band's order: the blocking items first, then the rest, each group in id order. `/todo` orders its groups by it too.
-export const bandOrder = (a: Item, b: Item): number => Number(b.blocking) - Number(a.blocking) || a.id - b.id
 
 const summaryOf = (folded: readonly Item[]): BandRow => {
   const blocking = folded.filter(item => item.blocking).length
   return { kind: 'more', blocking, more: folded.length - blocking, first: folded[0] as Item }
 }
 
-// The band's rows within `maxRows` lines, every row one line: the blocking items first, then the rest, each group in id order. When they do not all fit, the
-// last row is the summary of what is folded: the blocking items (`blocking`) apart from the rest (`more`), and the first folded item (`first`), which the
-// summary opens. That row takes the place of the last item row that would fit, so the rows never exceed `maxRows`: when none can be spared, no row draws.
+// The band's rows within `maxRows` lines, every row one line, in the ranking (rankOrder): the blocking items first, then the rest, each group in id order. When they
+// do not all fit, the last row is the summary of what is folded: the blocking items (`blocking`) apart from the rest (`more`), and the first folded item (`first`), which
+// the summary opens. That row takes the place of the last item row that would fit, so the rows never exceed `maxRows`: when none can be spared, no row draws.
 export const bandRows = (items: readonly Item[], maxRows: number): BandRow[] => {
-  const sorted = [...items].sort(bandOrder)
+  const sorted = [...items].sort(rankOrder)
   const asRows = (list: readonly Item[]): BandRow[] => list.map((item): BandRow => ({ kind: 'item', item }))
   if (sorted.length <= maxRows) return asRows(sorted)
   if (maxRows <= 0) return []

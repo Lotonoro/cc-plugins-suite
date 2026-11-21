@@ -82,6 +82,15 @@ export const normalizeStore = (raw: unknown): Store => {
   return { items, next: Math.max(saved, highest + 1), term: termStored(r.term) }
 }
 
+// The ranking, the one order of the list: a blocking item above a non-blocking one, then the oldest filed first. The band, `/todo`, the phone block, the
+// walk and the pane's picks (selectedItem, nextItem) all rank by it, each time over the whole current list, so none keeps a position. An item's number
+// comes from a counter that only goes up and is carried across /clear (clearAll, carryNext), so number order is filing order; the filing time is 0 for
+// an item an older release wrote, so it breaks no tie.
+export const rankOrder = (a: Item, b: Item): number => Number(b.blocking) - Number(a.blocking) || a.id - b.id
+
+// The open items of a list in the ranking: what `/todo`, the phone block and the walk take, and what the pane's next item is the first of.
+export const openRanked = (items: readonly Item[]): Item[] => items.filter(it => it.state === 'open').sort(rankOrder)
+
 // A term as the input check reads it: one line, or the reason it is refused. A blank term is `ok` with the empty text, which clears the term.
 type TermCheck = { ok: true; value: string } | { ok: false; reason: string }
 
@@ -370,17 +379,16 @@ export const act = (store: Store, input: ToolInput, ctx: Ctx): Outcome => {
   }, `updated #${target.id}`), input.term, ctx)
 }
 
-// The item the pane shows: the selected one, or with no selection the first. A selection that names the Claude list names no human item, and neither does
-// one whose item is gone; the pane moves on when its item is removed (successorOf), and that move writes the selection, so the lookup stays exact.
+// The item the pane shows: the selected one, or with no selection the first of the whole list in the ranking, the band's first row. A selection
+// that names the Claude list names no human item, and neither does one whose item is gone; the pane moves on when its item is removed (nextItem), and
+// that move writes the selection, so the lookup stays exact.
 export const selectedItem = (items: readonly Item[], selected: Selection): Item | undefined =>
-  selected === null ? items[0] : items.find(it => it.id === selected)
+  selected === null ? [...items].sort(rankOrder)[0] : items.find(it => it.id === selected)
 
-// The item the pane moves to when the one it shows leaves the actionable set (removed, or its press's window ended and it was sent): the
-// first open item with a higher id, else the last open one. Undefined when none is open.
-export const successorOf = (items: readonly Item[], removed: number): Item | undefined => {
-  const open = items.filter(it => it.state === 'open')
-  return open.find(it => it.id > removed) ?? open[open.length - 1]
-}
+// The item the pane moves to when the one it shows leaves the actionable set (removed, or its press's window ended and it was sent): the first open
+// item in the ranking, the first of `/todo`'s open items. Either trigger comes once the leaving item is gone or no longer open, so it needs no
+// excluding. Undefined when none is open.
+export const nextItem = (items: readonly Item[]): Item | undefined => openRanked(items)[0]
 
 // Empties the list and keeps the id counter: an id is never handed out twice, even across /clear. The term goes with the items.
 export const clearAll = (store: Store): Store => ({ items: [], next: store.next, term: null })

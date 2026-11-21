@@ -1,8 +1,7 @@
 import type { Item, TodoItem, Turn } from '../types'
 import { cutLine, cutText } from './cut'
 import { formsOf, humanTurn, isNumbered, labelOf, orderedOptions, replyText, turnsOf, type AnswerOutcome, type Form, type ShownOutcome } from './done'
-import { LINE_BREAK } from './items'
-import { bandOrder } from './layout'
+import { LINE_BREAK, openRanked, rankOrder } from './items'
 import { GLYPH, countsText, etaTail, headingOf, inDisplayOrder } from './todo'
 
 // The bounds the answers keep, in UTF-16 units. `cap` is the most `/todo <n>` prints, the cut line included, and the most a walk's question holds;
@@ -55,10 +54,10 @@ const ON_PHONE = 'The user is on their phone and cannot see the list.'
 const indented = (lines: readonly string[]): string => lines.map(line => `${INDENT}${line}`).join('\n')
 export const PHONE_REBUILDING = indented([ON_PHONE, `The list is still being rebuilt from the transcript; /${COMMAND} lists it once the rebuild is done.`])
 
-// The open items in the band's order, which `/todo`, the phone block and the walk all take.
-export const openOf = (items: readonly Item[]): Item[] => items.filter(it => it.state === 'open').sort(bandOrder)
+// The open items in the ranking (items.ts), which `/todo`, the phone block and the walk all take.
+export const openOf = openRanked
 
-// The block for the agent: the open items on one line, `#<n> <title>` each, in the band's order. The first PHONE_ITEMS are named, each title on
+// The block for the agent: the open items on one line, `#<n> <title>` each, in the ranking. The first PHONE_ITEMS are named, each title on
 // that line and cut to PHONE_TITLE, and the count of the rest follows. The agent ends its reply with that line, which names items by their
 // numbers, so the restatement check passes it, and which ends with the walk's pointer, the one thing the person on the phone can type to answer
 // them. Null when no item is open.
@@ -162,12 +161,12 @@ export const answerLine = (outcome: AnswerOutcome): string => {
   }
 }
 
-// The list: the open items, then the answered ones (state done-waiting or done-pending), each group in the band's order. The first
+// The list: the open items, then the answered ones (state done-waiting or done-pending), each group in the ranking. The first
 // LIMITS.listItems are named; the rest fold into one line of their numbers, in id order.
 const answerList = (items: readonly Item[]): string => {
   if (items.length === 0) return NOTHING
   const open = openOf(items)
-  const answered = items.filter(it => it.state !== 'open').sort(bandOrder)
+  const answered = items.filter(it => it.state !== 'open').sort(rankOrder)
   const listed = [...open, ...answered]
   const lines = listed.slice(0, LIMITS.listItems).map(listLine)
   const folded = listed.slice(LIMITS.listItems).map(it => it.id).sort((a, b) => a - b)
