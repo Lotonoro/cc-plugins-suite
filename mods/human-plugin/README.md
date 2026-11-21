@@ -55,6 +55,9 @@ from the repository root.
 - **Answer from the prompt.** Run `/todo` to list requests and
   `/todo <n>` to see one item and its valid responses. For example, run
   `/todo 4 done` or `/todo 4 reply Use the existing API`.
+- **Answer every open request.** Run `/do` and it asks about each open request
+  in turn, one dialog each. Each answer is written as you give it, and you can
+  stop or skip from any dialog.
 - **See what Claude is doing.** Look for **Agent TODO** beside your requests on a
   wide terminal, or run `/claude-todo` to read the same list as text.
 
@@ -63,9 +66,10 @@ from the repository root.
 The panes and the list above the prompt don’t draw on the phone, so there is
 nothing to click and the flow differs from the terminal’s. Slash commands and
 their output do draw, and they take the pane’s place. `/todo` and
-`/todo <n> <form>` work as they do at the prompt. `/todo answer` asks about
-each open request in turn, blocking first, one dialog per request, and writes
-each answer as you give it; it runs at the terminal too. The agent gets those
+`/todo <n> <form>` work as they do at the prompt. `/do` asks about each open
+request in turn, blocking first, one dialog per request, and writes each
+answer as you give it; `/todo answer` still starts the same walk, and both
+run at the terminal too. The agent gets those
 answers when the walk ends, as measured at the terminal. Whether the phone
 shows the agent’s reply without a prompt you type awaits a run on the phone.
 

@@ -1,6 +1,7 @@
 import { expect, test } from 'claude-code/testing'
 import {
-  ALREADY_ASKING, ARG_HINT, CLAUDE_COMMAND, CLAUDE_DESCRIPTION, CLAUDE_FAILED, CLAUDE_REBUILDING, CLAUDE_USAGE, DESCRIPTION, LIMITS, NOTHING_OPEN,
+  ALREADY_ASKING, ARG_HINT, CLAUDE_COMMAND, CLAUDE_DESCRIPTION, CLAUDE_FAILED, CLAUDE_REBUILDING, CLAUDE_USAGE, DESCRIPTION, DO_COMMAND, DO_DESCRIPTION, DO_FAILED,
+  DO_REBUILDING, DO_USAGE, LIMITS, NOTHING_OPEN,
   PHONE_ITEMS, PHONE_REBUILDING, PHONE_TITLE, PUSH_POINTER, USAGE, WALK_POINTER, WALK_WORD, answerLine, answerTo, claudeTodoText, hasArgument,
   openOf, outcomeLine, parseAsk, phoneBlock, readAnswer, skippedLine, walkDialog, walkEnd, walkSummary, type Reason,
 } from './commands'
@@ -730,6 +731,21 @@ test('the usage, rebuilding and failure lines each name /claude-todo, none names
   expect(CLAUDE_DESCRIPTION).not.toContain('/todo')
 })
 
+test('the /do lines: its description claims no order and names no pointer, and its usage, rebuilding and failure lines each name /do alone and are indented', () => {
+  expect(DO_COMMAND).toBe('do')
+  expect(DO_DESCRIPTION).toBe('Answer every open item on the to-do list, one question at a time.')
+  expect(DO_USAGE).toBe('  Usage: /do takes no argument.')
+  expect(DO_REBUILDING).toBe('  The list is still being rebuilt from the transcript; run /do again in a moment.')
+  expect(DO_FAILED).toBe('  /do failed: the error was logged.')
+  for (const text of [DO_USAGE, DO_REBUILDING, DO_FAILED]) {
+    expect(text).not.toContain('/todo')
+    expect(text).not.toContain('/claude-todo')
+    for (const line of text.split('\n')) expect(line.startsWith('  ')).toBe(true)
+  }
+  expect(DO_DESCRIPTION).not.toContain('blocking')
+  expect(DO_DESCRIPTION).not.toContain('/todo')
+})
+
 // A text with only whole copies of `unit` left, once the plain letters, the indent, the heading and the ellipsis are taken off.
 const onlyWhole = (text: string, unit: string): boolean => text.replace(/[a\s…]|you:/g, '').split(unit).join('') === ''
 
@@ -793,6 +809,10 @@ test('the description, the usage and the argument hint name answer, and the poin
 test('the lines a walk that does not start prints are indented', () => {
   expect(ALREADY_ASKING).toBe('  A walk is already asking; it goes on until every open item has been asked or you choose Stop on its question.')
   expect(NOTHING_OPEN).toBe('  Nothing is open to answer.')
+})
+
+test('the lines a walk that does not start prints name no command, so they are right for /do as for /todo answer', () => {
+  for (const line of [ALREADY_ASKING, NOTHING_OPEN]) expect(line).not.toContain('/')
 })
 
 test('the open items are those in the state open, blocking first and then by id', () => {

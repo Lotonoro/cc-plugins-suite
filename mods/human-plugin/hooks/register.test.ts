@@ -7,7 +7,10 @@ import { REMINDER_TEXT } from './reminder'
 import { TODO_SPEC, TOOL_SPEC } from './steering'
 import { paneRows } from './ui'
 import { correctionText } from './restatement'
-import { ALREADY_ASKING, ARG_HINT, CLAUDE_COMMAND, CLAUDE_DESCRIPTION, CLAUDE_FAILED, CLAUDE_REBUILDING, CLAUDE_USAGE, COMMAND, DESCRIPTION, FAILED, NOTHING_OPEN, PHONE_REBUILDING, REBUILDING, USAGE } from './commands'
+import {
+  ALREADY_ASKING, ARG_HINT, CLAUDE_COMMAND, CLAUDE_DESCRIPTION, CLAUDE_FAILED, CLAUDE_REBUILDING, CLAUDE_USAGE, COMMAND, DESCRIPTION, DO_COMMAND, DO_DESCRIPTION, DO_FAILED, DO_REBUILDING,
+  DO_USAGE, FAILED, NOTHING_OPEN, PHONE_REBUILDING, REBUILDING, USAGE,
+} from './commands'
 import { resetRebuild, setForkedTranscript, startRestore } from './rebuild'
 import { pressAnswer, pressDone, stopTicker } from './windows'
 import type { Item } from '../types'
@@ -2182,6 +2185,7 @@ const commandKey = (name: string): string => `command.run ${JSON.stringify({ com
 // The `/todo` command: registered at session start, answered by its command hook, and waiting for a rebuild as the tool does.
 const todoOf = (hooks: Record<string, Handler>): Handler => hooks[commandKey(COMMAND)] as Handler
 const claudeTodoOf = (hooks: Record<string, Handler>): Handler => hooks[commandKey(CLAUDE_COMMAND)] as Handler
+const doOf = (hooks: Record<string, Handler>): Handler => hooks[commandKey(DO_COMMAND)] as Handler
 
 test('/todo is registered at session start with the flag that runs it mid-turn, under the name its hook\'s matcher spells out', async () => {
   freshModule()
@@ -2199,11 +2203,31 @@ test('/claude-todo is registered at session start with the flag that runs it mid
   const { env } = memEnv([], [], null)
   const registered: Record<string, unknown>[] = []
   await started(wired, { ...env, command: { register: async (spec: Record<string, unknown>) => void registered.push(spec) } })
+  expect(registered).toContainEqual({ name: CLAUDE_COMMAND, description: CLAUDE_DESCRIPTION, immediate: true })
+  expect(typeof claudeTodoOf(wired.hooks)).toBe('function')
+})
+
+test('/do is registered at session start with the flag that runs it mid-turn and no argument hint, under the name its hook\'s matcher spells out', async () => {
+  freshModule()
+  const wired = wire()
+  const { env } = memEnv([], [], null)
+  const registered: Record<string, unknown>[] = []
+  await started(wired, { ...env, command: { register: async (spec: Record<string, unknown>) => void registered.push(spec) } })
+  expect(registered).toContainEqual({ name: DO_COMMAND, description: DO_DESCRIPTION, immediate: true })
+  expect(typeof doOf(wired.hooks)).toBe('function')
+})
+
+test('the session start registers three commands and no other: /todo, /claude-todo and /do, each with its own spec', async () => {
+  freshModule()
+  const wired = wire()
+  const { env } = memEnv([], [], null)
+  const registered: Record<string, unknown>[] = []
+  await started(wired, { ...env, command: { register: async (spec: Record<string, unknown>) => void registered.push(spec) } })
   expect(registered).toEqual([
     { name: COMMAND, description: DESCRIPTION, argumentHint: ARG_HINT, immediate: true },
     { name: CLAUDE_COMMAND, description: CLAUDE_DESCRIPTION, immediate: true },
+    { name: DO_COMMAND, description: DO_DESCRIPTION, immediate: true },
   ])
-  expect(typeof claudeTodoOf(wired.hooks)).toBe('function')
 })
 
 test('a failed /todo registration is logged, and the rest of the session start still delivers an owed notice', async () => {
@@ -2226,12 +2250,14 @@ test('a failed /todo registration is logged, and the rest of the session start s
   expect(logs).toEqual([
     'human-plugin: the /todo command was not registered: Error: no room for the command',
     'human-plugin: the /claude-todo command was not registered: Error: no room for the command',
+    'human-plugin: the /do command was not registered: Error: no room for the command',
   ])
   expect(submitted).toEqual([{ text: '#1 is done: Item 1' }])
 })
 
-test('a failed registration of one command leaves the other registered: /todo failing keeps /claude-todo, and the reverse', async () => {
-  for (const failing of [COMMAND, CLAUDE_COMMAND]) {
+test('a failed registration of one command leaves the other two registered and logs only its own line, whichever of /todo, /claude-todo and /do fails', async () => {
+  const names = [COMMAND, CLAUDE_COMMAND, DO_COMMAND]
+  for (const failing of names) {
     freshModule()
     const logs: string[] = []
     const registered: string[] = []
@@ -2247,8 +2273,8 @@ test('a failed registration of one command leaves the other registered: /todo fa
       },
     })
     await settle()
-    expect(registered).toEqual([failing === COMMAND ? CLAUDE_COMMAND : COMMAND])
-    expect(logs).toEqual([`human-plugin: the /${failing} command was not registered: Error: no room for the command`])
+    expect([failing, registered]).toEqual([failing, names.filter(name => name !== failing)])
+    expect([failing, logs]).toEqual([failing, [`human-plugin: the /${failing} command was not registered: Error: no room for the command`]])
   }
 })
 
@@ -4996,6 +5022,163 @@ test('/todo answer with nothing open says so and asks nothing, and one started w
   expect(asked).toHaveLength(1)
   release()
   expect(await first).toContain('It asked about every open item.')
+})
+
+// `/do` through the hooks: the same walk as `/todo answer`, started by a command of its own with its own usage, rebuilding and failure lines. The walk is walk.test.ts's and the `/todo answer`
+// tests' above; these drive what `/do` adds: its argument check, its wait for a rebuild, the one walk the two commands share, its failure line, and the source its walks' writes are logged by.
+
+// The text `/do` answers with, as its hook returns it.
+const doText = async (hooks: Record<string, Handler>, env: object, args = ''): Promise<string> =>
+  ((await doOf(hooks)(env as never, { args } as never, next(false) as never)) as { text: string }).text
+
+// The two commands that start the walk, each run as its hook runs it.
+const starters = {
+  '/do': (hooks: Record<string, Handler>, env: object): Promise<string> => doText(hooks, env),
+  '/todo answer': (hooks: Record<string, Handler>, env: object): Promise<string> => askText(hooks, env, 'answer'),
+}
+
+test('/do asks the questions /todo answer asks about the same list, writes the answer it is given, and returns the walk\'s end text, which still points to /todo answer', async () => {
+  const ran: { asked: string[]; text: string; list: unknown }[] = []
+  for (const start of Object.values(starters)) {
+    freshModule()
+    const { hooks } = wire()
+    const { env, values, clock } = memEnv([made(1, { detail: '' }), made(2, { detail: '', blocking: true })], [], null)
+    await endSession(hooks, env)
+    const asked: string[] = []
+    clock.now = 1000
+    const text = await start(hooks, askingHost(hooks, env, ['Done', 'Skip'], { asked }))
+    ran.push({ asked, text, list: values.list })
+  }
+  const [byDo, byTodo] = ran
+  expect(byDo).toEqual(byTodo)
+  expect(byDo?.asked).toHaveLength(2)
+  expect(byDo?.asked[0]?.split('\n')[2]).toBe('▶ 1 of 2 — #2 blocking: Item 2')
+  expect(byDo?.asked[1]?.split('\n').slice(0, 2)).toEqual(['answered #2 with done', '▶ 2 of 2 — #1 non-blocking: Item 1'])
+  expect(byDo?.text).toBe(['  skipped #1', '  It asked about every open item.', '  The walk sent 1 answer; 1 item is still open. /todo answer asks about it again.'].join('\n'))
+  expect(byDo?.list).toMatchObject({ items: [{ id: 1, state: 'open' }, { id: 2, state: 'done-waiting' }] })
+})
+
+test('/do with anything after it answers its usage and asks nothing, and blanks alone are no argument: each starts the walk', async () => {
+  freshModule()
+  const { hooks } = wire()
+  const { env, values } = memEnv([made(1, { detail: '' })], [], null)
+  await endSession(hooks, env)
+  const asked: string[] = []
+  for (const args of ['x', '3', 'answer', ' Answer ', '3 done', String.fromCodePoint(0xa0)]) {
+    expect([args, await doText(hooks, askingHost(hooks, env, ['Done'], { asked }), args)]).toEqual([args, DO_USAGE])
+  }
+  expect(asked).toEqual([])
+  expect(values.list).toMatchObject({ items: [{ id: 1, state: 'open' }] })
+  for (const args of [' ', '\t', ' \t ']) {
+    expect([args, (await doText(hooks, askingHost(hooks, env, ['Skip'], { asked }), args)).includes('It asked about every open item.')]).toEqual([args, true])
+  }
+  expect(asked).toHaveLength(3)
+})
+
+test('/do with nothing open says so and asks nothing', async () => {
+  freshModule()
+  const { hooks } = wire()
+  const { env } = memEnv([made(1, { state: 'done-pending', answer: 'done' })], [], null)
+  await endSession(hooks, env)
+  const asked: string[] = []
+  expect(await doText(hooks, askingHost(hooks, env, ['Done'], { asked }))).toBe(NOTHING_OPEN)
+  expect(asked).toEqual([])
+})
+
+test('/do while a /todo answer walk asks, and /todo answer while a /do walk asks, are each told a walk is already asking and ask nothing', async () => {
+  for (const [first, second] of [['/do', '/todo answer'], ['/todo answer', '/do']] as const) {
+    freshModule()
+    const { hooks } = wire()
+    const { env } = memEnv([made(1, { detail: '' })], [], null)
+    await endSession(hooks, env)
+    const asked: string[] = []
+    let release = (): void => {}
+    const hold = new Promise<void>(resolve => (release = resolve))
+    const running = starters[first](hooks, askingHost(hooks, env, ['Skip'], { asked, hold }))
+    await until(() => asked.length === 1)
+    expect(asked, first).toHaveLength(1)
+    expect([first, await starters[second](hooks, askingHost(hooks, env, ['Skip'], { asked }))]).toEqual([first, ALREADY_ASKING])
+    expect(asked, first).toHaveLength(1)
+    release()
+    expect([first, (await running).includes('It asked about every open item.')]).toEqual([first, true])
+  }
+})
+
+test('/do while the list is being rebuilt answers its own rebuilding line, which names /do, and asks nothing; once the rebuild has finished it starts the walk', async () => {
+  freshModule()
+  const wired = wire()
+  const timers: Timer[] = []
+  const { env, clock } = memEnv([], [], null, [], timers)
+  const { host, finish } = rebuilding(env)
+  const asked: string[] = []
+  setForkedTranscript('/sessions/s.jsonl')
+  try {
+    await started(wired, host)
+    const waiting = doText(wired.hooks, askingHost(wired.hooks, host, ['Skip'], { asked }))
+    await tickAt(timers, clock, 5000)
+    expect(await waiting).toBe(DO_REBUILDING)
+    expect(asked).toEqual([])
+    finish()
+    expect(await doText(wired.hooks, askingHost(wired.hooks, host, ['Skip'], { asked }))).toContain('It asked about every open item.')
+    expect(asked).toHaveLength(1)
+  } finally {
+    resetRebuild()
+  }
+})
+
+test('a /do whose hook throws answers its failure line and logs the throw', async () => {
+  freshModule()
+  const wired = wire()
+  const timers: Timer[] = []
+  const { env } = memEnv([], [], null, [], timers)
+  const { host, finish } = rebuilding(env)
+  // The host refuses the timer the wait for the rebuild arms, so the hook throws before the walk starts.
+  const refusing = {
+    ...host,
+    clock: {
+      ...env.clock,
+      after: () => {
+        throw new Error('no timer')
+      },
+    },
+  }
+  setForkedTranscript('/sessions/s.jsonl')
+  try {
+    await started(wired, host)
+    let thrown: unknown = null
+    try {
+      await doOf(wired.hooks)(refusing as never, { args: '' } as never, next(false) as never)
+    } catch (err) {
+      thrown = err
+    }
+    expect(String(thrown)).toContain('no timer')
+    const logs: string[] = []
+    const handler = wired.catches[commandKey(DO_COMMAND)] as Handler
+    expect(await handler({ ui: { log: (text: string) => void logs.push(text) } } as never, { args: '' } as never, next(false, 'no timer') as never)).toEqual({ text: DO_FAILED })
+    expect(logs).toEqual(['human-plugin: the command.run hook throw: no timer'])
+    finish()
+  } finally {
+    resetRebuild()
+  }
+})
+
+test('a walk\'s applied answer logs its window as a dialog answer, whichever command started the walk and with no command named, and a /todo <n> <form> answer logs it as /todo', async () => {
+  const cases = [
+    ['/do', 'dialog answer', starters['/do']],
+    ['/todo answer', 'dialog answer', starters['/todo answer']],
+    ['/todo 1 done', '/todo', (hooks: Record<string, Handler>, env: object) => askText(hooks, env, '1 done')],
+  ] as const
+  for (const [command, source, run] of cases) {
+    freshModule()
+    const { hooks } = wire()
+    const { env, clock } = memEnv([made(1, { detail: '' })], [], null)
+    await endSession(hooks, env)
+    clock.now = 1000
+    const logs: string[] = []
+    await run(hooks, askingHost(hooks, env, ['Done'], { logs }))
+    // A walk's and a command's write count from one window back (3000 ms), so the window it leaves is due at once.
+    expect([command, logs.filter(line => / #1 at /.test(line))]).toEqual([command, [`human-plugin: ${source} #1 at -2000: open -> done-waiting`]])
+  }
 })
 
 test('the session\'s end releases the walk that is asking: the next /todo answer asks while the old dialog is still open, and the old walk ends with its session when that dialog returns', async () => {

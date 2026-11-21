@@ -8,8 +8,8 @@ import { SUBAGENT_REFUSAL, TODO_NAME, TODO_TOOL, emptyTodo, parseTodo, readName,
 import { oneLine } from './cut'
 import { messageOf, stateOf } from './done'
 import {
-  ARG_HINT, CLAUDE_COMMAND, CLAUDE_DESCRIPTION, CLAUDE_FAILED, CLAUDE_REBUILDING, CLAUDE_USAGE, COMMAND, DESCRIPTION, FAILED, PHONE_REBUILDING, REBUILDING, USAGE,
-  answerLine, answerTo, claudeTodoText, hasArgument, parseAsk, phoneBlock,
+  ARG_HINT, CLAUDE_COMMAND, CLAUDE_DESCRIPTION, CLAUDE_FAILED, CLAUDE_REBUILDING, CLAUDE_USAGE, COMMAND, DESCRIPTION, DO_COMMAND, DO_DESCRIPTION, DO_FAILED, DO_REBUILDING, DO_USAGE,
+  FAILED, PHONE_REBUILDING, REBUILDING, USAGE, answerLine, answerTo, claudeTodoText, hasArgument, parseAsk, phoneBlock,
 } from './commands'
 import { carried, carryHeld, endTurn, giveBack, handOver, notEntered, offer, pending, reset, setOnChange, startTurn } from './turns'
 import { backlogPane, band, pane, toolLine, type Handlers, type View } from './ui'
@@ -203,6 +203,13 @@ const claudeTodo = async ($: EngineInterface, args: string): Promise<string> => 
   return claudeTodoText(await readTodo($), await readName($))
 }
 
+// The `/do` command's answer: the walk (walk.ts), reached as `/todo answer` reaches it, once a rebuild in progress has ended. It takes no argument, so an argument prints its usage and asks nothing. The wording is commands.ts's.
+const doCommand = async ($: EngineInterface, args: string, windowMs: number): Promise<string> => {
+  if (hasArgument(args)) return DO_USAGE
+  if (!(await restored($))) return DO_REBUILDING
+  return walk($, windowMs)
+}
+
 // The Claude list tool's calls, in the order they arrived. The engine does not promise to finish parallel calls in the order it started them,
 // and a resume replays the transcript's order, so each call waits for the one before it: the list left live is the list a resume rebuilds.
 let todoTurn: Promise<void> = Promise.resolve()
@@ -273,10 +280,11 @@ export const wireHooks = (on: On, windowMs: number): void => {
     setOnChange(() => saveNotices($))
     await $.tool.register(TOOL_SPEC)
     await $.tool.register(TODO_SPEC)
-    // A failed registration is logged, and the rest of the start still runs: the other command, the rebuild, the undo windows and the owed notices.
+    // A failed registration is logged, and the rest of the start still runs: the other commands, the rebuild, the undo windows and the owed notices.
     const commands = [
       { name: COMMAND, description: DESCRIPTION, argumentHint: ARG_HINT, immediate: true },
       { name: CLAUDE_COMMAND, description: CLAUDE_DESCRIPTION, immediate: true },
+      { name: DO_COMMAND, description: DO_DESCRIPTION, immediate: true },
     ] as const
     for (const spec of commands) {
       try {
@@ -296,7 +304,7 @@ export const wireHooks = (on: On, windowMs: number): void => {
     return { sections: [...composed.sections, STEERING] }
   })
 
-  // The walk's own dialogs (`$.ui.ask`, raised from the `/todo` hook) reach this hook as AskUserQuestion calls, and it sees each result before the dialog
+  // The walk's own dialogs (`$.ui.ask`, raised from the `/todo` or the `/do` hook) reach this hook as AskUserQuestion calls, and it sees each result before the dialog
   // returns. Every call passes through unchanged: the model's and other plugins' as well as the walk's. A call this plugin made is also handed, with its
   // result, to the walk, which records it (walk.ts); a throw there is logged and leaves the result as it was. The hook has no `.catch`: one that passed the
   // call on again would raise a dismissed dialog a second time. The matcher spells the tool's name out, as the others do.
@@ -335,6 +343,12 @@ export const wireHooks = (on: On, windowMs: number): void => {
   on('command.run', { command: 'claude-todo' }, ($, e) => claudeTodo($, e.args).then(text => ({ text }))).catch(($, _e, next) => {
     failed($, 'command.run', next.error)
     return { text: CLAUDE_FAILED }
+  })
+
+  // The same for `/do`: the name spelled out in the matcher, and a throw logged and answered by its own failure line.
+  on('command.run', { command: 'do' }, ($, e) => doCommand($, e.args, windowMs).then(text => ({ text }))).catch(($, _e, next) => {
+    failed($, 'command.run', next.error)
+    return { text: DO_FAILED }
   })
 
   // A done notice reaches a running turn at a read point the engine holds before its next request (turns.ts): the end of

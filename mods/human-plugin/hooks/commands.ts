@@ -39,6 +39,12 @@ export const CLAUDE_DESCRIPTION = 'Print the Claude TODO list: the steps the age
 export const CLAUDE_USAGE = `${INDENT}Usage: /${CLAUDE_COMMAND} takes no argument.`
 export const CLAUDE_REBUILDING = `${INDENT}The list is still being rebuilt from the transcript; run /${CLAUDE_COMMAND} again in a moment.`
 export const CLAUDE_FAILED = `${INDENT}/${CLAUDE_COMMAND} failed: the error was logged.`
+// `/do` starts the walk, as `/todo answer` does, and takes no argument. Its lines name no pointer and claim no order: the order the walk asks in is stated once, in the walk's summary (walkSummary).
+export const DO_COMMAND = 'do'
+export const DO_DESCRIPTION = 'Answer every open item on the to-do list, one question at a time.'
+export const DO_USAGE = `${INDENT}Usage: /${DO_COMMAND} takes no argument.`
+export const DO_REBUILDING = `${INDENT}The list is still being rebuilt from the transcript; run /${DO_COMMAND} again in a moment.`
+export const DO_FAILED = `${INDENT}/${DO_COMMAND} failed: the error was logged.`
 const NOTHING = `${INDENT}Nothing is on the list.`
 const NO_SUCH = `${INDENT}There is no such item.`
 const CUT = `${INDENT}The rest was cut.`
@@ -70,10 +76,10 @@ export const phoneBlock = (items: readonly Item[]): string | null => {
   ])
 }
 
-// An argument without the ASCII spaces and tabs around it: the blanks both commands read an argument by.
+// An argument without the ASCII spaces and tabs around it: the blanks every command reads an argument by.
 const trimmed = (args: string): string => args.replace(/^[ \t]+|[ \t]+$/g, '')
 
-// Whether the argument holds anything: `/claude-todo` takes none.
+// Whether the argument holds anything: `/claude-todo` and `/do` take none.
 export const hasArgument = (args: string): boolean => trimmed(args) !== ''
 
 // The Claude TODO list as `/claude-todo` prints it: a line that counts it, then the in-flight entries and the queued ones, each group in written
@@ -299,9 +305,9 @@ const cutPrinted = (text: string, max: number): string => {
   return best
 }
 
-// ---- the walk: `/todo answer` ----
+// ---- the walk: `/do` and `/todo answer` ----
 
-// What the command prints when the walk does not start: a walk is asking already, or no item is open.
+// What `/do` and `/todo answer` print when the walk does not start: a walk is asking already, or no item is open. Neither line names a command, so each is right for both.
 export const ALREADY_ASKING = `${INDENT}A walk is already asking; it goes on until every open item has been asked or you choose Stop on its question.`
 export const NOTHING_OPEN = `${INDENT}Nothing is open to answer.`
 
@@ -503,7 +509,7 @@ const countLine = (sent: number, open: number | null): string => {
   return `The walk sent ${sentWords}; ${openWords}`
 }
 
-// The command's output when the walk has ended, each line indented as the command's other prints are: the outcome line no question showed (`pending`, the
+// The output of `/do` and `/todo answer` when the walk has ended, each line indented as the commands' other prints are: the outcome line no question showed (`pending`, the
 // last item's, when it has one), why the walk ended, and the count of what it sent and what is still open (`open`, null when the list could not be read).
 export const walkEnd = (pending: string | null, reason: Reason, sent: number, open: number | null): string =>
   [...(pending === null ? [] : [pending]), reasonLine(reason), countLine(sent, open)].map(line => `${INDENT}${line}`).join('\n')
