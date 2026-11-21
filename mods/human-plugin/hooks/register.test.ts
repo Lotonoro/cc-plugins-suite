@@ -5610,3 +5610,142 @@ test('a turn that ends while a walk is asking submits nothing and leaves its not
     expect([aborted, values.notices]).toEqual([aborted, aborted ? { held: [notice], waiting: [] } : { held: [], waiting: [] }])
   }
 })
+
+// The posed flag: a walk has shown the person an item's question since the agent last changed it, and such an item ranks below those no walk has shown. One open item of each
+// of the four kinds, the numbers running against the ranking: shown non-blocking, shown blocking, not shown non-blocking, not shown blocking.
+const FOUR = (): Record<string, unknown>[] => [made(1, { posed: true }), made(2, { posed: true, blocking: true }), made(3), made(4, { blocking: true })]
+// The numbers of the title buttons a drawn tree holds, in the order the tree draws them.
+const titleOrder = (tree: unknown): number[] => [...JSON.stringify(tree).matchAll(/"key":"title-(\d+)"/g)].map(match => Number(match[1]))
+// The posed flags the list holds, in list order, as the mod reads them.
+const posedFlags = (values: Record<string, unknown>): boolean[] => normalizeStore(values.list).items.map(it => it.posed)
+// The position line of a walk's question.
+const positionOf = (question: string): string => question.split('\n').find(line => line.startsWith('▶')) ?? ''
+
+test('the band, the pane\'s default item, /todo and the phone block put the items no walk has shown first, blocking first within each group, whatever the numbers', async () => {
+  const open = ['human-items']
+  const { hooks, env } = await reloaded(open, FOUR(), null)
+  expect(titleOrder(await band(hooks, env))).toEqual([4, 3, 2, 1])
+  expect(JSON.stringify(await paneTree(hooks, env))).toContain('#4 blocking, open: Item 4')
+  expect(await askText(hooks, env, '')).toBe(['  #4 blocking: Item 4', '  #3 non-blocking: Item 3', '  #2 blocking: Item 2', '  #1 non-blocking: Item 1'].join('\n'))
+  const [block = ''] = (await entered(hooks, env, { origin: { kind: 'bridge' }, text: 'hi' }))[0]?.context ?? []
+  expect(block).toContain('  #4 Item 4, #3 Item 3, #2 Item 2, #1 Item 1')
+})
+
+test('with no selection the pane moves on, as each item it shows is removed, to the first open item left in the ranking, the items no walk has shown first', async () => {
+  const open = ['human-items']
+  const { hooks, env, values } = await reloaded(open, FOUR(), null)
+  const moves: unknown[] = []
+  for (const id of [4, 3, 2]) {
+    await (hooks['tool.call'] as Handler)(env as never, { tool: TOOL, action: 'remove', id } as never, next(false) as never)
+    await settle()
+    moves.push(values.selection)
+  }
+  expect(moves).toEqual([3, 2, 1])
+  expect(open).toEqual(['human-items'])
+  expect(JSON.stringify(await paneTree(hooks, env))).toContain('#1 non-blocking, open: Item 1')
+})
+
+test('with no selection the pane draws an item answered from the pane, which no walk showed, before an open item a walk showed that has a lower number, and the band\'s first row is that item', async () => {
+  const open = ['human-items']
+  const { hooks, env } = await reloaded(open, [made(1, { posed: true }), made(2, { state: 'done-pending', answer: 'Use sqlite' })], null)
+  expect(JSON.stringify(await paneTree(hooks, env))).toContain('#2 non-blocking, done-pending: Item 2')
+  expect(titleOrder(await band(hooks, env))).toEqual([2, 1])
+})
+
+test('/todo <n>, an answer form, opening the pane and switching it to another item leave every item\'s posed flag as it was', async () => {
+  const open: string[] = []
+  const { hooks, env, values } = await reloaded(open, [made(1, { posed: true, unread: true }), made(2, { unread: true }), made(3, { posed: true })], null)
+  expect(posedFlags(values)).toEqual([true, false, true])
+  await askText(hooks, env, '1')
+  expect(posedFlags(values)).toEqual([true, false, true])
+  findButton(await band(hooks, env), 'title-3')?.onPress()
+  await settle()
+  expect(open).toEqual(['human-items'])
+  findButton(await band(hooks, env), 'title-2')?.onPress()
+  await settle()
+  expect(values.selection).toBe(2)
+  expect(posedFlags(values)).toEqual([true, false, true])
+  await askText(hooks, env, '3 done')
+  expect(normalizeStore(values.list).items.map(it => [it.state, it.posed])).toEqual([['open', true], ['open', false], ['done-waiting', true]])
+})
+
+test('/todo <n> clears the unread mark of an item a walk marked posed after the read that printed it, since the mark is no change to what was printed', async () => {
+  freshModule()
+  const { hooks } = wire()
+  const { env, values } = memEnv([made(1, { unread: true })], [], null)
+  // A walk's mark lands between /todo's read of the list and its clear of the unread mark: the first read returns the list as it was.
+  const getState = env.state.get
+  let marked = false
+  env.state.get = async ref => {
+    const got = await getState(ref)
+    if (ref.key === 'list' && !marked) {
+      marked = true
+      const stored = normalizeStore(values.list)
+      values.list = { ...stored, items: stored.items.map(it => ({ ...it, posed: true })) }
+    }
+    return got
+  }
+  expect(await askText(hooks, env, '1')).toBe('  #1 non-blocking: Item 1\n  brief:\n  Brief 1.\n  /todo 1 done\n  /todo 1 reply <text>')
+  expect(values.list).toMatchObject({ items: [{ id: 1, unread: false, posed: true }] })
+})
+
+test('an agent\'s append or update through the tool leaves the item unposed, while an update that changes nothing and a term-only one leave it posed', async () => {
+  reset()
+  const { hooks } = wire()
+  const { env, values } = memEnv([made(1, { posed: true }), made(2, { posed: true }), made(3, { posed: true }), made(4, { posed: true })], [], null)
+  expect(await runTool(hooks, env, { action: 'append', id: 1, text: 'Which version?' })).toEqual({ result: 'appended to #1' })
+  expect(await runTool(hooks, env, { action: 'update', id: 2, title: 'Retitled' })).toEqual({ result: 'updated #2' })
+  expect(await runTool(hooks, env, { action: 'update', id: 3, title: 'Item 3' })).toEqual({ result: 'no change to #3' })
+  expect(await runTool(hooks, env, { action: 'update', id: 4, term: 'Boss' })).toEqual({ result: 'no change to #4 (term set to "Boss")' })
+  expect(posedFlags(values)).toEqual([false, false, true, true])
+})
+
+test('a hot reload keeps every item\'s posed flag, so the band keeps its order, and a /clear leaves no item to carry one', async () => {
+  freshModule()
+  const before = wire()
+  const { env, values } = memEnv(FOUR(), [], null)
+  await started(before, env)
+  expect(titleOrder(await band(before.hooks, env))).toEqual([4, 3, 2, 1])
+  // The reload: the module's variables start over, and the state keeps what it held.
+  freshModule()
+  const after = wire()
+  await started(after, env)
+  await settle()
+  expect(posedFlags(values)).toEqual([true, true, false, false])
+  expect(titleOrder(await band(after.hooks, env))).toEqual([4, 3, 2, 1])
+  await (after.hooks['session.end'] as Handler)(env as never, { reason: 'clear' } as never, next(false) as never)
+  expect(normalizeStore(values.list).items).toEqual([])
+})
+
+test('/todo answer through the hooks marks each item whose question it showed, the one the person closed included, and the next walk asks every item it did not reach before them', async () => {
+  freshModule()
+  const { hooks } = wire()
+  const { env, values } = memEnv([made(1, { blocking: true }), made(2), made(3), made(4, { blocking: true })], [], null)
+  await endSession(hooks, env)
+  const asked: string[] = []
+  await askText(hooks, askingHost(hooks, env, ['Skip', { rejects: 'The user dismissed the question' }], { asked }), 'answer')
+  expect(asked.map(positionOf)).toEqual(['▶ 1 of 4 — #1 blocking: Item 1', '▶ 2 of 4 — #4 blocking: Item 4'])
+  expect(posedFlags(values)).toEqual([true, false, false, true])
+  asked.length = 0
+  await askText(hooks, askingHost(hooks, env, ['Skip', 'Skip', 'Skip', 'Skip'], { asked }), 'answer')
+  expect(asked.map(positionOf)).toEqual([
+    '▶ 1 of 4 — #2 non-blocking: Item 2',
+    '▶ 2 of 4 — #3 non-blocking: Item 3',
+    '▶ 3 of 4 — #1 blocking: Item 1',
+    '▶ 4 of 4 — #4 blocking: Item 4',
+  ])
+  expect(posedFlags(values)).toEqual([true, true, true, true])
+})
+
+test('a walk that shows the item the open pane draws by default moves the pane to the next item in the ranking, and one the pane was opened on by a press stays where it is', async () => {
+  const open = ['human-items']
+  const { hooks, env } = await reloaded(open, [made(1), made(2), made(3)], null)
+  expect(JSON.stringify(await paneTree(hooks, env))).toContain('#1 non-blocking, open: Item 1')
+  await askText(hooks, askingHost(hooks, env, ['Stop']), 'answer')
+  expect(JSON.stringify(await paneTree(hooks, env))).toContain('#2 non-blocking, open: Item 2')
+  findButton(await band(hooks, env), 'title-3')?.onPress()
+  await settle()
+  expect(JSON.stringify(await paneTree(hooks, env))).toContain('#3 non-blocking, open: Item 3')
+  await askText(hooks, askingHost(hooks, env, ['Stop']), 'answer')
+  expect(JSON.stringify(await paneTree(hooks, env))).toContain('#3 non-blocking, open: Item 3')
+})

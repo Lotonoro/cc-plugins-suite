@@ -13,7 +13,7 @@ import type { Item, TodoItem, Turn } from '../types'
 
 // The `/todo` answers, parsed and worded. The expectations spell out each layout, so a change to a line shows here.
 const base: Item = {
-  id: 0, title: '', detail: '', blocking: false, createdAt: 0, state: 'open', pressedAt: null, note: null, agent: null, unread: false,
+  id: 0, title: '', detail: '', blocking: false, createdAt: 0, state: 'open', pressedAt: null, note: null, agent: null, unread: false, posed: false,
   options: [], answer: null, yesno: false, replied: false, doneLabel: null, thread: [], windowTurns: [], windowChanged: false,
 }
 const made = (id: number, extra: Partial<Item> = {}): Item => ({ ...base, id, title: `Item ${id}`, ...extra })
@@ -128,6 +128,27 @@ test('the list gives the open items first, a reopened one among them, then the a
     '  #5 non-blocking: Item 5',
     '  #2 blocking: Item 2 — you: Use sqlite (still undoable)',
     '  #4 non-blocking: Item 4 — you: Use postgres',
+  ])
+})
+
+test('the list orders each group by the ranking: the items no walk has shown first, blocking first within each, then by id; the answered group is in the same order', () => {
+  // One item of each of the four kinds, open and answered, the numbers against the order: shown non-blocking, shown blocking, not shown non-blocking, not shown blocking.
+  const kinds = (first: number, extra: Partial<Item>): Item[] => [
+    made(first, { ...extra, posed: true }),
+    made(first + 1, { ...extra, posed: true, blocking: true }),
+    made(first + 2, extra),
+    made(first + 3, { ...extra, blocking: true }),
+  ]
+  const items = [...kinds(5, { state: 'done-pending', answer: 'yes' }), ...kinds(1, {})]
+  expect(lineList(list(items))).toEqual([
+    '  #4 blocking: Item 4',
+    '  #3 non-blocking: Item 3',
+    '  #2 blocking: Item 2',
+    '  #1 non-blocking: Item 1',
+    '  #8 blocking: Item 8 — you: yes',
+    '  #7 non-blocking: Item 7 — you: yes',
+    '  #6 blocking: Item 6 — you: yes',
+    '  #5 non-blocking: Item 5 — you: yes',
   ])
 })
 
@@ -789,7 +810,7 @@ test('/todo <n> keeps its newest turn at the floor and whole when it is joined e
 const optionsOf = (...labels: string[]): Item['options'] => labels.map(label => ({ label, description: '', recommended: false }))
 const decision = (id: number, labels: string[], extra: Partial<Item> = {}): Item => made(id, { options: optionsOf(...labels), ...extra })
 const SENTENCE =
-  'They are asked one at a time, blocking first, and each answer is written to the list as you give it and reaches the agent when the walk ends. Stop, stop typed under Other, or closing the question ends the walk; Skip passes over an item. What you have not answered stays on the list.'
+  'They are asked one at a time: items a walk has not yet shown you, or that have changed since, come first, and blocking items first within each group. Each answer is written to the list as you give it and reaches the agent when the walk ends. Stop, stop typed under Other, or closing the question ends the walk; Skip passes over an item. What you have not answered stays on the list.'
 
 test('the word answer alone, in any case and with blanks around it, is the walk; anything after it or before it is the usage', () => {
   expect(WALK_WORD).toBe('answer')
@@ -818,6 +839,20 @@ test('the lines a walk that does not start prints name no command, so they are r
 test('the open items are those in the state open, blocking first and then by id', () => {
   const items = [made(1), made(2, { blocking: true }), made(3, { state: 'done-pending', answer: 'yes' }), made(4, { blocking: true }), made(5, { state: 'done-waiting', answer: 'no' })]
   expect(openOf(items).map(it => it.id)).toEqual([2, 4, 1])
+})
+
+test('the open items come in the ranking: those no walk has shown first, blocking first within each group, then by id', () => {
+  const items = [made(1, { posed: true }), made(2, { posed: true, blocking: true }), made(3), made(4, { blocking: true }), made(5, { state: 'done-pending', answer: 'yes' })]
+  expect(openOf(items).map(it => it.id)).toEqual([4, 3, 2, 1])
+})
+
+test('the phone block names the open items in the ranking, those no walk has shown first, and keeps its pointer', () => {
+  const items = [made(1, { posed: true }), made(2, { posed: true, blocking: true }), made(3), made(4, { blocking: true })]
+  expect(lastLine(phoneBlock(items) ?? '')).toBe('  #4 Item 4, #3 Item 3, #2 Item 2, #1 Item 1; /todo answer asks them one by one')
+  // The count of the rest folds in the ranking too: the first ten are named, those no walk has shown among them.
+  const crowd = [...Array.from({ length: PHONE_ITEMS }, (_, k) => made(k + 1, { posed: true })), made(PHONE_ITEMS + 1)]
+  expect(lastLine(phoneBlock(crowd) ?? '').startsWith(`  #${PHONE_ITEMS + 1} Item ${PHONE_ITEMS + 1}, #1 Item 1, `)).toBe(true)
+  expect(lastLine(phoneBlock(crowd) ?? '')).toContain(', and 1 more is open;')
 })
 
 test('the phone block\'s /todo line names /todo answer, the block keeps its four lines, and the line the agent ends its reply with ends with the pointer', () => {

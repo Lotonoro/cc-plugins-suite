@@ -13,6 +13,7 @@ const item = (id: number, title: string, state: ItemState = 'open', options: Ite
   note: null,
   agent: null,
   unread: false,
+  posed: false,
   options,
   answer: null,
   yesno: false,

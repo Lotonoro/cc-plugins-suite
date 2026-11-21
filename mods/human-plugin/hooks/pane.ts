@@ -1,6 +1,6 @@
 import { atom, read, update, type EngineInterface, type PaneCloseOrigin, type PaneOpenArgs } from 'claude-code'
 import type { Item, Selection, TodoItem } from '../types'
-import { nextItem, selectedItem, type Outcome } from './items'
+import { nextItem, poseItem, selectedItem, type Outcome } from './items'
 import { inBackground, readList, updateList } from './shared'
 import { HEADING, headingOf, readName, readTodo } from './todo'
 import { backlogRows, paneRows } from './ui'
@@ -236,9 +236,10 @@ function showBacklog($: EngineInterface): Promise<unknown> {
   return Promise.all([followed, select($, CLAUDE_VIEW)])
 }
 
-// The item as printed, against the item now: the same content, the unread mark aside (a clear changes that, and a print does not show it).
-// Both are normalized (normalizeItem), so their keys come in one order and the JSON compares the content.
-const sameContent = (now: Item, printed: Item): boolean => JSON.stringify({ ...now, unread: false }) === JSON.stringify({ ...printed, unread: false })
+// The item as printed, against the item now: the same content, the unread and posed marks aside (a clear changes the first and a walk's mark the second, and a print
+// shows neither). Both are normalized (normalizeItem), so their keys come in one order and the JSON compares the content.
+const sameContent = (now: Item, printed: Item): boolean =>
+  JSON.stringify({ ...now, unread: false, posed: false }) === JSON.stringify({ ...printed, unread: false, posed: false })
 
 // Marks one item read: an item the pane switches to is shown, so its unread mark goes. `/todo <n>` passes the item as it printed it, and the mark
 // goes only while the item is still that one: a change made since the print is not in the text, so the mark it raised stays.
@@ -247,6 +248,13 @@ export function markRead($: EngineInterface, id: number, printed?: Item): Promis
     ...store,
     items: store.items.map(it => (it.id === id && (printed === undefined || sameContent(it, printed)) ? { ...it, unread: false } : it)),
   }))
+}
+
+// Marks the item a walk showed posed (items.ts), in a write of its own. The mark goes only while the walk still owns its session and the item is still the one shown,
+// both tested in the list update itself: a session that ends before the update runs leaves the list another session's, where an item of the same number and content
+// would take the mark, and an item the agent changed meanwhile was not shown as it now reads, so it stays unposed. `shown` is the item as the walk read it.
+export function markPosed($: EngineInterface, shown: Item, owns: () => boolean): Promise<unknown> {
+  return updateList($, store => (owns() && store.items.some(it => it.id === shown.id && sameContent(it, shown)) ? poseItem(store, shown.id) : store))
 }
 
 // The flag clears before the close is awaited: an open made while the close is in flight counts as open, and the close's settling

@@ -23,6 +23,9 @@ export type Item = {
   note: string | null
   agent: string | null
   unread: boolean
+  // A `/todo answer` walk has shown the person this item's question since the agent last changed the item: the ranking puts such an item below those no walk has shown
+  // (items.ts, which clears the mark on every agent change). False when the item is filed.
+  posed: boolean
   // The answers a decision offers (none for a plain ask), and the one the human pressed, while its undo window runs or after.
   options: ItemOption[]
   // A yes/no question (the agent's `yesno` marker): its row offers a yes and a no in place of a check, and its answer is `yes` or

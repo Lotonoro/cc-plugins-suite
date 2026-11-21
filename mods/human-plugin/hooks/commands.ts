@@ -368,7 +368,7 @@ export const walkSummary = (open: readonly Item[]): string[] => {
   const counts = [...(blocking > 0 ? [`${blocking} blocking`] : []), ...(rest > 0 ? [`${rest} non-blocking`] : [])]
   return [
     `${counts.join(' and ')} ${open.length === 1 ? 'item is' : 'items are'} open.`,
-    'They are asked one at a time, blocking first, and each answer is written to the list as you give it and reaches the agent when the walk ends. Stop, stop typed under Other, or closing the question ends the walk; Skip passes over an item. What you have not answered stays on the list.',
+    'They are asked one at a time: items a walk has not yet shown you, or that have changed since, come first, and blocking items first within each group. Each answer is written to the list as you give it and reaches the agent when the walk ends. Stop, stop typed under Other, or closing the question ends the walk; Skip passes over an item. What you have not answered stays on the list.',
   ]
 }
 

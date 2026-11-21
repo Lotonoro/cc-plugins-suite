@@ -3,7 +3,7 @@ import type { Item } from '../types'
 import { ALREADY_ASKING, NOTHING_OPEN, openOf, outcomeLine, readAnswer, skippedLine, walkDialog, walkEnd, walkSummary, type Dialog, type Reason } from './commands'
 import { release } from './deliver'
 import { messageOf } from './done'
-import { markRead } from './pane'
+import { markPosed, markRead } from './pane'
 import { inBackground, readList } from './shared'
 import { setWalkAsking } from './turns'
 import { TICK_MS, pressShown } from './windows'
@@ -85,7 +85,7 @@ function armRelease($: EngineInterface): void {
 }
 
 // Whether the walk `me` still owns its session: its flag is its own until the session ends (endWalk). It is the one test a walk makes of that: before each
-// question, after each dialog, and, handed to the guarded write, inside the list update that carries its answer.
+// question, after each dialog, and, handed to a guarded write (the posed mark's, the answer's), inside the list update that carries it.
 const owns = (me: symbol): boolean => walking === me
 
 // How far a walk has got: the items it has asked about (an item is asked at most once per walk), the answers it has written, and the outcome line of the last
@@ -120,12 +120,24 @@ async function clearMark($: EngineInterface, item: Item): Promise<void> {
   }
 }
 
-// One question: the dialog is asked, and what it gave back is read in this order. A walk that lost its session ends, and a rejected dialog ends it, whatever the
-// observer saw of it: a close, an expiry that rejects and an engine refusal cannot be told apart, and read alike. An answer the observer saw no result for, or only
-// one for another question, ends the walk as one that cannot be confirmed as the person's, and so does one whose result carries `afkTimeoutMs`. Only then is the
-// answer read against the item: Stop ends the walk, Skip goes on, and any other answer is written through the guarded write, which is handed the walk's test of its
-// session and writes nothing once it fails, so a session that ends after the test above and before the write's list update ends the walk the same way. Every ask
-// leaves its line in the debug log, a throw included. Returns the reason the walk ended, or null to go on with the next item.
+// An item whose question was shown is posed, and only while this walk still owns its session and the item is still as shown (pane.ts). A mark that cannot be written is
+// logged, and the walk goes on, as with the unread mark: the item stays unposed, which is the direction that asks it again.
+async function markShown($: EngineInterface, item: Item, me: symbol): Promise<void> {
+  try {
+    await markPosed($, item, () => owns(me))
+  } catch (err) {
+    $.ui.log(`human-plugin: the posed mark of #${item.id} was not set: ${String(err)}`)
+  }
+}
+
+// One question: the dialog is asked, and what it gave back is read in this order. A walk that lost its session ends. Unless the result carries `afkTimeoutMs`, which
+// only a dialog the engine resolved for an absent person has, the item is then marked posed, whatever the dialog gave back: the person saw the question, and the mark is
+// written before the answer is read or written, while the item is open and as shown. A rejected dialog ends the walk, whatever the observer saw of it: a close, an
+// expiry that rejects and an engine refusal cannot be told apart, and read alike. An answer the observer saw no result for, or only one for another question, ends the
+// walk as one that cannot be confirmed as the person's, and so does one whose result carries `afkTimeoutMs`. Only then is the answer read against the item: Stop ends
+// the walk, Skip goes on, and any other answer is written through the guarded write, which is handed the walk's test of its session and writes nothing once it fails,
+// so a session that ends after the test above and before the write's list update ends the walk the same way. Every ask leaves its line in the debug log, a throw
+// included. Returns the reason the walk ended, or null to go on with the next item.
 async function askOne($: EngineInterface, windowMs: number, me: symbol, progress: Progress, item: Item, dialog: Dialog): Promise<Reason | null> {
   const slot: Asking = { id: item.id, question: dialog.question, seen: null }
   asking = slot
@@ -152,6 +164,7 @@ async function askOne($: EngineInterface, windowMs: number, me: symbol, progress
   }
   try {
     if (!owns(me)) return sessionEnded()
+    if (slot.seen?.afk !== true) await markShown($, item, me)
     if (returned.kind === 'rejected') {
       outcome = 'closed'
       return { kind: 'closed', id: item.id }

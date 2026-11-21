@@ -5,7 +5,7 @@ import { endsJoining } from './joining-oracle'
 import { SEQUENCES } from './sequences'
 import type { Item, TodoItem } from '../types'
 
-const item = (id: number, blocking = false): Item => ({
+const item = (id: number, blocking = false, posed = false): Item => ({
   id,
   title: `t${id}`,
   detail: '',
@@ -16,6 +16,7 @@ const item = (id: number, blocking = false): Item => ({
   note: null,
   agent: null,
   unread: false,
+  posed,
   options: [],
   answer: null,
   yesno: false,
@@ -38,6 +39,25 @@ test('a short list draws every item, with no summary', () => {
 
 test('blocking items come first, then the rest, each group in id order, one row each', () => {
   expect(ids(bandRows([item(1), item(2, true), item(3, true), item(4)], 5))).toEqual([2, 3, 1, 4])
+})
+
+test('items no walk has shown come before those a walk has, blocking first within each, each tier in id order: the numbers run against the order', () => {
+  const kinds = [item(1, false, true), item(2, true, true), item(3), item(4, true), item(5, false, true), item(6, true, true), item(7), item(8, true)]
+  expect(ids(bandRows(kinds, 8))).toEqual([4, 8, 3, 7, 2, 6, 1, 5])
+  expect(ids(bandRows([...kinds].reverse(), 8))).toEqual([4, 8, 3, 7, 2, 6, 1, 5])
+})
+
+test('the summary of a folded band opens on the first folded item in that order, a tier boundary included', () => {
+  const kinds = [item(1, false, true), item(2, true, true), item(3), item(4, true)]
+  expect(bandRows(kinds, 3)).toEqual([
+    { kind: 'item', item: item(4, true) },
+    { kind: 'item', item: item(3) },
+    { kind: 'more', blocking: 1, more: 1, first: item(2, true, true) },
+  ])
+  expect(bandRows(kinds, 2)).toEqual([
+    { kind: 'item', item: item(4, true) },
+    { kind: 'more', blocking: 1, more: 2, first: item(3) },
+  ])
 })
 
 test('a list exactly filling the rows has no summary', () => {

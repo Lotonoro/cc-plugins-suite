@@ -50,9 +50,10 @@ from the repository root.
 ## Use it
 
 - **Open an ask.** Click its title above the prompt to see its details, answers,
-  and conversation. Items blocking the agent appear first. Buttons and typed
-  replies give you a short undo window before they’re sent. The pane closes once
-  the answer to the item it shows is sent.
+  and conversation. Items `/todo answer` hasn’t shown you yet, or that have
+  changed since, appear first, and blocking items come first within each group.
+  Buttons and typed replies give you a short undo window before they’re sent.
+  The pane closes once the answer to the item it shows is sent.
 - **Answer from the prompt.** Run `/todo` to list requests and
   `/todo <n>` to see one item and its valid responses. For example, run
   `/todo 4 done` or `/todo 4 reply Use the existing API`.
@@ -68,11 +69,12 @@ The panes and the list above the prompt don’t draw on the phone, so there is
 nothing to click and the flow differs from the terminal’s. Slash commands and
 their output do draw, and they take the pane’s place. `/todo` and
 `/todo <n> <form>` work as they do at the prompt. `/do` asks about each open
-request in turn, blocking first, one dialog per request, and writes each
-answer as you give it; `/todo answer` still starts the same walk, and both
-run at the terminal too. The agent gets those
-answers when the walk ends, as measured at the terminal. Whether the phone
-shows the agent’s reply without a prompt you type awaits a run on the phone.
+request in turn, one dialog per request: the ones it hasn’t shown you yet, or
+that have changed since, come first, and blocking ones come first within each
+group. It writes each answer as you give it; `/todo answer` still starts the
+same walk, and both run at the terminal too. The agent gets those answers when
+the walk ends, as measured at the terminal. Whether the phone shows the
+agent’s reply without a prompt you type awaits a run on the phone.
 
 A prompt you type from the phone also carries the open requests to the agent
 as context, so you don’t have to ask what’s waiting. A blocking item can send
