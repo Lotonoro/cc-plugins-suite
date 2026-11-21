@@ -830,7 +830,7 @@ test('a to-do\'s question is its head, its brief under its heading, the line for
     header: '#3',
     question: [
       'Lead.',
-      '1 of 4 — #3 non-blocking: Item 3',
+      '▶ 1 of 4 — #3 non-blocking: Item 3',
       '  brief:',
       '  Brief 3.',
       'Under Other: type a reply, or skip to pass, or stop to end.',
@@ -855,7 +855,7 @@ test('a decision\'s question holds the note, the brief, its options numbered in 
     header: '#4',
     question: [
       'Lead.',
-      '2 of 5 — #4 blocking: Pick a db',
+      '▶ 2 of 5 — #4 blocking: Pick a db',
       '  note:',
       '  A note.',
       '  brief:',
@@ -952,8 +952,12 @@ test('the position line cuts the title at 300 units on one line, and a label and
     [],
   )
   const [position, first] = lineList(dialog.question)
-  expect(position).toBe(`1 of 1 — #2 non-blocking: ${`${'t'.repeat(150)} ${'u'.repeat(300)}`.slice(0, 299)}…`)
+  expect(position).toBe(`▶ 1 of 1 — #2 non-blocking: ${`${'t'.repeat(150)} ${'u'.repeat(300)}`.slice(0, 299)}…`)
   expect(first).toBe(`1. ${'l'.repeat(199)}… — ${'d'.repeat(199)}…`)
+})
+
+test('a question with no lead opens with its position line under the marker', () => {
+  expect(lineList(walkDialog(made(1), 1, 1, []).question)[0]).toBe('▶ 1 of 1 — #1 non-blocking: Item 1')
 })
 
 // A question of the given item with a note, a newest agent turn and a brief of the given sizes (0 for none).

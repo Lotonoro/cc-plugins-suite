@@ -190,7 +190,7 @@ test('a walk asks about the first open item, blocking first: the summary and the
   expect(lines(asked[0]?.question ?? '').slice(0, 3)).toEqual([
     '1 blocking and 2 non-blocking items are open.',
     'They are asked one at a time, blocking first, and each answer is written to the list as you give it and reaches the agent when the walk ends. Stop, or stop typed under Other, ends the walk; Skip, or closing the question, passes over an item. What you have not answered stays on the list.',
-    '1 of 3 — #2 blocking: Pick 2',
+    '▶ 1 of 3 — #2 blocking: Pick 2',
   ])
 })
 
@@ -199,8 +199,8 @@ test('the questions come blocking first and then by id, each opening with the pr
   const { env, asked } = walkEnv([made(1), made(2), made(3, { blocking: true })], [{ gives: 'Skip' }, { gives: 'Skip' }, { gives: 'Skip' }])
   const text = await walk(env, WINDOW)
   expect(asked.map(a => a.header)).toEqual(['#3', '#1', '#2'])
-  expect(lines(asked[1]?.question ?? '').slice(0, 2)).toEqual(['skipped #3', '2 of 3 — #1 non-blocking: Item 1'])
-  expect(lines(asked[2]?.question ?? '').slice(0, 2)).toEqual(['skipped #1', '3 of 3 — #2 non-blocking: Item 2'])
+  expect(lines(asked[1]?.question ?? '').slice(0, 2)).toEqual(['skipped #3', '▶ 2 of 3 — #1 non-blocking: Item 1'])
+  expect(lines(asked[2]?.question ?? '').slice(0, 2)).toEqual(['skipped #1', '▶ 3 of 3 — #2 non-blocking: Item 2'])
   expect(text).toBe(
     [
       '  skipped #2',
@@ -208,6 +208,17 @@ test('the questions come blocking first and then by id, each opening with the pr
       '  The walk sent nothing; 3 items are still open. /todo answer asks about them again.',
     ].join('\n'),
   )
+})
+
+test('a question\'s position line is the only line that opens with the marker: the first question\'s summary and the skipped line that leads a later one carry none', async () => {
+  fresh()
+  const { env, asked } = walkEnv([made(1), made(2)], [{ gives: 'Skip' }, { gives: 'Skip' }])
+  await walk(env, WINDOW)
+  expect(asked).toHaveLength(2)
+  const [first, second] = asked.map(a => lines(a.question))
+  expect(first?.filter(line => line.startsWith('▶'))).toEqual(['▶ 1 of 2 — #1 non-blocking: Item 1'])
+  expect(second?.[0]).toBe('skipped #1')
+  expect(second?.filter(line => line.startsWith('▶'))).toEqual(['▶ 2 of 2 — #2 non-blocking: Item 2'])
 })
 
 test('with nothing open the walk asks nothing and says so', async () => {
@@ -257,7 +268,7 @@ test('an item filed while the walk asks is asked in the band\'s order, one remov
   )
   const text = await walk(env, WINDOW)
   expect(asked.map(a => a.header)).toEqual(['#1', '#4', '#2'])
-  expect(lines(asked[1]?.question ?? '')[1]).toBe('2 of 3 — #4 blocking: Item 4')
+  expect(lines(asked[1]?.question ?? '')[1]).toBe('▶ 2 of 3 — #4 blocking: Item 4')
   expect(text).toContain('It asked about every open item.')
 })
 
@@ -462,7 +473,7 @@ test('a rejected dialog does not end the walk: the answers before and after it a
   clock.now = 1000
   const text = await walk(env, WINDOW)
   expect(asked.map(a => a.header)).toEqual(['#1', '#2', '#3'])
-  expect(lines(asked[2]?.question ?? '').slice(0, 2)).toEqual(['skipped #2', '3 of 3 — #3 non-blocking: Item 3'])
+  expect(lines(asked[2]?.question ?? '').slice(0, 2)).toEqual(['skipped #2', '▶ 3 of 3 — #3 non-blocking: Item 3'])
   expect(values.list.items.map(it => it.state)).toEqual(['done-waiting', 'open', 'done-waiting'])
   // Nothing is written for the skipped item: it is as it was, its unread mark aside, which showing its question cleared.
   expect(itemOf(values, 2)).toEqual(made(2))
@@ -488,8 +499,8 @@ test('a walk whose every dialog is rejected, whatever the messages say, asks eac
   clock.now = 1000
   const text = await walk(env, WINDOW)
   expect(asked.map(a => a.header)).toEqual(['#3', '#1', '#2'])
-  expect(lines(asked[1]?.question ?? '').slice(0, 2)).toEqual(['skipped #3', '2 of 3 — #1 non-blocking: Item 1'])
-  expect(lines(asked[2]?.question ?? '').slice(0, 2)).toEqual(['skipped #1', '3 of 3 — #2 non-blocking: Item 2'])
+  expect(lines(asked[1]?.question ?? '').slice(0, 2)).toEqual(['skipped #3', '▶ 2 of 3 — #1 non-blocking: Item 1'])
+  expect(lines(asked[2]?.question ?? '').slice(0, 2)).toEqual(['skipped #1', '▶ 3 of 3 — #2 non-blocking: Item 2'])
   expect(text).toBe(
     [
       '  skipped #2',

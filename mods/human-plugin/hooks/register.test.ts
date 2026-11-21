@@ -4934,8 +4934,8 @@ test('/todo answer asks about each open item through the hooks, blocking first, 
   clock.now = 1000
   const answered = await todoOf(hooks)(askingHost(hooks, env, ['Done', 'Skip'], { asked, through }) as never, { args: ' Answer ' } as never, next(false) as never)
   expect(asked).toHaveLength(2)
-  expect(asked[0]?.split('\n')[2]).toBe('1 of 2 — #2 blocking: Item 2')
-  expect(asked[1]?.split('\n').slice(0, 2)).toEqual(['answered #2 with done', '2 of 2 — #1 non-blocking: Item 1'])
+  expect(asked[0]?.split('\n')[2]).toBe('▶ 1 of 2 — #2 blocking: Item 2')
+  expect(asked[1]?.split('\n').slice(0, 2)).toEqual(['answered #2 with done', '▶ 2 of 2 — #1 non-blocking: Item 1'])
   expect(through).toEqual([true, true])
   expect(answered).toEqual({
     text: ['  skipped #1', '  It asked about every open item.', '  The walk sent 1 answer; 1 item is still open. /todo answer asks about it again.'].join('\n'),

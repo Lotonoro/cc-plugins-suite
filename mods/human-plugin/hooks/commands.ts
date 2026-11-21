@@ -400,6 +400,7 @@ const fitWalk = (parts: WalkParts): string => {
 // the summary on the first question, the previous item's outcome line on every later one. `k` counts the questions asked so far, this one included, and `n`
 // is `k` plus the open items not yet asked about. The body is the note, the agent's newest turn when it is the thread's newest, and the raw brief, each under
 // the heading `/todo <n>` gives it. The tail is a decision's numbered options, the line that says what Other takes, and the closing line.
+// The question's position line, `k` of `n`, opens with `▶ `, so an item's own question stands out on a phone, which shows the text unstyled.
 export type Dialog = { header: string; question: string; options: string[] }
 
 export const walkDialog = (item: Item, k: number, n: number, lead: readonly string[]): Dialog => {
@@ -408,7 +409,7 @@ export const walkDialog = (item: Item, k: number, n: number, lead: readonly stri
   const newest = turns[turns.length - 1]
   const question = fitWalk({
     id: item.id,
-    head: [...lead, `${k} of ${n} — #${item.id} ${blockingWord(item)}: ${cutLine(item.title, LIMITS.title)}`],
+    head: [...lead, `▶ ${k} of ${n} — #${item.id} ${blockingWord(item)}: ${cutLine(item.title, LIMITS.title)}`],
     note: item.note === null ? null : sectionOf('note', item.note),
     turn: newest === undefined || newest.speaker !== 'agent' ? null : turnOf(newest),
     brief: item.detail.trim() === '' ? null : sectionOf('brief', item.detail),
