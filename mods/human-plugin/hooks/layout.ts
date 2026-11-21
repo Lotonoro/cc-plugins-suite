@@ -10,8 +10,8 @@ const summaryOf = (folded: readonly Item[]): BandRow => {
   return { kind: 'more', blocking, more: folded.length - blocking, first: folded[0] as Item }
 }
 
-// The band's rows within `maxRows` lines, every row one line, in the ranking (rankOrder): the blocking items first, then the rest, each group in id order. When they
-// do not all fit, the last row is the summary of what is folded: the blocking items (`blocking`) apart from the rest (`more`), and the first folded item (`first`), which
+// The band's rows within `maxRows` lines, every row one line, in the ranking (rankOrder): the items no walk has shown first, then the posed ones (a walk has shown
+// them), the blocking items before the rest in each tier, each group in id order. When they do not all fit, the last row is the summary of what is folded: the blocking items (`blocking`) apart from the rest (`more`), and the first folded item (`first`), which
 // the summary opens. That row takes the place of the last item row that would fit, so the rows never exceed `maxRows`: when none can be spared, no row draws.
 export const bandRows = (items: readonly Item[], maxRows: number): BandRow[] => {
   const sorted = [...items].sort(rankOrder)
