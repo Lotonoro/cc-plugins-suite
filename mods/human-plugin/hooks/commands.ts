@@ -308,7 +308,7 @@ const cutPrinted = (text: string, max: number): string => {
 // ---- the walk: `/do` and `/todo answer` ----
 
 // What `/do` and `/todo answer` print when the walk does not start: a walk is asking already, or no item is open. Neither line names a command, so each is right for both.
-export const ALREADY_ASKING = `${INDENT}A walk is already asking; it goes on until every open item has been asked or you choose Stop on its question.`
+export const ALREADY_ASKING = `${INDENT}A walk is already asking; it goes on until every open item has been asked, you choose Stop on its question, or its question is closed.`
 export const NOTHING_OPEN = `${INDENT}Nothing is open to answer.`
 
 // The controls a question offers beside the item's answers, in the order they take the slots that are left, and the label a to-do's one answer takes when
@@ -369,7 +369,7 @@ export const walkSummary = (open: readonly Item[]): string[] => {
   const counts = [...(blocking > 0 ? [`${blocking} blocking`] : []), ...(rest > 0 ? [`${rest} non-blocking`] : [])]
   return [
     `${counts.join(' and ')} ${open.length === 1 ? 'item is' : 'items are'} open.`,
-    'They are asked one at a time, blocking first, and each answer is written to the list as you give it and reaches the agent when the walk ends. Stop, or stop typed under Other, ends the walk; Skip, or closing the question, passes over an item. What you have not answered stays on the list.',
+    'They are asked one at a time, blocking first, and each answer is written to the list as you give it and reaches the agent when the walk ends. Stop, stop typed under Other, or closing the question ends the walk; Skip passes over an item. What you have not answered stays on the list.',
   ]
 }
 
@@ -477,7 +477,7 @@ export type Reason =
   | { kind: 'stop' }
   | { kind: 'error' }
   | { kind: 'session' }
-  | { kind: 'auto' | 'unconfirmed'; id: number }
+  | { kind: 'closed' | 'auto' | 'unconfirmed'; id: number }
 
 const reasonLine = (reason: Reason): string => {
   switch (reason.kind) {
@@ -485,6 +485,8 @@ const reasonLine = (reason: Reason): string => {
       return 'It asked about every open item.'
     case 'stop':
       return 'It ended on Stop.'
+    case 'closed':
+      return `It ended when the question on #${reason.id} was closed, timed out or refused; nothing was sent for it. /${COMMAND} ${reason.id} shows it, and /${COMMAND} ${reason.id} <form> answers it.`
     case 'auto':
       return `It ended when the question auto-continued while you were away; nothing was sent for #${reason.id}.`
     case 'unconfirmed':

@@ -789,7 +789,7 @@ test('/todo <n> keeps its newest turn at the floor and whole when it is joined e
 const optionsOf = (...labels: string[]): Item['options'] => labels.map(label => ({ label, description: '', recommended: false }))
 const decision = (id: number, labels: string[], extra: Partial<Item> = {}): Item => made(id, { options: optionsOf(...labels), ...extra })
 const SENTENCE =
-  'They are asked one at a time, blocking first, and each answer is written to the list as you give it and reaches the agent when the walk ends. Stop, or stop typed under Other, ends the walk; Skip, or closing the question, passes over an item. What you have not answered stays on the list.'
+  'They are asked one at a time, blocking first, and each answer is written to the list as you give it and reaches the agent when the walk ends. Stop, stop typed under Other, or closing the question ends the walk; Skip passes over an item. What you have not answered stays on the list.'
 
 test('the word answer alone, in any case and with blanks around it, is the walk; anything after it or before it is the usage', () => {
   expect(WALK_WORD).toBe('answer')
@@ -807,7 +807,7 @@ test('the description, the usage and the argument hint name answer, and the poin
 })
 
 test('the lines a walk that does not start prints are indented', () => {
-  expect(ALREADY_ASKING).toBe('  A walk is already asking; it goes on until every open item has been asked or you choose Stop on its question.')
+  expect(ALREADY_ASKING).toBe('  A walk is already asking; it goes on until every open item has been asked, you choose Stop on its question, or its question is closed.')
   expect(NOTHING_OPEN).toBe('  Nothing is open to answer.')
 })
 
@@ -1184,17 +1184,21 @@ test('when the open items cannot be counted the count line keeps the sent count 
   expect(lastLine(walkEnd(null, { kind: 'error' }, 0, null))).toBe('  The walk sent nothing; /todo shows what is still open.')
 })
 
-test('each reason has its line: auto and unconfirmed name the item, session says nothing more was asked', () => {
+test('each reason has its line: closed names the item and how to answer it, auto and unconfirmed name the item, session says nothing more was asked', () => {
   const reasonOf = (reason: Reason): string => lineList(walkEnd(null, reason, 0, 0))[0] ?? ''
   expect(reasonOf({ kind: 'every' })).toBe('  It asked about every open item.')
   expect(reasonOf({ kind: 'stop' })).toBe('  It ended on Stop.')
+  expect(reasonOf({ kind: 'closed', id: 7 })).toBe(
+    '  It ended when the question on #7 was closed, timed out or refused; nothing was sent for it. /todo 7 shows it, and /todo 7 <form> answers it.',
+  )
   expect(reasonOf({ kind: 'auto', id: 8 })).toBe('  It ended when the question auto-continued while you were away; nothing was sent for #8.')
   expect(reasonOf({ kind: 'unconfirmed', id: 9 })).toBe('  It ended because the answer to #9 could not be confirmed as yours; nothing was sent, and this was logged.')
   expect(reasonOf({ kind: 'error' })).toBe('  It stopped on an error, which was logged.')
   expect(reasonOf({ kind: 'session' })).toBe('  It ended with its session; nothing more was asked or sent.')
 })
 
-test('no end text says refused, declined, timed out or closed, whichever reason ends the walk, whichever outcome line it opens with and whether or not the open items could be counted', () => {
+test('no end text says refused, declined, timed out or closed, whichever reason but closed ends the walk, whichever outcome line it opens with and whether or not the open items could be counted', () => {
+  // The closed reason's line words those causes on purpose, so it is the one reason left out.
   const reasons: Reason[] = [{ kind: 'every' }, { kind: 'stop' }, { kind: 'error' }, { kind: 'session' }, { kind: 'auto', id: 7 }, { kind: 'unconfirmed', id: 7 }]
   // An applied outcome line carries the person's own answer, which the rule leaves out.
   const outcomes = [null, skippedLine(made(7)), outcomeLine(made(7), { kind: 'changed' }), outcomeLine(made(7), { kind: 'missing' })]

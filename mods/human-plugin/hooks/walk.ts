@@ -96,7 +96,7 @@ type Progress = { asked: Set<number>; sent: number; pending: string | null }
 type Returned = { kind: 'text'; text: string } | { kind: 'rejected'; message: string }
 
 // How the walk's ask line ends: what became of the answer.
-type Outcome = 'written' | 'refused as changed' | 'left the list' | 'skipped' | 'stopped' | 'not written' | 'session ended'
+type Outcome = 'written' | 'refused as changed' | 'left the list' | 'skipped' | 'stopped' | 'closed' | 'not written' | 'session ended'
 
 // The record the observer made of the dialog's call: none, one for the question the walk asked, or one for another question.
 const recordState = (slot: Asking): 'matched' | 'missing' | 'other question' =>
@@ -120,7 +120,7 @@ async function clearMark($: EngineInterface, item: Item): Promise<void> {
   }
 }
 
-// One question: the dialog is asked, and what it gave back is read in this order. A walk that lost its session ends, and a rejected dialog is skipped, whatever the
+// One question: the dialog is asked, and what it gave back is read in this order. A walk that lost its session ends, and a rejected dialog ends it, whatever the
 // observer saw of it: a close, an expiry that rejects and an engine refusal cannot be told apart, and read alike. An answer the observer saw no result for, or only
 // one for another question, ends the walk as one that cannot be confirmed as the person's, and so does one whose result carries `afkTimeoutMs`. Only then is the
 // answer read against the item: Stop ends the walk, Skip goes on, and any other answer is written through the guarded write, which is handed the walk's test of its
@@ -144,7 +144,7 @@ async function askOne($: EngineInterface, windowMs: number, me: symbol, progress
     outcome = 'session ended'
     return { kind: 'session' }
   }
-  // The item is passed over, by Skip, by blank text or by a rejected dialog: nothing is written for it, and its outcome line opens the next question.
+  // The item is passed over, by Skip or by blank text: nothing is written for it, and its outcome line opens the next question.
   const skipped = (): null => {
     outcome = 'skipped'
     progress.pending = skippedLine(item)
@@ -152,7 +152,10 @@ async function askOne($: EngineInterface, windowMs: number, me: symbol, progress
   }
   try {
     if (!owns(me)) return sessionEnded()
-    if (returned.kind === 'rejected') return skipped()
+    if (returned.kind === 'rejected') {
+      outcome = 'closed'
+      return { kind: 'closed', id: item.id }
+    }
     if (state !== 'matched') return { kind: 'unconfirmed', id: item.id }
     if (slot.seen?.afk === true) return { kind: 'auto', id: item.id }
     const reading = readAnswer(item, returned.text)
