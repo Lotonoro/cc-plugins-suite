@@ -385,9 +385,8 @@ export const act = (store: Store, input: ToolInput, ctx: Ctx): Outcome => {
 export const selectedItem = (items: readonly Item[], selected: Selection): Item | undefined =>
   selected === null ? [...items].sort(rankOrder)[0] : items.find(it => it.id === selected)
 
-// The item the pane moves to when the one it shows leaves the actionable set (removed, or its press's window ended and it was sent): the first open
-// item in the ranking, the first of `/todo`'s open items. Either trigger comes once the leaving item is gone or no longer open, so it needs no
-// excluding. Undefined when none is open.
+// The item the pane moves to when the one it shows is removed: the first open item in the ranking, the first of `/todo`'s open items. The removed
+// item is gone from the list, so it needs no excluding. Undefined when none is open.
 export const nextItem = (items: readonly Item[]): Item | undefined => openRanked(items)[0]
 
 // Empties the list and keeps the id counter: an id is never handed out twice, even across /clear. The term goes with the items.

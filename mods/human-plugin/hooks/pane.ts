@@ -128,10 +128,10 @@ function switchPane($: EngineInterface, id: number, items: readonly Item[]): Pro
   return Promise.all([$.ui.open(paneRequest(id, items)), markRead($, id)])
 }
 
-// The pane shows one item and follows it. It moves to the next item (nextItem, an open item only), with that item's rows, and
-// the selection moves with it so the band and the pane agree; with no open item left, the pane closes. Two triggers: a tool call that
-// removes the shown item (followShown), and a window that ends by sending the shown item (followSent). A sent item the person views stays
-// shown until one of those. Never from a draw, since a draw may not write state (the host refuses it).
+// The pane shows one item and follows it. When the shown item is removed, the pane moves to the next item (nextItem, an open item only), with that item's rows, and the
+// selection moves with it so the band and the pane agree; with no open item left, the pane closes. A tool call that removes the item makes the move (followShown), and so
+// does a window's end that finds the item it sent already gone (followSent). A window that ends by sending the shown item closes the pane instead (followSent). A sent item
+// the person views stays shown until it is removed. Never from a draw, since a draw may not write state (the host refuses it).
 function moveOn($: EngineInterface, items: readonly Item[]): void {
   const next = nextItem(items)
   if (next === undefined) inBackground($, closePane($))
@@ -188,18 +188,20 @@ export async function followShown($: EngineInterface, out: Exclude<Outcome, { de
   else if (out.changed?.id === shown) inBackground($, switchPane($, shown, items))
 }
 
-// After a window ends and sends `id`, the pane stays on that item when the item is open again (an agent turn or an update the window took
-// reopened it: done.ts, expire). It re-asks the item's rows then, as a change does. Otherwise it moves on, whatever kind of answer was sent.
-// The list is read here, after the shown item, since an agent change made after the end wrote the item sent may have reopened or removed it.
-// A pane on the Claude list is on no item, so it stays.
+// After a window ends and sends `id`, the pane that shows that item closes, whatever kind of answer was sent and whatever other items are open. The list is read here, after
+// the shown item, since a change made after the end wrote the item sent may have changed what the item is: an item open again (an agent turn or an update the window took
+// reopened it: done.ts, expire) keeps the pane on it, with its rows asked again as a change asks them; an item the agent removed moves the pane on, as a removal does; an
+// item back in an undo window (reopened, then pressed again) leaves the pane as it is, for that window's own end to decide. A pane on another item, or on the Claude list, is
+// left alone.
 export async function followSent($: EngineInterface, id: number): Promise<void> {
   const shown = await shownView($)
   const { items } = await readList($)
   // Checked after the reads: the person may have closed the pane meanwhile, and a move would then reopen it.
   if (!paneOpen || shown !== id) return
   const current = items.find(it => it.id === id)
-  if (current?.state === 'open') inBackground($, switchPane($, id, items))
-  else moveOn($, items)
+  if (current === undefined) moveOn($, items)
+  else if (current.state === 'open') inBackground($, switchPane($, id, items))
+  else if (current.state === 'done-pending') inBackground($, closePane($))
 }
 
 // After a call that writes the Claude list or its name, while the pane shows the list: it reads the list and the heading as stored now. An empty list closes the pane, as an empty

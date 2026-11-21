@@ -1336,39 +1336,28 @@ test('an empty or blank reply sends nothing and opens no undo window', async () 
   expect(submitted).toEqual([])
 })
 
-test('when the window ends on the item the pane shows, the pane moves to the next open item, skipping one already sent', async () => {
-  reset()
-  const { hooks } = wire()
-  const open: string[] = []
-  const timers: Timer[] = []
-  const { env, values, clock } = memEnv([made(1), made(2, { state: 'done-pending' }), made(3)], open, null, [], timers)
-  await (hooks['session.end'] as Handler)(env as never, { reason: 'exit' } as never, next(false) as never)
-  findButton(await band(hooks, env), 'title-1')?.onPress()
-  await settle()
-  expect(open).toEqual(['human-items'])
-  findButton(await band(hooks, env), 'done-1')?.onPress()
-  await settle()
-  await tickAt(timers, clock, 3000)
-  expect(open).toEqual(['human-items'])
-  expect(values.selection).toBe(3)
-  const shown = JSON.stringify(await paneTree(hooks, env))
-  expect(shown).toContain('#3 non-blocking, open: Item 3')
-  expect(shown).not.toContain('Item 1')
-})
-
-test('when the window ends on the item the pane shows and no open item is left, the pane closes', async () => {
-  reset()
-  const { hooks } = wire()
-  const open: string[] = []
-  const timers: Timer[] = []
-  const { env, clock } = memEnv([made(1), made(2, { state: 'done-pending' })], open, null, [], timers)
-  await (hooks['session.end'] as Handler)(env as never, { reason: 'exit' } as never, next(false) as never)
-  findButton(await band(hooks, env), 'title-1')?.onPress()
-  await settle()
-  findButton(await band(hooks, env), 'done-1')?.onPress()
-  await settle()
-  await tickAt(timers, clock, 3000)
-  expect(open).toEqual([])
+test('when the window ends on the item the pane shows, the pane closes, whatever other items are open', async () => {
+  const lists: [string, unknown[]][] = [
+    ['another item open, one sent', [made(1), made(2, { state: 'done-pending' }), made(3)]],
+    ['no other item open, one sent', [made(1), made(2, { state: 'done-pending' })]],
+  ]
+  for (const [name, items] of lists) {
+    reset()
+    const { hooks } = wire()
+    const open: string[] = []
+    const timers: Timer[] = []
+    const { env, clock } = memEnv(items, open, null, [], timers)
+    await (hooks['session.end'] as Handler)(env as never, { reason: 'exit' } as never, next(false) as never)
+    findButton(await band(hooks, env), 'title-1')?.onPress()
+    await settle()
+    expect(open, name).toEqual(['human-items'])
+    findButton(await band(hooks, env), 'done-1')?.onPress()
+    await settle()
+    // The pane stays open through the undo window, and closes when it ends.
+    expect(open, name).toEqual(['human-items'])
+    await tickAt(timers, clock, 3000)
+    expect(open, name).toEqual([])
+  }
 })
 
 test('the window ending on an item the pane does not show leaves the pane where it is', async () => {
@@ -1393,12 +1382,12 @@ const recordingOpens = <E extends { ui: { open: (args: { id: string; rows: numbe
   ui: { ...plain.ui, open: async (args: { id: string; rows: number }) => { opened.push({ id: args.id, rows: args.rows }); return plain.ui.open(args) } },
 })
 
-test('a reply\'s window ending moves the pane on to the next open item, as an option press\'s does: the selection follows, and the pane asks for that item\'s rows', async () => {
+test('a reply\'s window ending closes the pane, as an option press\'s does, and the pane asks for no rows', async () => {
   reset()
   const { hooks } = wire()
   const open: string[] = []
   const timers: Timer[] = []
-  const { env: plain, values, clock } = replyEnv([made(1, { detail: '' }), made(2, { detail: 'a\nb\nc\nd\ne' })], open, null, [], timers)
+  const { env: plain, values, clock } = replyEnv([made(1, { detail: '' }), made(2)], open, null, [], timers)
   await (hooks['session.end'] as Handler)(plain as never, { reason: 'exit' } as never, next(false) as never)
   const opened: { id: string; rows: number }[] = []
   const env = recordingOpens(plain, opened)
@@ -1408,14 +1397,9 @@ test('a reply\'s window ending moves the pane on to the next open item, as an op
   await settle()
   opened.length = 0
   await tickAt(timers, clock, 3000)
-  const items = (values.list as { items: Item[] }).items
-  expect(items.find(it => it.id === 1)).toMatchObject({ state: 'done-pending', answer: 'Use sqlite', replied: true })
-  expect(open).toEqual(['human-items'])
-  expect(values.selection).toBe(2)
-  expect(opened).toEqual([{ id: 'human-items', rows: paneRows(items.find(it => it.id === 2)) }])
-  const shown = JSON.stringify(await paneTree(hooks, env))
-  expect(shown).toContain('#2 non-blocking, open: Item 2')
-  expect(shown).not.toContain('Item 1')
+  expect((values.list as { items: Item[] }).items.find(it => it.id === 1)).toMatchObject({ state: 'done-pending', answer: 'Use sqlite', replied: true })
+  expect(open).toEqual([])
+  expect(opened).toEqual([])
 })
 
 test('a reply undone within its window leaves the pane on its item, open with its reply field, and the pane asks for nothing', async () => {
@@ -1446,57 +1430,194 @@ test('a reply undone within its window leaves the pane on its item, open with it
   expect(findInput(shown, 'reply-1')).toBeDefined()
 })
 
-test('an option press\'s window ending moves the pane on to the next open item, as a done press\'s does', async () => {
+test('an option press\'s window ending closes the pane, as a done press\'s does', async () => {
   reset()
   const { hooks } = wire()
   const open: string[] = []
   const timers: Timer[] = []
   const decision = made(1, { detail: '', options: [{ label: 'Use sqlite', description: '', recommended: false }, { label: 'Use postgres', description: '', recommended: true }] })
-  const { env, values, clock } = memEnv([decision, made(2)], open, null, [], timers)
+  const { env, clock } = memEnv([decision, made(2)], open, null, [], timers)
   await (hooks['session.end'] as Handler)(env as never, { reason: 'exit' } as never, next(false) as never)
   findButton(await band(hooks, env), 'title-1')?.onPress()
   await settle()
   findButton(await paneTree(hooks, env), 'answer-1-1')?.onPress()
   await settle()
   await tickAt(timers, clock, 3000)
-  expect(open).toEqual(['human-items'])
-  expect(values.selection).toBe(2)
-  expect(JSON.stringify(await paneTree(hooks, env))).toContain('#2 non-blocking, open: Item 2')
+  expect(open).toEqual([])
 })
 
-test('a window that ends on the item the pane shows, with an agent append reopening it before the pane decides, leaves the pane on it, open', async () => {
-  reset()
-  const { hooks } = wire()
-  const open: string[] = []
-  const timers: Timer[] = []
-  const { env, values, clock } = memEnv([made(1, { detail: '' })], open, null, [], timers)
-  await (hooks['session.end'] as Handler)(env as never, { reason: 'exit' } as never, next(false) as never)
-  findButton(await band(hooks, env), 'title-1')?.onPress()
-  await settle()
-  findButton(await band(hooks, env), 'done-1')?.onPress()
-  await settle()
-  // The first read of the selection after the window's end is the pane's own, made once the end has written the item sent. It is held
-  // until an agent append has reopened the item.
+test('a yes or no press on the item the pane shows closes the pane when its window ends', async () => {
+  for (const key of ['yes-1', 'no-1']) {
+    reset()
+    const { hooks } = wire()
+    const open: string[] = []
+    const timers: Timer[] = []
+    const { env, clock } = memEnv([made(1, { detail: '', yesno: true }), made(2)], open, null, [], timers)
+    await (hooks['session.end'] as Handler)(env as never, { reason: 'exit' } as never, next(false) as never)
+    findButton(await band(hooks, env), 'title-1')?.onPress()
+    await settle()
+    findButton(await band(hooks, env), key)?.onPress()
+    await settle()
+    expect(open, key).toEqual(['human-items'])
+    await tickAt(timers, clock, 3000)
+    expect(open, key).toEqual([])
+  }
+})
+
+// The first read of the selection after a window's end is the pane's own, made once the end has written the item sent. It is held, so that something can happen to the
+// item between the end's write and the pane's decision: `reached` says the pane has made the read, and `release` lets it go on to read the list as it stands then.
+const holdSelectionRead = (env: { state: { get: (ref: { key: string }) => Promise<unknown> } }) => {
   let release: () => void = () => {}
   let holding = true
   const get = env.state.get
-  env.state.get = (async (ref: { key: string }) => {
+  env.state.get = async (ref: { key: string }) => {
     if (ref.key === 'selection' && holding) {
       holding = false
       await new Promise<void>(done => (release = done))
     }
     return get(ref)
-  }) as typeof env.state.get
+  }
+  return { reached: () => !holding, release: () => release() }
+}
+
+test('a window that ends on the item the pane shows, with an agent append reopening it before the pane decides, leaves the pane on it, open, and asks for its rows again', async () => {
+  reset()
+  const { hooks } = wire()
+  const open: string[] = []
+  const timers: Timer[] = []
+  const { env: plain, values, clock } = memEnv([made(1, { detail: '' })], open, null, [], timers)
+  await (hooks['session.end'] as Handler)(plain as never, { reason: 'exit' } as never, next(false) as never)
+  const opened: { id: string; rows: number }[] = []
+  const env = recordingOpens(plain, opened)
+  findButton(await band(hooks, env), 'title-1')?.onPress()
+  await settle()
+  findButton(await band(hooks, env), 'done-1')?.onPress()
+  await settle()
+  const hold = holdSelectionRead(plain)
+  opened.length = 0
   await tickAt(timers, clock, 3000)
-  expect(holding).toBe(false)
+  expect(hold.reached()).toBe(true)
   await (hooks['tool.call'] as Handler)(env as never, { tool: TOOL, action: 'append', id: 1, text: 'It needs a file.' } as never, next(false) as never)
   await settle()
-  release()
+  // The append's own follow-up has asked for the reopened item's rows; the window's end decides after the append, and asks once more.
+  const appended = opened.length
+  hold.release()
   await settle()
-  expect((values.list as { items: Item[] }).items[0]).toMatchObject({ state: 'open' })
+  const one = (values.list as { items: Item[] }).items[0] as Item
+  expect(one).toMatchObject({ state: 'open' })
+  expect(opened.slice(appended)).toEqual([{ id: 'human-items', rows: paneRows(one) }])
   expect(open).toEqual(['human-items'])
   expect(values.selection).toBe(1)
   expect(JSON.stringify(await paneTree(hooks, env))).toContain('#1 non-blocking, open: Item 1')
+})
+
+test('a window that ends on the item the pane shows, with the item removed before the pane reads the list, moves the pane on to the first open item in the ranking', async () => {
+  reset()
+  const { hooks } = wire()
+  const open: string[] = []
+  const timers: Timer[] = []
+  const { env: plain, values, clock } = memEnv([made(1, { detail: '' }), made(2)], open, null, [], timers)
+  await (hooks['session.end'] as Handler)(plain as never, { reason: 'exit' } as never, next(false) as never)
+  const opened: { id: string; rows: number }[] = []
+  const env = recordingOpens(plain, opened)
+  findButton(await band(hooks, env), 'title-1')?.onPress()
+  await settle()
+  findButton(await band(hooks, env), 'done-1')?.onPress()
+  await settle()
+  const hold = holdSelectionRead(plain)
+  opened.length = 0
+  await tickAt(timers, clock, 3000)
+  expect(hold.reached()).toBe(true)
+  // The item leaves the list in the state itself: a tool call that removes it would move the pane at once with its own follow-up, and the window's end would find the
+  // pane already elsewhere. Here the window's end alone decides.
+  const list = values.list as { items: { id: number }[] }
+  values.list = { ...list, items: list.items.filter(it => it.id !== 1) }
+  hold.release()
+  await settle()
+  expect(open).toEqual(['human-items'])
+  expect(values.selection).toBe(2)
+  expect(opened).toEqual([{ id: 'human-items', rows: paneRows((values.list as { items: Item[] }).items.find(it => it.id === 2)) }])
+  expect(JSON.stringify(await paneTree(hooks, env))).toContain('#2 non-blocking, open: Item 2')
+})
+
+test('a window that ends on the item the pane shows, with the item reopened and pressed again before the pane decides, leaves the pane as it is until that second window ends', async () => {
+  reset()
+  const { hooks } = wire()
+  const open: string[] = []
+  const timers: Timer[] = []
+  const { env: plain, values, clock } = memEnv([made(1, { detail: '' }), made(2)], open, null, [], timers)
+  await (hooks['session.end'] as Handler)(plain as never, { reason: 'exit' } as never, next(false) as never)
+  const opened: { id: string; rows: number }[] = []
+  const env = recordingOpens(plain, opened)
+  findButton(await band(hooks, env), 'title-1')?.onPress()
+  await settle()
+  findButton(await band(hooks, env), 'done-1')?.onPress()
+  await settle()
+  const hold = holdSelectionRead(plain)
+  await tickAt(timers, clock, 3000)
+  expect(hold.reached()).toBe(true)
+  // The agent's append reopens the sent item, and a second press on it opens a new undo window.
+  await (hooks['tool.call'] as Handler)(env as never, { tool: TOOL, action: 'append', id: 1, text: 'It needs a file.' } as never, next(false) as never)
+  await settle()
+  findButton(await band(hooks, env), 'done-1')?.onPress()
+  await settle()
+  expect((values.list as { items: Item[] }).items[0]).toMatchObject({ state: 'done-waiting', pressedAt: 3000 })
+  const asked = opened.length
+  hold.release()
+  await settle()
+  expect(opened.length).toBe(asked)
+  expect(open).toEqual(['human-items'])
+  expect(values.selection).toBe(1)
+  // The second window's end is the one that sends the item, and it closes the pane.
+  await tickAt(timers, clock, 6000)
+  expect((values.list as { items: Item[] }).items[0]).toMatchObject({ state: 'done-pending' })
+  expect(open).toEqual([])
+})
+
+test('a zero undo window with the pane open on the pressed item closes the pane and sends the notice before the press returns, and leaves no tick running', async () => {
+  reset()
+  const { hooks } = wire()
+  const open: string[] = []
+  const submitted: unknown[] = []
+  const timers: Timer[] = []
+  const { env } = memEnv([made(1, { detail: '' }), made(2)], open, null, submitted, timers)
+  await (hooks['session.end'] as Handler)(env as never, { reason: 'exit' } as never, next(false) as never)
+  findButton(await band(hooks, env), 'title-1')?.onPress()
+  await settle()
+  expect(open).toEqual(['human-items'])
+  await pressDone(env as never, 1, null, 0)
+  expect(open).toEqual([])
+  expect(submitted).toHaveLength(1)
+  expect((submitted[0] as { text: string }).text.startsWith('#1 is done: Item 1\nThe human marked it done.')).toBe(true)
+  expect(timers.length).toBe(0)
+})
+
+test('a close the window\'s end asks for and the pane refuses is logged and leaves the pane counted open, and the item\'s notice is still submitted', async () => {
+  reset()
+  const { hooks } = wire()
+  const open: string[] = []
+  const submitted: unknown[] = []
+  const timers: Timer[] = []
+  const logs: string[] = []
+  const { env: plain, clock } = memEnv([made(1, { detail: '' }), made(2)], open, null, submitted, timers)
+  let refuse = false
+  const env = { ...plain, ui: { ...plain.ui, log: (text: string) => void logs.push(text), close: (e: { id: string }) => (refuse ? Promise.reject(new Error('close refused')) : plain.ui.close(e)) } }
+  await (hooks['session.end'] as Handler)(env as never, { reason: 'exit' } as never, next(false) as never)
+  findButton(await band(hooks, env), 'title-1')?.onPress()
+  await settle()
+  findButton(await band(hooks, env), 'done-1')?.onPress()
+  await settle()
+  refuse = true
+  await tickAt(timers, clock, 3000)
+  expect(logs.filter(line => line.includes('close refused'))).toEqual(['human-plugin: Error: close refused'])
+  expect(open).toEqual(['human-items'])
+  expect(submitted).toHaveLength(1)
+  expect((submitted[0] as { text: string }).text.startsWith('#1 is done: Item 1\nThe human marked it done.')).toBe(true)
+  // The pane is still counted open: a press on the title of the item it shows closes it, where a pane counted shut would open it again.
+  refuse = false
+  findButton(await band(hooks, env), 'title-1')?.onPress()
+  await settle()
+  expect(open).toEqual([])
 })
 
 test('removing the shown item moves the pane to the next open item, skipping one already sent', async () => {
@@ -1620,18 +1741,15 @@ test('after a reload, removing the last item closes the pane', async () => {
   expect(open).toEqual([])
 })
 
-test('after a reload, the expiry of a press on the shown item moves the pane on to the first open item in the ranking', async () => {
+test('after a reload, the expiry of a press on the shown item closes the pane', async () => {
   const open = ['human-items']
   const timers: Timer[] = []
-  const { hooks, env, values, clock } = await reloaded(open, [made(1), made(2), made(3)], 2, [], timers)
+  const { hooks, env, clock } = await reloaded(open, [made(1), made(2), made(3)], 2, [], timers)
   findButton(await band(hooks, env), 'done-2')?.onPress()
   await settle()
   expect(timers.length).toBe(1)
   await tickAt(timers, clock, 3000)
-  expect(open).toEqual(['human-items'])
-  expect(values.selection).toBe(1)
-  const shown = JSON.stringify(await paneTree(hooks, env))
-  expect(shown).toContain('#1 non-blocking, open: Item 1')
+  expect(open).toEqual([])
 })
 
 test('with no selection the open pane shows the first item, so removing that item moves the pane on to the next', async () => {
@@ -2846,24 +2964,24 @@ test('a failure after an answer form\'s write leaves the item answered, and the 
   expect(logs.filter(line => line.includes('no clock')).length).toBe(1)
 })
 
-test('with the pane open on the item, a phone reply moves the pane on to the next open item once its window has ended, as a reply from the pane does', async () => {
-  reset()
-  stopTicker()
-  const { hooks } = wire()
-  const open: string[] = []
-  const timers: Timer[] = []
-  const { env, values, clock } = replyEnv([made(1, { detail: '' }), made(2)], open, null, [], timers)
-  await (hooks['session.end'] as Handler)(env as never, { reason: 'exit' } as never, next(false) as never)
-  findButton(await band(hooks, env), 'title-1')?.onPress()
-  await settle()
-  clock.now = 1000
-  expect(await askText(hooks, env, '1 reply Use sqlite')).toBe('  answered #1 with Use sqlite')
-  await tickAt(timers, clock, 1000)
-  expect(open).toEqual(['human-items'])
-  expect(values.selection).toBe(2)
-  const shown = JSON.stringify(await paneTree(hooks, env))
-  expect(shown).toContain('#2 non-blocking, open: Item 2')
-  expect(shown).not.toContain('Item 1')
+test('with the pane open on the item, a phone reply or done closes the pane once its window has ended, not when the command writes it, as a reply from the pane does', async () => {
+  const forms: [string, string][] = [['1 reply Use sqlite', '  answered #1 with Use sqlite'], ['1 done', '  answered #1 with done']]
+  for (const [args, confirmation] of forms) {
+    reset()
+    stopTicker()
+    const { hooks } = wire()
+    const open: string[] = []
+    const timers: Timer[] = []
+    const { env, clock } = replyEnv([made(1, { detail: '' }), made(2)], open, null, [], timers)
+    await (hooks['session.end'] as Handler)(env as never, { reason: 'exit' } as never, next(false) as never)
+    findButton(await band(hooks, env), 'title-1')?.onPress()
+    await settle()
+    clock.now = 1000
+    expect(await askText(hooks, env, args)).toBe(confirmation)
+    expect(open, args).toEqual(['human-items'])
+    await tickAt(timers, clock, 1000)
+    expect(open, args).toEqual([])
+  }
 })
 
 test('a reply sent by /todo leaves a human turn with its words on the item once the agent reopens it, under the reply notice', async () => {
@@ -5027,6 +5145,25 @@ test('/todo answer asks about each open item through the hooks, blocking first, 
   await tickAt(timers, clock, 1000)
   expect(submitted).toHaveLength(1)
   expect((submitted[0] as { text: string }).text.startsWith('#2 is done: Item 2')).toBe(true)
+})
+
+test('/todo answer\'s answer to the item the open pane shows closes the pane once its window has ended, not when the walk writes it', async () => {
+  freshModule()
+  const { hooks } = wire()
+  const open: string[] = []
+  const timers: Timer[] = []
+  const { env, values, clock } = memEnv([made(1, { detail: '' }), made(2, { detail: '' })], open, null, [], timers)
+  await endSession(hooks, env)
+  findButton(await band(hooks, env), 'title-1')?.onPress()
+  await settle()
+  expect(open).toEqual(['human-items'])
+  clock.now = 1000
+  // The walk asks #1, the first in the ranking and the item the pane shows, and writes its answer; it skips #2.
+  await todoOf(hooks)(askingHost(hooks, env, ['Done', 'Skip']) as never, { args: ' Answer ' } as never, next(false) as never)
+  expect(values.list).toMatchObject({ items: [{ id: 1, state: 'done-waiting' }, { id: 2, state: 'open' }] })
+  expect(open).toEqual(['human-items'])
+  await tickAt(timers, clock, 1000)
+  expect(open).toEqual([])
 })
 
 test('/todo answer with anything after it answers the usage and asks nothing', async () => {

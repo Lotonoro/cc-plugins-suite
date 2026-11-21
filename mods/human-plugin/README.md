@@ -51,7 +51,8 @@ from the repository root.
 
 - **Open an ask.** Click its title above the prompt to see its details, answers,
   and conversation. Items blocking the agent appear first. Buttons and typed
-  replies give you a short undo window before they’re sent.
+  replies give you a short undo window before they’re sent. The pane closes once
+  the answer to the item it shows is sent.
 - **Answer from the prompt.** Run `/todo` to list requests and
   `/todo <n>` to see one item and its valid responses. For example, run
   `/todo 4 done` or `/todo 4 reply Use the existing API`.
