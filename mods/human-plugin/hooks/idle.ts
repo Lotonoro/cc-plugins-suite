@@ -77,12 +77,14 @@ const declineText = (open: string): string => `human-plugin: the agent ended its
 // A SendMessage may address a listed agent by its name with a ` [ref]` appended, so the suffix is set aside before matching.
 const addressed = (agent: ListedAgent): boolean => messaged.some(to => agent.addresses.includes(to.replace(/ \[[^\]]*\]$/, '')))
 
-type Held = { kind: 'withheld'; why: string } | { kind: 'open'; open: Item[] }
-const withheld = (why: string): Held => ({ kind: 'withheld', why })
+// What the checks found: the steer is withheld, for a reason, or it goes out on the open items. Either way the result carries the debug lines the checks wrote on the
+// way, one for each agent they set aside.
+type Checked = { debug: string[] } & ({ kind: 'withheld'; why: string } | { kind: 'steer'; open: Item[] })
+const withheld = (why: string, debug: string[] = []): Checked => ({ kind: 'withheld', why, debug })
 
 // The checks, cheapest first; the first that holds the steer back says why. The engine agent list is read only when every other check has passed. Each agent it lists
 // that a plugin spawned is set aside, with a debug line: a plugin's agents are that plugin's own work, never one the main agent waits on.
-const check = async (f: Facts, debug: string[]): Promise<Held> => {
+const check = async (f: Facts): Promise<Checked> => {
   if (f.blocked) return withheld('another hook blocked this Stop')
   if (f.rebuilding) return withheld('a rebuild running, so the list may be partial')
   const open = openOf(f.items)
@@ -99,7 +101,7 @@ const check = async (f: Facts, debug: string[]): Promise<Held> => {
   if (messaged.includes('*')) return withheld('a broadcast SendMessage this turn')
   const reading = await f.agents()
   if (reading.kind === 'unread') return withheld(`the engine agent list was not read: ${reading.reason}`)
-  for (const a of reading.agents) if (a.spawnedBy !== null) debug.push(debugLine(`set aside agent ${a.id}: spawned by ${a.spawnedBy}, ${a.status}`))
+  const aside = reading.agents.filter(a => a.spawnedBy !== null).map(a => debugLine(`set aside agent ${a.id}: spawned by ${a.spawnedBy}, ${a.status}`))
   // A task is an agent's when it carries a listed agent's id, whatever label the engine gives its type; the agent is then counted by its own status.
   const running = tasks.filter(t => t.type !== 'teammate' && t.type !== 'subagent' && !reading.agents.some(a => a.id === t.id)).map(t => `${t.type} task ${t.id}`)
   const working = reading.agents.flatMap(a => {
@@ -108,8 +110,8 @@ const check = async (f: Facts, debug: string[]): Promise<Held> => {
     return WORKING.includes(a.status) || sent ? [`agent ${a.id} (${a.status}${sent ? ', messaged this turn' : ''})`] : []
   })
   const inFlight = [...running, ...working]
-  if (inFlight.length > 0) return withheld(`in flight: ${inFlight.join(', ')}`)
-  return { kind: 'open', open }
+  if (inFlight.length > 0) return withheld(`in flight: ${inFlight.join(', ')}`, aside)
+  return { kind: 'steer', open, debug: aside }
 }
 
 const quiet = (): Verdict => ({ block: null, debug: [], decline: null })
@@ -121,19 +123,13 @@ export const atStop = async (f: Facts): Promise<Verdict> => {
   const afterSteer = steered
   steered = false
   if (f.stop.stop_hook_active && !afterSteer) return quiet()
-  const debug: string[] = []
-  const held = await check(f, debug)
-  if (held.kind === 'withheld') {
-    debug.push(debugLine(`withheld: ${held.why}`))
-    return { block: null, debug, decline: null }
-  }
-  const ids = held.open.map(it => it.id)
+  const checked = await check(f)
+  // The answer's debug lines: those the checks wrote on the way, then the one that says what the rule did.
+  const lines = (last: string): string[] => [...checked.debug, debugLine(last)]
+  if (checked.kind === 'withheld') return { block: null, debug: lines(`withheld: ${checked.why}`), decline: null }
+  const ids = checked.open.map(it => it.id)
   const open = numbers(ids)
-  if (f.stop.stop_hook_active) {
-    debug.push(debugLine(`not steered again: ${open}`))
-    return { block: null, debug, decline: declineText(open) }
-  }
+  if (f.stop.stop_hook_active) return { block: null, debug: lines(`not steered again: ${open}`), decline: declineText(open) }
   steered = true
-  debug.push(debugLine(`steered, items open and none blocking: ${open}`))
-  return { block: steerText(ids), debug, decline: null }
+  return { block: steerText(ids), debug: lines(`steered, items open and none blocking: ${open}`), decline: null }
 }

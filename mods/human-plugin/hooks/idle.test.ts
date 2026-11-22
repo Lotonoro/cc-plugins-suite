@@ -445,6 +445,19 @@ test('a teammate task whose agent is idle, an agent another plugin spawned, a me
   expect(lines).toHaveLength(2)
 })
 
+test('an agent another plugin spawned is set aside in a read where another agent withholds the steer: its line comes first, and the reason line does not name it', async ($, on) => {
+  const { seen } = world(on, { agents: () => ({ value: [agent('rev1', { status: 'running', spawnedBy: 'auditor' }), agent('a1', { status: 'running' })] }) })
+  await base($)
+  expect((await $.classic.Stop(STOP)).block).toBe(undefined)
+  const lines = ruleLines(seen)
+  expect(lines).toHaveLength(2)
+  expect(lines[0]).toContain('set aside')
+  expect(lines[0]).toContain('rev1')
+  expect(lines[1]).toContain('in flight')
+  expect(lines[1]).toContain('a1')
+  expect(lines[1]).not.toContain('rev1')
+})
+
 test('a task that carries a listed agent id is that agent, whatever label its type has', async ($, on) => {
   world(on, { agents: () => ({ value: [agent('a1')] }) })
   await base($)
