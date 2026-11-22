@@ -145,7 +145,7 @@ const noTaskFound = (reason: string, id: string): boolean => reason.trim().repla
 // The session end reasons of a process that is exiting (`/exit`, ctrl+c, ctrl+d; a `-p` run finished, or a signal); any other reason (`clear`, `resume`, `logout`) leaves the process going or costs a line at worst.
 const EXIT_REASONS: readonly string[] = ['prompt_input_exit', 'other']
 
-// The session end reason of a /clear: the process goes on under a new session id, and the conversation's choice goes on with it (`carried`).
+// The session end reason of a /clear: the process goes on under a new session id, and what the session end's reset keeps goes on with it, the spawns in flight aside (`carried`).
 const CLEAR_REASON = 'clear'
 
 type Label = { type: string; name: string }
@@ -1188,8 +1188,8 @@ const lookUp = async ($: Pick<Scope, 'process' | 'ui'>, transcript: string | nul
 
 export const register: Register = (on, options) => {
   const log = options['log'] === true
-  // The conversation's choice between a /clear's session end and the session start after it: the engine empties the conversation state between the two (`$.state` is scoped to the session id in force), but the hooks module's memory outlives both. Set by `session.end`, taken by `classic.SessionStart`. It is the registering function's own rather than the module's, so each load, and each test, starts with none, and it needs no session key: a process runs one session at a time. A fresh load between the two (a reload, an enable, a worker respawn), a failed state change at the start and a reset that fails at its read leave the new conversation with none, which takes the last model set.
-  let carried: string | undefined
+  // What a /clear carries from its session end to the session start after it: the conversation the end's reset computed, with the choice of the conversation it cleared and no spawns in flight. The engine empties the conversation state between the two (`$.state` is scoped to the session id in force), but the hooks module's memory outlives both. Set by `session.end`, taken by `classic.SessionStart`. It is the registering function's own rather than the module's, so each load, and each test, starts with none, and it needs no session key: a process runs one session at a time. A fresh load between the two (a reload, an enable, a worker respawn), a failed state change at the start and a reset that fails at its read, where no earlier end set one, leave the new conversation with none: it starts on, at epoch and dispatch count zero, and takes the last model set.
+  let carried: Conversation | undefined
 
   on('session.start', async ($, e, next) => {
     // The footer button's twin for every surface: a phone draws no footer, but its typed commands run here and their answer shows there.
@@ -1251,14 +1251,14 @@ export const register: Register = (on, options) => {
     return next(e)
   })
 
-  // The session's start carries its transcript path, which a /clear renews; the lookup tool reads it from state. A /clear's start also hands the new conversation the choice its session end set aside (`carried`).
+  // The session's start carries its transcript path, which a /clear renews; the lookup tool reads it from state. A /clear's start also writes the conversation its session end carried (`carried`), in place of the state's.
   on('classic.SessionStart', async ($, e, next) => {
-    // Every start takes what the end set aside and empties it, before the change, whose callback may run more than once with the same choice: a hand-over is used at most once, a failed change's included. Only a /clear's start hands it in.
+    // Every start takes what the end set aside and empties it, before the change, whose callback may run more than once with the same conversation: a hand-over is used at most once, a failed change's included. Only a /clear's start hands it in.
     const handed = e.source === 'clear' ? carried : undefined
     carried = undefined
     try {
-      // The name handed in is not checked against the choices: it is the conversation's own choice of moments ago, which it would have kept unchecked had it not cleared, as `takeChoice` keeps a held one. A rule added there for a held choice belongs here too.
-      await change($, c => ({ ...withTranscript(c, e.transcript_path), ...(handed === undefined ? {} : { choice: handed }) }))
+      // A carried conversation is written whole, with this start's transcript path and nothing taken from the state: at this point the state cannot tell a write the new conversation made from a pre-/clear write built on the defaults, so none of its fields is trusted. With none carried the state's conversation is written, as at any start. The carried choice is not checked against the choices: it is the conversation's own choice of moments ago, which it would have kept unchecked had it not cleared, as `takeChoice` keeps a held one. A rule added there for a held choice belongs here too.
+      await change($, c => withTranscript(handed ?? c, e.transcript_path))
     } catch (err) {
       recordFailed($, 'session start', err)
     }
@@ -1382,14 +1382,15 @@ export const register: Register = (on, options) => {
       const done = await release($, c => {
         ended.conversation = c
         const gone = letGo(c, 'session end', c.reviewer?.id)
-        carried = e.reason === CLEAR_REASON ? c.choice : undefined
-        // The toggle is the session's: a /clear keeps it off. The reviewer markers are kept, so a pre-/clear reviewer's late end notice is still consumed, its calls stay out of the record and its task row stays hidden; so is the reason the reviewer was let go. A /clear keeps the choice too, but not in the state, which the engine empties before the new session starts: it is set aside in `carried` for that session's start to hand back (any other reason sets nothing aside, and a callback that runs again sets it again, the last run's conversation standing). Everything else starts over, and the epoch moves on (`epoch`). The spawns still in flight are kept for their dispatches to settle (`spawnsInFlight`).
-        return { next: { ...fresh(), dispatches: c.dispatches, dispatchesAtPrompt: c.dispatches, off: c.off, epoch: c.epoch + 1, spawnsInFlight: c.spawnsInFlight, ...markers(c), lastLetGo: gone.next.lastLetGo }, released: gone.released }
+        // The toggle is the session's, and a /clear keeps it as it was; so are the dispatch count with its prompt mark, the epoch moved on (`epoch`), the reviewer markers, so a pre-/clear reviewer's late end notice is still consumed, its calls stay out of the record and its task row stays hidden, and the reason the reviewer was let go. Everything else starts over. The spawns in flight stay in the state for their dispatches to settle (`spawnsInFlight`), but a /clear carries none. The engine empties the state between a /clear's session end and the session start after it, so a /clear sets this reset aside in `carried` for that start to write, in one assignment, with the choice of the conversation it clears added (the reset holds none) and no spawns in flight. Any other reason sets nothing aside, and a callback that runs again sets it again, the last run's conversation standing.
+        const reset: Conversation = { ...fresh(), dispatches: c.dispatches, dispatchesAtPrompt: c.dispatches, off: c.off, epoch: c.epoch + 1, spawnsInFlight: c.spawnsInFlight, ...markers(c), lastLetGo: gone.next.lastLetGo }
+        carried = e.reason === CLEAR_REASON ? { ...reset, choice: c.choice, spawnsInFlight: [] } : undefined
+        return { next: reset, released: gone.released }
       }, false, !exiting)
       released = done.released
     } catch (err) {
       recordFailed($, 'session end', err)
-      // The reset did not land, so the state still holds the session as it was: read it, for the stop and the log. A read that fails too is logged, and the session end goes on without them. The state still names the reviewer it forgot, so the stop passes false (`stopReviewer`).
+      // The reset did not land, so the state keeps the session as it was, until a /clear has the engine empty it; that /clear still carries the reset its callback computed or, where the read failed, what an earlier end set aside (`carried`). Read the state, for the stop and the log. A read that fails too is logged, and the session end goes on without them. The state still names the reviewer it forgot, so the stop passes false (`stopReviewer`).
       try {
         ended.conversation = await readConversation($)
         released = letGo(ended.conversation, 'session end', ended.conversation.reviewer?.id).released
