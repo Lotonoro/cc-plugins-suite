@@ -1665,6 +1665,7 @@ test('a press on the title of an unread item, with the pane shut, reads that ite
   on('ui.panes', () => ({ value: [] }))
   await $.tool.call({ tool: TOOL, action: 'add', blocking: true, title: 'First' })
   await $.tool.call({ tool: TOOL, action: 'add', blocking: true, title: 'Second' })
+  // The prop is given so this test adds no new type error under the installed engine's typings; the other tests omit it, a known type error there.
   const ui = await $.ui.mount({ plugin: 'human-plugin', surface: 'terminal', component: 'AbovePrompt', props: { ...BAND_PROPS, isCollapsed: false } })
   const before = JSON.stringify(await ui.drawn())
   expect(before).toContain('• #1')
