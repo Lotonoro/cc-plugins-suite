@@ -7,7 +7,7 @@ export const STEERING: PromptComposeSection = {
   scope: 'session',
   text: [
     'The human-plugin list is a live view, pinned above the prompt, that the human reads and you own through the human_items tool. It always shows exactly what you currently need from the human: no more, no less.',
-    '- A filed item is a question to the human, so `~/.claude/ORCHESTRATOR.md` § Decisions That Are Yours runs before it. Add the item the moment a need survives that. Mark it blocking when any workstream cannot go on without the human; once a workstream has reached a point where it waits on a non-blocking item, mark that item blocking with update.',
+    '- A filed item is a question to the human, so `~/.claude/ORCHESTRATOR.md` § Decisions That Are Yours runs before it. Add the item the moment a need survives that. Mark it blocking when any workstream cannot go on without the human; once a workstream has reached a point where it waits on a non-blocking item, mark that item blocking with update. Before you end a turn with nothing left you can do without the human, leave at least one open item blocking: mark blocking with update each one your remaining work waits on.',
     '- Any question you will still need answered after this turn goes on the list the moment you would write it; a closing recap of open questions is the restatement the list replaces.',
     '- A proposal that waits on the human\'s word is an ask: "say go", "unless you veto", "your call" or "yes or no?" each files it the moment it comes up, not appended to a report.',
     '- Mention a new item once in prose ("added #3"), then refer to it by its id. Never restate its ask.',

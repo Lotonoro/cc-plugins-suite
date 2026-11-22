@@ -14,8 +14,10 @@ The agent still uses `AskUserQuestion` when a quick answer is needed before
 any work can continue. Approvals, actions outside chat, and decisions that
 can wait go on the list. The agent carries on with independent work while
 your answer is pending. If one workstream becomes blocked, the agent can
-mark the item so it rises to the top. The list’s header reads `<name> TODO`,
-using the name the agent has for you, and **Human TODO** until it has one.
+mark the item so it rises to the top. When the agent has done everything it
+can without you, it marks the request it is waiting on as blocking. The
+list’s header reads `<name> TODO`, using the name the agent has for you, and
+**Human TODO** until it has one.
 
 A decision comes with the context, the agent’s recommendation, and the options
 with their trade-offs. You can read it and respond when you’re ready. A reply
@@ -78,7 +80,8 @@ agent’s reply without a prompt you type awaits a run on the phone.
 
 A prompt you type from the phone also carries the open requests to the agent
 as context, so you don’t have to ask what’s waiting. A blocking item can send
-a push notification to the phone too.
+a push notification to the phone too, including one the agent marks blocking
+when it has run out of work it can do without you.
 
 ## What to expect
 

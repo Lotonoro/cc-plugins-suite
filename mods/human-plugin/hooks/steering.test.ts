@@ -105,6 +105,10 @@ test('blocking means a workstream is blocked, and the agent promotes an item wit
   expect(STEERING.text).not.toContain('when the work cannot go on')
 })
 
+test('before a turn ends with nothing left to do without the human, the agent leaves at least one open item blocking', () => {
+  expect(STEERING.text).toContain('Before you end a turn with nothing left you can do without the human, leave at least one open item blocking: mark blocking with update each one your remaining work waits on.')
+})
+
 test('the done schema asks for a few words, at most 24 columns', () => {
   expect(TOOL_SPEC.inputSchema.properties.done.description).toContain('a few words, at most 24 columns')
 })
