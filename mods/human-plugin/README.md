@@ -55,7 +55,8 @@ from the repository root.
   and conversation. Items `/todo answer` hasn’t shown you yet, or that have
   changed since, appear first, and blocking items come first within each group.
   Buttons and typed replies give you a short undo window before they’re sent.
-  The pane closes once the answer to the item it shows is sent.
+  The pane moves on to the next open request once the answer to the item it
+  shows is sent, and closes when none is left.
 - **Answer from the prompt.** Run `/todo` to list requests and
   `/todo <n>` to see one item and its valid responses. For example, run
   `/todo 4 done` or `/todo 4 reply Use the existing API`.

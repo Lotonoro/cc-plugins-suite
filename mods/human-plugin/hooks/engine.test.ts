@@ -719,7 +719,7 @@ test('a correction the engine refuses is logged, and the turn end still submits 
   expect(logs.some(line => line.includes('a notice was refused') && line.includes('refused by the test'))).toBe(true)
 })
 
-test('a reply typed in the pane closes the pane once sent, and the agent\'s next append to the reply\'s item leaves the pane closed, the item open and unread', async ($, on) => {
+test('a reply typed in the pane moves the pane on to the next open item once sent, and the agent\'s next append to the reply\'s item leaves the pane there, the item open and unread', async ($, on) => {
   const opened: string[] = []
   const shown = new Set<string>()
   on('ui.open', (_$, e) => {
@@ -727,7 +727,7 @@ test('a reply typed in the pane closes the pane once sent, and the agent\'s next
     shown.add(e.id)
     return { value: { isPlaced: true } }
   })
-  // The engine drops a pane it is told to close, as it lists the panes: without this the close would leave the pane listed, and the test could not tell it was asked.
+  // The engine drops a pane it is told to close, as it lists the panes: without this a close would leave the pane listed, and the test could not tell it was asked.
   on('ui.close', (_$, e) => {
     shown.delete(e.id)
     return { value: undefined }
@@ -745,13 +745,19 @@ test('a reply typed in the pane closes the pane once sent, and the agent\'s next
   opened.length = 0
   expect([...shown]).toEqual(['human-items'])
   await clock.advance(5000)
-  expect([...shown]).toEqual([])
-  expect(opened).toEqual([])
+  const moved = JSON.stringify(await pane.drawn())
+  expect(moved).toContain('#2 non-blocking, open: Pick a cache')
+  expect(moved).not.toContain('Pick a db')
+  expect(opened).toEqual(['human-items'])
+  expect([...shown]).toEqual(['human-items'])
   await $.tool.call({ tool: TOOL, action: 'append', id: 1, text: 'more' })
-  expect([...shown]).toEqual([])
+  const after = JSON.stringify(await pane.drawn())
+  expect(after).toContain('#2 non-blocking, open: Pick a cache')
+  expect(after).not.toContain('Pick a db')
+  expect([...shown]).toEqual(['human-items'])
   expect(String((await $.tool.call({ tool: TOOL, action: 'list' })).result)).toContain('#1 non-blocking, open: Pick a db')
   expect(JSON.stringify(await band.drawn())).toContain('• #1')
-  expect(opened).toEqual([])
+  expect(opened).toEqual(['human-items'])
 })
 
 test('a reply typed into the terminal pane is sent through the undo window, and the agent is told it', async ($, on) => {
@@ -1224,7 +1230,7 @@ test('beside the docked pane the band drawn through the terminal\'s table in ban
   const clock = mock.clock(on)
   mock.store(on)
   paneRecord(on)
-  // An item that stays open, and the one the pane rests on while the sweep's windows end, so the pane stays open in the dock.
+  // An item that stays open, so the pane has an item to move on to as the sweep's windows end, and so stays open in the dock.
   await $.tool.call({ tool: TOOL, action: 'add', title: 'Anchor' })
   await $.tool.call({ tool: TODO_TOOL, entries: [{ title: 'Build it', state: 'in_flight' }, { title: 'Test it', state: 'queued' }] })
   const tall = { ...BAND_PROPS, maxRows: 400, scroll: { offset: 0, bodyRows: 400 } }
@@ -1288,10 +1294,10 @@ test('beside the docked pane the band drawn through the terminal\'s table in ban
     await band.press({ key: `done-${decision}` })
     await pane.input({ key: `reply-${decision}`, text: 'Not yet' })
     await check('replied')
-    // The pane moves to the anchor before the windows end: a window that ends on the item the pane shows closes the pane, and the engine would then draw the sent rows
-    // beside no docked pane. The pane's record keeps a pane it is told to close, so the sweep would pass without this press, which keeps it what the engine runs.
-    await band.press({ key: 'title-1' })
     await clock.advance(3000)
+    // The window that ends on the decision the pane shows moves the pane on to the anchor, the one item left open. The pane's record keeps a pane it is told to close, so
+    // the band drawn beside it would not tell a close from a move; the pane's own drawing does.
+    expect(JSON.stringify(await pane.drawn())).toContain('#1 non-blocking, open: Anchor')
     await check('sent')
     for (let id = first; id < next; id++) await $.tool.call({ tool: TOOL, action: 'remove', id })
   }

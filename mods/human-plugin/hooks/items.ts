@@ -387,13 +387,13 @@ export const act = (store: Store, input: ToolInput, ctx: Ctx): Outcome => {
 }
 
 // The item the pane shows: the selected one, or with no selection the first of the whole list in the ranking, the band's first row. A selection
-// that names the Claude list names no human item, and neither does one whose item is gone; the pane moves on when its item is removed (nextItem), and
+// that names the Claude list names no human item, and neither does one whose item is gone; the pane moves on when its item is removed or its answer is sent (nextItem), and
 // that move writes the selection, so the lookup stays exact.
 export const selectedItem = (items: readonly Item[], selected: Selection): Item | undefined =>
   selected === null ? [...items].sort(rankOrder)[0] : items.find(it => it.id === selected)
 
-// The item the pane moves to when the one it shows is removed: the first open item in the ranking, the first of `/todo`'s open items. The removed
-// item is gone from the list, so it needs no excluding. Undefined when none is open.
+// The item the pane moves to when the one it shows is removed or its answer is sent: the first open item in the ranking, the first of `/todo`'s open items. A removed
+// item is gone from the list and a sent one is not open, so neither needs excluding. Undefined when none is open.
 export const nextItem = (items: readonly Item[]): Item | undefined => openRanked(items)[0]
 
 // The list with the item `id` marked posed: a walk has shown the person its question. Whether the walk may mark it, its session still its own and the item still as

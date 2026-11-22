@@ -1336,27 +1336,100 @@ test('an empty or blank reply sends nothing and opens no undo window', async () 
   expect(submitted).toEqual([])
 })
 
-test('when the window ends on the item the pane shows, the pane closes, whatever other items are open', async () => {
-  const lists: [string, unknown[]][] = [
-    ['another item open, one sent', [made(1), made(2, { state: 'done-pending' }), made(3)]],
-    ['no other item open, one sent', [made(1), made(2, { state: 'done-pending' })]],
+// The pane's open requests, recorded as memEnv's pane takes them.
+const recordingOpens = <E extends { ui: { open: (args: { id: string; rows: number }) => Promise<unknown> } }>(plain: E, opened: { id: string; rows: number }[]) => ({
+  ...plain,
+  ui: { ...plain.ui, open: async (args: { id: string; rows: number }) => { opened.push({ id: args.id, rows: args.rows }); return plain.ui.open(args) } },
+})
+
+// What the pane shows once it has moved on to item `id`: it is still open, the stored selection names the item, the pane was asked once for the item's rows, and the pane draws the item's line.
+// `opened` holds the pane's open requests since the end that moved it (recordingOpens), and `name` says which case of a loop failed.
+const expectMovedOn = async (
+  { hooks, env, open, opened, values }: { hooks: Record<string, Handler>; env: unknown; open: string[]; opened: { id: string; rows: number }[]; values: Record<string, unknown> },
+  id: number,
+  name?: string,
+): Promise<void> => {
+  const item = (values.list as { items: Item[] }).items.find(it => it.id === id) as Item
+  expect(open, name).toEqual(['human-items'])
+  expect(values.selection, name).toBe(id)
+  expect(opened, name).toEqual([{ id: 'human-items', rows: paneRows(item) }])
+  expect(JSON.stringify(await paneTree(hooks, env)), name).toContain(`#${id} ${item.blocking ? 'blocking' : 'non-blocking'}, ${item.state}: ${item.title}`)
+}
+
+test('when the window ends on the item the pane shows and another item is open, the pane moves on to the first open item in the ranking, skipping a sent one; a press on that item\'s title then closes the pane', async () => {
+  const lists: [string, unknown[], number][] = [
+    ['the next item open', [made(1), made(2)], 2],
+    ['a sent item between', [made(1), made(2, { state: 'done-pending' }), made(3)], 3],
   ]
-  for (const [name, items] of lists) {
+  for (const [name, items, moved] of lists) {
     reset()
     const { hooks } = wire()
     const open: string[] = []
     const timers: Timer[] = []
-    const { env, clock } = memEnv(items, open, null, [], timers)
-    await (hooks['session.end'] as Handler)(env as never, { reason: 'exit' } as never, next(false) as never)
+    const { env: plain, values, clock } = memEnv(items, open, null, [], timers)
+    await (hooks['session.end'] as Handler)(plain as never, { reason: 'exit' } as never, next(false) as never)
+    const opened: { id: string; rows: number }[] = []
+    const env = recordingOpens(plain, opened)
     findButton(await band(hooks, env), 'title-1')?.onPress()
     await settle()
     expect(open, name).toEqual(['human-items'])
     findButton(await band(hooks, env), 'done-1')?.onPress()
     await settle()
+    // The pane stays on the item through the undo window, and moves on when it ends.
+    expect(open, name).toEqual(['human-items'])
+    expect(values.selection, name).toBe(1)
+    opened.length = 0
+    await tickAt(timers, clock, 3000)
+    await expectMovedOn({ hooks, env, open, opened, values }, moved, name)
+    // The pane shows that item now, so a press on its title closes the pane.
+    findButton(await band(hooks, env), `title-${moved}`)?.onPress()
+    await settle()
+    expect(open, name).toEqual([])
+  }
+})
+
+test('when the window ends on the item the pane shows and no other item is open, the pane closes, whether the others are sent, in their own undo window, or there are none; the end of that other window asks the pane nothing', async () => {
+  const lists: [string, unknown[], boolean][] = [
+    ['another item sent', [made(1), made(2, { state: 'done-pending' })], false],
+    ['no other item', [made(1)], false],
+    ['another item in its own undo window', [made(1), made(2)], true],
+  ]
+  for (const [name, items, pressed] of lists) {
+    reset()
+    const { hooks } = wire()
+    const open: string[] = []
+    const timers: Timer[] = []
+    const { env: plain, values, clock } = memEnv(items, open, null, [], timers)
+    await (hooks['session.end'] as Handler)(plain as never, { reason: 'exit' } as never, next(false) as never)
+    const opened: { id: string; rows: number }[] = []
+    const closed: string[] = []
+    const recording = recordingOpens(plain, opened)
+    const env = { ...recording, ui: { ...recording.ui, close: async (e: { id: string }) => { closed.push(e.id); return plain.ui.close(e) } } }
+    findButton(await band(hooks, env), 'title-1')?.onPress()
+    await settle()
+    expect(open, name).toEqual(['human-items'])
+    findButton(await band(hooks, env), 'done-1')?.onPress()
+    await settle()
+    if (pressed) {
+      // The other item's window opens a second later, so it ends a second after the shown item's.
+      clock.now = 1000
+      findButton(await band(hooks, env), 'done-2')?.onPress()
+      await settle()
+    }
     // The pane stays open through the undo window, and closes when it ends.
     expect(open, name).toEqual(['human-items'])
+    opened.length = 0
     await tickAt(timers, clock, 3000)
     expect(open, name).toEqual([])
+    expect(closed, name).toEqual(['human-items'])
+    expect(opened, name).toEqual([])
+    if (pressed) {
+      await tickAt(timers, clock, 4000)
+      expect((values.list as { items: Item[] }).items[1], name).toMatchObject({ state: 'done-pending' })
+      expect(open, name).toEqual([])
+      expect(closed, name).toEqual(['human-items'])
+      expect(opened, name).toEqual([])
+    }
   }
 })
 
@@ -1376,13 +1449,7 @@ test('the window ending on an item the pane does not show leaves the pane where 
   expect(values.selection).toBe(1)
 })
 
-// The pane's open requests, recorded as memEnv's pane takes them.
-const recordingOpens = <E extends { ui: { open: (args: { id: string; rows: number }) => Promise<unknown> } }>(plain: E, opened: { id: string; rows: number }[]) => ({
-  ...plain,
-  ui: { ...plain.ui, open: async (args: { id: string; rows: number }) => { opened.push({ id: args.id, rows: args.rows }); return plain.ui.open(args) } },
-})
-
-test('a reply\'s window ending closes the pane, as an option press\'s does, and the pane asks for no rows', async () => {
+test('a reply\'s window ending moves the pane on to the next open item, as an option press\'s does, and the pane asks for that item\'s rows once', async () => {
   reset()
   const { hooks } = wire()
   const open: string[] = []
@@ -1398,8 +1465,7 @@ test('a reply\'s window ending closes the pane, as an option press\'s does, and 
   opened.length = 0
   await tickAt(timers, clock, 3000)
   expect((values.list as { items: Item[] }).items.find(it => it.id === 1)).toMatchObject({ state: 'done-pending', answer: 'Use sqlite', replied: true })
-  expect(open).toEqual([])
-  expect(opened).toEqual([])
+  await expectMovedOn({ hooks, env, open, opened, values }, 2)
 })
 
 test('a reply undone within its window leaves the pane on its item, open with its reply field, and the pane asks for nothing', async () => {
@@ -1430,37 +1496,43 @@ test('a reply undone within its window leaves the pane on its item, open with it
   expect(findInput(shown, 'reply-1')).toBeDefined()
 })
 
-test('an option press\'s window ending closes the pane, as a done press\'s does', async () => {
+test('an option press\'s window ending moves the pane on to the next open item, as a done press\'s does', async () => {
   reset()
   const { hooks } = wire()
   const open: string[] = []
   const timers: Timer[] = []
   const decision = made(1, { detail: '', options: [{ label: 'Use sqlite', description: '', recommended: false }, { label: 'Use postgres', description: '', recommended: true }] })
-  const { env, clock } = memEnv([decision, made(2)], open, null, [], timers)
-  await (hooks['session.end'] as Handler)(env as never, { reason: 'exit' } as never, next(false) as never)
+  const { env: plain, values, clock } = memEnv([decision, made(2)], open, null, [], timers)
+  await (hooks['session.end'] as Handler)(plain as never, { reason: 'exit' } as never, next(false) as never)
+  const opened: { id: string; rows: number }[] = []
+  const env = recordingOpens(plain, opened)
   findButton(await band(hooks, env), 'title-1')?.onPress()
   await settle()
   findButton(await paneTree(hooks, env), 'answer-1-1')?.onPress()
   await settle()
+  opened.length = 0
   await tickAt(timers, clock, 3000)
-  expect(open).toEqual([])
+  await expectMovedOn({ hooks, env, open, opened, values }, 2)
 })
 
-test('a yes or no press on the item the pane shows closes the pane when its window ends', async () => {
+test('a yes or no press on the item the pane shows moves the pane on to the next open item when its window ends', async () => {
   for (const key of ['yes-1', 'no-1']) {
     reset()
     const { hooks } = wire()
     const open: string[] = []
     const timers: Timer[] = []
-    const { env, clock } = memEnv([made(1, { detail: '', yesno: true }), made(2)], open, null, [], timers)
-    await (hooks['session.end'] as Handler)(env as never, { reason: 'exit' } as never, next(false) as never)
+    const { env: plain, values, clock } = memEnv([made(1, { detail: '', yesno: true }), made(2)], open, null, [], timers)
+    await (hooks['session.end'] as Handler)(plain as never, { reason: 'exit' } as never, next(false) as never)
+    const opened: { id: string; rows: number }[] = []
+    const env = recordingOpens(plain, opened)
     findButton(await band(hooks, env), 'title-1')?.onPress()
     await settle()
     findButton(await band(hooks, env), key)?.onPress()
     await settle()
     expect(open, key).toEqual(['human-items'])
+    opened.length = 0
     await tickAt(timers, clock, 3000)
-    expect(open, key).toEqual([])
+    await expectMovedOn({ hooks, env, open, opened, values }, 2, key)
   }
 })
 
@@ -1568,56 +1640,81 @@ test('a window that ends on the item the pane shows, with the item reopened and 
   expect(opened.length).toBe(asked)
   expect(open).toEqual(['human-items'])
   expect(values.selection).toBe(1)
-  // The second window's end is the one that sends the item, and it closes the pane.
+  expect(JSON.stringify(await paneTree(hooks, env))).toContain('#1 non-blocking, done-waiting: Item 1')
+  // The second window's end is the one that sends the item, and the pane then moves on to the other open item.
+  opened.length = 0
   await tickAt(timers, clock, 6000)
   expect((values.list as { items: Item[] }).items[0]).toMatchObject({ state: 'done-pending' })
-  expect(open).toEqual([])
+  await expectMovedOn({ hooks, env, open, opened, values }, 2)
 })
 
-test('a zero undo window with the pane open on the pressed item closes the pane and sends the notice before the press returns, and leaves no tick running', async () => {
-  reset()
-  const { hooks } = wire()
-  const open: string[] = []
-  const submitted: unknown[] = []
-  const timers: Timer[] = []
-  const { env } = memEnv([made(1, { detail: '' }), made(2)], open, null, submitted, timers)
-  await (hooks['session.end'] as Handler)(env as never, { reason: 'exit' } as never, next(false) as never)
-  findButton(await band(hooks, env), 'title-1')?.onPress()
-  await settle()
-  expect(open).toEqual(['human-items'])
-  await pressDone(env as never, 1, null, 0)
-  expect(open).toEqual([])
-  expect(submitted).toHaveLength(1)
-  expect((submitted[0] as { text: string }).text.startsWith('#1 is done: Item 1\nThe human marked it done.')).toBe(true)
-  expect(timers.length).toBe(0)
+test('a zero undo window with the pane open on the pressed item moves the pane on to the next open item, or closes it with none open, and sends the notice before the press returns, and leaves no tick running', async () => {
+  // The item the pane moves on to, or null where none is open and the pane closes.
+  const lists: [string, unknown[], number | null][] = [
+    ['another item open', [made(1, { detail: '' }), made(2)], 2],
+    ['no other item open', [made(1, { detail: '' })], null],
+  ]
+  for (const [name, items, moved] of lists) {
+    reset()
+    const { hooks } = wire()
+    const open: string[] = []
+    const submitted: unknown[] = []
+    const timers: Timer[] = []
+    const { env: plain, values } = memEnv(items, open, null, submitted, timers)
+    await (hooks['session.end'] as Handler)(plain as never, { reason: 'exit' } as never, next(false) as never)
+    const opened: { id: string; rows: number }[] = []
+    const env = recordingOpens(plain, opened)
+    findButton(await band(hooks, env), 'title-1')?.onPress()
+    await settle()
+    expect(open, name).toEqual(['human-items'])
+    opened.length = 0
+    await pressDone(env as never, 1, null, 0)
+    // Inside the press: the pane has been asked to move on, or to close, and the notice is submitted.
+    if (moved === null) expect(open, name).toEqual([])
+    else expect(opened, name).toEqual([{ id: 'human-items', rows: paneRows((values.list as { items: Item[] }).items.find(it => it.id === moved)) }])
+    expect(submitted, name).toHaveLength(1)
+    expect((submitted[0] as { text: string }).text.startsWith('#1 is done: Item 1\nThe human marked it done.'), name).toBe(true)
+    expect(timers.length, name).toBe(0)
+    // Once the move's own writes have settled, the selection and the drawn pane follow it.
+    await settle()
+    if (moved !== null) await expectMovedOn({ hooks, env, open, opened, values }, moved, name)
+  }
 })
 
 test('a close the window\'s end asks for and the pane refuses is logged and leaves the pane counted open, and the item\'s notice is still submitted', async () => {
-  reset()
-  const { hooks } = wire()
-  const open: string[] = []
-  const submitted: unknown[] = []
-  const timers: Timer[] = []
-  const logs: string[] = []
-  const { env: plain, clock } = memEnv([made(1, { detail: '' }), made(2)], open, null, submitted, timers)
-  let refuse = false
-  const env = { ...plain, ui: { ...plain.ui, log: (text: string) => void logs.push(text), close: (e: { id: string }) => (refuse ? Promise.reject(new Error('close refused')) : plain.ui.close(e)) } }
-  await (hooks['session.end'] as Handler)(env as never, { reason: 'exit' } as never, next(false) as never)
-  findButton(await band(hooks, env), 'title-1')?.onPress()
-  await settle()
-  findButton(await band(hooks, env), 'done-1')?.onPress()
-  await settle()
-  refuse = true
-  await tickAt(timers, clock, 3000)
-  expect(logs.filter(line => line.includes('close refused'))).toEqual(['human-plugin: Error: close refused'])
-  expect(open).toEqual(['human-items'])
-  expect(submitted).toHaveLength(1)
-  expect((submitted[0] as { text: string }).text.startsWith('#1 is done: Item 1\nThe human marked it done.')).toBe(true)
-  // The pane is still counted open: a press on the title of the item it shows closes it, where a pane counted shut would open it again.
-  refuse = false
-  findButton(await band(hooks, env), 'title-1')?.onPress()
-  await settle()
-  expect(open).toEqual([])
+  const lists: [string, unknown[]][] = [
+    ['no other item', [made(1, { detail: '' })]],
+    ['another item sent', [made(1, { detail: '' }), made(2, { state: 'done-pending' })]],
+  ]
+  for (const [name, items] of lists) {
+    reset()
+    const { hooks } = wire()
+    const open: string[] = []
+    const submitted: unknown[] = []
+    const timers: Timer[] = []
+    const logs: string[] = []
+    const { env: plain, clock } = memEnv(items, open, null, submitted, timers)
+    let refuse = false
+    const env = { ...plain, ui: { ...plain.ui, log: (text: string) => void logs.push(text), close: (e: { id: string }) => (refuse ? Promise.reject(new Error('close refused')) : plain.ui.close(e)) } }
+    await (hooks['session.end'] as Handler)(env as never, { reason: 'exit' } as never, next(false) as never)
+    findButton(await band(hooks, env), 'title-1')?.onPress()
+    await settle()
+    findButton(await band(hooks, env), 'done-1')?.onPress()
+    await settle()
+    // The band is not drawn again before the last press: a draw asks the engine for its panes, which still lists this one, and would count it open whatever the mod had kept.
+    const drawn = await band(hooks, env)
+    refuse = true
+    await tickAt(timers, clock, 3000)
+    expect(logs.filter(line => line.includes('close refused')), name).toEqual(['human-plugin: Error: close refused'])
+    expect(open, name).toEqual(['human-items'])
+    expect(submitted, name).toHaveLength(1)
+    expect((submitted[0] as { text: string }).text.startsWith('#1 is done: Item 1\nThe human marked it done.'), name).toBe(true)
+    // The pane is still counted open: a press on the title of the item it shows closes it, where a pane counted shut would open it again.
+    refuse = false
+    findButton(drawn, 'title-1')?.onPress()
+    await settle()
+    expect(open, name).toEqual([])
+  }
 })
 
 test('removing the shown item moves the pane to the next open item, skipping one already sent', async () => {
@@ -1741,15 +1838,31 @@ test('after a reload, removing the last item closes the pane', async () => {
   expect(open).toEqual([])
 })
 
-test('after a reload, the expiry of a press on the shown item closes the pane', async () => {
+test('after a reload, the expiry of a press on the shown item moves the pane on to the first open item in the ranking, the selection following', async () => {
   const open = ['human-items']
   const timers: Timer[] = []
-  const { hooks, env, clock } = await reloaded(open, [made(1), made(2), made(3)], 2, [], timers)
+  const { hooks, env: plain, values, clock } = await reloaded(open, [made(1), made(2), made(3)], 2, [], timers)
+  const opened: { id: string; rows: number }[] = []
+  const env = recordingOpens(plain, opened)
   findButton(await band(hooks, env), 'done-2')?.onPress()
   await settle()
   expect(timers.length).toBe(1)
   await tickAt(timers, clock, 3000)
-  expect(open).toEqual([])
+  await expectMovedOn({ hooks, env, open, opened, values }, 1)
+})
+
+test('with no selection the open pane shows the first item in the ranking, so the expiry of a press on it moves the pane on to the next item in the ranking, not the lowest number, and the selection follows', async () => {
+  const open = ['human-items']
+  const timers: Timer[] = []
+  const { hooks, env: plain, values, clock } = await reloaded(open, [made(1), made(2, { blocking: true }), made(3, { blocking: true })], null, [], timers)
+  const opened: { id: string; rows: number }[] = []
+  const env = recordingOpens(plain, opened)
+  expect(JSON.stringify(await paneTree(hooks, env))).toContain('#2 blocking, open: Item 2')
+  findButton(await band(hooks, env), 'done-2')?.onPress()
+  await settle()
+  expect(values.selection).toBeNull()
+  await tickAt(timers, clock, 3000)
+  await expectMovedOn({ hooks, env, open, opened, values }, 3)
 })
 
 test('with no selection the open pane shows the first item, so removing that item moves the pane on to the next', async () => {
@@ -2964,7 +3077,7 @@ test('a failure after an answer form\'s write leaves the item answered, and the 
   expect(logs.filter(line => line.includes('no clock')).length).toBe(1)
 })
 
-test('with the pane open on the item, a phone reply or done closes the pane once its window has ended, not when the command writes it, as a reply from the pane does', async () => {
+test('with the pane open on the item, a phone reply or done moves the pane on to the next open item once its window has ended, not when the command writes it, as a reply from the pane does', async () => {
   const forms: [string, string][] = [['1 reply Use sqlite', '  answered #1 with Use sqlite'], ['1 done', '  answered #1 with done']]
   for (const [args, confirmation] of forms) {
     reset()
@@ -2972,15 +3085,21 @@ test('with the pane open on the item, a phone reply or done closes the pane once
     const { hooks } = wire()
     const open: string[] = []
     const timers: Timer[] = []
-    const { env, clock } = replyEnv([made(1, { detail: '' }), made(2)], open, null, [], timers)
-    await (hooks['session.end'] as Handler)(env as never, { reason: 'exit' } as never, next(false) as never)
+    const { env: plain, values, clock } = replyEnv([made(1, { detail: '' }), made(2)], open, null, [], timers)
+    await (hooks['session.end'] as Handler)(plain as never, { reason: 'exit' } as never, next(false) as never)
+    const opened: { id: string; rows: number }[] = []
+    const env = recordingOpens(plain, opened)
     findButton(await band(hooks, env), 'title-1')?.onPress()
     await settle()
+    opened.length = 0
     clock.now = 1000
     expect(await askText(hooks, env, args)).toBe(confirmation)
+    // The command's write moves nothing: the pane is still on the item, and has been asked for nothing.
     expect(open, args).toEqual(['human-items'])
+    expect(values.selection, args).toBe(1)
+    expect(opened, args).toEqual([])
     await tickAt(timers, clock, 1000)
-    expect(open, args).toEqual([])
+    await expectMovedOn({ hooks, env, open, opened, values }, 2, args)
   }
 })
 
@@ -5147,23 +5266,29 @@ test('/todo answer asks about each open item through the hooks, blocking first, 
   expect((submitted[0] as { text: string }).text.startsWith('#2 is done: Item 2')).toBe(true)
 })
 
-test('/todo answer\'s answer to the item the open pane shows closes the pane once its window has ended, not when the walk writes it', async () => {
+test('/todo answer\'s answer to the item the open pane shows moves the pane on to the next open item once its window has ended, not when the walk writes it', async () => {
   freshModule()
   const { hooks } = wire()
   const open: string[] = []
   const timers: Timer[] = []
-  const { env, values, clock } = memEnv([made(1, { detail: '' }), made(2, { detail: '' })], open, null, [], timers)
-  await endSession(hooks, env)
+  const { env: plain, values, clock } = memEnv([made(1, { detail: '' }), made(2, { detail: '' })], open, null, [], timers)
+  await endSession(hooks, plain)
+  const opened: { id: string; rows: number }[] = []
+  const env = recordingOpens(plain, opened)
   findButton(await band(hooks, env), 'title-1')?.onPress()
   await settle()
   expect(open).toEqual(['human-items'])
+  opened.length = 0
   clock.now = 1000
   // The walk asks #1, the first in the ranking and the item the pane shows, and writes its answer; it skips #2.
   await todoOf(hooks)(askingHost(hooks, env, ['Done', 'Skip']) as never, { args: ' Answer ' } as never, next(false) as never)
   expect(values.list).toMatchObject({ items: [{ id: 1, state: 'done-waiting' }, { id: 2, state: 'open' }] })
+  // The walk's write moves nothing: the pane is still on the item, and has been asked for nothing.
   expect(open).toEqual(['human-items'])
+  expect(values.selection).toBe(1)
+  expect(opened).toEqual([])
   await tickAt(timers, clock, 1000)
-  expect(open).toEqual([])
+  await expectMovedOn({ hooks, env, open, opened, values }, 2)
 })
 
 test('/todo answer with anything after it answers the usage and asks nothing', async () => {

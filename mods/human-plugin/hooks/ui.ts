@@ -497,7 +497,7 @@ export const paneRows = (shown: Item | undefined): number => {
 
 // The pane: the shown item alone, its header, its note, its whole detail (markdown, a decision brief is written in it), its thread, and last
 // its controls. No other item is drawn, so a removal moves no button under the pointer; the pane moves to the next item when its item is
-// removed, and closes when none is left (pane.ts). A tall pane scrolls by the person's keys once it has the keyboard.
+// removed or its answer is sent, and closes when none is left (pane.ts). A tall pane scrolls by the person's keys once it has the keyboard.
 export const pane = (t: Table, h: Handlers, store: Store, view: View): RenderElement => {
   const shown = selectedItem(store.items, view.selected ?? null)
   if (shown !== undefined) return paneDetail(t, h, shown, view)
