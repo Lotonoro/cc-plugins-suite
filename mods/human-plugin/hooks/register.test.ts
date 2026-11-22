@@ -1433,6 +1433,29 @@ test('when the window ends on the item the pane shows and no other item is open,
   }
 })
 
+test('the window\'s end that moves the pane on reads the item the pane moves to: that item\'s unread mark goes, and the open item it passed over keeps its own', async () => {
+  reset()
+  const { hooks } = wire()
+  const open: string[] = []
+  const timers: Timer[] = []
+  const { env, values, clock } = memEnv([made(1), made(2), made(3, { blocking: true })], open, null, [], timers)
+  await (hooks['session.end'] as Handler)(env as never, { reason: 'exit' } as never, next(false) as never)
+  findButton(await band(hooks, env), 'title-1')?.onPress()
+  await settle()
+  expect(open).toEqual(['human-items'])
+  // The open read every item, so items 2 and 3 are unread again here, and only the move to one of them can read it.
+  const listOf = () => values.list as { items: (Item & { unread: boolean })[] }
+  for (const it of listOf().items) it.unread = it.id !== 1
+  findButton(await band(hooks, env), 'done-1')?.onPress()
+  await settle()
+  expect(listOf().items.map(it => it.unread)).toEqual([false, true, true])
+  await tickAt(timers, clock, 3000)
+  await settle()
+  // The pane moves on to the blocking item 3, which comes first in the ranking, and reads it; item 2 is as it was.
+  expect(values.selection).toBe(3)
+  expect(listOf().items.map(it => it.unread)).toEqual([false, true, false])
+})
+
 test('the window ending on an item the pane does not show leaves the pane where it is', async () => {
   reset()
   const { hooks } = wire()
