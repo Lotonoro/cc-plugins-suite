@@ -74,6 +74,8 @@ type Opts = {
   stateFails?: string
   // Only the first read of the conversation is refused, and the rest answer.
   firstConversationReadFails?: boolean
+  // Every read of the conversation made while this holds is refused: a failure a test arms in the middle of its run, which the first-read failure cannot be, since any earlier read consumes that one.
+  conversationReadFailsWhen?: () => boolean
   // The conversation a state written before this build holds, until the plugin first writes one.
   stateSeed?: unknown
   // The first conversation read made while a reviewer spawn is in flight answers as if the spawn's entry were gone: the read the spawn hook makes for the choice, staged where no real run can take the entry away.
@@ -317,6 +319,7 @@ const engine = (on: any, opts: Opts = {}) => {
   let conversationReads = 0
   on('state.get', async (_$: any, e: any, next: any) => {
     if (e.key === 'conversation' && opts.firstConversationReadFails === true && ++conversationReads === 1) return { deny: 'state unavailable' }
+    if (e.key === 'conversation' && opts.conversationReadFailsWhen?.() === true) return { deny: 'state unavailable' }
     if (e.key === 'conversation' && learnedOnThrow.pending !== undefined && seen.conversation !== undefined) {
       const answer = await next(e)
       const learns = learnedOnThrow.pending
@@ -444,6 +447,15 @@ const engine = (on: any, opts: Opts = {}) => {
 // What the engine does to the conversation at a /clear, between the session's end and the new session's start (measured on engine 2.1.311): the state is scoped to the session id in force, so the new session reads it unset, while a variable of the hooks module written at the end is still there. The kit keeps the state, so a test says when. A write by the test's own `$` cannot stand in for it: `$.state.set` is raised by the value's owner alone, and it would count among the plugin's writes.
 const emptyConversation = (seen: { conversationEmptied: boolean }): void => {
   seen.conversationEmptied = true
+}
+
+// A /clear as 2.1.311 runs one: the session ends with reason clear (`endOfClear`), the engine empties the conversation state, and the new session starts with source clear (`startOf`). `cleared` runs the three in order, so a test that goes through it checks what the /clear carries and not a state the engine would have emptied.
+const endOfClear = ($: any) => $.session.end({ reason: 'clear', sessionId: 's1' } as any)
+const startOf = ($: any, source: string, path = '/tmp/w.jsonl') => $.classic.SessionStart({ source, transcript_path: path } as any)
+const cleared = async ($: any, seen: ReturnType<typeof engine>) => {
+  await endOfClear($)
+  emptyConversation(seen)
+  await startOf($, 'clear')
 }
 
 // The writes into a record or live directory: no entry is written to a file, so there are none.
@@ -1189,7 +1201,7 @@ describe('auditor', () => {
   test('after /clear a late turn end from the old reviewer matches nothing and is ignored, and dispatch numbers carry on', ON, async ($, on) => {
     const seen = engine(on, { reviewerIds: ['ag1', 'ag2'] })
     await workerTurn($)
-    await $.session.end({ reason: 'clear', sessionId: 's' } as any)
+    await cleared($, seen)
     await workerTurn($)
     expect(await entriesOf($, { which: 'record' }, 'ag2')).toBe(RECORD_OF(2, 'ASSISTANT: working'))
     await $.turn.complete(TURN_END('ag1', 'stale.ts:1 old.', USAGE))
@@ -2511,7 +2523,7 @@ describe('the stall nudge', () => {
     const seen = engine(on)
     await $.prompt.submit(COMPOSER('fix the parser'))
     await $.classic.Stop(QUIET_STOP)
-    await $.session.end({ reason: 'clear', sessionId: 's1' } as any)
+    await cleared($, seen)
     expect(seen.conversation.dispatches).toBe(1)
     expect(seen.conversation.dispatchesAtPrompt).toBe(1)
   })
@@ -2942,10 +2954,10 @@ describe('the transcript tool', () => {
   })
 
   test('after a /clear the reviewer before it is refused the transcript tool: its id still marks a reviewer, so it is not adopted again', ON, async ($, on) => {
-    engine(on, { agents: [{ id: 'ag1', name: 'auditor-reviewer', type: 'auditor:reviewer', spawnedBy: 'auditor' }] })
+    const seen = engine(on, { agents: [{ id: 'ag1', name: 'auditor-reviewer', type: 'auditor:reviewer', spawnedBy: 'auditor' }] })
     await $.classic.SessionStart({ transcript_path: TRANSCRIPT_PATH } as any)
     expect(await answer($, { search: 'pure' })).toBeDefined()
-    await $.session.end({ reason: 'clear', sessionId: 's1' } as any)
+    await cleared($, seen)
     expect(await ask($, { search: 'pure' }, 'ag1')).toMatchObject({ deny: REFUSED })
   })
 
@@ -3269,7 +3281,7 @@ describe('the session mode button', () => {
     await $.prompt.submit(COMPOSER('before off'))
     const ui = await mountMode($)
     await ui.press({ key: 'auditor-toggle' })
-    await $.session.end({ reason: 'clear', sessionId: 's1' } as any)
+    await cleared($, seen)
     await $.prompt.submit(COMPOSER('after the clear'))
     await workerTurn($)
     expect(seen.spawns.length).toBe(0)
@@ -3443,7 +3455,7 @@ describe('the session mode button', () => {
   })
 
   // Two spawns in flight across a /clear: each carries the epoch it was planned in, so the first to land is judged by the epoch it was made in, not by arrival order.
-  test('a /clear mid-spawn, then a second spawn that lands before the first: the second is the reviewer, the first is stopped, and the next review goes to the second', ON, async ($, on) => {
+  test('a /clear mid-spawn, then a second spawn that lands before the first: the second is the reviewer, the first is a former reviewer, and the next review goes to the second', ON, async ($, on) => {
     const firstLands = gate()
     const secondLands = gate()
     const firstReached = gate()
@@ -3456,7 +3468,7 @@ describe('the session mode button', () => {
     })
     const first = workerTurn($)
     await firstReached.until
-    await $.session.end({ reason: 'clear', sessionId: 's1' } as any)
+    await cleared($, seen)
     const second = workerTurn($, 'Second.')
     await secondReached.until
     secondLands.open()
@@ -3464,7 +3476,8 @@ describe('the session mode button', () => {
     firstLands.open()
     await first
     await drained()
-    expect(seen.stops.map(s => s.task_id)).toEqual(['ag1'])
+    // A spawn's result reaches its hook alone, and no entry crosses a /clear, so the first landing has no id to stop: the marker its hook left is what the new conversation holds of it.
+    expect(seen.conversation.reviewerIds).toContain('ag1')
     expect(seen.conversation.reviewer).toMatchObject({ id: 'ag2' })
     await turnEnded($, 'ag2', 'Nothing to note.')
     expect(logOf(seen, LOG_2)).toMatchObject({ status: 'complete', number: 2 })
@@ -3473,7 +3486,7 @@ describe('the session mode button', () => {
     expect(seen.sends[0].text).toContain('Review 3.')
   })
 
-  test('a /clear mid-spawn, then a second spawn that lands after the first: the first is stopped as it lands, the second is the reviewer, and the next review goes to the second', ON, async ($, on) => {
+  test('a /clear mid-spawn, then a second spawn that lands after the first: the first is a former reviewer, the second is the reviewer, and the next review goes to the second', ON, async ($, on) => {
     const firstLands = gate()
     const secondLands = gate()
     const firstReached = gate()
@@ -3486,13 +3499,15 @@ describe('the session mode button', () => {
     })
     const first = workerTurn($)
     await firstReached.until
-    await $.session.end({ reason: 'clear', sessionId: 's1' } as any)
+    await cleared($, seen)
     const second = workerTurn($, 'Second.')
     await secondReached.until
     firstLands.open()
     await first
     await drained()
-    expect(seen.stops.map(s => s.task_id)).toEqual(['ag1'])
+    // A spawn's result reaches its hook alone, and no entry crosses a /clear, so this landing has no id to stop: the marker its hook left is what the new conversation holds of it, and it is not stored as the reviewer.
+    expect(seen.conversation.reviewerIds).toEqual(['ag1'])
+    expect(seen.conversation.reviewer).toBeUndefined()
     secondLands.open()
     await second
     expect(seen.conversation.reviewer).toMatchObject({ id: 'ag2' })
@@ -3503,21 +3518,23 @@ describe('the session mode button', () => {
     expect(seen.sends[0].text).toContain('Review 3.')
   })
 
-  test('a /clear mid-spawn: the spawn calling the entries tool before it lands is not adopted, and is stopped as it lands', ON, async ($, on) => {
-    const firstLands = gate()
-    const firstReached = gate()
+  test('a /clear mid-spawn: the spawn whose id its hook learned before the /clear, calling the entries tool before it lands, is refused, and is stopped once, by the session end', ON, async ($, on) => {
+    const landing = gate()
+    const reached = gate()
+    // The landing's change is the first write after the hook learned the spawn's id: it is held, so the spawn is still in flight when the /clear comes.
     const seen = engine(on, {
-      spawnHold: [{ until: firstLands.until, reached: firstReached.open, result: { model: 'm', agentId: 'ag1' } }],
+      holdWrite: { when: () => current.seen?.conversation?.spawnsInFlight?.[0]?.id === 'ag1', until: landing.until, reached: reached.open },
       agents: [{ id: 'ag1', name: 'auditor-reviewer', type: 'auditor:reviewer', spawnedBy: 'auditor' }],
     })
     const first = workerTurn($)
-    await firstReached.until
-    await $.session.end({ reason: 'clear', sessionId: 's1' } as any)
+    await reached.until
+    await cleared($, seen)
     expect(await $.tool.call({ tool: ENTRIES, agentId: 'ag1', which: 'record' })).toMatchObject({ deny: REFUSED })
     expect(seen.conversation.reviewer).toBeUndefined()
-    firstLands.open()
+    landing.open()
     await first
     await drained()
+    // The session end stopped the reviewer its hook had stood in; the landing finds no entry to take an id from, since a spawn's result reaches its hook alone, and stops nothing more.
     expect(seen.stops.map(s => s.task_id)).toEqual(['ag1'])
     expect(seen.conversation.reviewer).toBeUndefined()
     expect(seen.conversation.spawnsInFlight).toEqual([])
@@ -3560,14 +3577,14 @@ describe('the session mode button', () => {
     expect(seen.stops).toEqual([])
   })
 
-  test('a spawn held past ten minutes after a /clear no longer blocks adoption by name of a later reviewer, and when it lands it is stopped and is not the reviewer', ON, async ($, on) => {
+  test('a spawn still in flight at a /clear blocks no adoption by name of a later reviewer after it, and when it lands it is a former reviewer, not the reviewer', ON, async ($, on) => {
     const held = heldSpawn()
     const seen = engine(on, { spawnHold: held.hold, agents: [{ id: 'ag2', name: 'auditor-reviewer', type: 'auditor:reviewer', spawnedBy: 'auditor' }] })
     await $.prompt.submit(COMPOSER('fix'))
     const stopping = $.classic.Stop(stop)
     await held.reached
-    await $.session.end({ reason: 'clear', sessionId: 's1' } as any)
-    seen.clock += TEN_MINUTES + 1
+    await cleared($, seen)
+    expect(seen.conversation.spawnsInFlight).toEqual([])
     try {
       expect(await entriesOf($, { which: 'record' }, 'ag2')).toBe(NO_REVIEW)
       expect(seen.conversation.reviewer).toMatchObject({ id: 'ag2' })
@@ -3576,7 +3593,8 @@ describe('the session mode button', () => {
     }
     await stopping
     await drained()
-    expect(seen.stops.map(s => s.task_id)).toEqual(['ag1'])
+    // The landing has no entry to take an id from, since a spawn's result reaches its hook alone: it stops nothing, and the marker its hook left makes it a former reviewer.
+    expect(seen.conversation.reviewerIds).toContain('ag1')
     expect(seen.conversation.reviewer).toMatchObject({ id: 'ag2' })
   })
 
@@ -4001,7 +4019,7 @@ describe('reviewer traffic', () => {
     await $.command.run({ command: 'auditor', args: 'off' } as any)
     await $.command.run({ command: 'auditor', args: 'on' } as any)
     await workerTurn($)
-    await $.session.end({ reason: 'clear', sessionId: 's1' } as any)
+    await cleared($, seen)
     await workerTurn($)
     for (const name of ['auditor-reviewer', 'auditor-reviewer-2', 'auditor-reviewer-3']) expect(await $.session.receive(MAILED(name, true))).toEqual(CONSUMED)
     expect(seen.received).toEqual([])
@@ -5279,7 +5297,7 @@ describe('rc session end ids', () => {
         spawnsInFlight: [{ brief: 'a brief', epoch: 0, number: 1, startedAt: 1000, id: 'ag1', model: 'm' }],
       },
     })
-    await $.session.end({ reason: 'clear', sessionId: 's1' } as any)
+    await cleared($, seen)
     expect(seen.conversation.reviewerIds).toEqual(['ag1'])
     expect(seen.conversation.reviewerNames).toEqual(['auditor-reviewer'])
     expect(await $.session.receive({ text: END_NOTICE('auditor-reviewer'), origin: { kind: 'peer' as const, teammate: 'auditor-reviewer', isVerified: true } } as any)).toEqual(CONSUMED)
@@ -7432,7 +7450,7 @@ describe('the reason the last reviewer was let go', () => {
     await requestWith($, contextOf(80_001))
     await turnEnded($, 'ag1', 'Nothing to note.')
     expect(seen.conversation.lastLetGo).toBe('rotation')
-    await $.session.end({ reason: 'clear', sessionId: 's1' } as any)
+    await cleared($, seen)
     expect(seen.conversation.lastLetGo).toBe('rotation')
     expect(seen.conversation.reviewer).toBeUndefined()
   })
@@ -7511,7 +7529,7 @@ describe('the fields of the review log that audit the brief', () => {
     const seen = engine(on, { reviewerIds: ['ag1', 'ag2'] })
     await workerTurn($)
     await turnEnded($, 'ag1', 'Nothing to note.')
-    await $.session.end({ reason: 'clear', sessionId: 's1' } as any)
+    await cleared($, seen)
     await workerTurn($, 'Second.')
     await turnEnded($, 'ag2', 'Nothing to note.')
     expect(logOf(seen, LOG_2)).toMatchObject({ brief_to: 'spawn: session end' })
@@ -9319,7 +9337,7 @@ describe('an idle reviewer the state does not store is swept', () => {
   test('after a /clear, a listed reviewer the state still knows is swept, and a listed reviewer it never learned is not', ON, async ($, on) => {
     const seen = engine(on, { agents: [entry('ag1'), entry('other1')] })
     await workerTurn($)
-    await $.session.end({ reason: 'clear', sessionId: 's' } as any)
+    await cleared($, seen)
     await drained()
     await started($)
     await drained()
@@ -9641,16 +9659,8 @@ describe('the reviewer model each conversation chooses', () => {
     })
   })
 
-  // A /clear as 2.1.311 runs one: the session ends with reason clear, the engine empties the conversation state (`emptyConversation`), and the new session starts with source clear. Where a test sets the last model to haiku after the conversation chose sonnet, the fallback alone would give haiku, and only a carry gives the conversation its own choice.
+  // Where a test sets the last model to haiku after the conversation chose sonnet, the fallback alone would give haiku, and only a carry gives the conversation its own choice.
   describe('the choice across a /clear', () => {
-    const endOfClear = ($: any) => $.session.end({ reason: 'clear', sessionId: 's1' } as any)
-    const startOf = ($: any, source: string, path = '/tmp/w.jsonl') => $.classic.SessionStart({ source, transcript_path: path } as any)
-    const cleared = async ($: any, seen: ReturnType<typeof engine>) => {
-      await endOfClear($)
-      emptyConversation(seen)
-      await startOf($, 'clear')
-    }
-
     test('a /clear keeps the conversation\'s choice: its next reviewer spawns on it, whatever another session has set as the last model since', ON, async ($, on) => {
       const seen = engine(on, { reviewerIds: ['ag1', 'ag2'] })
       await run($, 'model sonnet')
@@ -9729,12 +9739,13 @@ describe('the reviewer model each conversation chooses', () => {
       expect(seen.conversation.choice).toBeUndefined()
     })
 
-    test('a clear start whose change runs again, since another write landed first, hands the carried choice in on that run too', ON, async ($, on) => {
+    test('a clear start whose change runs again, since another write landed first, writes the carried conversation on that run too: its choice, toggle, epoch and count stand, and the prompt that landed first leaves no mid-turn mark', ON, async ($, on) => {
       const armed = { on: false }
       const landed = gate()
       const reached = gate()
-      const seen = engine(on, { holdWrite: { when: () => armed.on, until: landed.until, reached: reached.open } })
+      const seen = engine(on, { stateSeed: { dispatches: 4 }, holdWrite: { when: () => armed.on, until: landed.until, reached: reached.open } })
       await run($, 'model sonnet')
+      await run($, 'off')
       await endOfClear($)
       emptyConversation(seen)
       armed.on = true
@@ -9743,7 +9754,7 @@ describe('the reviewer model each conversation chooses', () => {
       await $.prompt.submit(COMPOSER('fix the parser'))
       landed.open()
       await starting
-      expect(seen.conversation).toMatchObject({ choice: 'sonnet', midTurn: true, transcript: '/tmp/w.jsonl' })
+      expect(seen.conversation).toMatchObject({ choice: 'sonnet', off: true, epoch: 2, dispatches: 4, midTurn: false, transcript: '/tmp/w.jsonl' })
     })
   })
 
@@ -10436,8 +10447,8 @@ describe('the reviewer model each conversation chooses', () => {
     test('a reviewer is priced at its own resolved model when it compacts, after the conversation has spawned on another choice and for a former reviewer from before a /clear', ON, async ($, on) => {
       const seen = engine(on, { spawnModels: [HAIKU, 'claude-opus-4-6'], reviewerIds: ['ag1', 'ag2'], compactUsage: COMPACT_USAGE })
       await turn($)
-      await $.session.end({ reason: 'clear', sessionId: 's1' } as any)
-      seen.store['lastModel'] = 'opus'
+      await cleared($, seen)
+      await run($, 'model opus')
       await turn($, 'after the clear')
       expect(seen.conversation.reviewerModels).toEqual({ ag1: HAIKU, ag2: 'claude-opus-4-6' })
       expect(seen.conversation.reviewer).toMatchObject({ id: 'ag2', choice: 'opus' })
@@ -10552,5 +10563,230 @@ describe('the reviewer model each conversation chooses', () => {
       await stopping
       expect(seen.spawns.filter((s: any) => typeOf(s) === 'auditor:reviewer')).toEqual([])
     })
+  })
+})
+
+// What a /clear carries: the reset the session end computes, but for the spawns still in flight, which the new conversation starts without. Every test runs its /clear as the engine does, with the conversation emptied between the session end and the new session's start (`cleared`), so it checks the carry and not a state the engine would have emptied.
+describe('a /clear carries the session end\'s reset', () => {
+  const run = async ($: any, args = ''): Promise<string | undefined> => (await $.command.run({ command: 'auditor', args })).text
+  // The first line of the command's answer: the label the footer draws.
+  const label = async ($: any, args = ''): Promise<string | undefined> => (await run($, args))?.split('\n')[0]
+  // A worker turn the user starts and ends: its Stop dispatches a review.
+  const turn = async ($: any, ask = 'fix the parser') => {
+    await $.prompt.submit(COMPOSER(ask))
+    await $.classic.Stop(stop)
+  }
+  const reaps = (seen: any) => seen.timers.filter((t: any) => t.ms > 1000 && t.ms !== 90_000)
+
+  test('a session switched off before a /clear reads off after it, in the footer and in /auditor: no review is dispatched until it is switched on, and the next turn end then dispatches one', ON, async ($, on) => {
+    const seen = engine(on)
+    otherMods(on)
+    const ui = await mountMode($)
+    expect(await label($, 'off')).toBe('auditor off')
+    await cleared($, seen)
+    await buttonReads(ui, 'off')
+    expect(await label($)).toBe('auditor off')
+    await turn($)
+    expect(seen.spawns.length).toBe(0)
+    expect(await label($, 'on')).toBe('auditor on')
+    await buttonReads(ui, 'on')
+    await turn($, 'after on')
+    expect(seen.spawns.length).toBe(1)
+  })
+
+  test('a session on before a /clear is on after it, and its next turn end dispatches a review', ON, async ($, on) => {
+    const seen = engine(on)
+    otherMods(on)
+    const ui = await mountMode($)
+    await cleared($, seen)
+    await buttonReads(ui, 'on')
+    expect(await label($)).toBe('auditor on')
+    await turn($)
+    expect(seen.spawns.length).toBe(1)
+  })
+
+  test('a session switched off before a session end with reason resume starts on at the start of source resume', ON, async ($, on) => {
+    const seen = engine(on)
+    otherMods(on)
+    const ui = await mountMode($)
+    await run($, 'off')
+    await $.session.end({ reason: 'resume', sessionId: 's1' } as any)
+    emptyConversation(seen)
+    await startOf($, 'resume')
+    await buttonReads(ui, 'on')
+    await turn($)
+    expect(seen.spawns.length).toBe(1)
+  })
+
+  test('a carried conversation is used once: a second start of source clear, with no session end between, starts on', ON, async ($, on) => {
+    const seen = engine(on)
+    otherMods(on)
+    const ui = await mountMode($)
+    await run($, 'off')
+    await cleared($, seen)
+    await buttonReads(ui, 'off')
+    emptyConversation(seen)
+    await startOf($, 'clear')
+    await buttonReads(ui, 'on')
+  })
+
+  // The session is switched off, ended with reason clear and emptied; its second end with no start between then reads the state while `readFails` says whether the read fails, and the next start has source clear.
+  const endedTwice = async ($: any, on: any, readFails: boolean) => {
+    const failing = { on: false }
+    const seen = engine(on, { conversationReadFailsWhen: () => failing.on })
+    await run($, 'off')
+    await endOfClear($)
+    emptyConversation(seen)
+    failing.on = readFails
+    await endOfClear($)
+    failing.on = false
+    emptyConversation(seen)
+    await startOf($, 'clear')
+    return seen
+  }
+
+  test('a second /clear end with no start between, whose state read fails, leaves the first end\'s conversation for the next clear start: off, with the first end\'s moved-on epoch', ON, async ($, on) => {
+    const seen = await endedTwice($, on, true)
+    expect(debugLines(seen, 'session end failed').length).toBe(1)
+    expect(seen.conversation).toMatchObject({ off: true, epoch: 2 })
+  })
+
+  test('a second /clear end with no start between, whose state read answers, carries the second end\'s conversation: the last run stands', ON, async ($, on) => {
+    const seen = await endedTwice($, on, false)
+    expect(debugLines(seen, 'session end failed')).toEqual([])
+    expect(seen.conversation).toMatchObject({ off: false, epoch: 1 })
+  })
+
+  test('a reset whose change runs again, since another write landed first, carries the conversation its last run computed', ON, async ($, on) => {
+    const armed = { on: false }
+    const landed = gate()
+    const reached = gate()
+    const seen = engine(on, { holdWrite: { when: () => armed.on, until: landed.until, reached: reached.open } })
+    armed.on = true
+    const ending = endOfClear($)
+    await reached.until
+    await run($, 'off')
+    landed.open()
+    await ending
+    emptyConversation(seen)
+    await startOf($, 'clear')
+    expect(seen.conversation).toMatchObject({ off: true, epoch: 2 })
+  })
+
+  test('a /clear whose reset write is refused after its callback computed the reset is off after the /clear, and carries the moved-on epoch', ON, async ($, on) => {
+    const seen = engine(on)
+    await run($, 'off')
+    seen.stateWritesFailAt = seen.stateWriteAttempts + 1
+    await endOfClear($)
+    expect(debugLines(seen, 'session end failed').length).toBe(1)
+    emptyConversation(seen)
+    await startOf($, 'clear')
+    expect(seen.conversation).toMatchObject({ off: true, epoch: 2 })
+  })
+
+  test('a clear start writes the carried conversation whole: the markers a pre-/clear spawn hook left in the emptied state before it are not kept', ON, async ($, on) => {
+    const held = heldSpawn()
+    const seen = engine(on, { spawnHold: { ...held.hold, to: 1 } })
+    const dispatching = workerTurn($)
+    await held.reached
+    await endOfClear($)
+    emptyConversation(seen)
+    held.land()
+    await dispatching
+    await drained()
+    // The hook and the landing wrote into the emptied state, so the state the start finds holds the spawn's marker.
+    expect(seen.conversation.reviewerIds).toEqual(['ag1'])
+    await startOf($, 'clear')
+    expect(seen.conversation.reviewerIds).toEqual([])
+    expect(seen.conversation).toMatchObject({ epoch: 1, dispatches: 1 })
+  })
+
+  test('the new conversation holds nothing the reset drops: no open review, held note, record entry, memory entry, brief in flight, tally or mark of the worker\'s turn', ON, async ($, on) => {
+    const seen = engine(on, {
+      stateSeed: {
+        dispatches: 3,
+        epoch: 5,
+        review: { number: 3, record: ['[1] USER: fix\n\n'], dispatchedAt: 1000, nothingWakes: false },
+        pendingNotes: [{ number: 2, text: 'a.ts:4 held.' }],
+        record: { blocks: ['[1] USER: more\n\n'] },
+        memory: [{ number: 1, text: 'a.ts:4 note.' }],
+        briefsInFlight: ['a brief'],
+        spent: 0.5,
+        reviews: 2,
+        notes: 1,
+        last: { at: 1, note: true },
+        unpriced: 'claude-unpriced-1-1',
+        midTurn: true,
+        interrupted: true,
+        turnStart: 'user',
+        lastMessage: 'Done.',
+        transcript: '/tmp/old.jsonl',
+      },
+    })
+    await cleared($, seen)
+    expect(seen.conversation.review).toBeUndefined()
+    expect(seen.conversation.last).toBeUndefined()
+    expect(seen.conversation).toMatchObject({ pendingNotes: [], record: { blocks: [] }, memory: [], briefsInFlight: [], spent: 0, reviews: 0, notes: 0, unpriced: null, midTurn: false, interrupted: false, turnStart: null, lastMessage: '', transcript: '/tmp/w.jsonl' })
+    expect(seen.conversation).toMatchObject({ epoch: 6, dispatches: 3, dispatchesAtPrompt: 3 })
+  })
+
+  test('a pre-/clear reviewer\'s late compaction is still told what the reviewer keeps', ON, async ($, on) => {
+    const seen = engine(on)
+    await workerTurn($)
+    await cleared($, seen)
+    await $.session.compact({ trigger: 'plugin', messages: [{ role: 'user', text: 'fix the parser', toolUses: [] }], agentId: 'ag1' } as any)
+    expect(seen.compactions[0].instructions.startsWith('You are the auditor reviewer. Keep:')).toBe(true)
+  })
+
+  for (const [when, prepare, epoch] of [
+    ['in a session never switched', async (_$: any) => undefined, 0],
+    ['after a switch off and on', async ($: any) => { await run($, 'off'); await run($, 'on') }, 2],
+  ] as const) {
+    test(`a dispatch planned before a /clear ${when} and settling after it makes no review, reviewer or epoch change in the new conversation: no review is opened, closed or numbered, the stored reviewer stays and the epoch stands`, ON, async ($, on) => {
+      const held = heldSpawn()
+      const seen = engine(on, { spawnHold: { ...held.hold, to: 1 }, reviewerIds: ['ag2'] })
+      await prepare($)
+      const dispatching = workerTurn($)
+      await held.reached
+      await cleared($, seen)
+      await workerTurn($, 'Second.')
+      expect(seen.conversation).toMatchObject({ epoch: epoch + 1, reviewer: { id: 'ag2' }, review: { number: 2 } })
+      held.land()
+      await dispatching
+      await drained()
+      expect(seen.conversation).toMatchObject({ epoch: epoch + 1, reviewer: { id: 'ag2' }, review: { number: 2 } })
+      expect(seen.conversation.reviewerIds).toContain('ag1')
+    })
+  }
+
+  test('a spawn still in flight at a /clear leaves the new conversation with none: the next reviewer left idle is reaped, a listed reviewer the state knows is swept, and the spawn, when it lands, is a former reviewer', ON, async ($, on) => {
+    const firstLands = gate()
+    const firstReached = gate()
+    const seen = engine(on, {
+      spawnHold: [{ until: firstLands.until, reached: firstReached.open, result: { model: 'm', agentId: 'ag1' } }],
+      reviewerIds: ['ag2'],
+      agentsAfterStops: stops => (stops === 0 ? [{ id: 'ag0', name: 'auditor-reviewer', type: 'auditor:reviewer', status: 'idle', spawnedBy: 'auditor' }] : []),
+      stateSeed: { reviewerIds: ['ag0'], reviewerNames: ['auditor-reviewer'] },
+    })
+    const first = workerTurn($)
+    await firstReached.until
+    await cleared($, seen)
+    expect(seen.conversation.spawnsInFlight).toEqual([])
+    await workerTurn($, 'Second.')
+    await turnEnded($, 'ag2', 'Nothing to note.')
+    await drained()
+    expect(debugLines(seen, 'sweeping idle reviewer')).toEqual(['auditor: sweeping idle reviewer ag0, which the state does not store'])
+    expect(reaps(seen).length).toBe(1)
+    reaps(seen)[0].fire()
+    await drained()
+    expect(seen.conversation.reviewer).toBeUndefined()
+    expect(seen.conversation.lastLetGo).toBe('reaped idle')
+    expect(seen.stops.map(s => s.task_id)).toEqual(['ag0', 'ag2'])
+    firstLands.open()
+    await first
+    await drained()
+    // A spawn's result reaches its hook alone and no entry crossed, so its landing has no id to stop: the marker its hook left makes it a former reviewer, and none is stored.
+    expect(seen.conversation.reviewerIds).toContain('ag1')
+    expect(seen.conversation.reviewer).toBeUndefined()
   })
 })

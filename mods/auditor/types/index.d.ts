@@ -65,7 +65,7 @@ export type MemoryEntry = { number: number; text: string; touched?: number } & (
 // What started a worker turn: the user's own prompt (typed, from a Remote Control client, or a headless run's), a reviewer's task notification, or anything else.
 export type TurnStart = 'user' | 'notice' | 'other'
 
-// One conversation, from a /clear or resume to the next. A /clear forgets its current reviewer, its open review and that review's note slot; it keeps the reviewer markers (`reviewerIds`, `reviewerNames`), which mark traffic, not a review.
+// One conversation, from a /clear or resume to the next. A /clear forgets its current reviewer, its open review and that review's note slot, with the rest of what the session end's reset drops. It carries what the reset keeps but the spawns in flight: the toggle (`off`), the dispatch count with its prompt mark, the epoch moved on, the reviewer markers (`reviewerIds`, `reviewerNames`, `reviewerModels`), which mark traffic, not a review, the reason the last reviewer was let go (`lastLetGo`) and the choice (`choice`).
 export type Conversation = {
   // Dispatches this session has made. Numbers carry across /clear, since a session's logs share one directory, and never repeat: a send naming an older number is a former reviewer's.
   dispatches: number
@@ -103,7 +103,7 @@ export type Conversation = {
   memory: MemoryEntry[]
   // The reviewer's open review, if it has one.
   review?: OpenReview
-  // Each reviewer spawn still in flight, by the brief it was spawned with, the epoch it was spawned under, the number of the review it serves, the clock's time its dispatch started, the choice it was spawned for (`choice`; the hook that sets a full id on the spawn reads it) and the id and resolved model once the spawn hook has seen it: a dispatch whose spawn result names no agent takes its id from here. No reset clears it, so a spawn a reset dropped still finds the id it is stopped by (`deliverBrief`). `learn`, `adopt` and `land` in reviewer.ts read and write it. Its landing takes it out (`releaseSpawn`). A review no reviewer has stood in for `SPAWN_TIMEOUT_MS` after its dispatch, and one its stored reviewer has not finished `REVIEW_TIMEOUT_MS` after it, fail at the next dispatch (`dispatchIdle`).
+  // Each reviewer spawn still in flight, by the brief it was spawned with, the epoch it was spawned under, the number of the review it serves, the clock's time its dispatch started, the choice it was spawned for (`choice`; the hook that sets a full id on the spawn reads it) and the id and resolved model once the spawn hook has seen it: a dispatch whose spawn result names no agent takes its id from here. A reset keeps it in the state, so a spawn a reset dropped still finds the id it is stopped by (`deliverBrief`); a /clear carries none, so its new conversation starts with none. `learn`, `adopt` and `land` in reviewer.ts read and write it. Its landing takes it out (`releaseSpawn`). A review no reviewer has stood in for `SPAWN_TIMEOUT_MS` after its dispatch, and one its stored reviewer has not finished `REVIEW_TIMEOUT_MS` after it, fail at the next dispatch (`dispatchIdle`).
   spawnsInFlight: { brief: string; epoch: number; number: number; startedAt: number; choice?: string; id?: string; model?: string }[]
   // Why the last review failed, while none has succeeded since: no review is dispatched until a turn the user's own prompt started ends. Absent means not failing. A state stored before causes existed holds `true` (read as the unknown cause) or `false` (not failing).
   failing?: FailCause | boolean

@@ -86,8 +86,8 @@ from the repository root.
   failing. Hover for review counts, recent activity, and estimated cost. Run
   `/auditor` for the same information on surfaces without the footer.
 - **Toggle it.** Click the footer label or run `/auditor on` or `/auditor off`
-  to control the current session. Each new session starts on while the plugin
-  is enabled.
+  to control the current session. `/clear` keeps the toggle as it was. Each
+  new session starts on while the plugin is enabled.
 - **Inspect findings.** Run `/auditor memory` to see the reviewer’s notes and
   which findings are still open or settled. Enable the plugin’s `log` option
   to write per-review JSON under `~/.claude/auditor/`, including timing, token
