@@ -58,9 +58,9 @@ const allows = (entry: string, name: string): boolean => {
 // The default of a list: haiku while it is offered, else the first choice that is not Fable, else the first (only Fable is left, and the plugin must always have something to spawn on).
 const defaultOf = (list: readonly string[]): string => (list.includes(DEFAULT_MODEL) ? DEFAULT_MODEL : (list.find(name => !isFable(name)) ?? list[0] ?? DEFAULT_MODEL))
 
-// The names a row may show, from the names the catalog gave each id: a name is used, trimmed, when it is non-empty once trimmed and holds no control character, since the popup draws a line per row and a value that could break the line is not drawn. A name more than one id has, once trimmed, names none of them: it does not say which model runs.
+// The names a row may show, from the names the catalog gave each id: a name is used, trimmed, when it is non-empty once trimmed and holds no control character, line separator or paragraph separator, since the popup draws a line per row and a value that could break the line is not drawn. A name more than one id has, once trimmed, names none of them: it does not say which model runs.
 const displayNames = (given: ModelNames): ModelNames => {
-  const usable = Object.entries(given).filter(([, name]) => name.trim() !== '' && !/\p{Cc}/u.test(name)).map(([id, name]) => [id, name.trim()] as const)
+  const usable = Object.entries(given).filter(([, name]) => name.trim() !== '' && !/[\p{Cc}\p{Zl}\p{Zp}]/u.test(name)).map(([id, name]) => [id, name.trim()] as const)
   const holders = new Map<string, number>()
   for (const [, name] of usable) holders.set(name, (holders.get(name) ?? 0) + 1)
   return Object.fromEntries(usable.filter(([, name]) => holders.get(name) === 1))

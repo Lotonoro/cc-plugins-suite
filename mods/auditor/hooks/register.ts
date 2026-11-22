@@ -122,7 +122,8 @@ export const readLedger = async ($: Pick<Scope, 'session' | 'clock' | 'ui'>): Pr
 const modelShown = (c: Conversation, memo: Memo): string => {
   const reviewer = c.reviewer
   const resolved = reviewer === undefined ? undefined : reviewer.model || c.reviewerModels[reviewer.id]
-  const ids = reviewer?.choice !== undefined && resolved !== undefined && keepsPair(reviewer.choice, resolved) ? { ...memo.ids, [reviewer.choice]: resolved } : memo.ids
+  const reviewerChoice = reviewer?.choice ?? DEFAULT_MODEL
+  const ids = resolved !== undefined && keepsPair(reviewerChoice, resolved) ? { ...memo.ids, [reviewerChoice]: resolved } : memo.ids
   return shownAs(takeChoice(c.choice, memo.last, memo.choices), ids, memo.choices)
 }
 

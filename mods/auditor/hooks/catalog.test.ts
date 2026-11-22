@@ -432,6 +432,16 @@ describe('readChoices', () => {
       expect(logs[0]).toContain('dropped for having no id: 1')
     })
 
+    test('the name of an id is read from its own model record: an option nested under a record names nothing, so the id of a record with no name keeps none', async () => {
+      const records = [
+        { id: 'claude-haiku-5-5', name: 'Haiku 5.5', thinking: { effort_options: [{ id: 'claude-opus-4-6', name: 'Nested' }] }, fast_mode: { options: [{ id: 'claude-opus-4-6', name: 'Nested' }] } },
+        { id: 'claude-opus-4-6' },
+      ]
+      const { $, logs } = engineWith({ 'a-cc.json': models(records) }, undefined)
+      expect((await readChoices($)).names).toEqual({ 'claude-haiku-5-5': 'Haiku 5.5' })
+      expect(logs).toEqual([])
+    })
+
     test('the names are those of the ids the parse kept: in a file of 51 records whose 51st shares the first\'s name, the first keeps its name', async () => {
       const records = Array.from({ length: 51 }, (_, n) => ({ id: `claude-model-${n + 1}`, name: n === 50 ? 'Model 1' : `Model ${n + 1}` }))
       const { $ } = engineWith({ 'a-cc.json': models(records) }, undefined)

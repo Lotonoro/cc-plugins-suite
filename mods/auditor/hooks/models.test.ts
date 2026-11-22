@@ -151,6 +151,11 @@ describe('the choices', () => {
       expect(names).toEqual({ 'claude-opus-4-6': 'Opus 4.6', 'claude-haiku-5-5': 'Haiku 5.5' })
     })
 
+    test('a name holding a line or paragraph separator gives its id no name, as a control character does, and the other names stand', () => {
+      expect(choicesOf(['claude-haiku-5-5'], undefined, { 'claude-haiku-5-5': 'Haiku' + String.fromCharCode(0x2028) + '5.5' }).names).toEqual({})
+      expect(choicesOf(['claude-haiku-5-5', 'claude-opus-4-6'], undefined, { 'claude-haiku-5-5': 'Haiku 5.5', 'claude-opus-4-6': 'Opus 4.6' + String.fromCharCode(0x2029) }).names).toEqual({ 'claude-haiku-5-5': 'Haiku 5.5' })
+    })
+
     // Two names empty once trimmed would be dropped as a shared name whether or not they were unusable, so each is tried by itself.
     test('a name that is empty, or only spaces, gives its id no name when no other name is empty', () => {
       expect(choicesOf(CATALOG_IDS, undefined, { 'claude-opus-4-8': '' }).names).toEqual({})

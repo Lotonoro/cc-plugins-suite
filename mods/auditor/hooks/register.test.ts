@@ -10975,6 +10975,12 @@ describe('the reviewer model shown', () => {
       expect(await footer($)).toBe('reviewer model: haiku')
     })
 
+    test('a reviewer stored before choices existed, with no choice, ran the default, so the row names the model it resolved to', ON, async ($, on) => {
+      await loaded($, on, { stateSeed: { reviewer: { id: 'ag1', model: HAIKU }, reviewerIds: ['ag1'] } })
+      expect(await footer($)).toBe('reviewer model: Haiku 5.5')
+      expect(answered(await run($))).toBe('reviewer model: Haiku 5.5')
+    })
+
     test('a spawn that resolves to a name that is no full id gives the alias no id', ON, async ($, on) => {
       await loaded($, on, { spawnModels: ['haiku'] })
       await workerTurn($)
