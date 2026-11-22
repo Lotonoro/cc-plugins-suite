@@ -92,6 +92,9 @@ export async function restored($: EngineInterface): Promise<boolean> {
   return done
 }
 
+// Whether a rebuild is in progress, answered at once: the lists may be partial until it ends. A caller that must have the finished lists calls `restored`.
+export const isRestoring = (): boolean => restoring !== null
+
 // A forked session's transcript is written after classic.SessionStart (it exists by session.start): its rebuild starts
 // at session.start, or at the first turn if the file is still missing then. The engine copies into it the original's
 // live branch from its last compaction on, without the subagents' files, so that is all the rebuild finds.

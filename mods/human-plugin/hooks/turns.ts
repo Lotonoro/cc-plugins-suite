@@ -104,6 +104,16 @@ export const carried = (): void => {
 
 export const unreadIds = (): number[] => unread.map(notice => notice.id)
 
+// What is on its way to the agent beyond the list's own item states, which the idle rule (idle.ts) reads at a turn's end: an answer, when a notice waits for a
+// read point or the turn's end, or one was appended that no request has read (the turn's end then submits a turn that carries it); the walk's hold, while a walk
+// is asking or its release is pending; else nothing. A held notice is none of these: it waits for the human's next prompt, not for a turn of its own.
+export type OnItsWay = 'answer' | 'walk' | null
+
+export const onItsWay = (): OnItsWay => {
+  if (waiting.length > 0 || unread.length > 0) return 'answer'
+  return walkAsking ? 'walk' : null
+}
+
 // Whether a prompt is the human's own (typed at the composer, or sent from the remote bridge): the only prompt that
 // carries the notices held over an interrupt.
 export const carriesHeld = (origin: { kind: string }): boolean => origin.kind === 'composer' || origin.kind === 'bridge'

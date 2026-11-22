@@ -11,7 +11,7 @@ import {
   ARG_HINT, CLAUDE_COMMAND, CLAUDE_DESCRIPTION, CLAUDE_FAILED, CLAUDE_REBUILDING, CLAUDE_USAGE, COMMAND, DESCRIPTION, DO_COMMAND, DO_DESCRIPTION, DO_FAILED, DO_REBUILDING, DO_USAGE,
   FAILED, PHONE_REBUILDING, REBUILDING, USAGE, answerLine, answerTo, claudeTodoText, hasArgument, parseAsk, phoneBlock,
 } from './commands'
-import { carried, carryHeld, endTurn, giveBack, handOver, notEntered, offer, pending, reset, setOnChange, startTurn } from './turns'
+import { carried, carryHeld, endTurn, giveBack, handOver, notEntered, offer, onItsWay, pending, reset, setOnChange, startTurn } from './turns'
 import { backlogPane, band, pane, toolLine, type Handlers, type View } from './ui'
 import { bandDraws } from './layout'
 import { correctionText, newlyRestated, restatedIds } from './restatement'
@@ -19,9 +19,11 @@ import { enter } from './deliver'
 import { CLAUDE_VIEW, PANE, endPane, followShown, followTodo, markRead, paneDocked, personClosed, pickBacklog, pickItem, seated, setDrawn, setDrawnTodo, shownSelection, showItem, syncPane } from './pane'
 import { endPushes, pushAnswer } from './push'
 import { pressAnswer, pressDone, pressReply, rearmWindows, stopTicker } from './windows'
-import { restored, resetRebuild, setForkedTranscript, startForkRestore, startRestore } from './rebuild'
+import { isRestoring, restored, resetRebuild, setForkedTranscript, startForkRestore, startRestore } from './rebuild'
 import { emptyList, inBackground, readList, updateList } from './shared'
 import { endWalk, observeAsked, walk } from './walk'
+import { readAgents } from './agents'
+import { atStop, clearTurn, recordBatch } from './idle'
 
 const SOUND = '/System/Library/Sounds/Glass.aiff'
 const UNDO_WINDOW_MS = 3000
@@ -359,20 +361,39 @@ export const wireHooks = (on: On, windowMs: number): void => {
   on('turn.start', async ($, e, next) => {
     if (e.agentId !== undefined) return next(e)
     startTurn()
+    // What the idle rule kept of the turn before is dropped (idle.ts).
+    clearTurn()
     await handOver(text => appendNotice($, text), () => liveNow($))
     await startForkRestore($)
     return next(e)
   })
 
   // The main agent's batch also counts its calls toward the Claude list's reminder (reminder.ts), which rides the result's context after any
-  // the rest of the chain gave. A subagent's batch is neither counted nor reminded.
+  // the rest of the chain gave, and its messages to agents are kept for the idle rule (idle.ts). A subagent's batch is neither counted, reminded nor kept.
   on('classic.PostToolBatch', async ($, e, next) => {
     if (e.agent_id !== undefined) return next(e)
+    recordBatch(e.tool_calls)
     await handOver(text => appendNotice($, text), () => liveNow($))
     const result = await next(e)
     const reminder = await countBatch($, e.tool_calls, TODO_TOOL)
     return reminder === null ? result : { ...result, additionalContext: [...(result.additionalContext ?? []), reminder] }
   }).catch(($, e, next) => next(e))
+
+  // The main agent's Stop is where it goes idle. With items open and none blocking, the Stop is blocked once with a steer (idle.ts), so the agent marks blocking what its
+  // remaining work waits on. A block a hook beneath already gave is left as it is. The rule's lines go to debug, and a steered turn that ended the same way is said once in
+  // the transcript. The list is read here, and the engine agent list only when the rule gets that far. A failure is logged, and the Stop passes on with no block of this hook's.
+  on('classic.Stop', async ($, e, next) => {
+    if (e.agent_id !== undefined) return next(e)
+    const result = await next(e)
+    const store = await readList($)
+    const verdict = await atStop({ stop: e, blocked: result.block !== undefined, items: store.items, delivery: onItsWay(), rebuilding: isRestoring(), agents: () => readAgents($) })
+    for (const line of verdict.debug) $.ui.log(line, { to: 'debug' })
+    if (verdict.decline !== null) $.ui.log(verdict.decline)
+    return verdict.block === null ? result : { ...result, block: verdict.block }
+  }).catch(($, e, next) => {
+    failed($, 'classic.Stop', next.error)
+    return next(e)
+  })
 
   on('turn.step', async function* ($, e, next) {
     if (e.agentId === undefined) carried()
@@ -425,12 +446,13 @@ export const wireHooks = (on: On, windowMs: number): void => {
 
   // A session's end ends what the mod holds for its conversation: the turn's notices, the undo countdown's redraw, a rebuild in progress
   // (its generation is dropped after a /clear or a /resume alike, so it cannot fill the next conversation's list), a fork waiting for
-  // its transcript and the walk that is asking (its flag is released, so a dialog it leaves open cannot block the next walk). /clear also empties
-  // the list; a resume starts with a fresh one (the state is held per session), which its rebuild fills.
+  // its transcript, the walk that is asking (its flag is released, so a dialog it leaves open cannot block the next walk) and what the idle rule kept of the
+  // turn (idle.ts). /clear also empties the list; a resume starts with a fresh one (the state is held per session), which its rebuild fills.
   // The id counter goes to the plugin store for the new session to carry (see carry).
   on('session.end', async ($, e, next) => {
     endPushes()
     reset()
+    clearTurn()
     stopTicker()
     resetRebuild()
     endWalk()
