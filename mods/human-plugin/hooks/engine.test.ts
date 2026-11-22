@@ -218,7 +218,7 @@ test('an update that makes an open item blocking plays the sound once; an unmark
   expect(runs).toEqual([['afplay', SOUND]])
 })
 
-test('a new item is unread until its title is pressed or the pane opens', async ($, on) => {
+test('a new item is unread until its title is pressed', async ($, on) => {
   mock.clock(on)
   mock.store(on)
   on('ui.panes', () => ({ value: [] }))
@@ -1657,4 +1657,20 @@ test('a press on a row\'s title opens the pane on the item where the row draws n
     await band.press({ key: `title-${id}` })
     expect(shown.has('human-items'), `band of ${columns}`).toBe(true)
   }
+})
+
+test('a press on the title of an unread item, with the pane shut, reads that item alone: the other unread item keeps its mark', async ($, on) => {
+  mock.clock(on)
+  mock.store(on)
+  on('ui.panes', () => ({ value: [] }))
+  await $.tool.call({ tool: TOOL, action: 'add', blocking: true, title: 'First' })
+  await $.tool.call({ tool: TOOL, action: 'add', blocking: true, title: 'Second' })
+  const ui = await $.ui.mount({ plugin: 'human-plugin', surface: 'terminal', component: 'AbovePrompt', props: { ...BAND_PROPS, isCollapsed: false } })
+  const before = JSON.stringify(await ui.drawn())
+  expect(before).toContain('• #1')
+  expect(before).toContain('• #2')
+  await ui.press({ key: 'title-1' })
+  const after = JSON.stringify(await ui.drawn())
+  expect(after).toContain('• #2')
+  expect(after).not.toContain('• #1')
 })

@@ -928,6 +928,20 @@ test('a press on the summary row opens the pane on the first folded item, a bloc
   expect(plainValues.selection).toBe(1)
 })
 
+test('a press on the summary row that opens the pane reads the item it opens on: its unread mark goes, the other item keeps its own', async () => {
+  reset()
+  const { hooks } = wire()
+  const open: string[] = []
+  const { env, values } = memEnv([made(1, { unread: true }), made(2, { unread: true })], open, null)
+  await (hooks['session.end'] as Handler)(env as never, { reason: 'exit' } as never, next(false) as never)
+  // Two rows leave the band its header and the summary row alone: the row folds both items and opens on the first.
+  findButton(await drawn(env, () => hooks['ui.render {"component":"AbovePrompt"}']?.(env as never, { props: { hasSurvey: false, maxRows: 2, bodyColumns: 80 } } as never, next(false) as never)), 'band-more')?.onPress()
+  await settle()
+  expect(open).toEqual(['human-items'])
+  expect(values.selection).toBe(1)
+  expect((values.list as { items: { unread: boolean }[] }).items.map(it => it.unread)).toEqual([false, true])
+})
+
 test('a band title the pane does not show opens the pane on it, or switches to it; the title of the item it shows closes it', async () => {
   reset()
   const { hooks } = wire()
@@ -965,6 +979,46 @@ test('a band title press opens the pane on that item; a press on the item it sho
   expect(open).toEqual(['human-items'])
 })
 
+test('a band title press that opens the pane on an item reads it: its unread mark goes, the other item keeps its own', async () => {
+  reset()
+  const { hooks } = wire()
+  const open: string[] = []
+  const { env, values } = memEnv([made(1, { blocking: true, unread: true }), made(2, { blocking: true, unread: true })], open, null)
+  await (hooks['session.end'] as Handler)(env as never, { reason: 'exit' } as never, next(false) as never)
+  findButton(await band(hooks, env), 'title-1')?.onPress()
+  await settle()
+  expect(open).toEqual(['human-items'])
+  expect(values.selection).toBe(1)
+  expect((values.list as { items: { unread: boolean }[] }).items.map(it => it.unread)).toEqual([false, true])
+})
+
+test('an open the list write refuses leaves the pane open on the item and every mark as it was, and logs the refusal once', async () => {
+  reset()
+  const { hooks } = wire()
+  const open: string[] = []
+  const { env, values } = memEnv([made(1, { blocking: true, unread: true }), made(2, { blocking: true, unread: true })], open, null)
+  await (hooks['session.end'] as Handler)(env as never, { reason: 'exit' } as never, next(false) as never)
+  const logs: string[] = []
+  // The write to the list is refused; the reads and every other write are memEnv's.
+  const refusing = {
+    ...env,
+    ui: { ...env.ui, log: (text: string) => void logs.push(text) },
+    state: {
+      ...env.state,
+      set: async (ref: { key: string }, value: unknown) => {
+        if (ref.key === 'list') throw new Error('list write refused')
+        return env.state.set(ref, value)
+      },
+    },
+  }
+  findButton(await band(hooks, refusing), 'title-1')?.onPress()
+  await settle()
+  expect(open).toEqual(['human-items'])
+  expect(values.selection).toBe(1)
+  expect((values.list as { items: { unread: boolean }[] }).items.map(it => it.unread)).toEqual([true, true])
+  expect(logs).toEqual(['human-plugin: Error: list write refused'])
+})
+
 test('a band title press on the item the pane shows closes it, when the pane shows the first item by default', async () => {
   reset()
   const { hooks } = wire()
@@ -994,16 +1048,15 @@ test('removing the shown item moves the pane to the first open item in the ranki
   reset()
   const { hooks } = wire()
   const open: string[] = []
-  const { env: plain, values } = memEnv([made(1), made(2), made(3)], open, null)
+  const { env: plain, values } = memEnv([made(1, { unread: true }), made(2), made(3)], open, null)
   const opened: { id: string; rows: number }[] = []
   const env = { ...plain, ui: { ...plain.ui, open: async (args: { id: string; rows: number }) => { opened.push({ id: args.id, rows: args.rows }); return plain.ui.open(args) } } }
   findButton(await band(hooks, env), 'title-2')?.onPress()
   await settle()
   expect(open).toEqual(['human-items'])
-  // Item 1 is unread after the open, so only the switch to it can read it.
+  // The open read item 2 alone, so item 1 is still unread, and only the switch to it can read it.
   const listOf = () => values.list as { items: (Item & { unread: boolean })[] }
-  const shownNext = listOf().items.find(it => it.id === 1)
-  if (shownNext) shownNext.unread = true
+  expect(listOf().items.find(it => it.id === 1)?.unread).toBe(true)
   opened.length = 0
   await (hooks['tool.call'] as Handler)(env as never, { tool: TOOL, action: 'remove', id: 2 } as never, next(false) as never)
   await settle()
@@ -1438,14 +1491,14 @@ test('the window\'s end that moves the pane on reads the item the pane moves to:
   const { hooks } = wire()
   const open: string[] = []
   const timers: Timer[] = []
-  const { env, values, clock } = memEnv([made(1), made(2), made(3, { blocking: true })], open, null, [], timers)
+  const { env, values, clock } = memEnv([made(1, { unread: true }), made(2, { unread: true }), made(3, { blocking: true, unread: true })], open, null, [], timers)
   await (hooks['session.end'] as Handler)(env as never, { reason: 'exit' } as never, next(false) as never)
   findButton(await band(hooks, env), 'title-1')?.onPress()
   await settle()
   expect(open).toEqual(['human-items'])
-  // The open read every item, so items 2 and 3 are unread again here, and only the move to one of them can read it.
+  // The open read item 1 alone, so items 2 and 3 are unread here, and only the move to one of them can read it.
   const listOf = () => values.list as { items: (Item & { unread: boolean })[] }
-  for (const it of listOf().items) it.unread = it.id !== 1
+  expect(listOf().items.map(it => it.unread)).toEqual([false, true, true])
   findButton(await band(hooks, env), 'done-1')?.onPress()
   await settle()
   expect(listOf().items.map(it => it.unread)).toEqual([false, true, true])
@@ -4672,12 +4725,12 @@ test('opening the Claude list from a closed pane, and switching to it from an it
   pressKey(await bandAt(hooks, $, 120), 'claude-header')
   await settle()
   expect(marks()).toEqual([true, true])
-  // An item opened from closed reads every item (the pane's open does), and the marks are raised again for the switch to the backlog.
+  // The second press closes the pane, and a press on #1's title opens it from closed: that open reads #1 alone. Both marks are raised again, so that the switch to the backlog finds #1 unread too.
   pressKey(await bandAt(hooks, $, 120), 'claude-header')
   await settle()
   pressKey(await bandAt(hooks, $, 120), 'title-1')
   await settle()
-  expect(marks()).toEqual([false, false])
+  expect(marks()).toEqual([false, true])
   values.list = { items: [made(1, { unread: true }), made(2, { unread: true })], next: 3 }
   pressKey(await bandAt(hooks, $, 120), 'claude-header')
   await settle()

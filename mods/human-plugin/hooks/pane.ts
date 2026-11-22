@@ -116,13 +116,6 @@ function openPane($: EngineInterface, request: PaneOpenArgs): Promise<unknown> {
   })
 }
 
-// A human item opened from closed. The pane's open reads every item: it shows one, and the marks of the rest are not the person's to chase.
-function openItem($: EngineInterface, id: number): Promise<unknown> {
-  const opened = openPane($, paneRequest(id, drawnItems))
-  const cleared = updateList($, store => ({ ...store, items: store.items.map(it => ({ ...it, unread: false })) }))
-  return Promise.all([opened, cleared])
-}
-
 // A switch while the pane is open re-opens it, so its rows fit the item shown now, and reads that item.
 function switchPane($: EngineInterface, id: number, items: readonly Item[]): Promise<unknown> {
   return Promise.all([$.ui.open(paneRequest(id, items)), markRead($, id)])
@@ -218,9 +211,9 @@ export async function followTodo($: EngineInterface): Promise<void> {
 }
 
 // Shows an item in the pane: the pane opens first when it is shut (the open is made inside the press), then the item is selected.
-// Showing an item reads it: the pane's open reads every item, and a switch reads the one it shows.
+// Showing an item reads that item alone, whether the pane is shut or open: an open from closed and a switch both read the one they show.
 export function showItem($: EngineInterface, id: number): Promise<unknown> {
-  const opening = paneOpen ? switchPane($, id, drawnItems) : openItem($, id)
+  const opening = paneOpen ? switchPane($, id, drawnItems) : Promise.all([openPane($, paneRequest(id, drawnItems)), markRead($, id)])
   return Promise.all([opening, select($, id)])
 }
 
@@ -240,7 +233,7 @@ function showBacklog($: EngineInterface): Promise<unknown> {
 const sameContent = (now: Item, printed: Item): boolean =>
   JSON.stringify({ ...now, unread: false, posed: false }) === JSON.stringify({ ...printed, unread: false, posed: false })
 
-// Marks one item read: an item the pane switches to is shown, so its unread mark goes. `/todo <n>` passes the item as it printed it, and the mark
+// Marks one item read: an item the pane opens on from closed or switches to is shown, so its unread mark goes. `/todo <n>` passes the item as it printed it, and the mark
 // goes only while the item is still that one: a change made since the print is not in the text, so the mark it raised stays.
 export function markRead($: EngineInterface, id: number, printed?: Item): Promise<unknown> {
   return updateList($, store => ({
