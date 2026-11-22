@@ -13,12 +13,13 @@ type Table = {
   Button: ElementConstructor<ButtonProps>
 }
 
-// What the words read: the toggle's state, the tally in dollars, the model that made it unknown (null while it is known), the session's total from the ledger (undefined when unknown), the reviews completed and notes given with the last review, the cause of the failure (set exactly while the state is failing) and the count of notes held for the next prompt.
+// What the words read: the toggle's state, the tally in dollars, the model that made it unknown (null while it is known), the session's total from the ledger (undefined when unknown), the words that name the model the next review runs on (its name, or its choice as spelled), the reviews completed and notes given with the last review, the cause of the failure (set exactly while the state is failing) and the count of notes held for the next prompt.
 export type Figures = {
   state: 'on' | 'off' | 'failing'
   spent: number
   unpriced: string | null
   total: number | undefined
+  model: string
   reviews: number
   notes: number
   last: LastReview | undefined
@@ -76,12 +77,14 @@ const stateRow = (f: Figures): string | undefined => {
   return failing === undefined ? `${plural(f.held, 'note')} held for your next prompt` : `${failing} · ${plural(f.held, 'note')} held`
 }
 
-// The popup's rows, in order: the cost row, the reviews row, the press row, then at most one state row; four at the most. Off shows the cost row and the press row alone.
+// The popup's rows, in order: the cost row, the model row, the reviews row, the press row, then at most one state row; five at the most. Off shows the cost row, the model row and the press row alone.
 export const rowsOf = (f: Figures): Row[] => {
+  const cost: Row = { key: 'cost', text: costRow(f) }
+  const model: Row = { key: 'model', text: `reviewer model: ${f.model}` }
   const press: Row = { key: 'press', text: f.state === 'off' ? 'click to switch on' : 'click to switch off' }
-  if (f.state === 'off') return [{ key: 'cost', text: costRow(f) }, press]
+  if (f.state === 'off') return [cost, model, press]
   const state = stateRow(f)
-  return [{ key: 'cost', text: costRow(f) }, { key: 'reviews', text: reviewsRow(f) }, press, ...(state === undefined ? [] : [{ key: 'state', text: state }])]
+  return [cost, model, { key: 'reviews', text: reviewsRow(f) }, press, ...(state === undefined ? [] : [{ key: 'state', text: state }])]
 }
 
 // What `/auditor` answers: the label the footer would draw, then the popup's rows.

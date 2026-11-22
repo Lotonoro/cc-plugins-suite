@@ -41,12 +41,29 @@ export const settled = async (): Promise<void> => {
 // The ids of the engine's model catalog cache as it was read once: 13, in the picker's order, which are the `id` of each model of `catalog.config.models` in the file `catalogfile.ts` holds.
 export const CATALOG_IDS: readonly string[] = ['claude-opus-5-5', 'claude-fable-5-2', 'claude-sonnet-5-5', 'claude-haiku-5-5', 'claude-fable-5-1', 'claude-haiku-4-5-20251001', 'claude-sonnet-5', 'claude-opus-5', 'claude-fable-5', 'claude-opus-4-8', 'claude-opus-4-7', 'claude-opus-4-6', 'claude-sonnet-4-6']
 
-// A catalog file in the engine's shape, with a model for each of `ids`, each holding its id alone, and the alias targets, which are present and never read. `over` sets keys at the top of the file, and a key set to undefined leaves it out of the text: `{ fetchedAt: undefined }` is a file that does not say when it was fetched.
-export const catalogFile = (ids: readonly string[] = CATALOG_IDS, over: Record<string, unknown> = {}): string =>
+// The `name` the same file gives each of those ids, by id as the file lists it: 13 names, all distinct (the `short_name` is not one of them: five Opus versions share "Opus").
+export const CATALOG_NAMES: Readonly<Record<string, string>> = {
+  'claude-opus-5-5': 'Opus 5.5',
+  'claude-fable-5-2': 'Fable 5.2',
+  'claude-sonnet-5-5': 'Sonnet 5.5',
+  'claude-haiku-5-5': 'Haiku 5.5',
+  'claude-fable-5-1': 'Fable 5.1',
+  'claude-haiku-4-5-20251001': 'Haiku 4.5',
+  'claude-sonnet-5': 'Sonnet 5',
+  'claude-opus-5': 'Opus 5',
+  'claude-fable-5': 'Fable 5',
+  'claude-opus-4-8': 'Opus 4.8',
+  'claude-opus-4-7': 'Opus 4.7',
+  'claude-opus-4-6': 'Opus 4.6',
+  'claude-sonnet-4-6': 'Sonnet 4.6',
+}
+
+// A catalog file in the engine's shape, with a model for each of `ids`, each holding its id alone, or its id and the `name` that `names` (by id) holds for it, whatever that value is, and the alias targets, which are present and never read. `over` sets keys at the top of the file, and a key set to undefined leaves it out of the text: `{ fetchedAt: undefined }` is a file that does not say when it was fetched.
+export const catalogFile = (ids: readonly string[] = CATALOG_IDS, over: Record<string, unknown> = {}, names: Readonly<Record<string, unknown>> = {}): string =>
   JSON.stringify({
     version: 2,
     fetchedAt: 1_794_728_996_752,
     staleAt: 1_794_731_126_951,
-    catalog: { surface: 'cc', config: { id: 'cc', models: ids.map(id => ({ id })), provider_alias_targets: { fable: { default: 'claude-fable-5-2' }, haiku: { default: 'claude-haiku-5-5' } } } },
+    catalog: { surface: 'cc', config: { id: 'cc', models: ids.map(id => (id in names ? { id, name: names[id] } : { id })), provider_alias_targets: { fable: { default: 'claude-fable-5-2' }, haiku: { default: 'claude-haiku-5-5' } } } },
     ...over,
   })

@@ -11,7 +11,7 @@ import { MAIN, admitSend, decideRefusal, followUpText, frameNote, isStoppedRefus
 import type { Decided, Outcome, Refusal, Sent, Verdict } from './notes'
 import { REVIEWER_PROMPT } from './prompt'
 import { clip, editedLines, entryBlock, pageOf, renumberBlock, toolLine } from './record'
-import { DEFAULT_MODEL, FALLBACK_CHOICES, isFullId, offered, takeChoice } from './models'
+import { DEFAULT_MODEL, FALLBACK_CHOICES, isFullId, keepsPair, offered, shownAs, takeChoice } from './models'
 import type { Choices, ModelIds } from './models'
 import { adopt, compactionModel, countUnmatched, idleTimerOf, isEndNotice, isHandBack, isNotice, isReviewerEntry, land, lapseListFacts, lapseOf, learn, learnName, letGo, letGoSwitched, letGoSwitchedIdle, markers, nameKnown, nameListed, needsIds, originOf, reapIdle, reviewModels, reviewerNameOf, spawnChoice, spawnName, spawning, standingOf, stopMissed, sweepable, WORKING, withTurnEnd } from './reviewer'
 import type { Counted, Identity, IdleTimer, LapseListFacts, Release, ReviewModels, UnmatchedReason } from './reviewer'
@@ -118,10 +118,18 @@ export const readLedger = async ($: Pick<Scope, 'session' | 'clock' | 'ui'>): Pr
   return typeof usd === 'number' && Number.isFinite(usd) && usd >= 0 ? usd : undefined
 }
 
-// What the button's words read for a conversation: its state and tally, and the session total where there is a share to show (off shows no figures, and nothing spent or an unknown cost has no share, so the ledger is not read for them).
-const figuresOf = async ($: Pick<Scope, 'session' | 'clock' | 'ui'>, c: Conversation): Promise<Figures> => {
+// The words that name the model the next review runs on: the conversation's choice, or, where it holds none, the one a take would give from the memo (`takeChoice`), shown by the name the catalog gives its id (`shownAs`). The ids are the memo's with the stored reviewer's own pair laid over them where the pair rule keeps it (`keepsPair`): that pair is the newest resolution of its alias, and a spawn stands in as the stored reviewer before the store has the pair. The reviewer's own model is never the answer, since after a switch it is the old one: the row names only what the next review runs on. The reviewer's resolved model is read as `resolvedOf` in reviewer.ts reads it: its stored model, else the one recorded for its id.
+const modelShown = (c: Conversation, memo: Memo): string => {
+  const reviewer = c.reviewer
+  const resolved = reviewer === undefined ? undefined : reviewer.model || c.reviewerModels[reviewer.id]
+  const ids = reviewer?.choice !== undefined && resolved !== undefined && keepsPair(reviewer.choice, resolved) ? { ...memo.ids, [reviewer.choice]: resolved } : memo.ids
+  return shownAs(takeChoice(c.choice, memo.last, memo.choices), ids, memo.choices)
+}
+
+// What the button's words read for a conversation: its state and tally, the session total where there is a share to show (off shows no figures, and nothing spent or an unknown cost has no share, so the ledger is not read for them), and the model the next review runs on, from the memo, so a redraw reads no store, catalog or setting.
+const figuresOf = async ($: Pick<Scope, 'session' | 'clock' | 'ui'>, c: Conversation, memo: Memo): Promise<Figures> => {
   const showsShare = !c.off && c.unpriced === null && c.spent > 0
-  return { state: stateOf(c), spent: c.spent, unpriced: c.unpriced, total: showsShare ? await readLedger($) : undefined, reviews: c.reviews, notes: c.notes, last: c.last, cause: causeOf(c), held: c.pendingNotes.length }
+  return { state: stateOf(c), spent: c.spent, unpriced: c.unpriced, total: showsShare ? await readLedger($) : undefined, model: modelShown(c, memo), reviews: c.reviews, notes: c.notes, last: c.last, cause: causeOf(c), held: c.pendingNotes.length }
 }
 
 const firstLine = (text: string): string => text.split('\n', 1)[0] ?? ''
@@ -964,6 +972,20 @@ const takeInputs = async ($: Scope): Promise<TakeInputs> => {
   return { last, choices }
 }
 
+// What the model row reads at a redraw: the take's inputs, and the full ids the store holds for the aliases, as the last refresh read them.
+type Memo = TakeInputs & { ids: ModelIds }
+
+// A refresh of the memo, run after `tail`, the refreshes asked for before it, so refreshes run one at a time in the order asked and none replaces a memo a later one wrote. It reads what a take reads (the last model set and the choices) and the stored ids; each read is bounded and fails open, recorded by its adapter, so a refresh ends within the bounds and a failed read leaves its part of the memo as the fallback. The guard is for a throw nothing foresees: a chain that once rejected would skip every later refresh. Resolves once `set` has been given the memo, and never rejects.
+const refreshMemo = ($: Scope, tail: Promise<void>, set: (memo: Memo) => void): Promise<void> =>
+  tail.then(async () => {
+    try {
+      const [last, choices, ids] = await Promise.all([readLastModel($), readChoices($), readModelIds($)])
+      set({ last, choices, ids })
+    } catch (err) {
+      recordFailed($, 'model row refresh', err)
+    }
+  })
+
 // Delivers the plan's brief to a reviewer, stored or spawned. Resolves true when the engine refused the brief in its stopped-session state, by either transport, so the caller gives the review back (`giveBack`); the stored reviewer is kept then, and no spawn is made after its refusal.
 const deliverBrief = async ($: Scope, plan: Plan): Promise<boolean> => {
   const { send, brief, number } = plan
@@ -1190,6 +1212,12 @@ export const register: Register = (on, options) => {
   const log = options['log'] === true
   // What a /clear carries from its session end to the session start after it: the conversation the end's reset computed, with the choice of the conversation it cleared and no spawns in flight. The engine empties the conversation state between the two (`$.state` is scoped to the session id in force), but the hooks module's memory outlives both. Set by `session.end`, taken by `classic.SessionStart`. It is the registering function's own rather than the module's, so each load, and each test, starts with none, and it needs no session key: a process runs one session at a time. A fresh load between the two (a reload, an enable, a worker respawn), a failed state change at the start and a reset that fails at its read, where no earlier end set one, leave the new conversation with none: it starts on, at epoch and dispatch count zero, and takes the last model set.
   let carried: Conversation | undefined
+  // What the model row reads (`Memo`), until a refresh has landed: no last model set, the fallback choices and no ids, so the row shows the held choice as spelled, or haiku where there is none. Written by `refreshMemo` alone, which runs once at load (not awaited) and once in each `/auditor` that answers the state; `/auditor memory` and `/auditor model` run none, since neither prints the row and the second reads its own inputs. Another session's set, a /clear and a /resume refresh nothing: the row names what the memo last read until the next load or `/auditor`. It is the registering function's own, as `carried` is, so each load and each test starts with an empty one and a /clear keeps it. `refreshing` is the tail of the refreshes asked for so far.
+  let memo: Memo = { last: undefined, choices: FALLBACK_CHOICES, ids: {} }
+  let refreshing: Promise<void> = Promise.resolve()
+  const setMemo = (taken: Memo): void => {
+    memo = taken
+  }
 
   on('session.start', async ($, e, next) => {
     // The footer button's twin for every surface: a phone draws no footer, but its typed commands run here and their answer shows there.
@@ -1248,6 +1276,7 @@ export const register: Register = (on, options) => {
       autoCompactWindow: 100_000,
     })
     void leftIdleAtLoad($)
+    refreshing = refreshMemo($, refreshing, setMemo)
     return next(e)
   })
 
@@ -1291,8 +1320,11 @@ export const register: Register = (on, options) => {
     const model = /^model(?:\s+([\s\S]*))?$/i.exec(e.args.trim())
     if (model !== null) return { text: await modelCommand($, (model[1] ?? '').trim()) }
     if (wanted !== '' && wanted !== 'on' && wanted !== 'off') return { text: USAGE }
-    const after = wanted === '' ? await readConversation($) : await toggle($, log, () => wanted === 'off')
-    return { text: answerOf(await figuresOf($, after)) }
+    // A switch takes effect before the refresh, so it never waits on the reads; the answer waits for them, so it names the model the store and the catalog now say, whoever set it.
+    const toggled = wanted === '' ? undefined : await toggle($, log, () => wanted === 'off')
+    refreshing = refreshMemo($, refreshing, setMemo)
+    await refreshing
+    return { text: answerOf(await figuresOf($, toggled ?? (await readConversation($)), memo)) }
   })
 
   // A compaction of a reviewer's own conversation keeps what its judgement rests on; the worker's is left as it is.
@@ -1553,7 +1585,7 @@ export const register: Register = (on, options) => {
   // The toggle sits among the footer's mode labels, where terminal and desktop draw it, and switches the reviewer off or on for this session (`switched`).
   on('ui.render', { component: 'SessionMode' }, async ($, e, next) => {
     const { Box, Button, Text } = $.ui.resolve(e)
-    const figures = await figuresOf($, await readConversation($))
+    const figures = await figuresOf($, await readConversation($), memo)
     const press = async (): Promise<void> => {
       await toggle($, log, c => !c.off)
     }
