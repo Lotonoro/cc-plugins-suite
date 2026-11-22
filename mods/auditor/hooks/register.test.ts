@@ -653,6 +653,10 @@ const separated = async (ui: any): Promise<boolean> => JSON.stringify(await ui.d
 const buttonReads = async (ui: any, state: 'on' | 'off' | 'failing') => {
   expect(await ui.find({ key: 'auditor-toggle' })).toMatchObject({ props: { plain: true, label: `auditor ${state}` } })
 }
+// The button as drawn while some model is unpriced and some spend is priced: its label reads the dollars, marked partial in the share's place.
+const buttonReadsPartial = async (ui: any, state: 'on' | 'failing', dollars: string) => {
+  expect(await ui.find({ key: 'auditor-toggle' })).toMatchObject({ props: { plain: true, label: `auditor ${state} (${dollars}, partial)` } })
+}
 // The popup's rows as the tree draws them, in order: the text of each row keyed as one of the popup's.
 const popupTexts = async (ui: any): Promise<string[]> => {
   const drawn = JSON.stringify(await ui.drawn())
@@ -6788,21 +6792,75 @@ describe('the auditor\'s cost', () => {
     const seen = engine(on)
     await workerTurn($)
     await request($, billed({ model: `${HAIKU}-20261001`, output_tokens: 1_000_000 }))
-    expect(seen.conversation).toMatchObject({ unpriced: null })
+    expect(seen.conversation.unpriced).toEqual([])
     expect(closeTo(seen.conversation.spent, 0.5)).toBe(true)
   })
 
-  test('a response reporting any other id leaves the cost unknown: the label drops the figures, the popup names the model, and later responses do not make it known', ON, async ($, on) => {
+  test('a response reporting any other id is named and adds nothing, and the priced responses around it both count: the label reads partial, the popup names the model with no share, and the ledger is not read', ON, async ($, on) => {
     const seen = engine(on, { ledger: 100 })
     otherMods(on)
     await workerTurn($)
     await request($, worth(1))
     await request($, billed({ model: 'haiku', output_tokens: 10 }))
     await request($, worth(1))
-    expect(seen.conversation).toMatchObject({ unpriced: 'haiku' })
+    expect(seen.conversation.unpriced).toEqual(['haiku'])
+    expect(closeTo(seen.conversation.spent, 2)).toBe(true)
+    const ui = await mountMode($)
+    await buttonReadsPartial(ui, 'on', '$2.00')
+    expect((await popupTexts(ui))[0]).toBe('auditor $2.00 since on · API list prices · partial: no price for haiku')
+    expect(seen.ledgerReads).toBe(0)
+  })
+
+  test('a response reporting an id outside the table, with no priced spend before or after it, leaves the cost unknown: the label drops the figures and the popup names the model', ON, async ($, on) => {
+    const seen = engine(on, { ledger: 100 })
+    otherMods(on)
+    await workerTurn($)
+    await request($, billed({ model: 'claude-unpriced-1-1', output_tokens: 10 }))
+    expect(seen.conversation).toMatchObject({ spent: 0 })
+    expect(seen.conversation.unpriced).toEqual(['claude-unpriced-1-1'])
     const ui = await mountMode($)
     await buttonReads(ui, 'on')
-    expect(await ui.find({ type: 'Text', text: 'cost unknown: no price for haiku' })).toBeDefined()
+    expect((await popupTexts(ui))[0]).toBe('cost unknown: no price for claude-unpriced-1-1')
+    expect(seen.ledgerReads).toBe(0)
+  })
+
+  test('every unpriced model is named, in the order met, with the dates of one dropped: the popup and /auditor read them all, and a priced response after them still counts', ON, async ($, on) => {
+    const seen = engine(on, { ledger: 100 })
+    otherMods(on)
+    await workerTurn($)
+    await request($, billed({ model: 'claude-unpriced-2-2-20261001', output_tokens: 10 }))
+    await request($, billed({ model: 'haiku', output_tokens: 10 }))
+    await request($, billed({ model: 'claude-unpriced-2-2', output_tokens: 10 }))
+    await request($, worth(0.75))
+    expect(seen.conversation.unpriced).toEqual(['claude-unpriced-2-2', 'haiku'])
+    const cost = 'auditor $0.75 since on · API list prices · partial: no price for claude-unpriced-2-2, haiku'
+    expect((await popupTexts(await mountMode($)))[0]).toBe(cost)
+    expect((await run($))?.split('\n').slice(0, 2)).toEqual(['auditor on ($0.75, partial)', cost])
+    expect(seen.ledgerReads).toBe(0)
+  })
+
+  test('a review on a model the table lacks, a switch back to a priced model and a priced review: the footer reads partial and the popup names the model left out', ON, async ($, on) => {
+    const FABLE = 'claude-fable-5-2'
+    const seen = engine(on, { ledger: 100, spawnModels: [FABLE, HAIKU], reviewerIds: ['ag1', 'ag2'] })
+    otherMods(on)
+    await run($, `model ${FABLE}`)
+    await workerTurn($)
+    // Each review's response reports the id its switch chose: the engine's answer here sets the reported model apart from the switch.
+    await request($, billed({ model: FABLE, output_tokens: 10 }))
+    await turnEnded($, 'ag1', 'Nothing to note.')
+    expect(seen.conversation.unpriced).toEqual([FABLE])
+    expect((await popupTexts(await mountMode($)))[0]).toBe(`cost unknown: no price for ${FABLE}`)
+    await run($, `model ${HAIKU}`)
+    await drained()
+    await workerTurn($, 'Second.')
+    await request($, worth(1), 'ag2')
+    expect(seen.spawns.filter(spawn => typeOf(spawn) === 'auditor:reviewer').map(spawn => spawn.model)).toEqual([FABLE, HAIKU])
+    expect(seen.conversation.unpriced).toEqual([FABLE])
+    expect(closeTo(seen.conversation.spent, 1)).toBe(true)
+    const ui = await mountMode($)
+    await buttonReadsPartial(ui, 'on', '$1.00')
+    expect((await popupTexts(ui))[0]).toBe(`auditor $1.00 since on · API list prices · partial: no price for ${FABLE}`)
+    expect(seen.ledgerReads).toBe(0)
   })
 
   test('a late response of a reviewer retired before it landed adds to the tally and leaves the current reviewer\'s tracked context alone', ON, async ($, on) => {
@@ -6843,6 +6901,19 @@ describe('the auditor\'s cost', () => {
     expect(closeTo(withUsage.conversation.spent, 0.01)).toBe(true)
   })
 
+  test('a reviewer compaction on a model the table lacks is named and adds nothing, and a priced response after it still counts', ON, async ($, on) => {
+    const seen = engine(on, { spawn: { model: 'claude-unpriced-1-1', agentId: 'ag1' }, compactUsage: { input_tokens: 100_000, output_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 } })
+    otherMods(on)
+    await workerTurn($)
+    await $.session.compact(compacting('ag1'))
+    expect(seen.conversation.spent).toBe(0)
+    expect(seen.conversation.unpriced).toEqual(['claude-unpriced-1-1'])
+    await request($, worth(1))
+    expect(closeTo(seen.conversation.spent, 1)).toBe(true)
+    expect(seen.conversation.unpriced).toEqual(['claude-unpriced-1-1'])
+    await buttonReadsPartial(await mountMode($), 'on', '$1.00')
+  })
+
   test('a reviewer compaction without usage leaves the tally unchanged', ON, async ($, on) => {
     const seen = engine(on, { spawn: PINNED })
     await workerTurn($)
@@ -6864,7 +6935,8 @@ describe('the auditor\'s cost', () => {
     await workerTurn($)
     await request($, worth(2))
     await run($, 'off')
-    expect(seen.conversation).toMatchObject({ spent: 0, unpriced: null })
+    expect(seen.conversation.spent).toBe(0)
+    expect(seen.conversation.unpriced).toEqual([])
     expect(await labelOf($)).toBe('auditor off')
     await request($, worth(2))
     expect(seen.conversation.spent).toBe(0)
@@ -6873,13 +6945,28 @@ describe('the auditor\'s cost', () => {
     expect(await labelOf($)).toBe('auditor on')
   })
 
-  test('switching off clears an unknown cost too', ON, async ($, on) => {
+  test('switching off clears the unpriced models and the priced spend beside them, a response landing while off names none, and switching on starts both empty', ON, async ($, on) => {
     const seen = engine(on)
     await workerTurn($)
+    await request($, worth(1))
     await request($, billed({ model: 'haiku' }))
+    expect(seen.conversation.unpriced).toEqual(['haiku'])
     await run($, 'off')
+    expect(seen.conversation.spent).toBe(0)
+    expect(seen.conversation.unpriced).toEqual([])
+    await request($, billed({ model: 'claude-unpriced-1-1' }))
+    expect(seen.conversation.unpriced).toEqual([])
     await run($, 'on')
-    expect(seen.conversation.unpriced).toBeNull()
+    expect(seen.conversation.spent).toBe(0)
+    expect(seen.conversation.unpriced).toEqual([])
+  })
+
+  test('switching on empties the unpriced models and the spend a state held while off', ON, async ($, on) => {
+    const seen = engine(on, { stateSeed: { off: true, epoch: 1, spent: 0.5, unpriced: ['claude-unpriced-1-1'] } })
+    await run($, 'on')
+    expect(seen.conversation.off).toBe(false)
+    expect(seen.conversation.spent).toBe(0)
+    expect(seen.conversation.unpriced).toEqual([])
   })
 
   test('the toggle button purges the tally the same way', ON, async ($, on) => {
@@ -6901,14 +6988,17 @@ describe('the auditor\'s cost', () => {
     expect(await labelOf($)).toBe('auditor failing ($2.00, 2%)')
   })
 
-  test('a /clear or a resume empties the tally', ON, async ($, on) => {
+  test('a /clear or a resume empties the tally and the unpriced models', ON, async ($, on) => {
     const seen = engine(on)
     for (const reason of ['clear', 'resume'] as const) {
       await workerTurn($)
       await request($, worth(2))
+      await request($, billed({ model: 'haiku' }))
       expect(seen.conversation.spent).toBeGreaterThan(0)
+      expect(seen.conversation.unpriced).toEqual(['haiku'])
       await $.session.end({ reason, sessionId: 's1' } as any)
       expect(seen.conversation.spent).toBe(0)
+      expect(seen.conversation.unpriced).toEqual([])
     }
   })
 
@@ -6930,6 +7020,43 @@ describe('the auditor\'s cost', () => {
     await workerTurn($)
     await request($, worth(1))
     expect(closeTo(seen.conversation.spent, 1)).toBe(true)
+    expect(seen.conversation.unpriced).toEqual([])
+  })
+
+  describe('a conversation stored with the unpriced models as one name or none', () => {
+    test('a single name, as stored before the field was a list, reads as a list of that name: the footer, the popup and /auditor read it, and the next write keeps the list', ON, async ($, on) => {
+      const seen = engine(on, { ledger: 100, stateSeed: { dispatches: 3, off: false, epoch: 1, spent: 0.5, unpriced: 'claude-unpriced-1-1' } })
+      otherMods(on)
+      const cost = 'auditor $0.50 since on · API list prices · partial: no price for claude-unpriced-1-1'
+      const ui = await mountMode($)
+      await buttonReadsPartial(ui, 'on', '$0.50')
+      expect((await popupTexts(ui))[0]).toBe(cost)
+      expect((await run($))?.split('\n').slice(0, 2)).toEqual(['auditor on ($0.50, partial)', cost])
+      expect(seen.ledgerReads).toBe(0)
+      await workerTurn($)
+      await request($, worth(1))
+      expect(seen.conversation.unpriced).toEqual(['claude-unpriced-1-1'])
+      expect(closeTo(seen.conversation.spent, 1.5)).toBe(true)
+    })
+
+    test('a single name stored with no priced spend reads as a list of that name: the cost is unknown for it', ON, async ($, on) => {
+      const seen = engine(on, { stateSeed: { dispatches: 3, off: false, epoch: 1, unpriced: 'haiku' } })
+      otherMods(on)
+      expect((await run($))?.split('\n').slice(0, 2)).toEqual(['auditor on', 'cost unknown: no price for haiku'])
+      await workerTurn($)
+      await request($, billed({ model: 'claude-unpriced-1-1', output_tokens: 10 }))
+      expect(seen.conversation.unpriced).toEqual(['haiku', 'claude-unpriced-1-1'])
+    })
+
+    test('a null reads as the empty list: the figures show with their share', ON, async ($, on) => {
+      const seen = engine(on, { ledger: 100, stateSeed: { dispatches: 3, off: false, epoch: 1, spent: 0.5, unpriced: null } })
+      otherMods(on)
+      expect(await labelOf($)).toBe('auditor on ($0.50, 0.5%)')
+      await workerTurn($)
+      await request($, worth(1))
+      expect(seen.conversation.unpriced).toEqual([])
+      expect(closeTo(seen.conversation.spent, 1.5)).toBe(true)
+    })
   })
 
   describe('the ledger reader', () => {
@@ -7076,6 +7203,17 @@ describe('the auditor\'s cost', () => {
       await request($, billed({ model: 'haiku' }))
       await turnFailed($, 'ag1')
       expect(await run($)).toBe('auditor failing\ncost unknown: no price for haiku\nreviewer model: haiku\nno reviews yet\nclick to switch off\nfailing: the reviewer ended a turn without an answer')
+    })
+
+    test('failing and a partial figure read as the footer does: the label marked partial, then the cost row naming the model left out', ON, async ($, on) => {
+      engine(on)
+      otherMods(on)
+      await workerTurn($)
+      await request($, worth(1))
+      await request($, billed({ model: 'haiku' }))
+      await turnFailed($, 'ag1')
+      expect(await run($)).toBe('auditor failing ($1.00, partial)\nauditor $1.00 since on · API list prices · partial: no price for haiku\nreviewer model: haiku\nno reviews yet\nclick to switch off\nfailing: the reviewer ended a turn without an answer')
+      await buttonReadsPartial(await mountMode($), 'failing', '$1.00')
     })
 
     test('the usage line names the model argument, the memory print is unchanged, and the description names the cost', ON, async ($, on) => {
@@ -10457,7 +10595,7 @@ describe('the reviewer model each conversation chooses', () => {
       expect(seen.conversation.reviewerModels).toEqual({ ag1: HAIKU, ag2: 'claude-opus-4-6' })
       expect(seen.conversation.reviewer).toMatchObject({ id: 'ag2', choice: 'opus' })
       await $.session.compact(compacting('ag1'))
-      expect(seen.conversation.unpriced).toBeNull()
+      expect(seen.conversation.unpriced).toEqual([])
       expect(closeTo(seen.conversation.spent, 0.01)).toBe(true)
     })
 
@@ -10465,26 +10603,27 @@ describe('the reviewer model each conversation chooses', () => {
       const seen = engine(on, { spawnModels: ['claude-unpriced-1-1'], compactUsage: COMPACT_USAGE })
       await turn($)
       await $.session.compact(compacting('ag1'))
-      expect(seen.conversation).toMatchObject({ spent: 0, unpriced: 'claude-unpriced-1-1' })
+      expect(seen.conversation.spent).toBe(0)
+      expect(seen.conversation.unpriced).toEqual(['claude-unpriced-1-1'])
     })
 
     test('a reviewer with no recorded model and no choice makes the cost read unknown for a named model, not a blank', ON, async ($, on) => {
       const seen = engine(on, { stateSeed: { reviewer: { id: 'ag1', model: '' }, reviewerIds: ['ag1'] }, compactUsage: COMPACT_USAGE })
       await $.session.compact(compacting('ag1'))
-      expect(seen.conversation.unpriced).toBe('an unknown model')
+      expect(seen.conversation.unpriced).toEqual(['an unknown model'])
     })
 
     test('a reviewer adopted before its result landed takes the id its choice gets from the stored ids', ON, async ($, on) => {
       const seen = engine(on, { stateSeed: { reviewer: { id: 'ag1', model: '', choice: 'haiku' }, reviewerIds: ['ag1'] }, store: { modelIds: { haiku: HAIKU } }, compactUsage: COMPACT_USAGE })
       await $.session.compact(compacting('ag1'))
-      expect(seen.conversation.unpriced).toBeNull()
+      expect(seen.conversation.unpriced).toEqual([])
       expect(closeTo(seen.conversation.spent, 0.01)).toBe(true)
     })
 
     test('a store that cannot be read leaves such a reviewer\'s compaction unknown, and is recorded', ON, async ($, on) => {
       const seen = engine(on, { stateSeed: { reviewer: { id: 'ag1', model: '', choice: 'haiku' }, reviewerIds: ['ag1'] }, storeReadFails: true, compactUsage: COMPACT_USAGE })
       await $.session.compact(compacting('ag1'))
-      expect(seen.conversation.unpriced).toBe('an unknown model')
+      expect(seen.conversation.unpriced).toEqual(['an unknown model'])
       expect(debugLines(seen, 'store read of the model ids failed').length).toBe(1)
     })
 
@@ -10719,7 +10858,7 @@ describe('a /clear carries the session end\'s reset', () => {
         reviews: 2,
         notes: 1,
         last: { at: 1, note: true },
-        unpriced: 'claude-unpriced-1-1',
+        unpriced: ['claude-unpriced-1-1'],
         midTurn: true,
         interrupted: true,
         turnStart: 'user',
@@ -10730,7 +10869,8 @@ describe('a /clear carries the session end\'s reset', () => {
     await cleared($, seen)
     expect(seen.conversation.review).toBeUndefined()
     expect(seen.conversation.last).toBeUndefined()
-    expect(seen.conversation).toMatchObject({ pendingNotes: [], record: { blocks: [] }, memory: [], briefsInFlight: [], spent: 0, reviews: 0, notes: 0, unpriced: null, midTurn: false, interrupted: false, turnStart: null, lastMessage: '', transcript: '/tmp/w.jsonl' })
+    expect(seen.conversation).toMatchObject({ pendingNotes: [], record: { blocks: [] }, memory: [], briefsInFlight: [], spent: 0, reviews: 0, notes: 0, midTurn: false, interrupted: false, turnStart: null, lastMessage: '', transcript: '/tmp/w.jsonl' })
+    expect(seen.conversation.unpriced).toEqual([])
     expect(seen.conversation).toMatchObject({ epoch: 6, dispatches: 3, dispatchesAtPrompt: 3 })
   })
 
@@ -11167,7 +11307,7 @@ describe('the reviewer model shown', () => {
       } finally {
         STEP_USAGE = null
       }
-      expect(seen.conversation).toMatchObject({ unpriced: 'claude-unpriced-1-1' })
+      expect(seen.conversation.unpriced).toEqual(['claude-unpriced-1-1'])
       expect(lines(await run($)).slice(1, 3)).toEqual(['cost unknown: no price for claude-unpriced-1-1', 'reviewer model: Haiku 5.5'])
     })
   })

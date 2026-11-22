@@ -63,11 +63,15 @@ list prices, for new input, output, cache reads and writes, and for reviewer
 compaction requests.
 
 The priced models are those the claude-api skill’s model table listed when
-the rates were taken, on 2026-11-18. A review on any other model leaves the
-cost unknown: the footer drops its figures and `/auditor` says
-`cost unknown`, naming the model, until you switch Auditor off and on again
-or run `/clear`. A price tier a model gains later is followed only once its
-rates are taken again.
+the rates were taken, on 2026-11-18. A review on any other model is left out
+of the estimate, while reviews on priced models still count. Once a priced
+review has counted, the footer and `/auditor` mark the figure `partial`, and
+hovering the label or running `/auditor` names each model left out. Before
+one has, the footer drops its figures and `/auditor` says `cost unknown`,
+naming the models. The share of the session total shows only while every
+review is priced. The models stay named until you switch Auditor off and on
+again or run `/clear`. A price tier a model gains later is followed only once
+its rates are taken again.
 
 ## Get started
 
