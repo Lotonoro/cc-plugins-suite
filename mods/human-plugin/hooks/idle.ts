@@ -60,16 +60,17 @@ const NAMED = 10
 
 const debugLine = (text: string): string => `human-plugin: idle rule: ${text}`
 
-// The open items' numbers, the first NAMED of them and then how many more.
-const numbers = (ids: readonly number[]): string => {
+// The open items' numbers, the first NAMED of them and then how many more, with `rest` after the count when there are more.
+const numbers = (ids: readonly number[], rest = ''): string => {
   const named = ids.slice(0, NAMED).map(id => `#${id}`).join(', ')
   const more = ids.length - NAMED
-  return more > 0 ? `${named}, and ${more} more` : named
+  return more > 0 ? `${named}, and ${more} more${rest}` : named
 }
 
-// The steer: the same words every time but the numbers, and no item's title or ask.
-const steerText = (open: string): string =>
-  `Your turn is ending with items open on the human list and none of them blocking: ${open}. If there is nothing left you can do without the human, mark blocking, with human_items update, each open item your remaining work waits on, at least one. Otherwise do the work you still can, or remove an item that no longer applies.`
+// The steer: the same words every time but the numbers, and no item's title or ask. When the numbers are cut it says how to read the rest, an item beyond them being
+// one the agent's work may wait on too.
+const steerText = (ids: readonly number[]): string =>
+  `Your turn is ending with items open on the human list and none of them blocking: ${numbers(ids, ' (read them with human_items list)')}. If there is nothing left you can do without the human, mark blocking, with human_items update, each open item your remaining work waits on, at least one. Otherwise do the work you still can, or remove an item that no longer applies.`
 
 const declineText = (open: string): string => `human-plugin: the agent ended its turn after the steer with items open and none blocking: ${open}`
 
@@ -126,12 +127,13 @@ export const atStop = async (f: Facts): Promise<Verdict> => {
     debug.push(debugLine(`withheld: ${held.why}`))
     return { block: null, debug, decline: null }
   }
-  const open = numbers(held.open.map(it => it.id))
+  const ids = held.open.map(it => it.id)
+  const open = numbers(ids)
   if (f.stop.stop_hook_active) {
     debug.push(debugLine(`not steered again: ${open}`))
     return { block: null, debug, decline: declineText(open) }
   }
   steered = true
   debug.push(debugLine(`steered, items open and none blocking: ${open}`))
-  return { block: steerText(open), debug, decline: null }
+  return { block: steerText(ids), debug, decline: null }
 }

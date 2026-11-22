@@ -511,21 +511,22 @@ test("a session end that is not a /clear clears the messages the turn recorded, 
 
 // ---- What the steer names
 
-test('twelve open items: the steer names the first ten numbers in the band\'s order and then says "and 2 more"', async ($, on) => {
+test('twelve open items: the steer names the first ten numbers in the band\'s order, says "and 2 more" and says to read them with the list call', async ($, on) => {
   world(on)
   await file($, ...Array.from({ length: 12 }, (_, n) => `Ask ${n + 1}`))
   const text = (await $.classic.Stop(STOP)).block ?? ''
-  expect(text).toContain('#1, #2, #3, #4, #5, #6, #7, #8, #9, #10, and 2 more')
+  expect(text).toContain('#1, #2, #3, #4, #5, #6, #7, #8, #9, #10, and 2 more (read them with human_items list).')
   expect(text).not.toContain('#11')
   expect(text).not.toContain('#12')
 })
 
-test('ten open items are all named, with no count of more', async ($, on) => {
+test('ten open items are all named, with no count of more and no call to read the rest', async ($, on) => {
   world(on)
   await file($, ...Array.from({ length: 10 }, (_, n) => `Ask ${n + 1}`))
   const text = (await $.classic.Stop(STOP)).block ?? ''
   expect(text).toContain('#1, #2, #3, #4, #5, #6, #7, #8, #9, #10.')
   expect(text).not.toContain('more')
+  expect(text).not.toContain('human_items list')
 })
 
 test("an item a walk has shown ranks below the rest in the steer, as it does in the band", async ($, on) => {
