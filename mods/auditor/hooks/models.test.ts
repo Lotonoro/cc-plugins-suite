@@ -1,6 +1,9 @@
 import { describe, expect, test } from 'claude-code/testing'
-import { CATALOG_IDS } from './fakes'
-import { ALIASES, DEFAULT_MODEL, FALLBACK_CHOICES, canonicalOf, choicesOf, idOf, isFable, isFullId, isNames, offered, sameModel, takeChoice } from './models'
+import { CATALOG_IDS, CATALOG_NAMES } from './fakes'
+import { ALIASES, DEFAULT_MODEL, FALLBACK_CHOICES, canonicalOf, choicesOf, idOf, isFable, isFullId, isNames, keepsPair, offered, sameModel, shownAs, takeChoice } from './models'
+
+// What the catalog read gives `choicesOf` for its names: each id's name, by canonical id.
+const NAMES: Record<string, string> = Object.fromEntries(CATALOG_IDS.map(id => [canonicalOf(id) ?? id, CATALOG_NAMES[id] ?? '']))
 
 describe('the id grammar', () => {
   test('a bare id, one with a date suffix and one with the other date form are full ids with one canonical form', () => {
@@ -81,7 +84,7 @@ describe('the choices', () => {
   test('with no catalog they are the four aliases, in order, and the default is haiku', () => {
     expect(ALIASES).toEqual(['haiku', 'sonnet', 'opus', 'fable'])
     expect(DEFAULT_MODEL).toBe('haiku')
-    expect(choicesOf(undefined, undefined)).toEqual({ list: ['haiku', 'sonnet', 'opus', 'fable'], defaultChoice: 'haiku', filterIgnored: false })
+    expect(choicesOf(undefined, undefined)).toEqual({ list: ['haiku', 'sonnet', 'opus', 'fable'], defaultChoice: 'haiku', filterIgnored: false, names: {} })
     expect(FALLBACK_CHOICES).toEqual(choicesOf(undefined, undefined))
   })
 
@@ -93,7 +96,7 @@ describe('the choices', () => {
   })
 
   test('an availableModels naming one alias and one catalog id leaves just those two', () => {
-    expect(choicesOf(CATALOG_IDS, ['opus', 'claude-opus-4-6'])).toEqual({ list: ['opus', 'claude-opus-4-6'], defaultChoice: 'opus', filterIgnored: false })
+    expect(choicesOf(CATALOG_IDS, ['opus', 'claude-opus-4-6'])).toEqual({ list: ['opus', 'claude-opus-4-6'], defaultChoice: 'opus', filterIgnored: false, names: {} })
   })
 
   test('an entry matches a choice by its name or its canonical id, in any case', () => {
@@ -123,6 +126,64 @@ describe('the choices', () => {
 
   test('the list is not changed by the filter\'s own order', () => {
     expect(choicesOf(CATALOG_IDS, ['claude-opus-4-6', 'sonnet']).list).toEqual(['sonnet', 'claude-opus-4-6'])
+  })
+
+  describe('the names', () => {
+    test('the names the catalog read gave are carried, by canonical id, and change nothing else', () => {
+      const named = choicesOf(CATALOG_IDS, undefined, NAMES)
+      expect(named.names).toEqual(NAMES)
+      expect(named.names['claude-haiku-4-5']).toBe('Haiku 4.5')
+      expect({ ...named, names: {} }).toEqual(choicesOf(CATALOG_IDS, undefined))
+    })
+
+    test('a name empty once trimmed or holding a control character gives its id no name, a name with spaces around it is given trimmed, and the other names stand', () => {
+      const { names } = choicesOf(CATALOG_IDS, undefined, {
+        'claude-opus-4-6': '  Opus 4.6  ',
+        'claude-opus-4-7': '   ',
+        'claude-opus-5': 'Opus\n5',
+        'claude-opus-5-5': 'Opus\t5.5',
+        'claude-fable-5': 'Fable\u00005',
+        'claude-fable-5-1': 'Fable 5.1\u007f',
+        'claude-fable-5-2': 'Fable\u00855.2',
+        'claude-sonnet-5': 'Sonnet 5\n',
+        'claude-haiku-5-5': 'Haiku 5.5',
+      })
+      expect(names).toEqual({ 'claude-opus-4-6': 'Opus 4.6', 'claude-haiku-5-5': 'Haiku 5.5' })
+    })
+
+    test('a name holding a line or paragraph separator gives its id no name, as a control character does, and the other names stand', () => {
+      expect(choicesOf(['claude-haiku-5-5'], undefined, { 'claude-haiku-5-5': 'Haiku' + String.fromCharCode(0x2028) + '5.5' }).names).toEqual({})
+      expect(choicesOf(['claude-haiku-5-5', 'claude-opus-4-6'], undefined, { 'claude-haiku-5-5': 'Haiku 5.5', 'claude-opus-4-6': 'Opus 4.6' + String.fromCharCode(0x2029) }).names).toEqual({ 'claude-haiku-5-5': 'Haiku 5.5' })
+    })
+
+    // Two names empty once trimmed would be dropped as a shared name whether or not they were unusable, so each is tried by itself.
+    test('a name that is empty, or only spaces, gives its id no name when no other name is empty', () => {
+      expect(choicesOf(CATALOG_IDS, undefined, { 'claude-opus-4-8': '' }).names).toEqual({})
+      expect(choicesOf(CATALOG_IDS, undefined, { 'claude-opus-4-8': '', 'claude-haiku-5-5': 'Haiku 5.5' }).names).toEqual({ 'claude-haiku-5-5': 'Haiku 5.5' })
+      expect(choicesOf(CATALOG_IDS, undefined, { 'claude-opus-4-7': '   ', 'claude-haiku-5-5': 'Haiku 5.5' }).names).toEqual({ 'claude-haiku-5-5': 'Haiku 5.5' })
+    })
+
+    test('two ids that share a name, once trimmed, have none; a name only one id holds stands', () => {
+      const { names } = choicesOf(CATALOG_IDS, undefined, { 'claude-opus-4-6': 'Opus', 'claude-opus-4-7': ' Opus ', 'claude-opus-4-8': 'Opus', 'claude-haiku-5-5': 'Haiku 5.5', 'claude-haiku-4-5': 'Haiku 4.5' })
+      expect(names).toEqual({ 'claude-haiku-5-5': 'Haiku 5.5', 'claude-haiku-4-5': 'Haiku 4.5' })
+    })
+
+    test('a name that only an unusable name could share is not shared', () => {
+      const { names } = choicesOf(CATALOG_IDS, undefined, { 'claude-opus-4-6': 'Opus', 'claude-opus-4-7': 'Opus\n' })
+      expect(names).toEqual({ 'claude-opus-4-6': 'Opus' })
+    })
+
+    test('the names cover the ids an availableModels filter removed from the list', () => {
+      const filtered = choicesOf(CATALOG_IDS, ['opus', 'claude-opus-4-6'], NAMES)
+      expect(filtered.list).toEqual(['opus', 'claude-opus-4-6'])
+      expect(filtered.names).toEqual(NAMES)
+    })
+
+    test('a filter that is ignored for leaving nothing leaves the names whole too', () => {
+      const ignored = choicesOf(CATALOG_IDS, ['nosuch'], NAMES)
+      expect(ignored.filterIgnored).toBe(true)
+      expect(ignored.names).toEqual(NAMES)
+    })
   })
 })
 
@@ -173,5 +234,73 @@ describe('takeChoice', () => {
   test('the default is the list\'s own, which a filter may move off haiku', () => {
     expect(takeChoice(undefined, undefined, choicesOf(CATALOG_IDS, ['sonnet', 'fable']))).toBe('sonnet')
     expect(takeChoice(undefined, 'haiku', choicesOf(CATALOG_IDS, ['sonnet', 'fable']))).toBe('sonnet')
+  })
+})
+
+describe('shownAs', () => {
+  const named = choicesOf(CATALOG_IDS, undefined, NAMES)
+
+  test('a choice is shown as the name of its id: an alias by the id it last resolved to, a full id by its own', () => {
+    expect(shownAs('haiku', { haiku: 'claude-haiku-5-5' }, named)).toBe('Haiku 5.5')
+    expect(shownAs('claude-opus-4-6', {}, named)).toBe('Opus 4.6')
+    expect(shownAs('claude-opus-4-6', { opus: 'claude-opus-5-5' }, named)).toBe('Opus 4.6')
+  })
+
+  test('a dated id is named by its canonical form, whether it is the choice or the id an alias resolved to', () => {
+    expect(shownAs('claude-haiku-4-5-20251001', {}, named)).toBe('Haiku 4.5')
+    expect(shownAs('haiku', { haiku: 'claude-haiku-5-5-20261001' }, named)).toBe('Haiku 5.5')
+  })
+
+  test('an alias no spawn has resolved is shown as spelled', () => {
+    expect(shownAs('sonnet', {}, named)).toBe('sonnet')
+    expect(shownAs('sonnet', { haiku: 'claude-haiku-5-5' }, named)).toBe('sonnet')
+  })
+
+  test('an id the names do not hold is shown as spelled, as the choice or as what an alias resolved to', () => {
+    expect(shownAs('claude-gone-1-1', {}, named)).toBe('claude-gone-1-1')
+    expect(shownAs('claude-opus-4-6[1m]', {}, named)).toBe('claude-opus-4-6[1m]')
+    expect(shownAs('haiku', { haiku: 'claude-gone-1-1' }, named)).toBe('haiku')
+  })
+
+  test('with the fallback choices, or choices read without names, a choice is shown as spelled', () => {
+    expect(shownAs('haiku', { haiku: 'claude-haiku-5-5' }, FALLBACK_CHOICES)).toBe('haiku')
+    expect(shownAs('claude-opus-4-6', {}, FALLBACK_CHOICES)).toBe('claude-opus-4-6')
+    expect(shownAs('claude-opus-4-6', {}, choicesOf(CATALOG_IDS, undefined))).toBe('claude-opus-4-6')
+  })
+
+  test('two catalog ids that share a name, once trimmed, are each shown as spelled, and an alias that resolved to one as the alias', () => {
+    const shared = choicesOf(CATALOG_IDS, undefined, { ...NAMES, 'claude-opus-4-6': 'Opus 4.6', 'claude-opus-4-7': ' Opus 4.6' })
+    expect(shownAs('claude-opus-4-6', {}, shared)).toBe('claude-opus-4-6')
+    expect(shownAs('claude-opus-4-7', {}, shared)).toBe('claude-opus-4-7')
+    expect(shownAs('opus', { opus: 'claude-opus-4-7' }, shared)).toBe('opus')
+    expect(shownAs('claude-opus-4-8', {}, shared)).toBe('Opus 4.8')
+  })
+
+  test('the name shown is the trimmed one', () => {
+    expect(shownAs('claude-opus-4-6', {}, choicesOf(CATALOG_IDS, undefined, { 'claude-opus-4-6': '  Opus 4.6 ' }))).toBe('Opus 4.6')
+  })
+
+  test('the words of a name the list does not offer are still its name: a held choice may lie outside an availableModels filter', () => {
+    const filtered = choicesOf(CATALOG_IDS, ['sonnet'], NAMES)
+    expect(shownAs('claude-opus-4-6', {}, filtered)).toBe('Opus 4.6')
+  })
+})
+
+describe('keepsPair', () => {
+  test('a pair of an alias choice and a full id is kept, in whatever form the id is', () => {
+    expect(keepsPair('haiku', 'claude-haiku-5-5')).toBe(true)
+    expect(keepsPair('opus', 'claude-opus-4-6[1m]')).toBe(true)
+    expect(keepsPair('haiku', 'claude-haiku-5-5-20261001')).toBe(true)
+  })
+
+  test('a full-id choice is its own id, so its pair is not kept', () => {
+    expect(keepsPair('claude-opus-4-6', 'claude-opus-4-6')).toBe(false)
+    expect(keepsPair('claude-opus-4-6', 'claude-opus-4-7')).toBe(false)
+  })
+
+  test('an alias paired with a name that is not a full id is not kept', () => {
+    expect(keepsPair('haiku', 'sonnet')).toBe(false)
+    expect(keepsPair('haiku', '')).toBe(false)
+    expect(keepsPair('haiku', 'claude-haiku')).toBe(false)
   })
 })

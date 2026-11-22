@@ -5,7 +5,7 @@ import { choicesOf } from './models'
 
 // 14:32 in the host's local time, built from local parts so the tests hold in any time zone.
 const AT = new Date(2026, 10, 9, 14, 32).getTime()
-const figures = (over: Partial<Figures> = {}): Figures => ({ state: 'on', spent: 12.4, unpriced: null, total: 410.27, reviews: 14, notes: 3, last: { at: AT, note: false }, cause: undefined, held: 0, ...over })
+const figures = (over: Partial<Figures> = {}): Figures => ({ state: 'on', spent: 12.4, unpriced: null, total: 410.27, model: 'Haiku 5.5', reviews: 14, notes: 3, last: { at: AT, note: false }, cause: undefined, held: 0, ...over })
 
 describe('labelOf', () => {
   test('on, nothing spent yet, reads auditor on', () => {
@@ -43,12 +43,20 @@ describe('labelOf', () => {
   test('a tally over the session total reads 100%', () => {
     expect(labelOf(figures({ spent: 5, total: 2 }))).toBe('auditor on ($5.00, 100%)')
   })
+
+  test('the label names no model, whatever the state', () => {
+    for (const state of ['on', 'off', 'failing'] as const) {
+      expect(labelOf(figures({ state, model: 'Opus 4.6' }))).toBe(labelOf(figures({ state, model: 'sonnet' })))
+      expect(labelOf(figures({ state, model: 'Opus 4.6' }))).not.toContain('Opus')
+    }
+  })
 })
 
 describe('rowsOf', () => {
-  test('on, the cost row names the tally, the session total, the share and the prices, then the reviews row and the press row', () => {
+  test('on, the cost row names the tally, the session total, the share and the prices, then the model row, the reviews row and the press row', () => {
     expect(rowsOf(figures())).toEqual([
       { key: 'cost', text: 'auditor $12.40 since on · session $410.27 · 3% · API list prices' },
+      { key: 'model', text: 'reviewer model: Haiku 5.5' },
       { key: 'reviews', text: '14 reviews · 3 notes · last at 14:32, quiet' },
       { key: 'press', text: 'click to switch off' },
     ])
@@ -70,11 +78,56 @@ describe('rowsOf', () => {
     expect(rowsOf(figures({ spent: 0.004, total: 0.0049 }))[0]?.text).toBe('auditor <$0.01 since on · session <$0.01 · 82% · API list prices')
   })
 
-  test('off, the rows say no reviews run and no figures show, then offer to switch on, with no review facts', () => {
+  test('off, the rows say no reviews run and no figures show, name the model, then offer to switch on, with no review facts', () => {
     expect(rowsOf(figures({ state: 'off' }))).toEqual([
       { key: 'cost', text: 'off: no reviews, no figures until switched on' },
+      { key: 'model', text: 'reviewer model: Haiku 5.5' },
       { key: 'press', text: 'click to switch on' },
     ])
+  })
+
+  describe('the model row', () => {
+    const modelRow = (over: Partial<Figures>): string | undefined => rowsOf(figures(over)).find(r => r.key === 'model')?.text
+
+    test('a name reads as the catalog gives it, and a spelling with no name as the list spells it', () => {
+      expect(modelRow({ model: 'Haiku 5.5' })).toBe('reviewer model: Haiku 5.5')
+      expect(modelRow({ model: 'Opus 4.6' })).toBe('reviewer model: Opus 4.6')
+      expect(modelRow({ model: 'sonnet' })).toBe('reviewer model: sonnet')
+      expect(modelRow({ model: 'claude-opus-4-6' })).toBe('reviewer model: claude-opus-4-6')
+    })
+
+    test('it is the second row, right after the cost row, in each of on, off and failing', () => {
+      for (const state of ['on', 'off', 'failing'] as const) {
+        const rows = rowsOf(figures({ state, cause: state === 'failing' ? 'no answer' : undefined, held: 1 }))
+        expect(rows.map(r => r.key).slice(0, 2)).toEqual(['cost', 'model'])
+        expect(rows.filter(r => r.key === 'model')).toHaveLength(1)
+      }
+    })
+
+    test('the other rows keep their words and their order among themselves', () => {
+      const without = (over: Partial<Figures>) => rowsOf(figures(over)).filter(r => r.key !== 'model')
+      expect(without({})).toEqual([
+        { key: 'cost', text: 'auditor $12.40 since on · session $410.27 · 3% · API list prices' },
+        { key: 'reviews', text: '14 reviews · 3 notes · last at 14:32, quiet' },
+        { key: 'press', text: 'click to switch off' },
+      ])
+      expect(without({ state: 'off' })).toEqual([
+        { key: 'cost', text: 'off: no reviews, no figures until switched on' },
+        { key: 'press', text: 'click to switch on' },
+      ])
+      expect(without({ state: 'failing', cause: 'no answer', held: 1 })).toEqual([
+        { key: 'cost', text: 'auditor $12.40 since on · session $410.27 · 3% · API list prices' },
+        { key: 'reviews', text: '14 reviews · 3 notes · last at 14:32, quiet' },
+        { key: 'press', text: 'click to switch off' },
+        { key: 'state', text: 'failing: the reviewer ended a turn without an answer · 1 note held' },
+      ])
+    })
+
+    test('with the cost unknown for an unpriced id, the row names the next model and the cost row keeps its own words', () => {
+      const rows = rowsOf(figures({ unpriced: 'claude-opus-4-6', model: 'Sonnet 5.5' }))
+      expect(rows[0]).toEqual({ key: 'cost', text: 'cost unknown: no price for claude-opus-4-6' })
+      expect(rows[1]).toEqual({ key: 'model', text: 'reviewer model: Sonnet 5.5' })
+    })
   })
 
   describe('the reviews row', () => {
@@ -113,7 +166,7 @@ describe('rowsOf', () => {
     const lastRow = (over: Partial<Figures>) => state(over).at(-1)
 
     test('neither failing nor holding a note shows none', () => {
-      expect(state({}).map(r => r.key)).toEqual(['cost', 'reviews', 'press'])
+      expect(state({}).map(r => r.key)).toEqual(['cost', 'model', 'reviews', 'press'])
     })
 
     test('failing names its cause, one wording for each', () => {
@@ -134,23 +187,23 @@ describe('rowsOf', () => {
       expect(lastRow({ state: 'failing', cause: 'no start', held: 2 })?.text).toBe('failing: the reviewer did not start in 10 minutes · 2 notes held')
     })
 
-    test('the popup never exceeds four rows, in any state', () => {
+    test('the popup never exceeds five rows, in any state, and holds five while failing with notes held', () => {
       for (const state of ['on', 'off', 'failing'] as const) {
-        for (const held of [0, 2]) expect(rowsOf(figures({ state, cause: state === 'failing' ? 'unknown' : undefined, held })).length).toBeLessThanOrEqual(4)
+        for (const held of [0, 2]) expect(rowsOf(figures({ state, cause: state === 'failing' ? 'unknown' : undefined, held })).length).toBeLessThanOrEqual(5)
       }
-      expect(rowsOf(figures({ state: 'failing', cause: 'unknown', held: 2 })).length).toBe(4)
+      expect(rowsOf(figures({ state: 'failing', cause: 'unknown', held: 2 })).map(r => r.key)).toEqual(['cost', 'model', 'reviews', 'press', 'state'])
     })
 
-    test('off shows no state row even with a cause or notes left over', () => {
-      expect(rowsOf(figures({ state: 'off', cause: 'unknown', held: 2 })).map(r => r.key)).toEqual(['cost', 'press'])
+    test('off shows no state row even with a cause or notes left over, and holds cost, model and press', () => {
+      expect(rowsOf(figures({ state: 'off', cause: 'unknown', held: 2 })).map(r => r.key)).toEqual(['cost', 'model', 'press'])
     })
   })
 })
 
 describe('answerOf', () => {
   test('the answer is the label, then each popup row, one to a line', () => {
-    expect(answerOf(figures())).toBe('auditor on ($12, 3%)\nauditor $12.40 since on · session $410.27 · 3% · API list prices\n14 reviews · 3 notes · last at 14:32, quiet\nclick to switch off')
-    expect(answerOf(figures({ state: 'off' }))).toBe('auditor off\noff: no reviews, no figures until switched on\nclick to switch on')
+    expect(answerOf(figures())).toBe('auditor on ($12, 3%)\nauditor $12.40 since on · session $410.27 · 3% · API list prices\nreviewer model: Haiku 5.5\n14 reviews · 3 notes · last at 14:32, quiet\nclick to switch off')
+    expect(answerOf(figures({ state: 'off' }))).toBe('auditor off\noff: no reviews, no figures until switched on\nreviewer model: Haiku 5.5\nclick to switch on')
   })
 
   test('a failing answer ends with the state row', () => {
@@ -174,7 +227,7 @@ describe('buttonOf', () => {
 
   test('the popup holds one keyed dim row per wording row, in order', () => {
     const popup = drawn(figures()).props.children[1]
-    expect(popup.props.children.map((row: Node) => row.props['key'])).toEqual(['cost', 'reviews', 'press'])
+    expect(popup.props.children.map((row: Node) => row.props['key'])).toEqual(['cost', 'model', 'reviews', 'press'])
     expect(popup.props.children[0].props.children[0]).toMatchObject({ type: 'Text', props: { dimColor: true, children: ['auditor $12.40 since on · session $410.27 · 3% · API list prices'] } })
   })
 

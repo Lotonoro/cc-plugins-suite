@@ -5,7 +5,7 @@ import { followUpText } from './notes'
 import { learn } from './reviewer'
 import type { MemoryEntry } from '../types/index'
 import { REVIEWER_PROMPT } from './prompt'
-import { CATALOG_IDS, catalogFile, fakeEngine } from './fakes'
+import { CATALOG_IDS, CATALOG_NAMES, catalogFile, fakeEngine } from './fakes'
 import * as register from './register'
 
 const ON = { options: { log: true } }
@@ -184,6 +184,8 @@ const engine = (on: any, opts: Opts = {}) => {
     storeHold: gate(),
     // The directories the plugin listed to find the model catalog.
     catalogLists: [] as string[],
+    // The reads of the availableModels setting made so far.
+    settingsReads: 0,
   }
   current.seen = seen
   current.seed = opts.stateSeed
@@ -272,7 +274,10 @@ const engine = (on: any, opts: Opts = {}) => {
     if (catalog === undefined || e.path !== CATALOG_DIR) return { deny: 'no such directory' }
     return { value: Object.entries(catalog).map(([name, text]) => ({ name, kind: 'file', size: text.length, mtimeMs: 1, isLink: false })) }
   })
-  on('settings.read', () => ({ value: opts.available === undefined ? {} : { availableModels: opts.available } }))
+  on('settings.read', () => {
+    seen.settingsReads++
+    return { value: opts.available === undefined ? {} : { availableModels: opts.available } }
+  })
   on('fs.read', (_$: any, e: any) => {
     if (e.path.startsWith(`${CATALOG_DIR}/`)) {
       const text = catalog?.[e.path.slice(CATALOG_DIR.length + 1)]
@@ -647,6 +652,11 @@ const separated = async (ui: any): Promise<boolean> => JSON.stringify(await ui.d
 // The button as drawn: its label says whether the reviewer is on, off or failing.
 const buttonReads = async (ui: any, state: 'on' | 'off' | 'failing') => {
   expect(await ui.find({ key: 'auditor-toggle' })).toMatchObject({ props: { plain: true, label: `auditor ${state}` } })
+}
+// The popup's rows as the tree draws them, in order: the text of each row keyed as one of the popup's.
+const popupTexts = async (ui: any): Promise<string[]> => {
+  const drawn = JSON.stringify(await ui.drawn())
+  return [...drawn.matchAll(/"key":"(cost|model|reviews|press|state)"[^]*?"children":\["([^"]+)"\]/g)].map(m => m[2] ?? '')
 }
 
 
@@ -6998,19 +7008,13 @@ describe('the auditor\'s cost', () => {
   })
 
   describe('the popup', () => {
-    // The popup's texts, in the order the tree draws them.
-    const rowsDrawn = async (ui: any): Promise<string[]> => {
-      const drawn = JSON.stringify(await ui.drawn())
-      return [...drawn.matchAll(/"key":"(cost|reviews|press|state)"[^]*?"children":\["([^"]+)"\]/g)].map(m => m[2] ?? '')
-    }
-
-    test('on: the cost row, the reviews row, then the press row, in order', ON, async ($, on) => {
+    test('on: the cost row, the model row, the reviews row, then the press row, in order', ON, async ($, on) => {
       engine(on, { ledger: 410.27 })
       otherMods(on)
       await workerTurn($)
       await request($, worth(12.4))
       const ui = await mountMode($)
-      expect(await rowsDrawn(ui)).toEqual(['auditor $12.40 since on · session $410.27 · 3% · API list prices', 'no reviews yet', 'click to switch off'])
+      expect(await popupTexts(ui)).toEqual(['auditor $12.40 since on · session $410.27 · 3% · API list prices', 'reviewer model: haiku', 'no reviews yet', 'click to switch off'])
     })
 
     test('with the share unknown the cost row has no session figure', ON, async ($, on) => {
@@ -7018,23 +7022,23 @@ describe('the auditor\'s cost', () => {
       otherMods(on)
       await workerTurn($)
       await request($, worth(12.4))
-      expect(await rowsDrawn(await mountMode($))).toEqual(['auditor $12.40 since on · API list prices', 'no reviews yet', 'click to switch off'])
+      expect(await popupTexts(await mountMode($))).toEqual(['auditor $12.40 since on · API list prices', 'reviewer model: haiku', 'no reviews yet', 'click to switch off'])
     })
 
-    test('off: no reviews, no figures, then click to switch on', ON, async ($, on) => {
+    test('off: no reviews, no figures, the model, then click to switch on', ON, async ($, on) => {
       engine(on)
       otherMods(on)
       await run($, 'off')
-      expect(await rowsDrawn(await mountMode($))).toEqual(['off: no reviews, no figures until switched on', 'click to switch on'])
+      expect(await popupTexts(await mountMode($))).toEqual(['off: no reviews, no figures until switched on', 'reviewer model: haiku', 'click to switch on'])
     })
 
-    test('the popup is out of the flow and shown on hover only, and never has more than four rows', ON, async ($, on) => {
+    test('the popup is out of the flow and shown on hover only, and never has more than five rows', ON, async ($, on) => {
       engine(on)
       otherMods(on)
       const ui = await mountMode($)
       const drawn = JSON.stringify(await ui.drawn())
       for (const part of ['"position":"absolute"', '"display":"none"', '"bottom":1', '"right":0', '"hover":{"display":"flex"}']) expect(drawn).toContain(part)
-      expect((await rowsDrawn(ui)).length).toBeLessThanOrEqual(4)
+      expect((await popupTexts(ui)).length).toBeLessThanOrEqual(5)
     })
 
     test('a press on the button still switches the auditor, and the popup changes nothing on press', ON, async ($, on) => {
@@ -7054,24 +7058,24 @@ describe('the auditor\'s cost', () => {
       await workerTurn($)
       await request($, worth(12.4))
       const answer = await run($)
-      expect(answer).toBe('auditor on ($12, 3%)\nauditor $12.40 since on · session $410.27 · 3% · API list prices\nno reviews yet\nclick to switch off')
+      expect(answer).toBe('auditor on ($12, 3%)\nauditor $12.40 since on · session $410.27 · 3% · API list prices\nreviewer model: haiku\nno reviews yet\nclick to switch off')
       expect(answer?.split('\n')[0]).toBe(await labelOf($))
     })
 
     test('on and off answer the new state the same way', ON, async ($, on) => {
       engine(on)
       otherMods(on)
-      expect(await run($, 'off')).toBe('auditor off\noff: no reviews, no figures until switched on\nclick to switch on')
-      expect(await run($, 'on')).toBe('auditor on\nauditor $0.00 since on · API list prices\nno reviews yet\nclick to switch off')
+      expect(await run($, 'off')).toBe('auditor off\noff: no reviews, no figures until switched on\nreviewer model: haiku\nclick to switch on')
+      expect(await run($, 'on')).toBe('auditor on\nauditor $0.00 since on · API list prices\nreviewer model: haiku\nno reviews yet\nclick to switch off')
     })
 
-    test('failing and an unknown cost read as the footer does', ON, async ($, on) => {
+    test('failing and an unknown cost read as the footer does, and the model row names the next model beside the cost row\'s own', ON, async ($, on) => {
       engine(on)
       otherMods(on)
       await workerTurn($)
       await request($, billed({ model: 'haiku' }))
       await turnFailed($, 'ag1')
-      expect(await run($)).toBe('auditor failing\ncost unknown: no price for haiku\nno reviews yet\nclick to switch off\nfailing: the reviewer ended a turn without an answer')
+      expect(await run($)).toBe('auditor failing\ncost unknown: no price for haiku\nreviewer model: haiku\nno reviews yet\nclick to switch off\nfailing: the reviewer ended a turn without an answer')
     })
 
     test('the usage line names the model argument, the memory print is unchanged, and the description names the cost', ON, async ($, on) => {
@@ -7094,10 +7098,7 @@ describe('the review facts', () => {
   const STOPPED_MAIN = 'The main conversation was not messaged: the session was stopped and nobody has sent input since.'
   const BODY = 'a.ts:4 swallows it.'
   // The popup's rows as the footer draws them.
-  const popupRows = async ($: any): Promise<string[]> => {
-    const drawn = JSON.stringify(await (await mountMode($)).drawn())
-    return [...drawn.matchAll(/"key":"(cost|reviews|press|state)"[^]*?"children":\["([^"]+)"\]/g)].map(m => m[2] ?? '')
-  }
+  const popupRows = async ($: any): Promise<string[]> => popupTexts(await mountMode($))
 
   describe('the reviews row', () => {
     test('a conversation with no review completed says so, and a state stored before the counters existed reads the same', ON, async ($, on) => {
@@ -7166,8 +7167,8 @@ describe('the review facts', () => {
       await workerTurn($)
       await turnEnded($, 'ag1', BODY)
       await run($, 'off')
-      expect(await rowsOf($)).toEqual(['off: no reviews, no figures until switched on', 'click to switch on'])
-      expect(await popupRows($)).toEqual(['off: no reviews, no figures until switched on', 'click to switch on'])
+      expect(await rowsOf($)).toEqual(['off: no reviews, no figures until switched on', 'reviewer model: haiku', 'click to switch on'])
+      expect(await popupRows($)).toEqual(['off: no reviews, no figures until switched on', 'reviewer model: haiku', 'click to switch on'])
     })
   })
 
@@ -7293,11 +7294,12 @@ describe('the review facts', () => {
   })
 
   describe('the popup and /auditor agree', () => {
-    test('failing with two notes held draws four rows in order, and /auditor answers the same four after its label', ON, async ($, on) => {
+    test('failing with two notes held draws five rows in order, and /auditor answers the same five after its label', ON, async ($, on) => {
       engine(on, { stateSeed: { failing: 'no answer', reviews: 2, notes: 2, last: { at: NOON, note: true }, pendingNotes: [{ number: 1, text: 'a' }, { number: 2, text: 'b' }] } })
       otherMods(on)
       const expected = [
         'auditor $0.00 since on · API list prices',
+        'reviewer model: haiku',
         '2 reviews · 2 notes · last at 14:32, note sent',
         'click to switch off',
         'failing: the reviewer ended a turn without an answer · 2 notes held',
@@ -7306,13 +7308,13 @@ describe('the review facts', () => {
       expect(await rowsOf($)).toEqual(expected)
     })
 
-    test('every state draws the rows /auditor answers, never more than four', ON, async ($, on) => {
+    test('every state draws the rows /auditor answers, never more than five', ON, async ($, on) => {
       engine(on, { stateSeed: { failing: true, reviews: 1, notes: 0, last: { at: NOON, note: false } } })
       otherMods(on)
       for (const args of ['', 'off', 'on']) {
         const answered = await rowsOf($, args)
         expect(await popupRows($)).toEqual(answered)
-        expect(answered.length).toBeLessThanOrEqual(4)
+        expect(answered.length).toBeLessThanOrEqual(5)
       }
     })
   })
@@ -9454,8 +9456,8 @@ describe('the stored reviewer\'s idle reap is re-armed at load', () => {
     const seen = loaded(on, idle(10 * MINUTE))
     await started($)
     await drained()
-    // A wait of nothing is below `reaps`' floor, so the timers are read whole.
-    const timers = seen.timers.filter((t: any) => t.ms !== 90_000)
+    // A wait of nothing is below `reaps`' floor, so the timers are read whole, but for the one-second bounds of the reads the load makes.
+    const timers = seen.timers.filter((t: any) => t.ms !== 1000 && t.ms !== 90_000)
     expect(timers.map((t: any) => t.ms)).toEqual([0])
     timers[0]?.fire()
     await drained()
@@ -9648,13 +9650,15 @@ describe('the reviewer model each conversation chooses', () => {
       expect(debugLines(seen, 'store read of the last model set failed').filter(line => line.includes('store unreadable')).length).toBe(1)
     })
 
-    test('a store whose every call never answers does not hold the session start, and the first spawn runs on haiku once the bound has passed', ON, async ($, on) => {
+    test('a store whose every call never answers does not hold the session start, and the first spawn runs on haiku once the bound has passed; the load\'s reads and the take\'s are each recorded', ON, async ($, on) => {
       const seen = engine(on, { storeHangs: true, boundsPass: true })
       await started($)
+      await drained()
       await turn($)
       expect(spawnedModels(seen)).toEqual(['haiku'])
       expect(seen.conversation.choice).toBe('haiku')
-      expect(debugLines(seen, 'store read of the last model set failed: Error: no answer within 1000 ms').length).toBe(1)
+      expect(debugLines(seen, 'store read of the last model set failed: Error: no answer within 1000 ms').length).toBe(2)
+      expect(debugLines(seen, 'store read of the model ids failed: Error: no answer within 1000 ms').length).toBe(1)
       seen.storeHold.open()
     })
   })
@@ -10788,5 +10792,383 @@ describe('a /clear carries the session end\'s reset', () => {
     // A spawn's result reaches its hook alone and no entry crossed, so its landing has no id to stop: the marker its hook left makes it a former reviewer, and none is stored.
     expect(seen.conversation.reviewerIds).toContain('ag1')
     expect(seen.conversation.reviewer).toBeUndefined()
+  })
+})
+
+// The model the next review runs on, as the footer's popup and `/auditor` show it: `reviewer model: <name>`, from the memo the load and each `/auditor` refresh, and the pair the stored reviewer holds.
+describe('the reviewer model shown', () => {
+  const HAIKU = 'claude-haiku-5-5'
+  const OPUS = 'claude-opus-4-6'
+  // A catalog that gives each of its ids its name.
+  const NAMED = { 'a-cc.json': catalogFile(CATALOG_IDS, {}, CATALOG_NAMES) }
+  const started = ($: any) => $.session.start({ cwd: '/', surface: null, isInteractive: true })
+  const run = async ($: any, args = ''): Promise<string> => (await $.command.run({ command: 'auditor', args })).text
+  const lines = (text: string): string[] => text.split('\n')
+  const isModelRow = (text: string): boolean => text.startsWith('reviewer model: ')
+  // The model row of an answer, or of the footer's popup drawn afresh; undefined where there is none.
+  const answered = (text: string): string | undefined => lines(text).find(isModelRow)
+  const footer = async ($: any): Promise<string | undefined> => (await popupTexts(await mountMode($))).find(isModelRow)
+  // An engine with the catalog of `NAMED` whose session has started and whose load's refresh has finished.
+  const loaded = async ($: any, on: any, opts: Opts = {}) => {
+    const seen = engine(on, { catalog: NAMED, ...opts })
+    otherMods(on)
+    await started($)
+    await drained()
+    return seen
+  }
+  // The reads a redraw must not make, and the ledger's, which a redraw of a conversation with a tally does.
+  const reads = (seen: ReturnType<typeof engine>) => ({ store: seen.storeReads.length, listings: seen.catalogLists.length, settings: seen.settingsReads, ledger: seen.ledgerReads })
+  // Where every store call is held, each is bounded afresh by the call that follows it: the one-second bounds still waiting are let pass a few times over. The engine's `boundsPass` is no help there: it makes every bounded call late, the catalog's read too, and the names come from that read.
+  const pastBounds = async (seen: ReturnType<typeof engine>): Promise<void> => {
+    for (let round = 0; round < 5; round++) {
+      await drained()
+      for (const timer of seen.timers) if (timer.ms === 1000) timer.fire()
+    }
+  }
+
+  describe('a conversation with no choice yet', () => {
+    test('names the last model set the list offers, by its name, in /auditor and in the footer, and holds no choice afterwards', ON, async ($, on) => {
+      const seen = await loaded($, on, { store: { lastModel: OPUS } })
+      expect(await footer($)).toBe('reviewer model: Opus 4.6')
+      expect(answered(await run($))).toBe('reviewer model: Opus 4.6')
+      expect(await footer($)).toBe('reviewer model: Opus 4.6')
+      expect(seen.conversation?.choice).toBeUndefined()
+    })
+
+    test('with nothing stored names haiku', ON, async ($, on) => {
+      const seen = await loaded($, on)
+      expect(await footer($)).toBe('reviewer model: haiku')
+      expect(answered(await run($))).toBe('reviewer model: haiku')
+      expect(seen.conversation?.choice).toBeUndefined()
+    })
+
+    test('names an alias as spelled when no spawn has resolved it', ON, async ($, on) => {
+      await loaded($, on, { store: { lastModel: 'sonnet' } })
+      expect(await footer($)).toBe('reviewer model: sonnet')
+    })
+
+    test('names haiku where the last model set is a model the catalog no longer lists', ON, async ($, on) => {
+      await loaded($, on, { store: { lastModel: 'claude-gone-1-1' } })
+      expect(await footer($)).toBe('reviewer model: haiku')
+    })
+
+    test('names the list\'s own default where availableModels moves it off haiku', ON, async ($, on) => {
+      await loaded($, on, { available: ['sonnet', 'opus'] })
+      expect(await footer($)).toBe('reviewer model: sonnet')
+    })
+
+    test('names the last model set a filter leaves, by its name', ON, async ($, on) => {
+      await loaded($, on, { store: { lastModel: OPUS }, available: ['opus', OPUS] })
+      expect(await footer($)).toBe('reviewer model: Opus 4.6')
+    })
+
+    test('names the filter\'s default, not a last model set the filter removes', ON, async ($, on) => {
+      await loaded($, on, { store: { lastModel: 'sonnet' }, available: ['opus', OPUS] })
+      expect(await footer($)).toBe('reviewer model: opus')
+    })
+  })
+
+  describe('after a switch while a review is open', () => {
+    // A haiku reviewer that resolved to `HAIKU` is busy on its first review when the conversation is switched to `name`.
+    const switchedWhileBusy = async ($: any, on: any, name: string) => {
+      const seen = await loaded($, on, { spawnModels: [HAIKU] })
+      await workerTurn($)
+      expect(seen.conversation).toMatchObject({ choice: 'haiku', review: { number: 1 }, reviewer: { id: 'ag1', model: HAIKU, choice: 'haiku' } })
+      await run($, `model ${name}`)
+      expect(seen.conversation).toMatchObject({ choice: name, review: { number: 1 }, reviewer: { id: 'ag1', choice: 'haiku' } })
+      return seen
+    }
+
+    test('the popup and /auditor name the new choice as spelled, with no id stored for it, and neither the old model nor its id', ON, async ($, on) => {
+      await switchedWhileBusy($, on, 'sonnet')
+      const answer = await run($)
+      const popup = (await popupTexts(await mountMode($))).join('\n')
+      expect(answered(answer)).toBe('reviewer model: sonnet')
+      expect(answered(popup)).toBe('reviewer model: sonnet')
+      for (const shown of [answer, popup]) for (const old of ['Haiku 5.5', 'haiku', HAIKU]) expect(shown).not.toContain(old)
+    })
+
+    test('the popup and /auditor name the new choice by its name where it is a full id', ON, async ($, on) => {
+      await switchedWhileBusy($, on, OPUS)
+      const answer = await run($)
+      const popup = (await popupTexts(await mountMode($))).join('\n')
+      expect(answered(answer)).toBe('reviewer model: Opus 4.6')
+      expect(answered(popup)).toBe('reviewer model: Opus 4.6')
+      for (const shown of [answer, popup]) for (const old of ['Haiku 5.5', 'haiku', HAIKU]) expect(shown).not.toContain(old)
+    })
+
+    test('the footer shows the new choice before any /auditor asks', ON, async ($, on) => {
+      await switchedWhileBusy($, on, OPUS)
+      expect(await footer($)).toBe('reviewer model: Opus 4.6')
+    })
+  })
+
+  describe('the id a spawn resolved to', () => {
+    test('a first review on haiku that resolves to claude-haiku-5-5 shows its name as soon as its spawn stands in, and keeps it once the review settles', ON, async ($, on) => {
+      const seen = await loaded($, on, { spawnModels: [HAIKU] })
+      expect(await footer($)).toBe('reviewer model: haiku')
+      await workerTurn($)
+      expect(seen.conversation.reviewer).toMatchObject({ id: 'ag1', model: HAIKU, choice: 'haiku' })
+      expect(await footer($)).toBe('reviewer model: Haiku 5.5')
+      await turnEnded($, 'ag1', 'Nothing to note.')
+      expect(await footer($)).toBe('reviewer model: Haiku 5.5')
+      expect(answered(await run($))).toBe('reviewer model: Haiku 5.5')
+    })
+
+    test('the redraws after the review settles add no store read, catalog listing or settings read', ON, async ($, on) => {
+      const seen = await loaded($, on, { spawnModels: [HAIKU], stateSeed: { spent: 1 } })
+      await workerTurn($)
+      await turnEnded($, 'ag1', 'Nothing to note.')
+      await drained()
+      const before = reads(seen)
+      for (let draw = 0; draw < 5; draw++) expect(await footer($)).toBe('reviewer model: Haiku 5.5')
+      const after = reads(seen)
+      expect({ ...after, ledger: 0 }).toEqual({ ...before, ledger: 0 })
+      // The ledger is read by every redraw of a conversation with a tally, so these redraws did run.
+      expect(after.ledger).toBeGreaterThanOrEqual(before.ledger + 5)
+    })
+
+    test('with no catalog file the same review leaves the row at the spelling', ON, async ($, on) => {
+      await loaded($, on, { catalog: 'none', spawnModels: [HAIKU] })
+      await workerTurn($)
+      expect(await footer($)).toBe('reviewer model: haiku')
+      await turnEnded($, 'ag1', 'Nothing to note.')
+      expect(await footer($)).toBe('reviewer model: haiku')
+    })
+
+    test('a catalog that names no id leaves the row at the spelling', ON, async ($, on) => {
+      await loaded($, on, { catalog: { 'a-cc.json': catalogFile() }, spawnModels: [HAIKU] })
+      await workerTurn($)
+      expect(await footer($)).toBe('reviewer model: haiku')
+    })
+
+    test('with every store call held past its bound, a session starts and a first review resolves, and the footer names the model', ON, async ($, on) => {
+      const seen = engine(on, { catalog: NAMED, storeHangs: true, spawnModels: [HAIKU] })
+      otherMods(on)
+      await started($)
+      await pastBounds(seen)
+      const ending = workerTurn($)
+      await pastBounds(seen)
+      await ending
+      expect(seen.conversation.reviewer).toMatchObject({ id: 'ag1', model: HAIKU, choice: 'haiku' })
+      expect(seen.store['modelIds']).toBeUndefined()
+      expect(await footer($)).toBe('reviewer model: Haiku 5.5')
+      seen.storeHold.open()
+    })
+
+    test('the pair the stored reviewer holds is the newer resolution: it wins over the id the store held for the alias at load', ON, async ($, on) => {
+      const seen = await loaded($, on, { store: { modelIds: { haiku: 'claude-haiku-4-5-20251001' } }, spawnModels: [HAIKU] })
+      expect(await footer($)).toBe('reviewer model: Haiku 4.5')
+      await workerTurn($)
+      expect(seen.conversation.reviewer).toMatchObject({ choice: 'haiku', model: HAIKU })
+      expect(await footer($)).toBe('reviewer model: Haiku 5.5')
+    })
+
+    test('a reviewer adopted before its result landed, whose spawn hook has named its model, shows that model\'s name from the model recorded for its id', ON, async ($, on) => {
+      await loaded($, on, { stateSeed: { reviewer: { id: 'ag1', model: '', choice: 'haiku' }, reviewerIds: ['ag1'], reviewerModels: { ag1: HAIKU } } })
+      expect(await footer($)).toBe('reviewer model: Haiku 5.5')
+      expect(answered(await run($))).toBe('reviewer model: Haiku 5.5')
+    })
+
+    test('a reviewer adopted before its result landed, with no model recorded for its id, shows the choice as spelled', ON, async ($, on) => {
+      await loaded($, on, { stateSeed: { reviewer: { id: 'ag1', model: '', choice: 'haiku' }, reviewerIds: ['ag1'] } })
+      expect(await footer($)).toBe('reviewer model: haiku')
+    })
+
+    test('a reviewer stored before choices existed, with no choice, ran the default, so the row names the model it resolved to', ON, async ($, on) => {
+      await loaded($, on, { stateSeed: { reviewer: { id: 'ag1', model: HAIKU }, reviewerIds: ['ag1'] } })
+      expect(await footer($)).toBe('reviewer model: Haiku 5.5')
+      expect(answered(await run($))).toBe('reviewer model: Haiku 5.5')
+    })
+
+    test('a spawn that resolves to a name that is no full id gives the alias no id', ON, async ($, on) => {
+      await loaded($, on, { spawnModels: ['haiku'] })
+      await workerTurn($)
+      expect(await footer($)).toBe('reviewer model: haiku')
+    })
+
+    test('a full-id choice is named by its own id, whatever its spawn resolved to', ON, async ($, on) => {
+      await loaded($, on, { store: { lastModel: OPUS }, spawnModels: ['claude-opus-4-7'] })
+      await workerTurn($)
+      expect(await footer($)).toBe('reviewer model: Opus 4.6')
+    })
+
+    test('a /clear lets go the stored reviewer, so the row reads the spelling until a bare /auditor reads the stored pair', ON, async ($, on) => {
+      const seen = await loaded($, on, { spawnModels: [HAIKU] })
+      await workerTurn($)
+      expect(seen.store['modelIds']).toEqual({ haiku: HAIKU })
+      await cleared($, seen)
+      expect(seen.conversation).toMatchObject({ choice: 'haiku' })
+      expect(seen.conversation.reviewer).toBeUndefined()
+      expect(await footer($)).toBe('reviewer model: haiku')
+      expect(answered(await run($))).toBe('reviewer model: Haiku 5.5')
+      expect(await footer($)).toBe('reviewer model: Haiku 5.5')
+    })
+
+    test('a /clear carries a full-id choice, which the row names by its name', ON, async ($, on) => {
+      const seen = await loaded($, on)
+      await run($, `model ${OPUS}`)
+      await cleared($, seen)
+      expect(await footer($)).toBe('reviewer model: Opus 4.6')
+    })
+  })
+
+  describe('a name the catalog gives to more than one id', () => {
+    const SHARED = { 'a-cc.json': catalogFile(CATALOG_IDS, {}, { ...CATALOG_NAMES, 'claude-opus-4-6': 'Opus', 'claude-opus-4-7': ' Opus ' }) }
+
+    test('names none of them: each row falls back to the choice as spelled, and an id with a name of its own keeps it', ON, async ($, on) => {
+      await loaded($, on, { catalog: SHARED })
+      await run($, 'model claude-opus-4-6')
+      expect(await footer($)).toBe('reviewer model: claude-opus-4-6')
+      await run($, 'model claude-opus-4-7')
+      expect(await footer($)).toBe('reviewer model: claude-opus-4-7')
+      await run($, 'model claude-opus-4-8')
+      expect(await footer($)).toBe('reviewer model: Opus 4.8')
+    })
+
+    test('an alias that resolved to one of them reads as the alias', ON, async ($, on) => {
+      await loaded($, on, { catalog: SHARED, store: { modelIds: { opus: 'claude-opus-4-6' } } })
+      await run($, 'model opus')
+      expect(await footer($)).toBe('reviewer model: opus')
+    })
+  })
+
+  describe('the refresh', () => {
+    test('the load makes one: the last model set, the stored ids, one catalog listing and one settings read', ON, async ($, on) => {
+      const seen = await loaded($, on)
+      expect([...seen.storeReads].sort()).toEqual(['lastModel', 'modelIds'])
+      expect(seen.catalogLists).toEqual([CATALOG_DIR])
+      expect(seen.settingsReads).toBe(1)
+    })
+
+    test('a load whose store never answers is not held by it', ON, async ($, on) => {
+      const seen = engine(on, { storeHangs: true })
+      otherMods(on)
+      await started($)
+      await drained()
+      expect(seen.storeReads.length).toBeGreaterThan(0)
+      seen.storeHold.open()
+      await drained()
+    })
+
+    test('refreshes run in the order they were asked: one asked while an earlier one waits does not end before it, so the memo the later one wrote is the one that stands', ON, async ($, on) => {
+      const files: Record<string, string> = { ...NAMED }
+      const seen = engine(on, { catalog: files, storeHangs: true, stateSeed: { choice: OPUS } })
+      otherMods(on)
+      await started($)
+      await drained()
+      // The load's refresh has read the catalog and waits on the store: the catalog is renamed after that read.
+      const waiting = seen.timers.length
+      files['a-cc.json'] = catalogFile(CATALOG_IDS, {}, { ...CATALOG_NAMES, [OPUS]: 'Opus 4.6 renamed' })
+      const asking = run($)
+      await drained()
+      // The bounds of the later refresh's reads pass first, then the load's: a refresh that has to wait its turn has set none yet.
+      for (const timer of seen.timers.slice(waiting)) if (timer.ms === 1000) timer.fire()
+      await drained()
+      for (const timer of seen.timers.slice(0, waiting)) if (timer.ms === 1000) timer.fire()
+      await pastBounds(seen)
+      expect(answered(await asking)).toBe('reviewer model: Opus 4.6 renamed')
+      expect(await footer($)).toBe('reviewer model: Opus 4.6 renamed')
+      seen.storeHold.open()
+    })
+
+    test('a bare /auditor makes one, and so do on and off', ON, async ($, on) => {
+      const seen = await loaded($, on)
+      for (const args of ['', 'on', 'off']) {
+        const before = reads(seen)
+        await run($, args)
+        expect({ store: seen.storeReads.length - before.store, listings: seen.catalogLists.length - before.listings, settings: seen.settingsReads - before.settings }).toEqual({ store: 2, listings: 1, settings: 1 })
+      }
+    })
+
+    test('/auditor memory makes none, and /auditor model makes only the reads it made before: the stored ids, one catalog listing and one settings read', ON, async ($, on) => {
+      const seen = await loaded($, on)
+      await run($, 'model sonnet')
+      const before = reads(seen)
+      const keys = seen.storeReads.length
+      await run($, 'memory')
+      expect(reads(seen)).toEqual(before)
+      await run($, 'model')
+      expect(seen.storeReads.slice(keys)).toEqual(['modelIds'])
+      expect(seen.catalogLists.length).toBe(before.listings + 1)
+      expect(seen.settingsReads).toBe(before.settings + 1)
+    })
+
+    test('the store and the catalog unreadable: the load and a bare /auditor reject nothing, the answer reads haiku, and the footer draws', ON, async ($, on) => {
+      const seen = engine(on, { storeReadFails: true, catalog: 'none' })
+      otherMods(on)
+      await started($)
+      await drained()
+      expect(answered(await run($))).toBe('reviewer model: haiku')
+      await buttonReads(await mountMode($), 'on')
+      expect(await footer($)).toBe('reviewer model: haiku')
+      expect(debugLines(seen, 'model catalog listing failed').length).toBeGreaterThan(0)
+    })
+  })
+
+  describe('a redraw', () => {
+    test('makes no store read, catalog listing or settings read, and names the last model set stored before the load', ON, async ($, on) => {
+      const seen = await loaded($, on, { store: { lastModel: OPUS }, stateSeed: { spent: 1 } })
+      const before = reads(seen)
+      for (let draw = 0; draw < 5; draw++) expect(await footer($)).toBe('reviewer model: Opus 4.6')
+      const after = reads(seen)
+      expect({ ...after, ledger: 0 }).toEqual({ ...before, ledger: 0 })
+      expect(after.ledger).toBeGreaterThanOrEqual(before.ledger + 5)
+    })
+
+    test('does not see a last model set another session stores after the load: the next /auditor does', ON, async ($, on) => {
+      const seen = await loaded($, on, { store: { lastModel: OPUS } })
+      seen.store['lastModel'] = 'claude-sonnet-4-6'
+      expect(await footer($)).toBe('reviewer model: Opus 4.6')
+      expect(answered(await run($))).toBe('reviewer model: Sonnet 4.6')
+      expect(await footer($)).toBe('reviewer model: Sonnet 4.6')
+    })
+  })
+
+  describe('a last model set stored after the load, by another session', () => {
+    test('is named by the answer of a bare /auditor, of /auditor on and of /auditor off, and by the footer after each', ON, async ($, on) => {
+      const seen = await loaded($, on)
+      seen.store['lastModel'] = OPUS
+      expect(answered(await run($))).toBe('reviewer model: Opus 4.6')
+      expect(await footer($)).toBe('reviewer model: Opus 4.6')
+      seen.store['lastModel'] = 'claude-opus-4-7'
+      expect(answered(await run($, 'on'))).toBe('reviewer model: Opus 4.7')
+      expect(await footer($)).toBe('reviewer model: Opus 4.7')
+      seen.store['lastModel'] = 'claude-sonnet-4-6'
+      expect(answered(await run($, 'off'))).toBe('reviewer model: Sonnet 4.6')
+      expect(await footer($)).toBe('reviewer model: Sonnet 4.6')
+    })
+  })
+
+  describe('/auditor', () => {
+    test('answers the model row after the cost row, and its first line, the label, is as it was', ON, async ($, on) => {
+      await loaded($, on)
+      expect(lines(await run($))).toEqual(['auditor on', 'auditor $0.00 since on · API list prices', 'reviewer model: haiku', 'no reviews yet', 'click to switch off'])
+      expect(lines(await run($, 'off'))).toEqual(['auditor off', 'off: no reviews, no figures until switched on', 'reviewer model: haiku', 'click to switch on'])
+    })
+
+    test('after /auditor model, bare and with a name, names the model of the choice that answer names: its name, or that spelling', ON, async ($, on) => {
+      await loaded($, on)
+      const said = (answer: string): string | undefined => lines(answer).find(line => line.startsWith('Reviewer model: '))
+      expect(said(await run($, 'model'))).toBe('Reviewer model: haiku')
+      expect(answered(await run($))).toBe('reviewer model: haiku')
+      expect(said(await run($, `model ${OPUS}`))).toBe(`Reviewer model: ${OPUS}`)
+      expect(answered(await run($))).toBe('reviewer model: Opus 4.6')
+      expect(said(await run($, 'model sonnet'))).toBe('Reviewer model: sonnet')
+      expect(answered(await run($))).toBe('reviewer model: sonnet')
+    })
+
+    test('with the cost unknown names the next model, and the cost row keeps its own words', ON, async ($, on) => {
+      const seen = await loaded($, on, { spawnModels: [HAIKU] })
+      await workerTurn($)
+      STEP_USAGE = { input_tokens: 0, output_tokens: 10, cache_read_input_tokens: 0, cache_creation_input_tokens: 0, model: 'claude-unpriced-1-1' }
+      try {
+        await step($, '', 'ag1')
+      } finally {
+        STEP_USAGE = null
+      }
+      expect(seen.conversation).toMatchObject({ unpriced: 'claude-unpriced-1-1' })
+      expect(lines(await run($)).slice(1, 3)).toEqual(['cost unknown: no price for claude-unpriced-1-1', 'reviewer model: Haiku 5.5'])
+    })
   })
 })

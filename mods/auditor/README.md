@@ -83,8 +83,11 @@ from the repository root.
 ## Use it
 
 - **Check status and cost.** The footer shows whether Auditor is on, off, or
-  failing. Hover for review counts, recent activity, and estimated cost. Run
-  `/auditor` for the same information on surfaces without the footer.
+  failing. Hover for review counts, recent activity, estimated cost, and the
+  model the next review runs on, by the name `/model` shows for it where the
+  catalog has one and as `/auditor model` spells it otherwise. Before a session
+  has chosen a model, this is the one it would take. Run `/auditor` for the
+  same information on surfaces without the footer.
 - **Toggle it.** Click the footer label or run `/auditor on` or `/auditor off`
   to control the current session. `/clear` keeps the toggle as it was. Each
   new session starts on while the plugin is enabled.

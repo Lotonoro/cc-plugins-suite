@@ -256,7 +256,7 @@ const namesOf = (c: Conversation): { spawned: string; chosen: string } | undefin
   c.reviewer === undefined || c.choice === undefined ? undefined : { spawned: c.reviewer.choice ?? DEFAULT_MODEL, chosen: c.choice }
 
 // The model the stored reviewer's spawn resolved to: the one it stores, else the one recorded for its id, which a reviewer adopted before its result landed has alone. Undefined where there is no reviewer, or it has none.
-const resolvedOf = (c: Conversation): string | undefined => (c.reviewer === undefined ? undefined : c.reviewer.model || c.reviewerModels[c.reviewer.id] || undefined)
+export const resolvedOf = (c: Conversation): string | undefined => (c.reviewer === undefined ? undefined : c.reviewer.model || c.reviewerModels[c.reviewer.id] || undefined)
 
 // What a switch compares, or undefined where nothing needs comparing: no reviewer, no choice yet, or a reviewer spawned for the choice itself, which is kept whatever the id it runs, so an unchanged choice never lets one go. Otherwise the choice, against the id the stored reviewer runs (the model its spawn resolved to, in canonical form) where that is a full id, else against the name it was spawned for. The id outweighs the name: an alias resolves again at every spawn, so what the stored ids say of the reviewer's name now is not what the reviewer runs.
 const comparedOf = (c: Conversation): { held: string; chosen: string } | undefined => {

@@ -2,8 +2,9 @@ import { describe, expect, test } from 'claude-code/testing'
 import { BOUND_MS } from './boundary'
 import { readAvailable, readCatalog, readChoices } from './catalog'
 import { ENGINE_CATALOG_FILE } from './catalogfile'
-import { CATALOG_IDS, catalogFile, fakeEngine, never, settled } from './fakes'
+import { CATALOG_IDS, CATALOG_NAMES, catalogFile, fakeEngine, never, settled } from './fakes'
 import type { FakeTimer } from './fakes'
+import { canonicalOf } from './models'
 
 const DIR = '/home/test/.claude/cache/model-catalog'
 const entry = (name: string, over: Record<string, unknown> = {}) => ({ name, kind: 'file', size: 16_000, mtimeMs: 1, isLink: false, ...over })
@@ -378,7 +379,7 @@ describe('readChoices', () => {
 
   test('availableModels filters the list', async () => {
     const { $, logs } = engineWith({ 'a-cc.json': catalogFile() }, ['opus', 'claude-opus-4-6'])
-    expect(await readChoices($)).toEqual({ list: ['opus', 'claude-opus-4-6'], defaultChoice: 'opus', filterIgnored: false })
+    expect(await readChoices($)).toEqual({ list: ['opus', 'claude-opus-4-6'], defaultChoice: 'opus', filterIgnored: false, names: {} })
     expect(logs).toEqual([])
   })
 
@@ -402,5 +403,70 @@ describe('readChoices', () => {
     expect((await readChoices($)).list).toEqual(['haiku', 'sonnet', 'opus', 'fable', 'claude-opus-4-6'])
     expect(logs).toHaveLength(1)
     expect(logs[0]).toContain('model catalog file a-cc.json failed')
+  })
+
+  describe('the names', () => {
+    test('the engine\'s own file gives each of its 13 ids its name, a date-suffixed id included, with nothing recorded', async () => {
+      const { $, logs } = engineWith({ 'a-cc.json': ENGINE_CATALOG_FILE }, undefined)
+      const { names } = await readChoices($)
+      expect(names).toEqual(Object.fromEntries(CATALOG_IDS.map(id => [canonicalOf(id) ?? id, CATALOG_NAMES[id]])))
+      expect(Object.keys(names)).toHaveLength(13)
+      expect(names['claude-haiku-5-5']).toBe('Haiku 5.5')
+      expect(names[canonicalOf('claude-haiku-4-5-20251001') ?? '']).toBe('Haiku 4.5')
+      expect(logs).toEqual([])
+    })
+
+    test('an entry whose name is missing or not a string keeps its id, in its place, with no name and nothing recorded; the file\'s other names stand', async () => {
+      const records = [{ id: 'claude-opus-4-6', name: 'Opus 4.6' }, { id: 'claude-opus-5-5' }, { id: 'claude-haiku-5-5', name: 7 }, { id: 'claude-sonnet-5-5', name: null }, { id: 'claude-fable-5-2', name: ['Fable 5.2'] }, { id: 'claude-sonnet-4-6', name: 'Sonnet 4.6' }]
+      const { $, logs } = engineWith({ 'a-cc.json': models(records) }, undefined)
+      const choices = await readChoices($)
+      expect(choices.list.slice(4)).toEqual(records.map(record => record.id))
+      expect(choices.names).toEqual({ 'claude-opus-4-6': 'Opus 4.6', 'claude-sonnet-4-6': 'Sonnet 4.6' })
+      expect(logs).toEqual([])
+    })
+
+    test('a record\'s name is the one beside its id, whatever order the file lists them in, and a record with no id gives none', async () => {
+      const { $, logs } = engineWith({ 'a-cc.json': models([{ name: 'Ghost' }, { name: 'Opus 4.6', id: 'claude-opus-4-6' }, { id: 'claude-haiku-5-5', name: 'Haiku 5.5' }]) }, undefined)
+      expect((await readChoices($)).names).toEqual({ 'claude-opus-4-6': 'Opus 4.6', 'claude-haiku-5-5': 'Haiku 5.5' })
+      expect(logs).toHaveLength(1)
+      expect(logs[0]).toContain('dropped for having no id: 1')
+    })
+
+    test('the name of an id is read from its own model record: an option nested under a record names nothing, so the id of a record with no name keeps none', async () => {
+      const records = [
+        { id: 'claude-haiku-5-5', name: 'Haiku 5.5', thinking: { effort_options: [{ id: 'claude-opus-4-6', name: 'Nested' }] }, fast_mode: { options: [{ id: 'claude-opus-4-6', name: 'Nested' }] } },
+        { id: 'claude-opus-4-6' },
+      ]
+      const { $, logs } = engineWith({ 'a-cc.json': models(records) }, undefined)
+      expect((await readChoices($)).names).toEqual({ 'claude-haiku-5-5': 'Haiku 5.5' })
+      expect(logs).toEqual([])
+    })
+
+    test('the names are those of the ids the parse kept: in a file of 51 records whose 51st shares the first\'s name, the first keeps its name', async () => {
+      const records = Array.from({ length: 51 }, (_, n) => ({ id: `claude-model-${n + 1}`, name: n === 50 ? 'Model 1' : `Model ${n + 1}` }))
+      const { $ } = engineWith({ 'a-cc.json': models(records) }, undefined)
+      const { list, names } = await readChoices($)
+      expect(list).toHaveLength(4 + 50)
+      expect(Object.keys(names)).toHaveLength(50)
+      expect(names['claude-model-1']).toBe('Model 1')
+    })
+
+    test('a repeated id keeps the name of its first record', async () => {
+      const { $ } = engineWith({ 'a-cc.json': models([{ id: 'claude-opus-4-6', name: 'Opus 4.6' }, { id: 'claude-opus-4-6-20261001', name: 'Opus 4.6 (dated)' }]) }, undefined)
+      expect((await readChoices($)).names).toEqual({ 'claude-opus-4-6': 'Opus 4.6' })
+    })
+
+    test('availableModels filters the list and not the names: a model the filter removed keeps its name', async () => {
+      const { $ } = engineWith({ 'a-cc.json': catalogFile(CATALOG_IDS, {}, CATALOG_NAMES) }, ['opus', 'claude-opus-4-6'])
+      const choices = await readChoices($)
+      expect(choices.list).toEqual(['opus', 'claude-opus-4-6'])
+      expect(choices.names['claude-haiku-5-5']).toBe('Haiku 5.5')
+      expect(Object.keys(choices.names)).toHaveLength(13)
+    })
+
+    test('a catalog that no file gives has no names', async () => {
+      const { $ } = engineWith({}, undefined)
+      expect((await readChoices($)).names).toEqual({})
+    })
   })
 })
