@@ -13,7 +13,7 @@ import { REVIEWER_PROMPT } from './prompt'
 import { clip, editedLines, entryBlock, pageOf, renumberBlock, toolLine } from './record'
 import { DEFAULT_MODEL, FALLBACK_CHOICES, isFullId, keepsPair, offered, shownAs, takeChoice } from './models'
 import type { Choices, ModelIds } from './models'
-import { adopt, compactionModel, countUnmatched, idleTimerOf, isEndNotice, isHandBack, isNotice, isReviewerEntry, land, lapseListFacts, lapseOf, learn, learnName, letGo, letGoSwitched, letGoSwitchedIdle, markers, nameKnown, nameListed, needsIds, originOf, reapIdle, reviewModels, reviewerNameOf, spawnChoice, spawnName, spawning, standingOf, stopMissed, sweepable, WORKING, withTurnEnd } from './reviewer'
+import { adopt, compactionModel, countUnmatched, idleTimerOf, isEndNotice, isHandBack, isNotice, isReviewerEntry, land, lapseListFacts, lapseOf, learn, learnName, letGo, letGoSwitched, letGoSwitchedIdle, markers, nameKnown, nameListed, needsIds, originOf, reapIdle, resolvedOf, reviewModels, reviewerNameOf, spawnChoice, spawnName, spawning, standingOf, stopMissed, sweepable, WORKING, withTurnEnd } from './reviewer'
 import type { Counted, Identity, IdleTimer, LapseListFacts, Release, ReviewModels, UnmatchedReason } from './reviewer'
 import { readLastModel, readModelIds, storeModelId, writeLastModel } from './store'
 import { purged, withCompaction, withNoteGiven, withResponse, withReviewDone } from './tally'
@@ -118,10 +118,10 @@ export const readLedger = async ($: Pick<Scope, 'session' | 'clock' | 'ui'>): Pr
   return typeof usd === 'number' && Number.isFinite(usd) && usd >= 0 ? usd : undefined
 }
 
-// The words that name the model the next review runs on: the conversation's choice, or, where it holds none, the one a take would give from the memo (`takeChoice`), shown by the name the catalog gives its id (`shownAs`). The ids are the memo's with the stored reviewer's own pair laid over them where the pair rule keeps it (`keepsPair`): that pair is the newest resolution of its alias, and a spawn stands in as the stored reviewer before the store has the pair. The reviewer's own model is never the answer, since after a switch it is the old one: the row names only what the next review runs on. The reviewer's resolved model is read as `resolvedOf` in reviewer.ts reads it: its stored model, else the one recorded for its id.
+// The words that name the model the next review runs on: the conversation's choice, or, where it holds none, the one a take would give from the memo (`takeChoice`), shown by the name the catalog gives its id (`shownAs`). The ids are the memo's with the stored reviewer's own pair laid over them where the pair rule keeps it (`keepsPair`): that pair is the newest resolution of its alias, and a spawn stands in as the stored reviewer before the store has the pair. The reviewer's own model is never the answer, since after a switch it is the old one: the row names only what the next review runs on.
 const modelShown = (c: Conversation, memo: Memo): string => {
   const reviewer = c.reviewer
-  const resolved = reviewer === undefined ? undefined : reviewer.model || c.reviewerModels[reviewer.id]
+  const resolved = resolvedOf(c)
   const reviewerChoice = reviewer?.choice ?? DEFAULT_MODEL
   const ids = resolved !== undefined && keepsPair(reviewerChoice, resolved) ? { ...memo.ids, [reviewerChoice]: resolved } : memo.ids
   return shownAs(takeChoice(c.choice, memo.last, memo.choices), ids, memo.choices)
