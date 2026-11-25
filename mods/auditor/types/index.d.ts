@@ -119,7 +119,7 @@ export type Conversation = {
   nudged: boolean
   // The dispatch count when the user's latest own prompt arrived, or the last /clear or toggle press: a review numbered above it was dispatched after that point.
   dispatchesAtPrompt: number
-  // What the auditor's reviewers have spent, in US dollars at API list prices (pricing.ts), since this conversation began or the auditor was last switched on: every response of every reviewer this session spawned and every reviewer compaction's own request, while on. Switching off empties it, and a fresh conversation starts it empty (the `session.end` reset in register.ts, the one place that decides which session ends restart it).
+  // What the auditor's reviewers have spent, in US dollars at API list prices (pricing.ts), since this conversation began or the auditor was last switched on: every priced response of every reviewer this session spawned and every priced reviewer compaction's own request, while on; one at a model with no price adds nothing, and `unpriced` names the model. Switching off empties it, and a fresh conversation starts it empty (the `session.end` reset in register.ts, the one place that decides which session ends restart it).
   spent: number
   // Reviews completed since this conversation began or the auditor was last switched on, a complete one with a note or quiet; an incomplete one is not counted. Restarts with the tally (`purged`, and the `session.end` reset).
   reviews: number
@@ -127,8 +127,8 @@ export type Conversation = {
   notes: number
   // The last completed review. Absent while none has completed since the same point.
   last?: LastReview
-  // The model id that made the cost unknown: a response or a compaction priced at a model pricing.ts has no rate for. Null while every figure was priced; once set it stays until the tally restarts, and `spent` stops growing.
-  unpriced: string | null
+  // The models pricing.ts has no rate for, which a response or a compaction was made at since the tally started: each once, in the order met, in the form `canonicalOf` (models.ts) gives it, or as reported where it has none (an alias, or `an unknown model` for a compaction whose model is not known). Empty while every figure was priced. It restarts with the tally, and later priced spend is still added to `spent`. A state stored before the field was a list holds one name or null, which the stored-state defaults step in register.ts (`withDefaults`) reads as a list.
+  unpriced: string[]
   // The worker's record since the reviewer's last dispatch.
   record: TurnRecord
   // What each of the worker's own subagents is labelled as, by agent id.

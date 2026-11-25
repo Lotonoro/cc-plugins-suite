@@ -11,7 +11,7 @@ import { MAIN, admitSend, decideRefusal, followUpText, frameNote, isStoppedRefus
 import type { Decided, Outcome, Refusal, Sent, Verdict } from './notes'
 import { REVIEWER_PROMPT } from './prompt'
 import { clip, editedLines, entryBlock, pageOf, renumberBlock, toolLine } from './record'
-import { DEFAULT_MODEL, FALLBACK_CHOICES, isFullId, keepsPair, offered, shownAs, takeChoice } from './models'
+import { DEFAULT_MODEL, FALLBACK_CHOICES, canonicalOf, isFullId, keepsPair, offered, shownAs, takeChoice } from './models'
 import type { Choices, ModelIds } from './models'
 import { adopt, compactionModel, countUnmatched, idleTimerOf, isEndNotice, isHandBack, isNotice, isReviewerEntry, land, lapseListFacts, lapseOf, learn, learnName, letGo, letGoSwitched, letGoSwitchedIdle, markers, nameKnown, nameListed, needsIds, originOf, reapIdle, resolvedOf, reviewModels, reviewerNameOf, spawnChoice, spawnName, spawning, standingOf, stopMissed, sweepable, WORKING, withTurnEnd } from './reviewer'
 import type { Counted, Identity, IdleTimer, LapseListFacts, Release, ReviewModels, UnmatchedReason } from './reviewer'
@@ -81,7 +81,7 @@ type Finished = { answer: string; reason: string; isAborted: boolean; durationMs
 // `epoch`: the epoch at the plan; `at`: the clock's time at the plan.
 type Plan = { number: number; brief: string; send: string | undefined; epoch: number; at: number }
 
-const fresh = (): Conversation => ({ dispatches: 0, off: false, epoch: 0, midTurn: false, pendingNotes: [], interrupted: false, lastMessage: '', transcript: null, record: EMPTY_RECORD, subagents: {}, briefsInFlight: [], turnStart: null, reviewerIds: [], reviewerNames: [], reviewerContext: 0, memory: [], reviewerModels: {}, spawnsInFlight: [], wake: null, lastAsked: false, messaged: [], nudged: false, dispatchesAtPrompt: 0, spent: 0, unpriced: null, reviews: 0, notes: 0 })
+const fresh = (): Conversation => ({ dispatches: 0, off: false, epoch: 0, midTurn: false, pendingNotes: [], interrupted: false, lastMessage: '', transcript: null, record: EMPTY_RECORD, subagents: {}, briefsInFlight: [], turnStart: null, reviewerIds: [], reviewerNames: [], reviewerContext: 0, memory: [], reviewerModels: {}, spawnsInFlight: [], wake: null, lastAsked: false, messaged: [], nudged: false, dispatchesAtPrompt: 0, spent: 0, unpriced: [], reviews: 0, notes: 0 })
 
 // The toggle, by the footer button or `/auditor`. Off stops the auditor at once: the open review is dropped with its note slot, the held notes are dropped and the reviewer is let go (`letGo`; `toggle` releases it), so the gate refuses every reviewer send from then on; a note let through before the switch may still arrive. Its ids still mark its traffic and rows, and its late turn end matches no reviewer. On starts an empty record, an empty memory and a fresh run, so no entry from the off period or before it is briefed, no memory entry about work the reviewer never saw is briefed either, a failure before it no longer holds the reviewer back, and an interrupt mark from before it holds no note refused for another reason. Either empties the tally (`purged`), so off shows no figures and on starts them from zero, and clears the stall guard. A switch moves the epoch (`epoch`); setting the state it already has changes nothing.
 const switched = (c: Conversation, off: boolean): Release => {
@@ -127,9 +127,9 @@ const modelShown = (c: Conversation, memo: Memo): string => {
   return shownAs(takeChoice(c.choice, memo.last, memo.choices), ids, memo.choices)
 }
 
-// What the button's words read for a conversation: its state and tally, the session total where there is a share to show (off shows no figures, and nothing spent or an unknown cost has no share, so the ledger is not read for them), and the model the next review runs on, from the memo, so a redraw reads no store, catalog or setting.
+// What the button's words read for a conversation: its state and tally, the session total where there is a share to show (off shows no figures, and nothing spent or any unpriced model has no share, so the ledger is not read for them), and the model the next review runs on, from the memo, so a redraw reads no store, catalog or setting.
 const figuresOf = async ($: Pick<Scope, 'session' | 'clock' | 'ui'>, c: Conversation, memo: Memo): Promise<Figures> => {
-  const showsShare = !c.off && c.unpriced === null && c.spent > 0
+  const showsShare = !c.off && c.unpriced.length === 0 && c.spent > 0
   return { state: stateOf(c), spent: c.spent, unpriced: c.unpriced, total: showsShare ? await readLedger($) : undefined, model: modelShown(c, memo), reviews: c.reviews, notes: c.notes, last: c.last, cause: causeOf(c), held: c.pendingNotes.length }
 }
 
@@ -186,10 +186,11 @@ const usageOf = (turn: TurnUsage | undefined): ReviewUsage | null => {
   }
 }
 
-// A conversation state written before a field existed reads with that field's default.
+// A conversation state written before a field existed reads with that field's default. One written before the unpriced models were a list holds a single name there, which reads as a list of that name in the form the tally gives it (`canonicalOf`), and a null there reads as the default, the empty list: this step is the one place that knows the old shape, and every reader past it sees a list.
 const withDefaults = (c: Conversation): Conversation => {
   const stored = Object.fromEntries(Object.entries(c).filter(([, value]) => value !== undefined && value !== null))
-  return { ...fresh(), ...stored }
+  const { unpriced } = stored
+  return { ...fresh(), ...stored, ...(typeof unpriced === 'string' ? { unpriced: [canonicalOf(unpriced) ?? unpriced] } : {}) }
 }
 
 // The transcript path an engine event carries, taken when it is there and kept otherwise.

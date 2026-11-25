@@ -5,7 +5,7 @@ import { choicesOf } from './models'
 
 // 14:32 in the host's local time, built from local parts so the tests hold in any time zone.
 const AT = new Date(2026, 10, 9, 14, 32).getTime()
-const figures = (over: Partial<Figures> = {}): Figures => ({ state: 'on', spent: 12.4, unpriced: null, total: 410.27, model: 'Haiku 5.5', reviews: 14, notes: 3, last: { at: AT, note: false }, cause: undefined, held: 0, ...over })
+const figures = (over: Partial<Figures> = {}): Figures => ({ state: 'on', spent: 12.4, unpriced: [], total: 410.27, model: 'Haiku 5.5', reviews: 14, notes: 3, last: { at: AT, note: false }, cause: undefined, held: 0, ...over })
 
 describe('labelOf', () => {
   test('on, nothing spent yet, reads auditor on', () => {
@@ -20,18 +20,31 @@ describe('labelOf', () => {
     expect(labelOf(figures({ total: undefined }))).toBe('auditor on ($12)')
   })
 
-  test('on, with the cost unknown, reads auditor on', () => {
-    expect(labelOf(figures({ unpriced: 'haiku' }))).toBe('auditor on')
+  test('on, with the cost unknown (unpriced models and no priced spend), reads auditor on, naming no model', () => {
+    expect(labelOf(figures({ spent: 0, unpriced: ['haiku'] }))).toBe('auditor on')
+    expect(labelOf(figures({ spent: 0, unpriced: ['haiku', 'claude-unpriced-1-1'] }))).toBe('auditor on')
+  })
+
+  test('on, with priced spend and an unpriced model, reads the dollars marked partial in the share\'s place, though a session total is given', () => {
+    expect(labelOf(figures({ spent: 0.75, unpriced: ['haiku'] }))).toBe('auditor on ($0.75, partial)')
+    expect(labelOf(figures({ unpriced: ['haiku', 'claude-unpriced-1-1'] }))).toBe('auditor on ($12, partial)')
+    expect(labelOf(figures({ spent: 0.75, unpriced: ['haiku'], total: undefined }))).toBe('auditor on ($0.75, partial)')
+    expect(labelOf(figures({ spent: 0.004, unpriced: ['haiku'] }))).toBe('auditor on (<$0.01, partial)')
   })
 
   test('failing keeps the figures the same way', () => {
     expect(labelOf(figures({ state: 'failing' }))).toBe('auditor failing ($12, 3%)')
     expect(labelOf(figures({ state: 'failing', total: undefined }))).toBe('auditor failing ($12)')
-    expect(labelOf(figures({ state: 'failing', unpriced: 'haiku' }))).toBe('auditor failing')
+    expect(labelOf(figures({ state: 'failing', spent: 0, unpriced: ['haiku'] }))).toBe('auditor failing')
+  })
+
+  test('failing, with priced spend and an unpriced model, reads the dollars marked partial', () => {
+    expect(labelOf(figures({ state: 'failing', spent: 0.75, unpriced: ['haiku'] }))).toBe('auditor failing ($0.75, partial)')
   })
 
   test('off reads auditor off, whatever the figures', () => {
     expect(labelOf(figures({ state: 'off' }))).toBe('auditor off')
+    expect(labelOf(figures({ state: 'off', unpriced: ['haiku'] }))).toBe('auditor off')
   })
 
   test('the dollars are whole from $10 and to the cent below, and the share one decimal below 1%', () => {
@@ -70,8 +83,24 @@ describe('rowsOf', () => {
     expect(rowsOf(figures({ spent: 0 }))[0]).toEqual({ key: 'cost', text: 'auditor $0.00 since on · API list prices' })
   })
 
-  test('with the cost unknown, the cost row names the model with no price', () => {
-    expect(rowsOf(figures({ unpriced: 'haiku' }))[0]).toEqual({ key: 'cost', text: 'cost unknown: no price for haiku' })
+  test('with the cost unknown, the cost row names every model with no price, comma-joined in the order given', () => {
+    expect(rowsOf(figures({ spent: 0, unpriced: ['haiku'] }))[0]).toEqual({ key: 'cost', text: 'cost unknown: no price for haiku' })
+    expect(rowsOf(figures({ spent: 0, unpriced: ['claude-unpriced-2-2', 'haiku', 'claude-unpriced-1-1'] }))[0]).toEqual({ key: 'cost', text: 'cost unknown: no price for claude-unpriced-2-2, haiku, claude-unpriced-1-1' })
+  })
+
+  test('with priced spend and an unpriced model, the cost row shows the tally with no session and no share, though a session total is given, then names every model with no price, last', () => {
+    expect(rowsOf(figures({ spent: 0.75, unpriced: ['claude-unpriced-1-1'] }))[0]).toEqual({ key: 'cost', text: 'auditor $0.75 since on · API list prices · partial: no price for claude-unpriced-1-1' })
+    expect(rowsOf(figures({ spent: 0.75, unpriced: ['A', 'B'] }))[0]).toEqual({ key: 'cost', text: 'auditor $0.75 since on · API list prices · partial: no price for A, B' })
+    expect(rowsOf(figures({ spent: 0.75, unpriced: ['A', 'B'], total: undefined }))[0]).toEqual({ key: 'cost', text: 'auditor $0.75 since on · API list prices · partial: no price for A, B' })
+  })
+
+  test('a partial cost row names every unpriced model, however many, and the partial clause ends the row', () => {
+    const many = ['claude-unpriced-1-1', 'claude-unpriced-2-2', 'claude-unpriced-3-3', 'claude-unpriced-4-4', 'haiku', 'an unknown model']
+    expect(rowsOf(figures({ spent: 1.5, unpriced: many }))[0]?.text).toBe(`auditor $1.50 since on · API list prices · partial: no price for ${many.join(', ')}`)
+  })
+
+  test('a partial figure under a cent reads <$0.01', () => {
+    expect(rowsOf(figures({ spent: 0.004, unpriced: ['haiku'] }))[0]?.text).toBe('auditor <$0.01 since on · API list prices · partial: no price for haiku')
   })
 
   test('under a cent, both figures read <$0.01', () => {
@@ -124,8 +153,14 @@ describe('rowsOf', () => {
     })
 
     test('with the cost unknown for an unpriced id, the row names the next model and the cost row keeps its own words', () => {
-      const rows = rowsOf(figures({ unpriced: 'claude-opus-4-6', model: 'Sonnet 5.5' }))
+      const rows = rowsOf(figures({ spent: 0, unpriced: ['claude-opus-4-6'], model: 'Sonnet 5.5' }))
       expect(rows[0]).toEqual({ key: 'cost', text: 'cost unknown: no price for claude-opus-4-6' })
+      expect(rows[1]).toEqual({ key: 'model', text: 'reviewer model: Sonnet 5.5' })
+    })
+
+    test('with a partial figure, the row names the next model and the cost row keeps its own words', () => {
+      const rows = rowsOf(figures({ unpriced: ['claude-opus-4-6'], model: 'Sonnet 5.5' }))
+      expect(rows[0]).toEqual({ key: 'cost', text: 'auditor $12.40 since on · API list prices · partial: no price for claude-opus-4-6' })
       expect(rows[1]).toEqual({ key: 'model', text: 'reviewer model: Sonnet 5.5' })
     })
   })
@@ -209,6 +244,19 @@ describe('answerOf', () => {
   test('a failing answer ends with the state row', () => {
     expect(answerOf(figures({ state: 'failing', cause: 'not dispatched', held: 1 })).split('\n').at(-1)).toBe('failing: a review could not be handed to a reviewer · 1 note held')
   })
+
+  test('a partial figure reads the same words in the answer: the label with partial, then the cost row naming every unpriced model', () => {
+    expect(answerOf(figures({ spent: 0.75, unpriced: ['A', 'B'] }))).toBe('auditor on ($0.75, partial)\nauditor $0.75 since on · API list prices · partial: no price for A, B\nreviewer model: Haiku 5.5\n14 reviews · 3 notes · last at 14:32, quiet\nclick to switch off')
+    expect(answerOf(figures({ state: 'failing', spent: 0.75, unpriced: ['A'], cause: 'no answer' })).split('\n').slice(0, 2)).toEqual(['auditor failing ($0.75, partial)', 'auditor $0.75 since on · API list prices · partial: no price for A'])
+  })
+
+  test('an unknown cost reads the same words in the answer: the plain label, then the cost row naming every unpriced model', () => {
+    expect(answerOf(figures({ spent: 0, unpriced: ['A', 'B'] })).split('\n').slice(0, 2)).toEqual(['auditor on', 'cost unknown: no price for A, B'])
+  })
+
+  test('off reads its own words with unpriced models left over', () => {
+    expect(answerOf(figures({ state: 'off', unpriced: ['A'] }))).toBe(answerOf(figures({ state: 'off' })))
+  })
 })
 
 describe('buttonOf', () => {
@@ -229,6 +277,12 @@ describe('buttonOf', () => {
     const popup = drawn(figures()).props.children[1]
     expect(popup.props.children.map((row: Node) => row.props['key'])).toEqual(['cost', 'model', 'reviews', 'press'])
     expect(popup.props.children[0].props.children[0]).toMatchObject({ type: 'Text', props: { dimColor: true, children: ['auditor $12.40 since on · session $410.27 · 3% · API list prices'] } })
+  })
+
+  test('a partial figure is drawn in the label and in the cost row, with no share in either, though a session total is given', () => {
+    const [button, popup] = drawn(figures({ spent: 0.75, unpriced: ['A', 'B'] })).props.children
+    expect(button.props.label).toBe('auditor on ($0.75, partial)')
+    expect(popup.props.children[0].props.children[0]).toMatchObject({ type: 'Text', props: { dimColor: true, children: ['auditor $0.75 since on · API list prices · partial: no price for A, B'] } })
   })
 
   test('a press runs the handler given', () => {

@@ -13,11 +13,11 @@ type Table = {
   Button: ElementConstructor<ButtonProps>
 }
 
-// What the words read: the toggle's state, the tally in dollars, the model that made it unknown (null while it is known), the session's total from the ledger (undefined when unknown), the words that name the model the next review runs on (its name, or its choice as spelled), the reviews completed and notes given with the last review, the cause of the failure (set exactly while the state is failing) and the count of notes held for the next prompt.
+// What the words read: the toggle's state, the tally in dollars, the models left out of it for want of a price, in the order met (empty while every figure was priced), the session's total from the ledger (undefined when unknown), the words that name the model the next review runs on (its name, or its choice as spelled), the reviews completed and notes given with the last review, the cause of the failure (set exactly while the state is failing) and the count of notes held for the next prompt.
 export type Figures = {
   state: 'on' | 'off' | 'failing'
   spent: number
-  unpriced: string | null
+  unpriced: readonly string[]
   total: number | undefined
   model: string
   reviews: number
@@ -30,21 +30,29 @@ export type Figures = {
 // One popup row: a stable key, so a test or a later row finds it by key and order, and its words.
 export type Row = { key: string; text: string }
 
-// The label: the state, then the dollars and the share in parentheses where there are figures to show. Off shows none.
+// The label: the state, then the dollars in parentheses where there are figures to show, with the share, or with the word `partial` in its place while some model is unpriced. Off shows none, and nothing spent shows none, whether or not a model is unpriced.
 export const labelOf = (f: Figures): string => {
-  if (f.state === 'off' || f.unpriced !== null || f.spent === 0) return `auditor ${f.state}`
+  if (f.state === 'off' || f.spent === 0) return `auditor ${f.state}`
+  if (f.unpriced.length > 0) return `auditor ${f.state} (${wholeOf(f.spent)}, partial)`
   const share = shareOf(f.spent, f.total)
   return `auditor ${f.state} (${wholeOf(f.spent)}${share === undefined ? '' : `, ${percentOf(share)}`})`
 }
 
-// The cost row's words.
+// What the cost row says its dollars are priced at.
+const PRICES = 'API list prices'
+
+// The cost row's words. While some model is unpriced the row names every one, in the order met, and has no session total or share: as `cost unknown` where no priced spend counted, else after the tally as the last clause, `partial`, so a row cut at its end keeps the dollars.
 const costRow = (f: Figures): string => {
   if (f.state === 'off') return 'off: no reviews, no figures until switched on'
-  if (f.unpriced !== null) return `cost unknown: no price for ${f.unpriced}`
+  const tally = `auditor ${centsOf(f.spent)} since on`
+  if (f.unpriced.length > 0) {
+    const missing = `no price for ${f.unpriced.join(', ')}`
+    return f.spent === 0 ? `cost unknown: ${missing}` : [tally, PRICES, `partial: ${missing}`].join(' · ')
+  }
   // The share of nothing spent is not shown, as in the label.
   const share = f.spent === 0 ? undefined : shareOf(f.spent, f.total)
   const session = share === undefined || f.total === undefined ? [] : [`session ${centsOf(f.total)}`, percentOf(share)]
-  return ['auditor ' + centsOf(f.spent) + ' since on', ...session, 'API list prices'].join(' · ')
+  return [tally, ...session, PRICES].join(' · ')
 }
 
 // The failing row's cause wording, one per cause. A place that sets `failing` with a cause of its own adds its row here.
