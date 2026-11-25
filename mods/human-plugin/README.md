@@ -15,7 +15,11 @@ any work can continue. Approvals, actions outside chat, and decisions that
 can wait go on the list. The agent carries on with independent work while
 your answer is pending. If one workstream becomes blocked, the agent can
 mark the item so it rises to the top. When the agent has done everything it
-can without you, it marks the request it is waiting on as blocking. The
+can without you, it marks the request it is waiting on as blocking. If the
+agent ends its turn with open requests and none marked blocking, the plugin
+may ask it to mark the one it waits on, and the terminal shows that ask as a
+Stop hook message, `Stop hook error: ...` with the footer
+`Stop hook error occurred`, which is the plugin asking, not an error. The
 list’s header reads `<name> TODO`, using the name the agent has for you, and
 **Human TODO** until it has one.
 
