@@ -11,7 +11,7 @@ import { MAIN, admitSend, decideRefusal, followUpText, frameNote, isStoppedRefus
 import type { Decided, Outcome, Refusal, Sent, Verdict } from './notes'
 import { REVIEWER_PROMPT } from './prompt'
 import { clip, editedLines, entryBlock, pageOf, renumberBlock, toolLine } from './record'
-import { DEFAULT_MODEL, FALLBACK_CHOICES, isFullId, keepsPair, offered, shownAs, takeChoice } from './models'
+import { DEFAULT_MODEL, FALLBACK_CHOICES, canonicalOf, isFullId, keepsPair, offered, shownAs, takeChoice } from './models'
 import type { Choices, ModelIds } from './models'
 import { adopt, compactionModel, countUnmatched, idleTimerOf, isEndNotice, isHandBack, isNotice, isReviewerEntry, land, lapseListFacts, lapseOf, learn, learnName, letGo, letGoSwitched, letGoSwitchedIdle, markers, nameKnown, nameListed, needsIds, originOf, reapIdle, resolvedOf, reviewModels, reviewerNameOf, spawnChoice, spawnName, spawning, standingOf, stopMissed, sweepable, WORKING, withTurnEnd } from './reviewer'
 import type { Counted, Identity, IdleTimer, LapseListFacts, Release, ReviewModels, UnmatchedReason } from './reviewer'
@@ -186,11 +186,11 @@ const usageOf = (turn: TurnUsage | undefined): ReviewUsage | null => {
   }
 }
 
-// A conversation state written before a field existed reads with that field's default. One written before the unpriced models were a list holds a single name there, which reads as a list of that name, and a null there reads as the default, the empty list: this step is the one place that knows the old shape, and every reader past it sees a list.
+// A conversation state written before a field existed reads with that field's default. One written before the unpriced models were a list holds a single name there, which reads as a list of that name in the form the tally gives it (`canonicalOf`), and a null there reads as the default, the empty list: this step is the one place that knows the old shape, and every reader past it sees a list.
 const withDefaults = (c: Conversation): Conversation => {
   const stored = Object.fromEntries(Object.entries(c).filter(([, value]) => value !== undefined && value !== null))
   const { unpriced } = stored
-  return { ...fresh(), ...stored, ...(typeof unpriced === 'string' ? { unpriced: [unpriced] } : {}) }
+  return { ...fresh(), ...stored, ...(typeof unpriced === 'string' ? { unpriced: [canonicalOf(unpriced) ?? unpriced] } : {}) }
 }
 
 // The transcript path an engine event carries, taken when it is there and kept otherwise.

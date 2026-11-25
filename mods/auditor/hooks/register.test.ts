@@ -7048,6 +7048,15 @@ describe('the auditor\'s cost', () => {
       expect(seen.conversation.unpriced).toEqual(['haiku', 'claude-unpriced-1-1'])
     })
 
+    test('a single dated name stored with no priced spend reads as its canonical name: a later review on that model adds nothing, and the cost row names it once', ON, async ($, on) => {
+      const seen = engine(on, { stateSeed: { dispatches: 3, off: false, epoch: 1, unpriced: 'claude-unpriced-1-1-20261001' } })
+      otherMods(on)
+      await workerTurn($)
+      await request($, billed({ model: 'claude-unpriced-1-1', output_tokens: 10 }))
+      expect(seen.conversation.unpriced).toEqual(['claude-unpriced-1-1'])
+      expect((await popupTexts(await mountMode($)))[0]).toBe('cost unknown: no price for claude-unpriced-1-1')
+    })
+
     test('a null reads as the empty list: the figures show with their share', ON, async ($, on) => {
       const seen = engine(on, { ledger: 100, stateSeed: { dispatches: 3, off: false, epoch: 1, spent: 0.5, unpriced: null } })
       otherMods(on)
