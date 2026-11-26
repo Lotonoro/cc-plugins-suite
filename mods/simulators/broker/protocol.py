@@ -8,6 +8,10 @@ broker puts there, where the script's own texts write `%s` or `${name}`.
 
 from __future__ import annotations
 
+# The protocol's version, which `PROTOCOL.md` states. A change to the state directory's layout or to
+# a record's form is a breaking change, and raises it.
+PROTOCOL_VERSION = 1
+
 # The exit codes of a client command. 75, 124, 126 and 127 are the script's, and
 # LOCK-PROTOCOL.md section 5.5 binds them. 64 and 78 follow sysexits.h's EX_USAGE and EX_CONFIG,
 # as the script's 75 follows EX_TEMPFAIL.
