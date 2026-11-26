@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -40,6 +41,16 @@ PASSING_CHECK = "#!/usr/bin/env python3\nopen('check-ran', 'w').close()\n"
 FAILING_CHECK = "#!/usr/bin/env python3\nimport sys\nprint('the mod suite failed')\nsys.exit(1)\n"
 
 LEAK = "/Users/someone/x"
+
+# A name that ends a log line twice, once with a line feed and once with a carriage return, to
+# start a workflow command of its own each time, and that holds the text of an escaped line end.
+HOSTILE = "evil\n::error::injected\r::warning::more%0A"
+ESCAPED = "evil%0A::error::injected%0D::warning::more%250A"
+
+
+def command_lines(log: str) -> List[str]:
+    """The lines of a log that the runner reads as workflow commands; it ends a line at CR too."""
+    return [line for line in re.split(r"\r\n|\r|\n", log) if line.startswith("::")]
 
 
 class GateTest(unittest.TestCase):
@@ -315,6 +326,51 @@ class GateTest(unittest.TestCase):
         self.assertEqual(result.code, 2)
         self.assertIn("--no-such-option", result.err)
         self.assertEqual(self.claude_calls(), [])
+
+    def test_a_mods_name_cannot_end_a_log_line_and_start_a_workflow_command(self) -> None:
+        self.mod(HOSTILE, check=FAILING_CHECK)
+        self.marketplace([HOSTILE])
+        result = self.gate()
+        self.assertEqual(result.code, 1)
+        mod = f"mods/{ESCAPED}"
+        self.assertEqual(
+            command_lines(result.out),
+            [
+                "::group::marketplace: claude plugin validate .",
+                "::endgroup::",
+                f"::group::{mod}: claude plugin validate {mod}",
+                "::endgroup::",
+                f"::group::{mod}: check",
+                "::endgroup::",
+                f"::error::{mod}: check: exit status 1",
+                "::group::leak check",
+                "::endgroup::",
+            ],
+        )
+        lines = result.out.split("\n")
+        self.assertIn(f"$ claude plugin validate '{mod}'", lines)
+        self.assertIn(f"FAILED {mod}: check: exit status 1", lines)
+
+    def test_a_marketplace_entrys_name_cannot_end_a_log_line_and_start_a_workflow_command(
+        self,
+    ) -> None:
+        entry = {"name": HOSTILE, "source": f"./mods/{HOSTILE}"}
+        text = json.dumps({"name": "scratch", "plugins": [entry]}, indent=2) + "\n"
+        self.add(".claude-plugin/marketplace.json", text)
+        result = self.gate()
+        self.assertEqual(result.code, 1)
+        why = f"{ESCAPED}: source ./mods/{ESCAPED} is not a directory of this repository"
+        self.assertEqual(
+            command_lines(result.out),
+            [
+                f"::error::marketplace: {why}",
+                "::group::marketplace: claude plugin validate .",
+                "::endgroup::",
+                "::group::leak check",
+                "::endgroup::",
+            ],
+        )
+        self.assertIn(f"FAILED marketplace: {why}", result.out.split("\n"))
 
 
 if __name__ == "__main__":

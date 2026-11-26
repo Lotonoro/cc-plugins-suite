@@ -67,8 +67,19 @@ class Step:
         return self.command or shlex.join(self.argv)
 
 
+def escape(text: str) -> str:
+    """The text with `%`, CR and LF escaped, as GitHub's workflow commands escape their data."""
+    return text.replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
+
+
 def say(text: str) -> None:
-    print(text, flush=True)
+    """Prints a line of the log, escaped.
+
+    The runner reads a line that starts with `::` as a workflow command and ends a line at CR as
+    well as LF, so a name the pull request chose, a mod's directory or a marketplace entry's,
+    must not hold a line end, wherever the line shows it.
+    """
+    print(escape(text), flush=True)
 
 
 def git(root: Optional[Path], *args: str) -> bytes:
