@@ -151,6 +151,23 @@ describe('pingText', () => {
     expect(text).toContain(`"${'😀'.repeat(80)} …+4 characters" (queued)`)
   })
 
+  test('a line break, a tab or any run of whitespace in a title is one space, so the text stays one paragraph', () => {
+    const separator = String.fromCharCode(0x2028)
+    const text = pingText([ENTRY('Fix the\nparser'), ENTRY(`  Update \t the\r\n\r\nconfig${separator}now  `)])
+    expect(text).toContain('"Fix the parser" (queued), "Update the config now" (queued).')
+    expect(text).not.toContain('\n')
+  })
+
+  test('a control character in a title is dropped, and the spaces on either side of it are one', () => {
+    const text = pingText([ENTRY('Fix \u0007 the\u001b parser\u007f'), ENTRY('Up\u0000date the config')])
+    expect(text).toContain('"Fix the parser" (queued), "Update the config" (queued).')
+  })
+
+  test('a title is made one line before it is cut, so its whitespace costs it no length', () => {
+    const text = pingText([ENTRY(`${'x'.repeat(70)}${'\n'.repeat(20)}`), ENTRY(`${'y'.repeat(40)}\n\n\n${'z'.repeat(39)}`)])
+    expect(text).toContain(`"${'x'.repeat(70)}" (queued), "${'y'.repeat(40)} ${'z'.repeat(39)}" (queued).`)
+  })
+
   test('it does not call the stop a stall, which is the reviewer\'s word', () => {
     expect(pingText([ENTRY('a')]).toLowerCase()).not.toContain('stall')
   })

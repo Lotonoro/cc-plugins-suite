@@ -75,10 +75,13 @@ export const readingOf = ({ todo, list }: Lists): Reading => {
   return { entries: lines.length > 0 ? [] : (entries ?? []), lines }
 }
 
+// A title on one line, as the text shows it: a control character that is not whitespace is dropped, then each run of whitespace, line breaks included, becomes one space. The owner's tool refuses a line break in a title when it writes one, but not another control character, and a stored title is read as it stands.
+const oneLine = (title: string): string => title.replace(/(?!\s)\p{Cc}/gu, '').replace(/\s+/g, ' ').trim()
+
 // The ping's text: one paragraph that says who asks and the fact, names up to NAMED of the open entries, those in flight first, and asks for one of three ways out. It names the entries since the list lives in human-plugin's state and the agent may no longer hold their titles, it does not accuse, and it leaves "stalled" to the reviewer, so the two read apart in the record.
 export const pingText = (entries: readonly TodoEntry[]): string => {
   const open = [...entries.filter(entry => entry.state === 'in_flight'), ...entries.filter(entry => entry.state === 'queued')]
-  const shown = open.slice(0, NAMED).map(entry => `"${clip(entry.title, TITLE_CHARS)}" (${entry.state})`)
+  const shown = open.slice(0, NAMED).map(entry => `"${clip(oneLine(entry.title), TITLE_CHARS)}" (${entry.state})`)
   const rest = open.length - shown.length
   const count = open.length === 1 ? '1 open entry' : `${open.length} open entries`
   return `${PLUGIN}: you stopped with ${count} on your TODO list, and no background task or scheduled wake-up is in flight to wake you: ${shown.join(', ')}${rest > 0 ? `, and ${rest} more` : ''}. If the work is not done, carry on. If it is done, mark the entries done. If you are waiting on something, say in one line what.`
