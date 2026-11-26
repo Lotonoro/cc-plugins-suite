@@ -21,10 +21,11 @@ import subprocess
 import sys
 from contextlib import contextmanager
 from dataclasses import dataclass
-from typing import Dict, Iterator, List, Optional, Sequence
+from typing import Any, Dict, Iterator, List, Optional, Sequence
 
 from broker import protocol, wrapper
 from broker.errors import WrapperError
+from broker.leaf import Applicant
 from broker.waiter import GaveUp, Waiter
 
 logger = logging.getLogger(__name__)
@@ -62,14 +63,14 @@ class SignalForwarder:
 
 @contextmanager
 def _handlers(forwarder: SignalForwarder) -> Iterator[None]:
-    previous: Dict[int, object] = {}
+    previous: Dict[int, Any] = {}
     for sig in forwarder.SIGNALS:
         previous[sig] = signal.signal(sig, forwarder.handle)
     try:
         yield
     finally:
         for sig, handler in previous.items():
-            signal.signal(sig, handler)  # type: ignore[arg-type]
+            signal.signal(sig, handler)
 
 
 @contextmanager
@@ -110,7 +111,7 @@ def run_in_wrapper(
 
 def metered_run(
     waiter: Waiter,
-    applicant: "object",
+    applicant: Applicant,
     limits: RunLimits = RunLimits(),
     python: str = sys.executable,
 ) -> int:
@@ -119,10 +120,10 @@ def metered_run(
     75 when the wait reached the timeout, and the command did not run.
     """
     with _interrupt_ends_the_process():
-        outcome = waiter.wait(applicant)  # type: ignore[arg-type]
+        outcome = waiter.wait(applicant)
     if isinstance(outcome, GaveUp):
         return protocol.EXIT_TIMEOUT
     try:
-        return run_in_wrapper(outcome.fd, applicant.command, limits, python)  # type: ignore[attr-defined]
+        return run_in_wrapper(outcome.fd, applicant.command, limits, python)
     finally:
         os.close(outcome.fd)
