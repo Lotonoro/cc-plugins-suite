@@ -108,11 +108,14 @@ the gate.
 
 ## Reasons
 
-The reasons a run waits are `LOCK-PROTOCOL.md` section 3's. The broker adds one.
+The reasons a run waits are `LOCK-PROTOCOL.md` section 3's. The broker adds one, for a CPU sample
+that outlasts the machine adapter's timeout. Such a sample gives no idle reading, so it takes the
+fallback of `LOCK-PROTOCOL.md` section 3.2: a run that is alone starts, and one that is not waits
+with this reason, which therefore shows only beside another run.
 
 | When | Text |
 |---|---|
-| the CPU sample outlasted the machine adapter's timeout | `the CPU sample timed out after {seconds}s` |
+| the CPU sample outlasted the machine adapter's timeout, and the run is not alone | `the CPU sample timed out after {seconds}s` |
 
 ## Lines on stderr
 

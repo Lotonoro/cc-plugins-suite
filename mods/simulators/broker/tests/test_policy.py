@@ -165,13 +165,26 @@ class UnmeasurableIdleTest(unittest.TestCase):
 
 
 class TimedOutSampleTest(unittest.TestCase):
-    def test_a_timed_out_sample_waits_a_lone_run_with_the_timeout_reason(self) -> None:
+    """A sample that timed out gives no idle reading, so it takes the unmeasurable-idle fallback."""
+
+    def test_a_lone_run_starts_when_the_sample_timed_out(self) -> None:
         got = decide(FREE, sample=TimedOut(10))
+        self.assertEqual(got, Decision(Verdict.ADMIT, "the checks passed"))
+
+    def test_a_run_beside_another_waits_with_the_timeout_reason(self) -> None:
+        got = decide((True, False, False), last_start=NOW - 200, sample=TimedOut(10))
         self.assertEqual(got, Decision(Verdict.WAIT, "the CPU sample timed out after 10s"))
 
-    def test_a_timed_out_sample_waits_a_run_beside_another_too(self) -> None:
-        got = decide((True, False, False), last_start=NOW - 200, sample=TimedOut(10))
-        self.assertEqual(got.reason, "the CPU sample timed out after 10s")
+    def test_the_reason_names_the_seconds_the_sample_was_given(self) -> None:
+        got = decide((False, True, False), last_start=NOW - 200, sample=TimedOut(25))
+        self.assertEqual(got.reason, "the CPU sample timed out after 25s")
+
+    def test_the_verdict_is_the_unmeasurable_one_for_a_lone_run_and_for_one_beside_another(self) -> None:
+        for held in (FREE, (True, False, False)):
+            with self.subTest(held=held):
+                timed_out = decide(held, last_start=NOW - 200, sample=TimedOut(10))
+                unmeasurable = decide(held, last_start=NOW - 200, sample=Unmeasurable())
+                self.assertEqual(timed_out.verdict, unmeasurable.verdict)
 
 
 class CheckOrderTest(unittest.TestCase):

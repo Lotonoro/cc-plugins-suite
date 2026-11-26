@@ -155,6 +155,13 @@ class AdmitTest(LeafCase):
     def test_an_unmeasurable_cpu_admits_a_lone_run(self) -> None:
         self.assertIsInstance(self.attempt(self.leaf(cpu=[Unmeasurable()])), Admitted)
 
+    def test_a_cpu_sample_that_timed_out_admits_a_lone_run_and_records_the_admission(self) -> None:
+        self.assertIsInstance(self.attempt(self.leaf(cpu=[TimedOut(10)])), Admitted)
+        self.assertEqual(
+            self.decisions.read(),
+            LastDecision(protocol.DECISION_ADMIT, protocol.REASON_ADMITTED, 0, EPOCH + 1),
+        )
+
 
 class WaitTest(LeafCase):
     def test_every_broker_slot_held_waits_with_that_reason_and_takes_no_sample(self) -> None:
@@ -186,9 +193,15 @@ class WaitTest(LeafCase):
         got = self.attempt(self.leaf(cpu=[Unmeasurable()]))
         self.assertEqual(got, Waiting("the CPU's idle percentage cannot be measured"))
 
-    def test_a_sample_that_timed_out_waits_with_that_reason(self) -> None:
+    def test_a_sample_that_timed_out_beside_another_run_waits_with_that_reason(self) -> None:
+        self.hold(1)
+        self.write(".last-start", f"{EPOCH - 100}\n")
         got = self.attempt(self.leaf(cpu=[TimedOut(10)]))
         self.assertEqual(got, Waiting("the CPU sample timed out after 10s"))
+        self.assertEqual(
+            self.decisions.read(),
+            LastDecision(protocol.DECISION_WAIT, "the CPU sample timed out after 10s", None, EPOCH + 1),
+        )
 
     def test_every_decision_is_recorded_with_its_reason_and_no_slot(self) -> None:
         self.attempt(self.leaf(cpu=[Measured(20)]))

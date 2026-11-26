@@ -2,8 +2,9 @@
 
 The adapter is the one place the broker runs a tool to learn about the machine. Every call has a
 timeout. A tool that outlasts it is killed with its whole process group and reaped, so no call
-leaves a child behind, and the timeout is a reading (`TimedOut`) that a waiter reports as its
-reason. A tool that cannot be run, or prints nothing the adapter can read, is `Unmeasurable`.
+leaves a child behind, and the timeout is a reading (`TimedOut`). A tool that cannot be run, or
+prints nothing the adapter can read, is `Unmeasurable`. Neither gives a reading: the policy core
+treats them alike, and only the reason a run beside another waits with tells them apart.
 """
 
 from __future__ import annotations
