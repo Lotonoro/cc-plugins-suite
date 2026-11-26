@@ -217,6 +217,61 @@ class WrapperProcessTest(ClientCase):
         child.wait(timeout=15)
         self.assertEqual(child.returncode, 0)
 
+    # A stderr nobody reads: the line before a kill or a failed start must not stand in their way.
+
+    def spawn_wrapper_whose_stderr_has_no_reader(
+        self, *command: str, limit: int = 0, grace: int = 1
+    ) -> "subprocess.Popen[str]":
+        """A wrapper whose stderr is a pipe with no reader from the start, so a write to it is EPIPE."""
+        read_end, write_end = os.pipe()
+        os.close(read_end)
+        try:
+            child = subprocess.Popen(
+                wrapper.argv(limit, grace, list(command)),
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=write_end,
+            )
+        finally:
+            os.close(write_end)
+        self.addCleanup(stop_process, child)
+        return child
+
+    def test_a_command_past_the_limit_is_still_killed_and_the_status_124_kept_when_stderr_has_no_reader(
+        self,
+    ) -> None:
+        child = self.spawn_wrapper_whose_stderr_has_no_reader(
+            *self.python(
+                programs.TRAP_TERM_WITH_A_STUBBORN_GRANDCHILD,
+                self.path("leader"),
+                self.path("term-mark"),
+                self.path("grandchild"),
+            ),
+            limit=1,
+            grace=5,
+        )
+        leader, grandchild = self.read_pid("leader"), self.read_pid("grandchild")
+        child.wait(timeout=30)
+        self.assertEqual(child.returncode, protocol.EXIT_RUN_LIMIT)
+        with open(self.path("term-mark"), encoding="utf-8") as handle:
+            self.assertEqual(handle.read(), "term")  # TERM was sent, and came before the KILL
+        self.assertTrue(wait_until(lambda: not pid_is_alive(leader)), "the leader is still there")
+        self.assertTrue(wait_until(lambda: not pid_is_alive(grandchild)), "the group's KILL missed")
+
+    def test_a_command_that_cannot_start_still_exits_127_or_126_when_stderr_has_no_reader(self) -> None:
+        plain = self.path("not-executable")
+        with open(plain, "w", encoding="utf-8") as handle:
+            handle.write("#!/bin/sh\nexit 0\n")
+        os.chmod(plain, 0o644)
+        for status, command in (
+            (protocol.EXIT_NOT_FOUND, "/nonexistent/dir/tool"),
+            (protocol.EXIT_CANNOT_EXECUTE, plain),
+        ):
+            with self.subTest(status=status):
+                child = self.spawn_wrapper_whose_stderr_has_no_reader(command)
+                child.wait(timeout=30)
+                self.assertEqual(child.returncode, status)
+
 
 if __name__ == "__main__":
     unittest.main()

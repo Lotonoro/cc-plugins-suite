@@ -62,6 +62,19 @@ def exit_status(returncode: int) -> int:
     return returncode if returncode >= 0 else 128 - returncode
 
 
+def say(line: str) -> None:
+    """Writes a line to descriptor 2, and says nothing when it cannot be written.
+
+    A stderr that has no reader or is closed must not stop the kill or the status that follow the
+    line. `print` is no use here: the line it fails to write stays in `sys.stderr`'s buffer, and the
+    interpreter's flush of that buffer at exit fails again and makes the status 120.
+    """
+    try:
+        os.write(2, os.fsencode(f"{line}\n"))  # fsencode: the command's name came from argv's bytes
+    except OSError:
+        pass
+
+
 class Run:
     """One command under the wrapper: starts it, stops it at the limit, and says how it ended."""
 
@@ -115,17 +128,14 @@ class Run:
             # close_fds, on by default, closes the inherited slot descriptor in the command.
             self.proc = subprocess.Popen(self.command, start_new_session=True)
         except OSError as err:
-            print(
-                protocol.LINE_CANNOT_START.format(command=self.command[0], reason=err.strerror),
-                file=sys.stderr,
-            )
+            say(protocol.LINE_CANNOT_START.format(command=self.command[0], reason=err.strerror))
             if isinstance(err, FileNotFoundError):
                 return protocol.EXIT_NOT_FOUND
             return protocol.EXIT_CANNOT_EXECUTE
         while self.pending:
             self._kill_group(self.pending.pop(0))
         if not self._leader_exited(self.limit_seconds or None):
-            print(protocol.LINE_RUN_LIMIT.format(limit=self.limit_seconds), file=sys.stderr)
+            say(protocol.LINE_RUN_LIMIT.format(limit=self.limit_seconds))
             self._kill_group(signal.SIGTERM)
             self._leader_exited(self.grace_seconds)
             self._kill_group(signal.SIGKILL)
