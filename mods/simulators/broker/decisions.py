@@ -14,6 +14,7 @@ from typing import Optional
 
 from broker import protocol
 from broker.errors import StateError
+from broker.files import write_whole
 
 
 @dataclass(frozen=True)
@@ -45,14 +46,9 @@ class DecisionStore:
             )
             + "\n"
         )
-        temporary = os.path.join(self.state_dir, f".{protocol.LAST_DECISION_FILE}.{os.getpid()}.tmp")
         try:
-            os.makedirs(self.state_dir, exist_ok=True)
-            with open(temporary, "w", encoding="utf-8") as handle:
-                handle.write(text)
-            os.replace(temporary, self.path)
+            write_whole(self.path, text)
         except OSError as err:
-            self._discard(temporary)
             raise StateError(f"cannot write {self.path}: {err.strerror or err}") from err
 
     def read(self) -> Optional[LastDecision]:
@@ -86,12 +82,3 @@ class DecisionStore:
         if not well_formed:
             raise StateError(f"{self.path} is not a last-decision record")
         return LastDecision(decision, reason, slot, at)
-
-    @staticmethod
-    def _discard(path: str) -> None:
-        try:
-            os.unlink(path)
-        except OSError:
-            # Best effort, on a path that is already failing: the write's own error is the one
-            # that is raised, and a stray temporary name is harmless and replaced by the next write.
-            pass
