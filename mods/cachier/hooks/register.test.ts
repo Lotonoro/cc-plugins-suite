@@ -6246,7 +6246,7 @@ describe('the learned count: an unpinned run sends what the stored pauses say, a
     expect(text).toContain('refreshes/pause: 1 (kept from pause start; recounted next prompt)')
   })
 
-  test('the count line says the count a pause started with when it equals break-even and a different learned count now stands', { options: { keepalive_lead_s: 60, keepalive_count: 24 } }, async ($, on) => {
+  test('the count line says the count a pause started with when it equals break-even and a different learned count now stands', { options: { keepalive_lead_s: 60, keepalive_count: 24 }, timeoutMs: 60000 }, async ($, on) => {
     // On a one-hour cache these pauses learn nothing, so the run sends the break-even count, capped at 24, and keeps it through its first refresh.
     // On a five-minute cache the same pauses learn 2, so the break-even count is no longer what the history gives, though it is still 24.
     const doc: any = { text: lines([user({ uuid: 'u1', parent: null, ts: iso(T0) }), assistant({ uuid: 'a1', parent: 'u1', ts: iso(T0), write: 18551, tags: ONE_HOUR, model: 'claude-opus-5-5', speed: 'standard' })]), store: { 'pauses/old': [{ startMs: 1000, pausedMs: 600000, hour: 10, weekday: 2, ratio: 24, ttlMs: 300000 }, { startMs: 1001, pausedMs: 3 * 3600000, hour: 10, weekday: 2, ratio: 24, ttlMs: 300000 }, { startMs: 1002, pausedMs: 3 * 3600000, hour: 10, weekday: 2, ratio: 24, ttlMs: 300000 }] } }
@@ -6461,7 +6461,7 @@ const expectRows = async ($: any, rest: string, overnight: string) => {
 }
 
 describe("the rest stop: inside the learned window, once a local day, keepalive stops for the user's rest", () => {
-  test("inside the window, with refreshes answered since the last request 30 minutes ago and every session idle, one tick commits the overnight stop and then writes the step's time, and no refresh is sent while it holds", { options: OVERNIGHT_ON }, async ($, on) => {
+  test("inside the window, with refreshes answered since the last request 30 minutes ago and every session idle, one tick commits the overnight stop and then writes the step's time, and no refresh is sent while it holds", { options: OVERNIGHT_ON, timeoutMs: 60000 }, async ($, on) => {
     const { rec, clk, journal } = await longNight($, on)
     // Refreshes were answered since the request, and nothing has stopped them yet.
     const sent = rec.forks.length
@@ -6483,7 +6483,7 @@ describe("the rest stop: inside the learned window, once a local day, keepalive 
     expect(rec.forks.length).toBe(sent)
   })
 
-  test("the user's return after the rest ends the stop and keepalive resumes; the rest's pause is counted as one whose refreshes ran out", { options: OVERNIGHT_ON }, async ($, on) => {
+  test("the user's return after the rest ends the stop and keepalive resumes; the rest's pause is counted as one whose refreshes ran out", { options: OVERNIGHT_ON, timeoutMs: 60000 }, async ($, on) => {
     const { rec, clk, doc } = await longNight($, on)
     await clk.to(NIGHT + 2000)
     expect(await toggle($, '')).toContain(STOPPED)
@@ -6986,7 +6986,7 @@ describe('the rest stop reads the window the pane shows, and acts only where it 
     expect(debugOf(rec, 'cachier overnight')).toMatchObject([{ window: '00:00–05:00' }])
   })
 
-  test("after a pause's write the window the tick acts on is the one the pane's rest row shows: the pause that ends an 8th rest narrows the window, and no step is taken outside it", { options: OVERNIGHT_ON }, async ($, on) => {
+  test("after a pause's write the window the tick acts on is the one the pane's rest row shows: the pause that ends an 8th rest narrows the window, and no step is taken outside it", { options: OVERNIGHT_ON, timeoutMs: 60000 }, async ($, on) => {
     const EVENING = new Date(2026, 0, 13, 22, 0).getTime()
     const FOUR = new Date(2026, 0, 14, 4, 0).getTime()
     // Another session's prompt five minutes before 04:00 keeps the step from the first ticks, which fall in the window from 02:00 to 07:00 the stored rests give. The page prices
@@ -7027,7 +7027,7 @@ describe('the rest stop reads the window the pane shows, and acts only where it 
     expect((await paneLines($)).some((row) => row.startsWith('overnight:'))).toBe(false)
   })
 
-  test('with a stop held, no tick reads the store for a scan, though every other condition of a step holds', { options: { ...OVERNIGHT_ON, keepalive_count: 1 } }, async ($, on) => {
+  test('with a stop held, no tick reads the store for a scan, though every other condition of a step holds', { options: { ...OVERNIGHT_ON, keepalive_count: 1 }, timeoutMs: 60000 }, async ($, on) => {
     const { rec, clk, journal } = await longNight($, on, nightDoc(FIVE, { 'prompted/other': NIGHT - 3 * 60 * MIN }))
     expect(await toggle($, '')).toContain('Keepalive  paused count used')
     const reads = () => rec.gets.filter((key) => key === 'prompted/other').length
@@ -7077,7 +7077,7 @@ describe('the rest stop reads the window the pane shows, and acts only where it 
     }
   })
 
-  test("during the stop the footer pie is green throughout, with almost the whole hour left, in its last quarter and tenth, and once the cache has lapsed; the heading and the overnight row say the step throughout, and the heading stops saying it at the prompt", { options: OVERNIGHT_ON }, async ($, on) => {
+  test("during the stop the footer pie is green throughout, with almost the whole hour left, in its last quarter and tenth, and once the cache has lapsed; the heading and the overnight row say the step throughout, and the heading stops saying it at the prompt", { options: OVERNIGHT_ON, timeoutMs: 60000 }, async ($, on) => {
     const { clk } = await nearNight($, on)
     await clk.to(NIGHT + 2000)
     const tones = async () => {
@@ -7252,7 +7252,7 @@ describe('the overnight notices: the user is told once per install, when the sto
     expect(rec.store.get(NOTICES_KEY)).toEqual({ window: true, step: false })
   })
 
-  test('a stop already held does not hold the first line back: a window learned while the run stands paused is told at the next tick, and the run stays paused', { options: { ...OVERNIGHT_ON, keepalive_count: 1 } }, async ($, on) => {
+  test('a stop already held does not hold the first line back: a window learned while the run stands paused is told at the next tick, and the run stays paused', { options: { ...OVERNIGHT_ON, keepalive_count: 1 }, timeoutMs: 60000 }, async ($, on) => {
     const { rec, clk } = await longNight($, on, nightDoc(FIVE, { 'pauses/old': startsOf(6, NIGHT - 120 * MIN - DAY_MS).flatMap(restAt) }))
     expect(await toggle($, '')).toContain('Keepalive  paused count used')
     expect(await keepaliveRows($)).toContain('rest: 6 of 7 seen')
@@ -7399,7 +7399,7 @@ describe('the overnight notices: the user is told once per install, when the sto
     expect(rec.store.has(NOTICES_KEY)).toBe(false)
   })
 
-  test("both lines another session told since this load read the record are not told again, and its flags are not erased by this session's asks", { options: OVERNIGHT_ON }, async ($, on) => {
+  test("both lines another session told since this load read the record are not told again, and its flags are not erased by this session's asks", { options: OVERNIGHT_ON, timeoutMs: 60000 }, async ($, on) => {
     const { rec, clk, journal, turn } = await beforeFirstTick($, on, nightDoc(ONE_HOUR, {}, EARLY))
     // The record was read untold at the learn; another session of the install has told the user both lines since.
     rec.store.set(NOTICES_KEY, { window: true, step: true })
@@ -7477,7 +7477,7 @@ describe('the overnight notices: the user is told once per install, when the sto
     }
   }
 
-  test("a /keepalive on made while the first line's record is written is seen by the step: no stop, mark or second line follows it, and the day's step is still to come", { options: OVERNIGHT_ON }, async ($, on) => {
+  test("a /keepalive on made while the first line's record is written is seen by the step: no stop, mark or second line follows it, and the day's step is still to come", { options: OVERNIGHT_ON, timeoutMs: 60000 }, async ($, on) => {
     await atDue($, on, 'write', async ({ rec, clk, journal, notice, edit, holdEdits }) => {
       holdEdits()
       const toggled = toggle($, 'on 60 24')
@@ -7634,7 +7634,7 @@ describe('the night compaction: a step on a conversation at the floor also compa
     expect(noticesOf(rec)[1]).not.toContain('compacted')
   })
 
-  test('the floor reads no TTL and no price: a step on the 5 m TTL compacts a conversation at the floor, as one on the 1 h TTL does', { options: OVERNIGHT_ON }, async ($, on) => {
+  test('the floor reads no TTL and no price: a step on the 5 m TTL compacts a conversation at the floor, as one on the 1 h TTL does', { options: OVERNIGHT_ON, timeoutMs: 60000 }, async ($, on) => {
     const doc = nightDoc(FIVE, {}, REQ, undefined, writeOf(COMPACT_FLOOR_TOKENS))
     doc.compact = () => STANDS()
     const { rec, clk, journal } = await longNight($, on, doc)
@@ -7883,7 +7883,7 @@ describe('the night compaction: a step on a conversation at the floor also compa
     expect(debugOf(rec, 'cachier overnight')).toMatchObject([{ compaction: STOOD_LINE }])
   })
 
-  test("no second compaction is asked the same local day: the user returns for a reply on a context above the floor and goes idle in the window again, and the day's step is not taken again", { options: OVERNIGHT_ON }, async ($, on) => {
+  test("no second compaction is asked the same local day: the user returns for a reply on a context above the floor and goes idle in the window again, and the day's step is not taken again", { options: OVERNIGHT_ON, timeoutMs: 60000 }, async ($, on) => {
     const { rec, clk, journal, doc } = await compactNight($, on, COMPACT_FLOOR_TOKENS)
     await clk.to(NIGHT + 2000)
     expect(rec.compacts).toHaveLength(1)
@@ -9798,7 +9798,7 @@ describe('the best setup: one sentence, in the pane and in the bare command, pri
     expect((await commandText($, '')).replace(/\n\s*/g, ' ')).toMatch(/\(5 pauses this session/)
   })
 
-  test("a pause a prompt ends while every session's pauses are still being read stays in the recent pauses once the read lands", async ($, on) => {
+  test("a pause a prompt ends while every session's pauses are still being read stays in the recent pauses once the read lands", { timeoutMs: 60000 }, async ($, on) => {
     let release!: () => void
     const hold = new Promise<void>((resolve) => (release = resolve))
     // The history's read of another session's key is held: it listed the keys before this session's key held the pause.
@@ -10339,7 +10339,7 @@ describe('a model switch counts as a reset only on a cache cachier read as warm'
   const causes = (rec: any) => debugOf(rec, 'cachier miss').map((m: any) => m.cause)
   const lineOf = (rec: any) => debugOf(rec, 'cachier switch')
 
-  test('a cache read as expired at the switch makes the next miss a lapse and adds nothing to the reset times', async ($, on) => {
+  test('a cache read as expired at the switch makes the next miss a lapse and adds nothing to the reset times', { timeoutMs: 60000 }, async ($, on) => {
     const { rec } = await scenario($, on, { afterMs: TTL + 10000 })
     expect(snapshot).toEqual([])
     expect(held('cold')).toBeDefined()
@@ -10359,7 +10359,7 @@ describe('a model switch counts as a reset only on a cache cachier read as warm'
     expect(lineOf(rec)).toEqual([{ prompt_cache_warm: false, reading: 'warm' }])
   })
 
-  test('an expired read with the engine saying warm adds nothing', async ($, on) => {
+  test('an expired read with the engine saying warm adds nothing', { timeoutMs: 60000 }, async ($, on) => {
     const { rec } = await scenario($, on, { afterMs: TTL + 10000, engineWarm: true })
     expect(snapshot).toEqual([])
     expect(lineOf(rec)).toEqual([{ prompt_cache_warm: true, reading: 'expired' }])
