@@ -21,6 +21,8 @@ python() {
 
 main() {
     cd -- "$(dirname -- "${BASH_SOURCE[0]}")"
+    # The run leaves nothing behind in the tree, bytecode included.
+    export PYTHONDONTWRITEBYTECODE=1
     python -m unittest discover -v -s broker -t .
 }
 
