@@ -411,6 +411,27 @@ class InDefaultFamilyTest(FamilyCase):
             with self.subTest(path=path):
                 self.assertFalse(self.says(path))
 
+    def test_a_directory_that_is_not_there_is_no_match_though_its_path_reads_as_the_default_locks(self) -> None:
+        # Read as text, `nosuch/..` is the default lock's own directory; the shell's `cd` into it fails.
+        self.assertFalse(self.says(os.path.join(self.tmp, "nosuch", "..", self.NAME)))
+
+    def test_a_directory_that_is_a_regular_file_is_no_match_whether_or_not_it_can_be_executed(self) -> None:
+        for mode in (0o644, 0o755):
+            with self.subTest(mode=oct(mode)):
+                # Named for the default lock, so that a path in it would match by prefix if `cd` were not asked.
+                named_for_it = f"{self.default}.{mode:o}"
+                self.write(named_for_it, "")
+                os.chmod(named_for_it, mode)
+                self.assertFalse(self.says(os.path.join(named_for_it, "lock")))
+
+    @unittest.skipIf(os.geteuid() == 0, "root searches any directory")
+    def test_a_directory_that_cannot_be_searched_is_no_match(self) -> None:
+        closed = self.default + ".closed"
+        os.makedirs(closed)
+        os.chmod(closed, 0o600)
+        self.addCleanup(os.chmod, closed, 0o700)
+        self.assertFalse(self.says(os.path.join(closed, "lock")))
+
     def test_a_symlink_to_a_family_file_other_than_the_default_lock_is_a_miss_as_in_the_script(self) -> None:
         self.write(self.default + ".1", "")
         self.assertFalse(self.says(self.link(self.default + ".1", self.elsewhere, "mine.flock")))
