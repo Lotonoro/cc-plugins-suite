@@ -1,11 +1,14 @@
-# The global gitignore drops every dotfile; these are the mods' manifests and this file
+# The global gitignore drops every dotfile; these are the mods' manifests, the CI gate and this file
 !.gitignore
 !.claude-plugin
 !mods/*/.claude-plugin
+!/.github
 # Operational artifacts (plans, memory, local settings): private scratch
 .claude/
 # Written by the engine when it loads a mod
 mods/*/.claude-plugin/types/
+# Written by Python when it imports a module
+__pycache__/
 .DS_Store
 /docs/adr/
 /docs/prd/
