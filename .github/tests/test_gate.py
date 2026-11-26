@@ -412,6 +412,15 @@ class GateTest(unittest.TestCase):
         self.assertIn("gate: 3 of 5 steps failed", lines)
         self.assertNotIn("\r", result.out)
 
+    def test_a_tracked_path_with_a_line_end_outside_the_leak_checks_files_passes(self) -> None:
+        self.mod("alpha")
+        self.marketplace(["alpha"])
+        self.add("docs/a\n::error::boom\nb.md", "notes\n")
+        self.add("mods/c\rd.md", "notes\n")
+        result = self.gate()
+        self.assertEqual(result.code, 0, result.out)
+        self.assertEqual(result.out.splitlines()[-1], "gate: all 3 steps passed")
+
 
 if __name__ == "__main__":
     unittest.main()
