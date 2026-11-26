@@ -55,7 +55,7 @@ class LeakCheckTest(unittest.TestCase):
         self.assertEqual(result.code, 1)
         self.assertEqual(result.out, "b.md:1:$HOME/temp/b\nb.md:3:/Users/c\na.md:2:~/temp/a\n")
 
-    def test_a_line_holding_two_scope_strings_prints_once(self) -> None:
+    def test_a_line_holding_two_machine_specific_paths_prints_once(self) -> None:
         self.write("a.md", "/Users/a and ~/temp/b\n")
         result = self.run_check("a.md")
         self.assertEqual(result.out, "a.md:1:/Users/a and ~/temp/b\n")
@@ -81,55 +81,26 @@ class LeakCheckTest(unittest.TestCase):
         result = self.run_check("--", "-leak.md")
         self.assertEqual((result.code, result.out), (1, "-leak.md:1:/Users/a\n"))
 
-    def test_shipped_scope_fails_machine_specific_paths(self) -> None:
+    def test_machine_specific_paths_fail(self) -> None:
         for text in MACHINE_SPECIFIC:
             with self.subTest(text=text):
                 self.write("a.md", f"before\n{text}\n")
                 result = self.run_check("a.md")
                 self.assertEqual((result.code, result.out), (1, f"a.md:2:{text}\n"))
 
-    def test_shipped_scope_passes_standard_locations(self) -> None:
+    def test_standard_locations_pass(self) -> None:
         for text in STANDARD_LOCATIONS:
             with self.subTest(text=text):
                 self.write("a.md", f"{text}\n")
                 result = self.run_check("a.md")
                 self.assertEqual((result.code, result.out), (0, ""))
 
-    def test_scope_option_replaces_the_shipped_scope(self) -> None:
+    def test_no_option_changes_what_the_check_refuses(self) -> None:
         self.write("scope.txt", "/Volumes/Backup\n")
         self.write("private.md", "/Volumes/Backup/x\n")
-        self.write("machine.md", "/Users/someone/x\n")
-        private = self.run_check("--scope", "scope.txt", "private.md")
-        self.assertEqual((private.code, private.out), (1, "private.md:1:/Volumes/Backup/x\n"))
-        machine = self.run_check("--scope", "scope.txt", "machine.md")
-        self.assertEqual((machine.code, machine.out), (0, ""))
-
-    def test_scope_strings_match_as_literal_text(self) -> None:
-        self.write("scope.txt", "a.c\n$HOME\n")
-        self.write("a.md", "abc\nan a.c\n$HOME\n")
-        result = self.run_check("--scope", "scope.txt", "a.md")
-        self.assertEqual(result.out, "a.md:2:an a.c\na.md:3:$HOME\n")
-
-    def test_scope_skips_comments_and_blank_lines_and_trims_each_string(self) -> None:
-        self.write("scope.txt", "# /Users/ is a comment here\n\n   /opt/private   \n")
-        self.write("a.md", "/Users/someone/x\n")
-        self.write("b.md", "see /opt/private/y\n")
-        self.assertEqual(self.run_check("--scope", "scope.txt", "a.md").code, 0)
-        result = self.run_check("--scope", "scope.txt", "b.md")
-        self.assertEqual((result.code, result.out), (1, "b.md:1:see /opt/private/y\n"))
-
-    def test_scope_naming_no_string_exits_2(self) -> None:
-        self.write("scope.txt", "# only a comment\n\n")
-        self.write("a.md", "/Users/someone/x\n")
-        result = self.run_check("--scope", "scope.txt", "a.md")
+        result = self.run_check("--scope", "scope.txt", "private.md")
         self.assertEqual((result.code, result.out), (2, ""))
-        self.assertIn("scope.txt", result.err)
-
-    def test_unreadable_scope_exits_2(self) -> None:
-        self.write("a.md", "ok\n")
-        result = self.run_check("--scope", "missing.txt", "a.md")
-        self.assertEqual((result.code, result.out), (2, ""))
-        self.assertIn("missing.txt", result.err)
+        self.assertIn("--scope", result.err)
 
     def test_missing_path_exits_2_and_still_reports_the_other_paths_matches(self) -> None:
         self.write("leak.md", "/Users/a\n")
