@@ -15,7 +15,8 @@ when an earlier one fails, so one run names every failure, and it exits 1 when a
 4. The leak check, `leak_check.py` beside this file, over every tracked file under a mod's
    directory (`mods/<name>/...`, as `git ls-files` lists them, since a mod's directory is what an
    install copies) and over `README.md` and `.claude-plugin/marketplace.json`, which the
-   marketplace's page shows.
+   marketplace's page shows. A path among them that holds CR or LF fails the gate by name and is
+   left out, since the check prints a path as it is and the log ends a line at either.
 
 A mod declares its check as an executable file named `check` at the mod's root. The gate runs it
 from the mod's directory, and its exit status is the step's: 0 passes. A `check` that is not
@@ -171,7 +172,14 @@ def plan(root: Path, tracked: Sequence[str]) -> Tuple[List[Step], List[Problem]]
             steps.append(Step(f"{mod}: check", ("./check",), root / mod))
         else:
             problems.append((f"{mod}: check", "not executable"))
-    files = files_to_leak_check(tracked)
+    # The leak check prints a path as it is, and the log ends a line at CR as well as LF, so a path
+    # that holds either is named here, escaped, and left out of what the check is given.
+    files: List[str] = []
+    for path in files_to_leak_check(tracked):
+        if "\r" in path or "\n" in path:
+            problems.append(("leak check", f"tracked path {path} holds CR or LF"))
+        else:
+            files.append(path)
     command = f"python3 {LEAK_CHECK.name} -- {len(files)} files"
     steps.append(Step("leak check", (sys.executable, str(LEAK_CHECK), "--", *files), root, command))
     return steps, problems

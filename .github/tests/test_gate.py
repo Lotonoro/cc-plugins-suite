@@ -47,6 +47,9 @@ LEAK = "/Users/someone/x"
 HOSTILE = "evil\n::error::injected\r::warning::more%0A"
 ESCAPED = "evil%0A::error::injected%0D::warning::more%250A"
 
+# File names that hold a line end, one with a line feed and one with a carriage return.
+LINE_END_NAMES = ("a\n::error::boom\nb.md", "c\r::warning::more\rd.md")
+
 
 def command_lines(log: str) -> List[str]:
     """The lines of a log that the runner reads as workflow commands; it ends a line at CR too."""
@@ -105,12 +108,13 @@ class GateTest(unittest.TestCase):
         hooks: bool = False,
         check: Optional[str] = None,
         executable: bool = True,
+        track: bool = True,
     ) -> None:
-        self.add(f"mods/{name}/README.md", f"The {name} mod.\n")
+        self.add(f"mods/{name}/README.md", f"The {name} mod.\n", track=track)
         if hooks:
-            self.add(f"mods/{name}/hooks/hooks.json", "{}\n")
+            self.add(f"mods/{name}/hooks/hooks.json", "{}\n", track=track)
         if check is not None:
-            self.add(f"mods/{name}/check", check, executable=executable)
+            self.add(f"mods/{name}/check", check, executable=executable, track=track)
 
     def gate(self, *args: str, env: Optional[Dict[str, str]] = None) -> Result:
         return run([sys.executable, str(GATE), *args], cwd=self.root, env=env or self.env)
@@ -328,7 +332,9 @@ class GateTest(unittest.TestCase):
         self.assertEqual(self.claude_calls(), [])
 
     def test_a_mods_name_cannot_end_a_log_line_and_start_a_workflow_command(self) -> None:
-        self.mod(HOSTILE, check=FAILING_CHECK)
+        # Untracked, so that the step labels are all that holds the name; the paths of a tracked
+        # file under it are the subject of the test below.
+        self.mod(HOSTILE, check=FAILING_CHECK, track=False)
         self.marketplace([HOSTILE])
         result = self.gate()
         self.assertEqual(result.code, 1)
@@ -371,6 +377,40 @@ class GateTest(unittest.TestCase):
             ],
         )
         self.assertIn(f"FAILED marketplace: {why}", result.out.split("\n"))
+
+    def test_a_tracked_path_with_a_line_end_fails_the_gate_and_stays_out_of_the_leak_check(
+        self,
+    ) -> None:
+        self.mod("alpha")
+        self.marketplace(["alpha"])
+        for name in LINE_END_NAMES:
+            self.add(f"mods/alpha/{name}", f"see {LEAK}\n")
+        self.add("mods/alpha/notes.md", f"see {LEAK}\n")
+        result = self.gate()
+        self.assertEqual(result.code, 1)
+        first = "tracked path mods/alpha/a%0A::error::boom%0Ab.md holds CR or LF"
+        second = "tracked path mods/alpha/c%0D::warning::more%0Dd.md holds CR or LF"
+        self.assertEqual(
+            command_lines(result.out),
+            [
+                f"::error::leak check: {first}",
+                f"::error::leak check: {second}",
+                "::group::marketplace: claude plugin validate .",
+                "::endgroup::",
+                "::group::mods/alpha: claude plugin validate mods/alpha",
+                "::endgroup::",
+                "::group::leak check",
+                "::endgroup::",
+                "::error::leak check: exit status 1",
+            ],
+        )
+        lines = result.out.split("\n")
+        self.assertIn("$ python3 leak_check.py -- 4 files", lines)
+        self.assertIn(f"mods/alpha/notes.md:1:see {LEAK}", lines)
+        self.assertIn(f"FAILED leak check: {first}", lines)
+        self.assertIn(f"FAILED leak check: {second}", lines)
+        self.assertIn("gate: 3 of 5 steps failed", lines)
+        self.assertNotIn("\r", result.out)
 
 
 if __name__ == "__main__":
