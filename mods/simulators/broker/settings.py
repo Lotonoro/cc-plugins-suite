@@ -93,11 +93,13 @@ class Config:
         return config
 
     def validate(self) -> None:
-        """Raises ConfigError unless every setting is in range and the settings agree."""
+        """Raises ConfigError unless the settings `from_mapping` has not checked are in range and all agree.
+
+        `shared` and `max_runs` are checked where `from_mapping` reads them, since the default slot
+        count needs them.
+        """
         if type(self.family) is not str or not os.path.isabs(self.family):
             raise ConfigError(f"family must be an absolute path, not {self.family!r}")
-        _flag(protocol.KEY_SHARED, self.shared)
-        _positive(protocol.KEY_MAX_RUNS, self.max_runs)
         _positive(protocol.KEY_SLOTS, self.slots)
         if self.shared and self.slots > self.max_runs:
             raise ConfigError(
