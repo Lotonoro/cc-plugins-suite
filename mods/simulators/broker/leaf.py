@@ -27,7 +27,7 @@ from broker.clock import Clock, local_stamp
 from broker.decisions import DecisionStore, LastDecision
 from broker.family import Family
 from broker.machine import MachineAdapter
-from broker.policy import Decision, Rules, Verdict, decide
+from broker.policy import Decision, Rules, Verdict, decide, take_failed
 
 logger = logging.getLogger(__name__)
 
@@ -110,7 +110,7 @@ class TakeTimeLeaf:
         taken = self.family.take_lowest_free()
         if taken is None:
             logger.debug("[LEAF] the checks passed and no broker slot could be locked")
-            return self._wait(protocol.REASON_ALL_HELD.format(slots=self.rules.slots))
+            return self._wait(take_failed(self.rules).reason)
         slot, fd = taken
         try:
             at = self.clock.now()

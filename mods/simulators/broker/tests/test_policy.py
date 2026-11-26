@@ -198,6 +198,21 @@ class TimedOutSampleTest(unittest.TestCase):
         self.assertNotEqual(timed_out.reason, unmeasurable.reason)
 
 
+class TakeFailedTest(unittest.TestCase):
+    """Check 5 of LOCK-PROTOCOL.md section 3: the checks passed and the take then found no free slot."""
+
+    def test_the_decision_is_a_wait_with_the_all_held_reason(self) -> None:
+        got = policy.take_failed(rules())
+        self.assertEqual(got, Decision(Verdict.WAIT, "all 3 run slots are held"))
+
+    def test_the_reason_counts_the_broker_slots_not_the_window(self) -> None:
+        got = policy.take_failed(rules(slots=2, window=3))
+        self.assertEqual(got.reason, "all 2 run slots are held")
+
+    def test_it_is_the_decision_check_1_gives_when_every_slot_is_held(self) -> None:
+        self.assertEqual(policy.take_failed(rules()), decide((True, True, True)))
+
+
 class CheckOrderTest(unittest.TestCase):
     def test_slots_come_before_settle(self) -> None:
         got = decide((True, True, True), last_start=NOW - 1)

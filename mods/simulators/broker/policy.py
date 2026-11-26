@@ -11,6 +11,9 @@ only when it can matter:
 
 A caller that gets `Verdict.SAMPLE` takes the sample and calls `decide` again with it. Later
 changes add their stages to this module, so a new admission rule is one edit here.
+
+After an admit the caller takes the slot, and the take can still find none free, as check 5 of
+LOCK-PROTOCOL.md section 3 says: `take_failed` is the decision then.
 """
 
 from __future__ import annotations
@@ -75,6 +78,10 @@ def _wait(reason: str) -> Decision:
     return Decision(Verdict.WAIT, reason)
 
 
+def _all_held(rules: Rules) -> Decision:
+    return _wait(protocol.REASON_ALL_HELD.format(slots=rules.slots))
+
+
 def _settled(last_start: Optional[int], now: int, settle_seconds: int) -> bool:
     """Whether the settle time has passed; a missing or non-numeric last start counts as settled."""
     return last_start is None or now - last_start >= settle_seconds
@@ -115,7 +122,7 @@ def decide(
     if len(held) != rules.window:
         raise ValueError(f"held has {len(held)} entries for a window of {rules.window}")
     if all(held[: rules.slots]):
-        return _wait(protocol.REASON_ALL_HELD.format(slots=rules.slots))
+        return _all_held(rules)
     alone = not any(held)
     if not alone and not _settled(last_start, now, rules.settle_seconds):
         return _wait(protocol.REASON_SETTLING.format(settle=rules.settle_seconds))
@@ -124,3 +131,12 @@ def decide(
     if sample is None:
         return Decision(Verdict.SAMPLE, "")
     return _after_sample(rules, alone, sample)
+
+
+def take_failed(rules: Rules) -> Decision:
+    """The decision when the checks passed and the take then found no free broker slot.
+
+    It is a wait with check 1's reason: every one of the broker's slots is held, as the count `c`
+    of the rules says, whatever the window holds.
+    """
+    return _all_held(rules)
