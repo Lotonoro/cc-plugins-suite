@@ -7,25 +7,18 @@ tested is what they see.
 from __future__ import annotations
 
 import os
-import subprocess
 import sys
 import tempfile
 import unittest
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, Optional, Union
+
+from support import Result, run
 
 LEAK_CHECK = Path(__file__).resolve().parents[1] / "leak_check.py"
 
 MACHINE_SPECIFIC = ("/Users/someone/x", "~/temp/x", "$HOME/temp/x")
 STANDARD_LOCATIONS = ("~/.claude/x", "~/.android/avd", "/home/someone/x")
-
-
-@dataclass(frozen=True)
-class Result:
-    code: int
-    out: str
-    err: str
 
 
 class LeakCheckTest(unittest.TestCase):
@@ -41,13 +34,7 @@ class LeakCheckTest(unittest.TestCase):
         return name
 
     def run_check(self, *args: str, env: Optional[Dict[str, str]] = None) -> Result:
-        done = subprocess.run(
-            [sys.executable, str(LEAK_CHECK), *args],
-            cwd=self.dir,
-            env=env,
-            capture_output=True,
-        )
-        return Result(done.returncode, done.stdout.decode("utf-8"), done.stderr.decode("utf-8"))
+        return run([sys.executable, str(LEAK_CHECK), *args], cwd=self.dir, env=env)
 
     def test_clean_files_exit_0_and_print_nothing(self) -> None:
         self.write("a.md", "nothing here\nor here\n")
