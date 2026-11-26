@@ -13,7 +13,7 @@ import subprocess
 import sys
 import time
 import unittest
-from typing import List, Optional
+from typing import Optional
 
 from broker import protocol, wrapper
 from broker.tests import programs
