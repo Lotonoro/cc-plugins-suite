@@ -173,6 +173,16 @@ class WrapperProcessTest(ClientCase):
         self.assertEqual(done.returncode, protocol.EXIT_NOT_FOUND)
         self.assertEqual(done.stderr, "sim-lock: /nonexistent/dir/tool: No such file or directory\n")
 
+    def test_a_command_whose_name_is_not_utf8_exits_127_and_says_the_name_unchanged_on_stderr(self) -> None:
+        # The name reaches the wrapper as the bytes of its argv, which Python holds as a surrogate
+        # where they are not UTF-8, and the line must go out as those bytes without failing to be said.
+        name = os.fsdecode(b"/nonexistent/\xff")
+        done = subprocess.run(
+            wrapper.argv(0, 1, [name]), stdin=subprocess.DEVNULL, capture_output=True, timeout=30
+        )
+        self.assertEqual(done.returncode, protocol.EXIT_NOT_FOUND)
+        self.assertEqual(done.stderr, b"sim-lock: /nonexistent/\xff: No such file or directory\n")
+
     def test_a_command_that_cannot_be_executed_exits_126_and_says_why_on_stderr(self) -> None:
         plain = self.path("not-executable")
         with open(plain, "w", encoding="utf-8") as handle:
