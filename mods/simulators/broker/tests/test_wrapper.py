@@ -13,7 +13,8 @@ import subprocess
 import sys
 import time
 import unittest
-from typing import Optional
+from typing import List, Optional, Tuple
+from unittest import mock
 
 from broker import protocol, wrapper
 from broker.tests import programs
@@ -50,6 +51,59 @@ class CommandLineTest(unittest.TestCase):
 
     def test_the_boot_text_writes_no_bytecode_into_the_package(self) -> None:
         self.assertIn("sys.dont_write_bytecode = True", wrapper.BOOT)
+
+
+class PendingSignalTest(unittest.TestCase):
+    """A signal that lands before the command exists is held, and sent as soon as it does.
+
+    These run the wrapper's `Run` in this process, with `Popen`, the signal calls and the group kill
+    replaced, so a signal can be made to land while `Popen` has not yet returned, which a process
+    test cannot time.
+    """
+
+    def run_with_signals_during_popen(self, *landing: int) -> Tuple[int, List[Tuple[int, int]], List[str]]:
+        """Runs a command whose `Popen` receives `landing` before it returns.
+
+        Returns the status, the (group, signal) pairs sent to the command's group, and the order in
+        which the handlers went in and the command started.
+        """
+        run = wrapper.Run(limit_seconds=0, grace_seconds=1, command=["tool"])
+        events: List[str] = []
+        sent: List[Tuple[int, int]] = []
+        process = mock.Mock(pid=4242)
+        process.wait.return_value = 0
+
+        def popen(command: object, **options: object) -> mock.Mock:
+            events.append("started")
+            for signum in landing:
+                run.forward(signum, None)  # lands before Popen returns, so before run.proc is set
+            return process
+
+        with mock.patch.object(wrapper.signal, "signal", side_effect=lambda *_: events.append("handler")):
+            with mock.patch.object(wrapper.subprocess, "Popen", side_effect=popen):
+                with mock.patch.object(wrapper.os, "killpg", side_effect=lambda g, s: sent.append((g, s))):
+                    with mock.patch.object(run, "_leader_exited", return_value=True):
+                        status = run.run()
+        return status, sent, events
+
+    def test_a_signal_that_lands_before_popen_returns_is_sent_to_the_commands_group(self) -> None:
+        status, sent, _ = self.run_with_signals_during_popen(signal.SIGTERM)
+        self.assertEqual(sent, [(4242, signal.SIGTERM)])
+        self.assertEqual(status, 0)
+
+    def test_signals_that_land_before_popen_returns_are_sent_in_the_order_they_came(self) -> None:
+        _, sent, _ = self.run_with_signals_during_popen(signal.SIGHUP, signal.SIGINT, signal.SIGTERM)
+        self.assertEqual(
+            sent, [(4242, signal.SIGHUP), (4242, signal.SIGINT), (4242, signal.SIGTERM)]
+        )
+
+    def test_no_signal_is_sent_when_none_landed(self) -> None:
+        _, sent, _ = self.run_with_signals_during_popen()
+        self.assertEqual(sent, [])
+
+    def test_the_handlers_for_interrupt_terminate_and_hangup_go_in_before_the_command_starts(self) -> None:
+        _, _, events = self.run_with_signals_during_popen()
+        self.assertEqual(events, ["handler", "handler", "handler", "started"])
 
 
 @unittest.skipUnless(sys.platform == "darwin", ONLY_ON_MACOS)
