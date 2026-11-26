@@ -74,11 +74,15 @@ list prices, for new input, output, cache reads and writes, and for reviewer
 compaction requests.
 
 The priced models are those the claude-api skill’s model table listed when
-the rates were taken, on 2026-11-18. A review on any other model leaves the
-cost unknown: the footer drops its figures and `/auditor` says
-`cost unknown`, naming the model, until you switch Auditor off and on again
-or run `/clear`. A price tier a model gains later is followed only once its
-rates are taken again.
+the rates were taken, on 2026-11-18. A review on any other model is left out
+of the estimate, while reviews on priced models still count. Once a priced
+review has counted, the footer and `/auditor` mark the figure `partial`, and
+hovering the label or running `/auditor` names each model left out. Before
+one has, the footer drops its figures and `/auditor` says `cost unknown`,
+naming the models. The share of the session total shows only while every
+review is priced. The models stay named until you switch Auditor off and on
+again or run `/clear`. A price tier a model gains later is followed only once
+its rates are taken again.
 
 ## Get started
 
@@ -94,11 +98,14 @@ from the repository root.
 ## Use it
 
 - **Check status and cost.** The footer shows whether Auditor is on, off, or
-  failing. Hover for review counts, recent activity, and estimated cost. Run
-  `/auditor` for the same information on surfaces without the footer.
+  failing. Hover for review counts, recent activity, estimated cost, and the
+  model the next review runs on, by the name `/model` shows for it where the
+  catalog has one and as `/auditor model` spells it otherwise. Before a session
+  has chosen a model, this is the one it would take. Run `/auditor` for the
+  same information on surfaces without the footer.
 - **Toggle it.** Click the footer label or run `/auditor on` or `/auditor off`
-  to control the current session. Each new session starts on while the plugin
-  is enabled.
+  to control the current session. `/clear` keeps the toggle as it was. Each
+  new session starts on while the plugin is enabled.
 - **Inspect findings.** Run `/auditor memory` to see the reviewer’s notes and
   which findings are still open or settled. Enable the plugin’s `log` option
   to write per-review JSON under `~/.claude/auditor/`, including timing, token

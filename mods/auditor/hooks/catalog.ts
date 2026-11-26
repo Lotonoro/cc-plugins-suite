@@ -16,29 +16,34 @@ const MAX_IDS = 50
 // The newest files read: a config home holds one file per account it served, and only the latest fetch counts, so a directory of many is not read whole.
 const MAX_FILES = 8
 
-// One file's ids, when it was fetched, as the file says (a file that says nothing sorts last), and how many entries of its list had no string `id`.
-type Catalog = { ids: string[]; fetchedAt: number; withoutId: number }
+// One file's ids and the name it gives each (by canonical id, where it gives one), when it was fetched, as the file says (a file that says nothing sorts last), and how many entries of its list had no string `id`.
+type Catalog = { ids: string[]; names: Record<string, string>; fetchedAt: number; withoutId: number }
 
 const fieldsOf = (value: unknown): Record<string, unknown> => (typeof value === 'object' && value !== null && !Array.isArray(value) ? (value as Record<string, unknown>) : {})
 
-// The catalog a file's text holds; throws the reason it holds none. The file holds `catalog.config.models`, a list of records, each with the `id` of a model: the catalog's ids are those that are full ids, one repeated in canonical form once, in the file's order. An entry with no string `id` is skipped and counted, for the caller to record: one such entry is no reason to reject the file. The file's alias targets (`catalog.config.provider_alias_targets`) are never read: they named a Fable the engine did not run.
+// The catalog a file's text holds; throws the reason it holds none. The file holds `catalog.config.models`, a list of records, each with the `id` of a model and its `name`, the words `/model` shows for it: the catalog's ids are those that are full ids, one repeated in canonical form once, in the file's order, at most MAX_IDS of them, and each id's name is that of its first record, when that is a string (which names are fit to show is `choicesOf`'s to say). An entry with no string `id` is skipped and counted, for the caller to record: one such entry is no reason to reject the file. The file's alias targets (`catalog.config.provider_alias_targets`) are never read: they named a Fable the engine did not run.
 const catalogOf = (text: string): Catalog => {
   const file = fieldsOf(JSON.parse(text))
   const models = fieldsOf(fieldsOf(file['catalog'])['config'])['models']
   if (!Array.isArray(models)) throw new Error('the file holds no list of models at catalog.config.models')
-  const named = models.map(model => fieldsOf(model)['id']).filter((id): id is string => typeof id === 'string')
+  const named = models.flatMap(model => {
+    const { id, name } = fieldsOf(model)
+    return typeof id === 'string' ? [{ id, name }] : []
+  })
   const kept = new Set<string>()
   const ids: string[] = []
-  for (const id of named) {
+  const names: Record<string, string> = {}
+  for (const { id, name } of named) {
     const canonical = canonicalOf(id)
     if (canonical === undefined || kept.has(canonical)) continue
     kept.add(canonical)
     ids.push(id)
+    if (typeof name === 'string') names[canonical] = name
     if (ids.length === MAX_IDS) break
   }
   if (ids.length === 0) throw new Error('no entry of the list is a full model id')
   const fetchedAt = file['fetchedAt']
-  return { ids, fetchedAt: typeof fetchedAt === 'number' && Number.isFinite(fetchedAt) ? fetchedAt : -Infinity, withoutId: models.length - named.length }
+  return { ids, names, fetchedAt: typeof fetchedAt === 'number' && Number.isFinite(fetchedAt) ? fetchedAt : -Infinity, withoutId: models.length - named.length }
 }
 
 // The directory of the engine's catalog cache: under `CLAUDE_CONFIG_DIR` when that is set, else under `.claude` in the home directory. Undefined, recorded, where the read failed or neither is known.
@@ -74,8 +79,8 @@ async function readCatalogFile($: Scope, dir: string, file: FsEntry): Promise<Ca
   return catalog
 }
 
-// The catalog's ids in its order, or undefined, recorded, where there is none: no directory, no file, or no file that holds a list of full ids. Of several valid files the one fetched last wins, so a config home that served two accounts still gives a list.
-export async function readCatalog($: Scope): Promise<string[] | undefined> {
+// The newest valid file's catalog, or undefined, recorded, where there is none: no directory, no file, or no file that holds a list of full ids. Of several valid files the one fetched last wins, so a config home that served two accounts still gives a list.
+async function readNewest($: Scope): Promise<Catalog | undefined> {
   const dir = await catalogDir($)
   if (dir === undefined) return undefined
   const listed = await within($, 'model catalog listing', () => $.fs.list(dir))
@@ -89,7 +94,12 @@ export async function readCatalog($: Scope): Promise<string[] | undefined> {
   for (const catalog of await Promise.all(files.map(file => readCatalogFile($, dir, file)))) {
     if (catalog !== undefined && (newest === undefined || catalog.fetchedAt > newest.fetchedAt)) newest = catalog
   }
-  return newest?.ids
+  return newest
+}
+
+// The catalog's ids in its order, or undefined, recorded, where there is none (`readNewest`).
+export async function readCatalog($: Scope): Promise<string[] | undefined> {
+  return (await readNewest($))?.ids
 }
 
 // The `availableModels` setting as a list of names, or undefined where it is not set, cannot be read, or is not a list of names, which counts as unset: the last two recorded.
@@ -102,10 +112,10 @@ export async function readAvailable($: Scope): Promise<string[] | undefined> {
   return undefined
 }
 
-// What `/auditor model` offers and a conversation takes from: the four aliases and the catalog's ids, filtered by `availableModels` when it is set. A catalog or a setting that could not be read leaves the choices as they stand without it, and a filter that leaves nothing is ignored, recorded.
+// What `/auditor model` offers and a conversation takes from: the four aliases and the catalog's ids, filtered by `availableModels` when it is set, with the catalog's name for each id. A catalog or a setting that could not be read leaves the choices as they stand without it, and a filter that leaves nothing is ignored, recorded.
 export async function readChoices($: Scope): Promise<Choices> {
-  const [catalog, available] = await Promise.all([readCatalog($), readAvailable($)])
-  const choices = choicesOf(catalog, available)
+  const [catalog, available] = await Promise.all([readNewest($), readAvailable($)])
+  const choices = choicesOf(catalog?.ids, available, catalog?.names)
   if (choices.filterIgnored) recordFailed($, 'availableModels filter', new Error('the setting leaves no choice, so it is ignored'))
   return choices
 }

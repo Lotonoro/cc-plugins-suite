@@ -13,9 +13,9 @@ import { mayPing, pingText, readLists, readingOf, withPing, withText } from './p
 import type { Beneath } from './ping'
 import { REVIEWER_PROMPT } from './prompt'
 import { clip, editedLines, isUserKind, pageOf, promptEntry, renumberBlock, toolLine, withEntry } from './record'
-import { DEFAULT_MODEL, FALLBACK_CHOICES, isFullId, offered, takeChoice } from './models'
+import { DEFAULT_MODEL, FALLBACK_CHOICES, canonicalOf, isFullId, keepsPair, offered, shownAs, takeChoice } from './models'
 import type { Choices, ModelIds } from './models'
-import { adopt, compactionModel, countUnmatched, idleTimerOf, isEndNotice, isHandBack, isNotice, isReviewerEntry, land, lapseListFacts, lapseOf, learn, learnName, letGo, letGoSwitched, letGoSwitchedIdle, markers, nameKnown, nameListed, needsIds, originOf, reapIdle, reviewModels, reviewerNameOf, spawnChoice, spawnName, spawning, standingOf, stopMissed, sweepable, WORKING, withTurnEnd } from './reviewer'
+import { adopt, compactionModel, countUnmatched, idleTimerOf, isEndNotice, isHandBack, isNotice, isReviewerEntry, land, lapseListFacts, lapseOf, learn, learnName, letGo, letGoSwitched, letGoSwitchedIdle, markers, nameKnown, nameListed, needsIds, originOf, reapIdle, resolvedOf, reviewModels, reviewerNameOf, spawnChoice, spawnName, spawning, standingOf, stopMissed, sweepable, WORKING, withTurnEnd } from './reviewer'
 import type { Counted, Identity, IdleTimer, LapseListFacts, Release, ReviewModels, UnmatchedReason } from './reviewer'
 import { readLastModel, readModelIds, storeModelId, writeLastModel } from './store'
 import { purged, withCompaction, withNoteGiven, withResponse, withReviewDone } from './tally'
@@ -83,7 +83,7 @@ type Finished = { answer: string; reason: string; isAborted: boolean; durationMs
 // `epoch`: the epoch at the plan; `at`: the clock's time at the plan.
 type Plan = { number: number; brief: string; send: string | undefined; epoch: number; at: number }
 
-const fresh = (): Conversation => ({ dispatches: 0, off: false, epoch: 0, midTurn: false, pendingNotes: [], interrupted: false, lastMessage: '', transcript: null, record: EMPTY_RECORD, subagents: {}, briefsInFlight: [], turnStart: null, reviewerIds: [], reviewerNames: [], reviewerContext: 0, memory: [], reviewerModels: {}, spawnsInFlight: [], wake: null, lastAsked: false, messaged: [], nudged: false, dispatchesAtPrompt: 0, prompts: 0, spent: 0, unpriced: null, reviews: 0, notes: 0 })
+const fresh = (): Conversation => ({ dispatches: 0, off: false, epoch: 0, midTurn: false, pendingNotes: [], interrupted: false, lastMessage: '', transcript: null, record: EMPTY_RECORD, subagents: {}, briefsInFlight: [], turnStart: null, reviewerIds: [], reviewerNames: [], reviewerContext: 0, memory: [], reviewerModels: {}, spawnsInFlight: [], wake: null, lastAsked: false, messaged: [], nudged: false, dispatchesAtPrompt: 0, prompts: 0, spent: 0, unpriced: [], reviews: 0, notes: 0 })
 
 // The toggle, by the footer button or `/auditor`. Off stops the auditor at once: the open review is dropped with its note slot, the held notes are dropped and the reviewer is let go (`letGo`; `toggle` releases it), so the gate refuses every reviewer send from then on; a note let through before the switch may still arrive. Its ids still mark its traffic and rows, and its late turn end matches no reviewer. On starts an empty record, an empty memory and a fresh run, so no entry from the off period or before it is briefed, no memory entry about work the reviewer never saw is briefed either, a failure before it no longer holds the reviewer back, and an interrupt mark from before it holds no note refused for another reason. Either empties the tally (`purged`), so off shows no figures and on starts them from zero, and clears the stall guard. A switch moves the epoch (`epoch`); setting the state it already has changes nothing.
 const switched = (c: Conversation, off: boolean): Release => {
@@ -120,10 +120,19 @@ export const readLedger = async ($: Pick<Scope, 'session' | 'clock' | 'ui'>): Pr
   return typeof usd === 'number' && Number.isFinite(usd) && usd >= 0 ? usd : undefined
 }
 
-// What the button's words read for a conversation: its state and tally, and the session total where there is a share to show (off shows no figures, and nothing spent or an unknown cost has no share, so the ledger is not read for them).
-const figuresOf = async ($: Pick<Scope, 'session' | 'clock' | 'ui'>, c: Conversation): Promise<Figures> => {
-  const showsShare = !c.off && c.unpriced === null && c.spent > 0
-  return { state: stateOf(c), spent: c.spent, unpriced: c.unpriced, total: showsShare ? await readLedger($) : undefined, reviews: c.reviews, notes: c.notes, last: c.last, cause: causeOf(c), held: c.pendingNotes.length }
+// The words that name the model the next review runs on: the conversation's choice, or, where it holds none, the one a take would give from the memo (`takeChoice`), shown by the name the catalog gives its id (`shownAs`). The ids are the memo's with the stored reviewer's own pair laid over them where the pair rule keeps it (`keepsPair`): that pair is the newest resolution of its alias, and a spawn stands in as the stored reviewer before the store has the pair. The reviewer's own model is never the answer, since after a switch it is the old one: the row names only what the next review runs on.
+const modelShown = (c: Conversation, memo: Memo): string => {
+  const reviewer = c.reviewer
+  const resolved = resolvedOf(c)
+  const reviewerChoice = reviewer?.choice ?? DEFAULT_MODEL
+  const ids = resolved !== undefined && keepsPair(reviewerChoice, resolved) ? { ...memo.ids, [reviewerChoice]: resolved } : memo.ids
+  return shownAs(takeChoice(c.choice, memo.last, memo.choices), ids, memo.choices)
+}
+
+// What the button's words read for a conversation: its state and tally, the session total where there is a share to show (off shows no figures, and nothing spent or any unpriced model has no share, so the ledger is not read for them), and the model the next review runs on, from the memo, so a redraw reads no store, catalog or setting.
+const figuresOf = async ($: Pick<Scope, 'session' | 'clock' | 'ui'>, c: Conversation, memo: Memo): Promise<Figures> => {
+  const showsShare = !c.off && c.unpriced.length === 0 && c.spent > 0
+  return { state: stateOf(c), spent: c.spent, unpriced: c.unpriced, total: showsShare ? await readLedger($) : undefined, model: modelShown(c, memo), reviews: c.reviews, notes: c.notes, last: c.last, cause: causeOf(c), held: c.pendingNotes.length }
 }
 
 const firstLine = (text: string): string => text.split('\n', 1)[0] ?? ''
@@ -147,7 +156,7 @@ const noTaskFound = (reason: string, id: string): boolean => reason.trim().repla
 // The session end reasons of a process that is exiting (`/exit`, ctrl+c, ctrl+d; a `-p` run finished, or a signal); any other reason (`clear`, `resume`, `logout`) leaves the process going or costs a line at worst.
 const EXIT_REASONS: readonly string[] = ['prompt_input_exit', 'other']
 
-// The session end reason of a /clear: the process goes on under a new session id, and the conversation's choice goes on with it (`carried`).
+// The session end reason of a /clear: the process goes on under a new session id, and what the session end's reset keeps goes on with it, the spawns in flight aside (`carried`).
 const CLEAR_REASON = 'clear'
 
 type Label = { type: string; name: string }
@@ -179,10 +188,11 @@ const usageOf = (turn: TurnUsage | undefined): ReviewUsage | null => {
   }
 }
 
-// A conversation state written before a field existed reads with that field's default.
+// A conversation state written before a field existed reads with that field's default. One written before the unpriced models were a list holds a single name there, which reads as a list of that name in the form the tally gives it (`canonicalOf`), and a null there reads as the default, the empty list: this step is the one place that knows the old shape, and every reader past it sees a list.
 const withDefaults = (c: Conversation): Conversation => {
   const stored = Object.fromEntries(Object.entries(c).filter(([, value]) => value !== undefined && value !== null))
-  return { ...fresh(), ...stored }
+  const { unpriced } = stored
+  return { ...fresh(), ...stored, ...(typeof unpriced === 'string' ? { unpriced: [canonicalOf(unpriced) ?? unpriced] } : {}) }
 }
 
 // The transcript path an engine event carries, taken when it is there and kept otherwise.
@@ -1009,6 +1019,20 @@ const takeInputs = async ($: Scope): Promise<TakeInputs> => {
   return { last, choices }
 }
 
+// What the model row reads at a redraw: the take's inputs, and the full ids the store holds for the aliases, as the last refresh read them.
+type Memo = TakeInputs & { ids: ModelIds }
+
+// A refresh of the memo, run after `tail`, the refreshes asked for before it, so refreshes run one at a time in the order asked and none replaces a memo a later one wrote. It reads what a take reads (the last model set and the choices) and the stored ids; each read is bounded and fails open, recorded by its adapter, so a refresh ends within the bounds and a failed read leaves its part of the memo as the fallback. The guard is for a throw nothing foresees: a chain that once rejected would skip every later refresh. Resolves once `set` has been given the memo, and never rejects.
+const refreshMemo = ($: Scope, tail: Promise<void>, set: (memo: Memo) => void): Promise<void> =>
+  tail.then(async () => {
+    try {
+      const [last, choices, ids] = await Promise.all([readLastModel($), readChoices($), readModelIds($)])
+      set({ last, choices, ids })
+    } catch (err) {
+      recordFailed($, 'model row refresh', err)
+    }
+  })
+
 // Delivers the plan's brief to a reviewer, stored or spawned. Resolves true when the engine refused the brief in its stopped-session state, by either transport, so the caller gives the review back (`giveBack`); the stored reviewer is kept then, and no spawn is made after its refusal.
 const deliverBrief = async ($: Scope, plan: Plan): Promise<boolean> => {
   const { send, brief, number } = plan
@@ -1231,8 +1255,14 @@ const lookUp = async ($: Pick<Scope, 'process' | 'ui'>, transcript: string | nul
 
 export const register: Register = (on, options) => {
   const log = options['log'] === true
-  // The conversation's choice between a /clear's session end and the session start after it: the engine empties the conversation state between the two (`$.state` is scoped to the session id in force), but the hooks module's memory outlives both. Set by `session.end`, taken by `classic.SessionStart`. It is the registering function's own rather than the module's, so each load, and each test, starts with none, and it needs no session key: a process runs one session at a time. A fresh load between the two (a reload, an enable, a worker respawn), a failed state change at the start and a reset that fails at its read leave the new conversation with none, which takes the last model set.
-  let carried: string | undefined
+  // What a /clear carries from its session end to the session start after it: the conversation the end's reset computed, with the choice of the conversation it cleared and no spawns in flight. The engine empties the conversation state between the two (`$.state` is scoped to the session id in force), but the hooks module's memory outlives both. Set by `session.end`, taken by `classic.SessionStart`. It is the registering function's own rather than the module's, so each load, and each test, starts with none, and it needs no session key: a process runs one session at a time. A fresh load between the two (a reload, an enable, a worker respawn), a failed state change at the start and a reset that fails at its read, where no earlier end set one, leave the new conversation with none: it starts on, at epoch and dispatch count zero, and takes the last model set.
+  let carried: Conversation | undefined
+  // What the model row reads (`Memo`), until a refresh has landed: no last model set, the fallback choices and no ids, so the row shows the held choice as spelled, or haiku where there is none. Written by `refreshMemo` alone, which runs once at load (not awaited) and once in each `/auditor` that answers the state; `/auditor memory` and `/auditor model` run none, since neither prints the row and the second reads its own inputs. Another session's set, a /clear and a /resume refresh nothing: the row names what the memo last read until the next load or `/auditor`. It is the registering function's own, as `carried` is, so each load and each test starts with an empty one and a /clear keeps it. `refreshing` is the tail of the refreshes asked for so far.
+  let memo: Memo = { last: undefined, choices: FALLBACK_CHOICES, ids: {} }
+  let refreshing: Promise<void> = Promise.resolve()
+  const setMemo = (taken: Memo): void => {
+    memo = taken
+  }
 
   on('session.start', async ($, e, next) => {
     // The footer button's twin for every surface: a phone draws no footer, but its typed commands run here and their answer shows there.
@@ -1291,17 +1321,18 @@ export const register: Register = (on, options) => {
       autoCompactWindow: 100_000,
     })
     void leftIdleAtLoad($)
+    refreshing = refreshMemo($, refreshing, setMemo)
     return next(e)
   })
 
-  // The session's start carries its transcript path, which a /clear renews; the lookup tool reads it from state. A /clear's start also hands the new conversation the choice its session end set aside (`carried`).
+  // The session's start carries its transcript path, which a /clear renews; the lookup tool reads it from state. A /clear's start also writes the conversation its session end carried (`carried`), in place of the state's.
   on('classic.SessionStart', async ($, e, next) => {
-    // Every start takes what the end set aside and empties it, before the change, whose callback may run more than once with the same choice: a hand-over is used at most once, a failed change's included. Only a /clear's start hands it in.
+    // Every start takes what the end set aside and empties it, before the change, whose callback may run more than once with the same conversation: a hand-over is used at most once, a failed change's included. Only a /clear's start hands it in.
     const handed = e.source === 'clear' ? carried : undefined
     carried = undefined
     try {
-      // The name handed in is not checked against the choices: it is the conversation's own choice of moments ago, which it would have kept unchecked had it not cleared, as `takeChoice` keeps a held one. A rule added there for a held choice belongs here too.
-      await change($, c => ({ ...withTranscript(c, e.transcript_path), ...(handed === undefined ? {} : { choice: handed }) }))
+      // A carried conversation is written whole, with this start's transcript path and nothing taken from the state: at this point the state cannot tell a write the new conversation made from a pre-/clear write built on the defaults, so none of its fields is trusted. With none carried the state's conversation is written, as at any start. The carried choice is not checked against the choices: it is the conversation's own choice of moments ago, which it would have kept unchecked had it not cleared, as `takeChoice` keeps a held one. A rule added there for a held choice belongs here too.
+      await change($, c => withTranscript(handed ?? c, e.transcript_path))
     } catch (err) {
       recordFailed($, 'session start', err)
     }
@@ -1334,8 +1365,11 @@ export const register: Register = (on, options) => {
     const model = /^model(?:\s+([\s\S]*))?$/i.exec(e.args.trim())
     if (model !== null) return { text: await modelCommand($, (model[1] ?? '').trim()) }
     if (wanted !== '' && wanted !== 'on' && wanted !== 'off') return { text: USAGE }
-    const after = wanted === '' ? await readConversation($) : await toggle($, log, () => wanted === 'off')
-    return { text: answerOf(await figuresOf($, after)) }
+    // A switch takes effect before the refresh, so it never waits on the reads; the answer waits for them, so it names the model the store and the catalog now say, whoever set it.
+    const toggled = wanted === '' ? undefined : await toggle($, log, () => wanted === 'off')
+    refreshing = refreshMemo($, refreshing, setMemo)
+    await refreshing
+    return { text: answerOf(await figuresOf($, toggled ?? (await readConversation($)), memo)) }
   })
 
   // A compaction of a reviewer's own conversation keeps what its judgement rests on; the worker's is left as it is.
@@ -1425,14 +1459,15 @@ export const register: Register = (on, options) => {
       const done = await release($, c => {
         ended.conversation = c
         const gone = letGo(c, 'session end', c.reviewer?.id)
-        carried = e.reason === CLEAR_REASON ? c.choice : undefined
-        // The toggle is the session's: a /clear keeps it off. The reviewer markers are kept, so a pre-/clear reviewer's late end notice is still consumed, its calls stay out of the record and its task row stays hidden; so is the reason the reviewer was let go. A /clear keeps the choice too, but not in the state, which the engine empties before the new session starts: it is set aside in `carried` for that session's start to hand back (any other reason sets nothing aside, and a callback that runs again sets it again, the last run's conversation standing). Everything else starts over, and the epoch moves on (`epoch`). The spawns still in flight are kept for their dispatches to settle (`spawnsInFlight`).
-        return { next: { ...fresh(), dispatches: c.dispatches, dispatchesAtPrompt: c.dispatches, off: c.off, epoch: c.epoch + 1, spawnsInFlight: c.spawnsInFlight, ...markers(c), lastLetGo: gone.next.lastLetGo }, released: gone.released }
+        // The toggle is the session's, and a /clear keeps it as it was; so are the dispatch count with its prompt mark, the epoch moved on (`epoch`), the reviewer markers, so a pre-/clear reviewer's late end notice is still consumed, its calls stay out of the record and its task row stays hidden, and the reason the reviewer was let go. Everything else starts over. The spawns in flight stay in the state for their dispatches to settle (`spawnsInFlight`), but a /clear carries none. The engine empties the state between a /clear's session end and the session start after it, so a /clear sets this reset aside in `carried` for that start to write, in one assignment, with the choice of the conversation it clears added (the reset holds none) and no spawns in flight. Any other reason sets nothing aside, and a callback that runs again sets it again, the last run's conversation standing.
+        const reset: Conversation = { ...fresh(), dispatches: c.dispatches, dispatchesAtPrompt: c.dispatches, off: c.off, epoch: c.epoch + 1, spawnsInFlight: c.spawnsInFlight, ...markers(c), lastLetGo: gone.next.lastLetGo }
+        carried = e.reason === CLEAR_REASON ? { ...reset, choice: c.choice, spawnsInFlight: [] } : undefined
+        return { next: reset, released: gone.released }
       }, false, !exiting)
       released = done.released
     } catch (err) {
       recordFailed($, 'session end', err)
-      // The reset did not land, so the state still holds the session as it was: read it, for the stop and the log. A read that fails too is logged, and the session end goes on without them. The state still names the reviewer it forgot, so the stop passes false (`stopReviewer`).
+      // The reset did not land, so the state keeps the session as it was, until a /clear has the engine empty it; that /clear still carries the reset its callback computed or, where the read failed, what an earlier end set aside (`carried`). Read the state, for the stop and the log. A read that fails too is logged, and the session end goes on without them. The state still names the reviewer it forgot, so the stop passes false (`stopReviewer`).
       try {
         ended.conversation = await readConversation($)
         released = letGo(ended.conversation, 'session end', ended.conversation.reviewer?.id).released
@@ -1595,7 +1630,7 @@ export const register: Register = (on, options) => {
   // The toggle sits among the footer's mode labels, where terminal and desktop draw it, and switches the reviewer off or on for this session (`switched`).
   on('ui.render', { component: 'SessionMode' }, async ($, e, next) => {
     const { Box, Button, Text } = $.ui.resolve(e)
-    const figures = await figuresOf($, await readConversation($))
+    const figures = await figuresOf($, await readConversation($), memo)
     const press = async (): Promise<void> => {
       await toggle($, log, c => !c.off)
     }

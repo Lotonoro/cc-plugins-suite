@@ -65,7 +65,7 @@ export type MemoryEntry = { number: number; text: string; touched?: number } & (
 // What started a worker turn: the user's own prompt (typed, from a Remote Control client, or a headless run's), a reviewer's task notification, or anything else.
 export type TurnStart = 'user' | 'notice' | 'other'
 
-// One conversation, from a /clear or resume to the next. A /clear forgets its current reviewer, its open review and that review's note slot; it keeps the reviewer markers (`reviewerIds`, `reviewerNames`), which mark traffic, not a review.
+// One conversation, from a /clear or resume to the next. A /clear forgets its current reviewer, its open review and that review's note slot, with the rest of what the session end's reset drops. It carries what the reset keeps but the spawns in flight: the toggle (`off`), the dispatch count with its prompt mark, the epoch moved on, the reviewer markers (`reviewerIds`, `reviewerNames`, `reviewerModels`), which mark traffic, not a review, the reason the last reviewer was let go (`lastLetGo`) and the choice (`choice`).
 export type Conversation = {
   // Dispatches this session has made. Numbers carry across /clear, since a session's logs share one directory, and never repeat: a send naming an older number is a former reviewer's.
   dispatches: number
@@ -103,7 +103,7 @@ export type Conversation = {
   memory: MemoryEntry[]
   // The reviewer's open review, if it has one.
   review?: OpenReview
-  // Each reviewer spawn still in flight, by the brief it was spawned with, the epoch it was spawned under, the number of the review it serves, the clock's time its dispatch started, the choice it was spawned for (`choice`; the hook that sets a full id on the spawn reads it) and the id and resolved model once the spawn hook has seen it: a dispatch whose spawn result names no agent takes its id from here. No reset clears it, so a spawn a reset dropped still finds the id it is stopped by (`deliverBrief`). `learn`, `adopt` and `land` in reviewer.ts read and write it. Its landing takes it out (`releaseSpawn`). A review no reviewer has stood in for `SPAWN_TIMEOUT_MS` after its dispatch, and one its stored reviewer has not finished `REVIEW_TIMEOUT_MS` after it, fail at the next dispatch (`dispatchIdle`).
+  // Each reviewer spawn still in flight, by the brief it was spawned with, the epoch it was spawned under, the number of the review it serves, the clock's time its dispatch started, the choice it was spawned for (`choice`; the hook that sets a full id on the spawn reads it) and the id and resolved model once the spawn hook has seen it: a dispatch whose spawn result names no agent takes its id from here. A reset keeps it in the state, so a spawn a reset dropped still finds the id it is stopped by (`deliverBrief`); a /clear carries none, so its new conversation starts with none. `learn`, `adopt` and `land` in reviewer.ts read and write it. Its landing takes it out (`releaseSpawn`). A review no reviewer has stood in for `SPAWN_TIMEOUT_MS` after its dispatch, and one its stored reviewer has not finished `REVIEW_TIMEOUT_MS` after it, fail at the next dispatch (`dispatchIdle`).
   spawnsInFlight: { brief: string; epoch: number; number: number; startedAt: number; choice?: string; id?: string; model?: string }[]
   // Why the last review failed, while none has succeeded since: no review is dispatched until a turn the user's own prompt started ends. Absent means not failing. A state stored before causes existed holds `true` (read as the unknown cause) or `false` (not failing).
   failing?: FailCause | boolean
@@ -121,7 +121,7 @@ export type Conversation = {
   dispatchesAtPrompt: number
   // How many of the user's own prompts have arrived since this conversation began, advanced in the change that clears the stall guard. A Stop reads it as it begins and again where it decides: a moved count says the user's prompt arrived while the hooks beneath ran.
   prompts: number
-  // What the auditor's reviewers have spent, in US dollars at API list prices (pricing.ts), since this conversation began or the auditor was last switched on: every response of every reviewer this session spawned and every reviewer compaction's own request, while on. Switching off empties it, and a fresh conversation starts it empty (the `session.end` reset in register.ts, the one place that decides which session ends restart it).
+  // What the auditor's reviewers have spent, in US dollars at API list prices (pricing.ts), since this conversation began or the auditor was last switched on: every priced response of every reviewer this session spawned and every priced reviewer compaction's own request, while on; one at a model with no price adds nothing, and `unpriced` names the model. Switching off empties it, and a fresh conversation starts it empty (the `session.end` reset in register.ts, the one place that decides which session ends restart it).
   spent: number
   // Reviews completed since this conversation began or the auditor was last switched on, a complete one with a note or quiet; an incomplete one is not counted. Restarts with the tally (`purged`, and the `session.end` reset).
   reviews: number
@@ -129,8 +129,8 @@ export type Conversation = {
   notes: number
   // The last completed review. Absent while none has completed since the same point.
   last?: LastReview
-  // The model id that made the cost unknown: a response or a compaction priced at a model pricing.ts has no rate for. Null while every figure was priced; once set it stays until the tally restarts, and `spent` stops growing.
-  unpriced: string | null
+  // The models pricing.ts has no rate for, which a response or a compaction was made at since the tally started: each once, in the order met, in the form `canonicalOf` (models.ts) gives it, or as reported where it has none (an alias, or `an unknown model` for a compaction whose model is not known). Empty while every figure was priced. It restarts with the tally, and later priced spend is still added to `spent`. A state stored before the field was a list holds one name or null, which the stored-state defaults step in register.ts (`withDefaults`) reads as a list.
+  unpriced: string[]
   // The worker's record since the reviewer's last dispatch.
   record: TurnRecord
   // What each of the worker's own subagents is labelled as, by agent id.
