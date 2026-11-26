@@ -147,7 +147,7 @@ class CpuSampleTest(unittest.TestCase):
 
 
 class UnmeasurableIdleTest(unittest.TestCase):
-    """The fallback is provisional: pango's item 3 is unanswered. These cases change with it."""
+    """LOCK-PROTOCOL.md section 3.2: a lone run starts with no idle reading, one beside another waits."""
 
     def test_a_lone_run_starts_when_the_idle_percentage_cannot_be_measured(self) -> None:
         got = decide(FREE, sample=Unmeasurable())

@@ -90,7 +90,7 @@ def _after_sample(rules: Rules, alone: bool, sample: Sample) -> Decision:
         return _wait(protocol.REASON_SAMPLE_TIMED_OUT.format(seconds=sample.seconds))
     elif not alone:
         # The idle percentage cannot be measured: a lone run starts, one beside another waits.
-        # Provisional until pango's item 3 is answered.
+        # LOCK-PROTOCOL.md section 3.2 states the rule and how pango decided it.
         return _wait(protocol.REASON_UNMEASURABLE)
     return Decision(Verdict.ADMIT, protocol.REASON_ADMITTED)
 
