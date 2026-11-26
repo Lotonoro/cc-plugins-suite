@@ -1,5 +1,6 @@
 import { describe, expect, test } from 'claude-code/testing'
-import { clip, EDITED_PATHS_CAP, editedLines, entryBlock, splitPages, toolLine } from './record'
+import type { Conversation } from '../types/index'
+import { clip, EDITED_PATHS_CAP, editedLines, entryBlock, isUserKind, promptEntry, splitPages, toolLine, withEntry } from './record'
 
 describe('clip', () => {
   test('text within the bound is returned as it is, with no marker', () => {
@@ -85,6 +86,52 @@ describe('entryBlock', () => {
 
   test('a multi-line entry keeps its lines whole inside its block', () => {
     expect(entryBlock(1, 'ASSISTANT: a\nb')).toBe('[1] ASSISTANT: a\nb\n\n')
+  })
+})
+
+describe('isUserKind', () => {
+  test('a prompt typed at the terminal, sent from a Remote Control client or run headless is the user\'s own', () => {
+    for (const kind of ['composer', 'bridge', 'sdk']) expect(isUserKind(kind)).toBe(true)
+  })
+
+  test('a plugin\'s, a peer\'s, a notification\'s or an unknown kind of prompt is not', () => {
+    for (const kind of ['plugin', 'peer', 'task-notification', 'cron', '']) expect(isUserKind(kind)).toBe(false)
+  })
+})
+
+describe('promptEntry', () => {
+  test('the user\'s own prompt is labelled USER', () => {
+    expect(promptEntry('composer', 'fix the parser')).toBe('USER: fix the parser')
+    expect(promptEntry('bridge', 'carry on')).toBe('USER: carry on')
+  })
+
+  test('any other prompt names its kind, so the reviewer does not read it as the user\'s', () => {
+    expect(promptEntry('plugin', 'auditor: check this')).toBe('PROMPT (plugin): auditor: check this')
+    expect(promptEntry('peer', 'helper done')).toBe('PROMPT (peer): helper done')
+  })
+})
+
+describe('withEntry', () => {
+  // The conversation the entry is added to: only the fields the entry reads.
+  const recording = (over: Partial<Conversation> = {}): Conversation => ({ off: false, turnStart: 'user', record: { blocks: ['[1] USER: first\n\n'] }, ...over }) as unknown as Conversation
+
+  test('an entry joins the record as the next numbered block', () => {
+    expect(withEntry(recording(), 'ASSISTANT: second').record.blocks).toEqual(['[1] USER: first\n\n', '[2] ASSISTANT: second\n\n'])
+  })
+
+  test('a turn that no prompt has started, or any other turn, records', () => {
+    expect(withEntry(recording({ turnStart: null }), 'x').record.blocks.length).toBe(2)
+    expect(withEntry(recording({ turnStart: 'other' }), 'x').record.blocks.length).toBe(2)
+  })
+
+  test('a switched-off reviewer records nothing', () => {
+    const c = recording({ off: true })
+    expect(withEntry(c, 'x')).toBe(c)
+  })
+
+  test('a turn a reviewer\'s task notification started records nothing', () => {
+    const c = recording({ turnStart: 'notice' })
+    expect(withEntry(c, 'x')).toBe(c)
   })
 })
 

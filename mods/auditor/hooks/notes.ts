@@ -40,14 +40,21 @@ export const readSend = (to: string, text: string): Sent => {
   return { toMain: to === MAIN, number: opening === null ? null : Number(opening[1]), body, quiet: body === QUIET, ...marksOf(body) }
 }
 
+// Whether a stall note of review `number` counts for the user's current prompt: only a review dispatched after the user's latest own prompt does, since an older review's note answers a turn the user has already moved past.
+export const countsForPrompt = (c: Pick<Conversation, 'dispatchesAtPrompt'>, number: number): boolean => number > c.dispatchesAtPrompt
+
+// Whether the worker has had its one nudge this prompt, or is about to: the stall guard is set (a stall note booked, delivered or held, or a ping), or the open review's note slot holds a stall note of a review that counts for the prompt, admitted and not yet booked. The one definition the send admission, the ping and the booking's guard set read.
+export const committedNudge = (c: Pick<Conversation, 'nudged' | 'review' | 'dispatchesAtPrompt'>): boolean =>
+  c.nudged || (c.review?.note !== undefined && marksOf(c.review.note).stall && countsForPrompt(c, c.review.number))
+
 // What the gate knows of the open review: its number, whether its brief said nothing will wake the worker, and its note slot.
 export type Slot = { number: number; nothingWakes: boolean; note?: string | undefined }
 
 // The send-admission verdict: admitted with the review number and the epoch its effects run under, or refused with the reason the reviewer reads.
 export type Verdict = { admitted: true; number: number; epoch: number } | { admitted: false; reason: string }
 
-// Admits a reviewer's send only as a note for the open review, at the conversation's current epoch.
-export const admitSend = (sent: Sent, review: Slot | undefined, epoch: number): Verdict => {
+// Admits a reviewer's send only as a note for the open review, at the conversation's current epoch. `committed`: a nudge has gone out to the worker this prompt (`committedNudge`), which no stall note may follow.
+export const admitSend = (sent: Sent, review: Slot | undefined, epoch: number, committed: boolean): Verdict => {
   const refuse = (reason: string): Verdict => ({ admitted: false, reason })
   if (review === undefined) return refuse('auditor has no review open, so this message was not sent; end your turn')
   // The open review's number is not named: it is what tells the current reviewer from a former one.
@@ -58,6 +65,7 @@ export const admitSend = (sent: Sent, review: Slot | undefined, epoch: number): 
   if (sent.quiet) return refuse(`a quiet review sends nothing: end your turn with "${QUIET}"`)
   if (review.note !== undefined) return refuse('this review has sent its one note already; this message was not sent')
   if (sent.stall && !review.nothingWakes) return refuse(`this review's brief did not say nothing will wake the worker, so it sends no "${STALL}" note`)
+  if (sent.stall && committed) return refuse(`a nudge already went out to the worker this prompt, so this review sends no "${STALL}" note`)
   return { admitted: true, number: review.number, epoch }
 }
 
@@ -84,7 +92,7 @@ export const decideRefusal = (c: Conversation, refusal: Refusal, booked: (c: Con
   }
   let state = c
   if (filling) {
-    const verdict = admitSend(sent, c.review, c.epoch)
+    const verdict = admitSend(sent, c.review, c.epoch, committedNudge(c))
     if (!verdict.admitted) return { next: c, outcome: 'untouched', refused: verdict.reason }
     if (c.epoch !== epoch || c.review === undefined) return { next: c, outcome: 'untouched' }
     state = { ...c, review: { ...c.review, note: sent.body } }

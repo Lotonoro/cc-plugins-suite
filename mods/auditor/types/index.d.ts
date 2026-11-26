@@ -109,16 +109,18 @@ export type Conversation = {
   failing?: FailCause | boolean
   // What started the worker's latest turn. A turn a reviewer's task notification started records nothing and dispatches nothing at its end.
   turnStart: TurnStart | null
-  // The stall fact the worker's latest Stop gave, which the brief states. Null when the guards withheld it, a Stop omitted a list, the agent list was unread, or an aborted turn cleared it: a turn whose main loop sent a broadcast gets no stall verdict.
+  // The stall fact the worker's latest Stop gave, which the brief states. Null when the guards withheld it, a Stop omitted a list, the agent list was unread, the user's own prompt arrived while the Stop's hooks beneath ran, a ping went out at the Stop, or an aborted turn cleared it: a turn whose main loop sent a broadcast gets no stall verdict.
   wake: Wake | null
   // Whether the worker's latest main-loop tool call asked the user: AskUserQuestion, or a human_items add. A subagent's call leaves it as it was. Reset at each worker turn end.
   lastAsked: boolean
   // The addresses the worker's main-loop SendMessage calls named in this turn: a message wakes its recipient whatever its status. A broadcast (`"*"`) names no agent, so a turn that sent one gets no stall verdict. Reset at each worker turn end.
   messaged: string[]
-  // Whether a stall note from a review dispatched after the user's latest own prompt has been let through and delivered since that prompt, /clear or toggle: one nudge per stall.
+  // Whether the worker has had its one nudge since the user's latest own prompt, /clear or toggle: a stall note from a review dispatched after that prompt, let through and delivered or held, or a ping at its Stop. One nudge per prompt.
   nudged: boolean
   // The dispatch count when the user's latest own prompt arrived, or the last /clear or toggle press: a review numbered above it was dispatched after that point.
   dispatchesAtPrompt: number
+  // How many of the user's own prompts have arrived since this conversation began, advanced in the change that clears the stall guard. A Stop reads it as it begins and again where it decides: a moved count says the user's prompt arrived while the hooks beneath ran.
+  prompts: number
   // What the auditor's reviewers have spent, in US dollars at API list prices (pricing.ts), since this conversation began or the auditor was last switched on: every priced response of every reviewer this session spawned and every priced reviewer compaction's own request, while on; one at a model with no price adds nothing, and `unpriced` names the model. Switching off empties it, and a fresh conversation starts it empty (the `session.end` reset in register.ts, the one place that decides which session ends restart it).
   spent: number
   // Reviews completed since this conversation began or the auditor was last switched on, a complete one with a note or quiet; an incomplete one is not counted. Restarts with the tally (`purged`, and the `session.end` reset).
@@ -137,10 +139,21 @@ export type Conversation = {
   briefsInFlight: string[]
 }
 
+// What a ping reads of human-plugin's state, which that plugin owns and writes: only the fields it reads, as human-plugin's own types/index.d.ts declares them (its `Store` and `TodoItem`). The values are checked where they are read, since the owner may move its format.
+// An item of the human list: `blocking` marks one the agent's remaining work waits on, and `state` and `pressedAt` say whether the user has marked it done.
+export type HumanItem = { id: number; blocking: boolean; state: 'open' | 'done-waiting' | 'done-pending'; pressedAt: number | null }
+// An entry of the agent's own TODO list.
+export type TodoEntry = { title: string; state: 'queued' | 'in_flight' }
+
 declare module 'claude-code' {
   interface PluginState {
     auditor: {
       conversation: Conversation
+    }
+    // `list`: the human list, absent until something writes it. `todo`: the agent's TODO list, null until its first write in a session.
+    'human-plugin': {
+      list: { items: HumanItem[] }
+      todo: TodoEntry[] | null
     }
   }
 }
