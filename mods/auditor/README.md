@@ -33,6 +33,17 @@ turn. The reviewer reads that reply in the transcript and can drop a mistaken
 finding after a single exchange. It can also nudge a stalled agent or escalate
 a disagreement that persists.
 
+**A nudge when the TODO list is left open.** If the main agent stops with
+entries still open on its TODO list and nothing in flight to wake it, Auditor
+asks it to carry on, to mark the entries done, or to say in one line what it
+is waiting on. The list is the one human-plugin keeps, so without
+human-plugin Auditor does nothing here. The ask fires at most once per user
+prompt, and not while the agent’s last step was a question to you or a
+human-plugin item for you may still be open and blocking. In the terminal it
+shows as a `Stop hook feedback: auditor: …` row, not as an error. It was not
+shown on the phone’s web view, so a reply there may answer a question you never
+saw. `/auditor off` silences it along with the reviewer.
+
 **Read-only access to project files.** The reviewer’s tools are limited to
 inspecting files and the transcript, updating its own findings memory, and
 sending notes. The main agent handles any edits.

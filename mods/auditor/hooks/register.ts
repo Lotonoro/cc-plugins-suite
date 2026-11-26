@@ -7,10 +7,12 @@ import { MEMORY, MEMORY_ACTION, MEMORY_FIELD, MEMORY_LOG_CHARS, REVIEW_ENDED, WH
 import type { MemoryChange } from './memory'
 import { answerOf, buttonOf, modelAnswerOf, modelFiguresOf } from './button'
 import type { Figures } from './button'
-import { MAIN, admitSend, decideRefusal, followUpText, frameNote, isStoppedRefusal, marksOf, readSend, settleOutcome } from './notes'
+import { MAIN, admitSend, committedNudge, countsForPrompt, decideRefusal, followUpText, frameNote, isStoppedRefusal, marksOf, readSend, settleOutcome } from './notes'
 import type { Decided, Outcome, Refusal, Sent, Verdict } from './notes'
+import { mayPing, pingText, readLists, readingOf, withPing, withText } from './ping'
+import type { Beneath } from './ping'
 import { REVIEWER_PROMPT } from './prompt'
-import { clip, editedLines, entryBlock, pageOf, renumberBlock, toolLine } from './record'
+import { clip, editedLines, isUserKind, pageOf, promptEntry, renumberBlock, toolLine, withEntry } from './record'
 import { DEFAULT_MODEL, FALLBACK_CHOICES, canonicalOf, isFullId, keepsPair, offered, shownAs, takeChoice } from './models'
 import type { Choices, ModelIds } from './models'
 import { adopt, compactionModel, countUnmatched, idleTimerOf, isEndNotice, isHandBack, isNotice, isReviewerEntry, land, lapseListFacts, lapseOf, learn, learnName, letGo, letGoSwitched, letGoSwitchedIdle, markers, nameKnown, nameListed, needsIds, originOf, reapIdle, resolvedOf, reviewModels, reviewerNameOf, spawnChoice, spawnName, spawning, standingOf, stopMissed, sweepable, WORKING, withTurnEnd } from './reviewer'
@@ -81,7 +83,7 @@ type Finished = { answer: string; reason: string; isAborted: boolean; durationMs
 // `epoch`: the epoch at the plan; `at`: the clock's time at the plan.
 type Plan = { number: number; brief: string; send: string | undefined; epoch: number; at: number }
 
-const fresh = (): Conversation => ({ dispatches: 0, off: false, epoch: 0, midTurn: false, pendingNotes: [], interrupted: false, lastMessage: '', transcript: null, record: EMPTY_RECORD, subagents: {}, briefsInFlight: [], turnStart: null, reviewerIds: [], reviewerNames: [], reviewerContext: 0, memory: [], reviewerModels: {}, spawnsInFlight: [], wake: null, lastAsked: false, messaged: [], nudged: false, dispatchesAtPrompt: 0, spent: 0, unpriced: [], reviews: 0, notes: 0 })
+const fresh = (): Conversation => ({ dispatches: 0, off: false, epoch: 0, midTurn: false, pendingNotes: [], interrupted: false, lastMessage: '', transcript: null, record: EMPTY_RECORD, subagents: {}, briefsInFlight: [], turnStart: null, reviewerIds: [], reviewerNames: [], reviewerContext: 0, memory: [], reviewerModels: {}, spawnsInFlight: [], wake: null, lastAsked: false, messaged: [], nudged: false, dispatchesAtPrompt: 0, prompts: 0, spent: 0, unpriced: [], reviews: 0, notes: 0 })
 
 // The toggle, by the footer button or `/auditor`. Off stops the auditor at once: the open review is dropped with its note slot, the held notes are dropped and the reviewer is let go (`letGo`; `toggle` releases it), so the gate refuses every reviewer send from then on; a note let through before the switch may still arrive. Its ids still mark its traffic and rows, and its late turn end matches no reviewer. On starts an empty record, an empty memory and a fresh run, so no entry from the off period or before it is briefed, no memory entry about work the reviewer never saw is briefed either, a failure before it no longer holds the reviewer back, and an interrupt mark from before it holds no note refused for another reason. Either empties the tally (`purged`), so off shows no figures and on starts them from zero, and clears the stall guard. A switch moves the epoch (`epoch`); setting the state it already has changes nothing.
 const switched = (c: Conversation, off: boolean): Release => {
@@ -503,10 +505,6 @@ const takeReview = async ($: Pick<Scope, 'state'>, ready: (r: OpenReview, c: Con
 const unflightBrief = ($: Pick<Scope, 'state'>, brief: string): Promise<Conversation> =>
   change($, c => ({ ...c, briefsInFlight: c.briefsInFlight.filter(b => b !== brief) }))
 
-// Appends one entry to the record, in the order the entries happen; a switched-off reviewer records nothing, and neither does a turn a reviewer's task notification started.
-const withEntry = (c: Conversation, body: string): Conversation =>
-  c.off || c.turnStart === 'notice' ? c : { ...c, record: { blocks: [...c.record.blocks, entryBlock(c.record.blocks.length + 1, body)] } }
-
 const appendEntry = async ($: Pick<Scope, 'state'>, body: string): Promise<void> => {
   await change($, c => withEntry(c, body))
 }
@@ -520,9 +518,6 @@ const markFailed = async ($: Pick<Scope, 'state' | 'ui'>, reason: string, epoch:
   $.ui.log(`${PLUGIN}: review failed: ${reason}`, { to: 'debug' })
   return after
 }
-
-// Whether a prompt is the user's own: typed at the terminal, sent from a Remote Control client, or a headless run's.
-const isUserKind = (kind: string): boolean => kind === 'composer' || kind === 'bridge' || kind === 'sdk'
 
 // Takes every held note in one change, so each is attached by one prompt only. `epoch`: the epoch at the take (`restorePending`).
 const takePending = async ($: Pick<Scope, 'state'>): Promise<TakenNotes> => {
@@ -542,14 +537,14 @@ const restorePending = ($: Pick<Scope, 'state'>, taken: TakenNotes): Promise<Con
 // The held notes as the worker reads them: each framed as its review line then its body, oldest first.
 const framedOf = (notes: readonly PendingNote[]): string => notes.map(n => frameNote(n.number, n.text)).join('\n\n')
 
-// A booked stall note sets the once-per-stall guard only when its review was dispatched after the user's latest prompt. An older review's note answers a turn the user has already moved past, so it must not hold back the stall fact of the turn it lands in.
-const withStallGuard = (c: Conversation, number: number, stall: boolean): Conversation => (stall && number > c.dispatchesAtPrompt ? { ...c, nudged: true } : c)
+// A booked stall note sets the once-per-prompt guard only when its review was dispatched after the user's latest prompt (`countsForPrompt`). An older review's note answers a turn the user has already moved past, so it must not hold back the stall fact of the turn it lands in.
+const withStallGuard = (c: Conversation, number: number, stall: boolean): Conversation => (stall && countsForPrompt(c, number) ? { ...c, nudged: true } : c)
 
-// Admits a reviewer's send in one change (`admitSend`): an admitted note fills its open review's note slot in that change, so of two notes sent at once one is admitted.
+// Admits a reviewer's send in one change (`admitSend`): an admitted note fills its open review's note slot in that change, so of two notes sent at once one is admitted, and a stall note is refused once a nudge has gone out to the worker this prompt (`committedNudge`).
 const admit = async ($: Pick<Scope, 'state'>, sent: Sent): Promise<Verdict> => {
   const got: { verdict: Verdict } = { verdict: { admitted: false, reason: UNCHECKED } }
   await change($, c => {
-    got.verdict = admitSend(sent, c.review, c.epoch)
+    got.verdict = admitSend(sent, c.review, c.epoch, committedNudge(c))
     return got.verdict.admitted && c.review !== undefined ? { ...c, review: { ...c.review, note: sent.body } } : c
   })
   return got.verdict
@@ -701,7 +696,7 @@ const followUp = async ($: Scope, log: boolean, agentId: string, done: Finished,
   await settle($, log, agentId, done, dispatched, true)
 }
 
-// A guard withholds the stall fact: the turn's last tool call asked the user; a stall note on a review dispatched since the user's last prompt was delivered; or the turn's main loop sent a broadcast (`"*"`), which names no listed agent, so the agent list cannot say what it wakes.
+// A guard withholds the stall fact: the turn's last tool call asked the user; a stall note on a review dispatched since the user's last prompt was delivered, or a ping went out (either sets the guard); or the turn's main loop sent a broadcast (`"*"`), which names no listed agent, so the agent list cannot say what it wakes.
 const withheld = (c: Conversation): boolean => c.lastAsked || c.nudged || c.messaged.includes('*')
 
 // A SendMessage may address a listed name with its ` [ref]` appended, so the suffix is set aside before matching.
@@ -865,6 +860,56 @@ const atTurnEnd = async ($: Scope, dispatch: () => Promise<void>): Promise<void>
   } catch (err) {
     recordFailed($, 'review dispatch', err)
   }
+}
+
+// The Stop event as the hook reads it.
+type StopInput = StopFacts & { stop_hook_active: boolean; last_assistant_message?: string; transcript_path?: string }
+
+// The user's own prompts counted so far (`prompts`), or undefined where the state cannot be read. A Stop that cannot tell whether a prompt arrived while its hooks beneath ran pings nothing and stores its stall fact withheld.
+const promptsCounted = async ($: Pick<Scope, 'state' | 'ui'>): Promise<number | undefined> => {
+  try {
+    return (await readConversation($)).prompts
+  } catch (err) {
+    recordFailed($, 'prompt count read', err)
+    return undefined
+  }
+}
+
+// What the worker's Stop does once the hooks beneath have answered (`beneath`, undefined where they rejected; `started`: the prompts counted when the Stop began). It stores the last message, the transcript path and the stall fact, and then either pings the worker (`ping.ts`) or dispatches the review. Resolves to the ping's text when one goes out, and dispatches nothing then: the worker answers the ping in the turn it continues, and that turn's end dispatches one review covering the stop and the reply. It rejects nothing: a failure is logged and the Stop goes on.
+// The stall fact is stored withheld when the user's own prompt arrived while the hooks beneath ran: the review dispatched here is numbered above the dispatch count that prompt marked, so a note it sent on the fact would spend the new prompt's nudge on the old prompt's stop.
+// The agent list is read before the state change, and only when the auditor is on and no guard withholds the fact. The two lists of human-plugin's state are read last, and only when the Stop could ping on what its start showed; the decision itself is made in the state change, on the state it lands on.
+const atStop = async ($: Scope, log: boolean, e: StopInput, beneath: Beneath | undefined, started: number | undefined): Promise<string | undefined> => {
+  let text: string | undefined
+  await atTurnEnd($, async () => {
+    const prior = await readConversation($)
+    const listed = prior.off || withheld(prior) ? undefined : await listAgents($)
+    const stopped = { active: e.stop_hook_active, beneath, nothingWakes: wakesNothing(stallFact(prior, e, listed)), started }
+    const lists = mayPing(prior, stopped) ? await readLists($) : undefined
+    const reading = lists === undefined ? undefined : readingOf(lists)
+    for (const line of reading?.lines ?? []) $.ui.log(line, { to: 'debug' })
+    const ping = reading === undefined || reading.entries.length === 0 ? undefined : { text: pingText(reading.entries), epoch: prior.epoch, count: reading.entries.length }
+    const got = { pinged: false }
+    const before = await change($, c => {
+      got.pinged = false
+      const wake = started === undefined || c.prompts !== started ? null : stallFact(c, e, listed)
+      const stored = withTranscript({ ...c, lastMessage: e.last_assistant_message ?? '', wake }, e.transcript_path)
+      if (ping === undefined) return stored
+      const written = withPing(stored, { text: ping.text, epoch: ping.epoch, stopped: { ...stopped, nothingWakes: wakesNothing(wake) } })
+      got.pinged = written.pinged
+      return written.next
+    })
+    const sent = got.pinged ? ping : undefined
+    text = sent?.text
+    if (before.review !== undefined && before.reviewer === undefined) {
+      $.ui.log(`${PLUGIN}: the reviewer has an open review but no reviewer id: its spawn result did not name it`, { to: 'debug' })
+    }
+    if (sent !== undefined) {
+      $.ui.log(`${PLUGIN}: pinged the worker: nothing in flight to wake it; TODO entries open: ${sent.count}`, { to: 'debug' })
+      return
+    }
+    await dispatchAtTurnEnd($, log)
+  })
+  return text
 }
 
 // A reviewer spawn's id, as the spawn hook sees it, and the team name it runs under (`spawnName`). The id and name mark the reviewer's traffic and rows from here on, and the spawn stands in as the reviewer at once where `spawnsInFlight` allows it (`learn`).
@@ -1173,8 +1218,6 @@ const turnStartOf = (c: Conversation, e: { text: string; origin: { kind: string 
   return isNotice(IDENTITY, e) ? 'notice' : 'other'
 }
 
-const promptEntry = (kind: string, text: string): string => (isUserKind(kind) ? `USER: ${text}` : `PROMPT (${kind}): ${text}`)
-
 // Runs the lookup a call asks for as a host command, and answers with what it found, or with why it did not run.
 const lookUp = async ($: Pick<Scope, 'process' | 'ui'>, transcript: string | null, input: Record<string, unknown>): Promise<string> => {
   const parsed = lookupOf(input)
@@ -1472,8 +1515,8 @@ export const register: Register = (on, options) => {
       return result
     }
     try {
-      // The prompt entered, so the worker is mid-turn until its turn ends; a note's peer prompt too. A plugin's own submission reaches this hook too. The user's own prompt ends the stall guard; one that took the held notes, whether or not any were waiting, clears the interrupt mark.
-      await change($, c => ({ ...c, midTurn: true, turnStart: turnStartOf(c, e), ...(isUserKind(e.origin.kind) ? { nudged: false, dispatchesAtPrompt: c.dispatches } : {}), ...(took ? { interrupted: false } : {}) }))
+      // The prompt entered, so the worker is mid-turn until its turn ends; a note's peer prompt too. A plugin's own submission reaches this hook too. The user's own prompt ends the stall guard and is counted (`prompts`), which a Stop whose hooks beneath were still running reads; one that took the held notes, whether or not any were waiting, clears the interrupt mark.
+      await change($, c => ({ ...c, midTurn: true, turnStart: turnStartOf(c, e), ...(isUserKind(e.origin.kind) ? { nudged: false, dispatchesAtPrompt: c.dispatches, prompts: c.prompts + 1 } : {}), ...(took ? { interrupted: false } : {}) }))
       await appendEntry($, promptEntry(e.origin.kind, result.text))
       // The notes enter the record as the plugin's own prompt, so the reviewer sees what it already said.
       if (held.length > 0) await appendEntry($, promptEntry('plugin', notesText))
@@ -1616,20 +1659,16 @@ export const register: Register = (on, options) => {
     return Box({})
   })
 
-  // Stop and the main loop's turn end are both dispatch points.
+  // Stop and the main loop's turn end are both dispatch points. The hooks beneath answer first, since the ping rests on what they gave and a pinged Stop dispatches nothing (`atStop`): a worker with entries open on its TODO list and nothing in flight to wake it gets the ping as the last entry of the Stop's context, and the engine continues the turn with it. A rejection from beneath is the caller's: the Stop is stored and dispatched as it would be with no ping, and the rejection passes on.
   on('classic.Stop', async ($, e, next) => {
     if (e.agent_id !== undefined) return next(e)
-    await atTurnEnd($, async () => {
-      // The agent list is read before the state change, and only when the auditor is on and no guard withholds the fact.
-      const prior = await readConversation($)
-      const listed = prior.off || withheld(prior) ? undefined : await listAgents($)
-      const before = await change($, c => withTranscript({ ...c, lastMessage: e.last_assistant_message ?? '', wake: stallFact(c, e, listed) }, e.transcript_path))
-      if (before.review !== undefined && before.reviewer === undefined) {
-        $.ui.log(`${PLUGIN}: the reviewer has an open review but no reviewer id: its spawn result did not name it`, { to: 'debug' })
-      }
-      await dispatchAtTurnEnd($, log)
+    const started = await promptsCounted($)
+    const beneath = await next(e).catch(async (err: unknown) => {
+      await atStop($, log, e, undefined, started)
+      throw err
     })
-    return next(e)
+    const text = await atStop($, log, e, beneath, started)
+    return text === undefined ? beneath : withText(beneath, text)
   })
 
   // A reviewer's turn end settles its review inline: it closes it, or gives it its one follow-up and leaves it open. The worker's own turn end, which every outcome reaches, ends its mid-turn and dispatches. A subagent's turn end reads the conversation once: that read says whose the turn end is, and gives the dispatch count a turn end that closes nothing is counted against (`recordUnmatched`). A reviewer the conversation let go has it counted on the review then open; any other agent's, the worker's own subagents included, is none of the auditor's.

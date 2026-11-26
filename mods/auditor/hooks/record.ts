@@ -1,3 +1,5 @@
+import type { Conversation } from '../types/index'
+
 // One tool call of the worker's loops as the turn record shows it: the input and the result are clipped, so a record stays small whatever the call did.
 
 const INPUT_CHARS = 300
@@ -58,6 +60,16 @@ export const entryBlock = (n: number, body: string): string => `[${n}] ${body}\n
 
 // The same entry block under number n, its number being the leading `[k] ` that entryBlock wrote.
 export const renumberBlock = (block: string, n: number): string => block.replace(/^\[\d+\] /, `[${n}] `)
+
+// Appends one entry to the record, in the order the entries happen; a switched-off reviewer records nothing, and neither does a turn a reviewer's task notification started.
+export const withEntry = (c: Conversation, body: string): Conversation =>
+  c.off || c.turnStart === 'notice' ? c : { ...c, record: { blocks: [...c.record.blocks, entryBlock(c.record.blocks.length + 1, body)] } }
+
+// Whether a prompt is the user's own: typed at the terminal, sent from a Remote Control client, or a headless run's.
+export const isUserKind = (kind: string): boolean => kind === 'composer' || kind === 'bridge' || kind === 'sdk'
+
+// A prompt's entry: the user's own is labelled `USER:`, any other names its kind, since the reviewer attributes only a `USER:` line to the user.
+export const promptEntry = (kind: string, text: string): string => (isUserKind(kind) ? `USER: ${text}` : `PROMPT (${kind}): ${text}`)
 
 // The engine hands a tool result over whole only up to 50,000 characters (above it, it saves the result to a file in the user's configuration directory), so a page is at most this many UTF-8 bytes, within that limit whether the engine counts characters or bytes.
 export const PAGE_BYTES = 50_000
