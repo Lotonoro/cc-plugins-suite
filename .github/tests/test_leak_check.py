@@ -169,6 +169,12 @@ class LeakCheckTest(unittest.TestCase):
             "a.md:3:/Users/c%0D\na.md:4:/Users/d%0De%0Df\n",
         )
 
+    def test_the_rest_of_a_matching_line_prints_as_the_file_holds_it(self) -> None:
+        line = "100% /Users/a%0D %25 \t tab ’quoted’ ::x"
+        self.write("a.md", f"{line}\n")
+        result = self.run_check("a.md")
+        self.assertEqual((result.code, result.out), (1, f"a.md:1:{line}\n"))
+
     def test_bytes_that_are_not_utf8_do_not_hide_a_match(self) -> None:
         self.write("bin.dat", b"\xff\xfe junk /Users/x\n")
         result = self.run_check("bin.dat")
