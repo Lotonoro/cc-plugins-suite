@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'claude-code/testing'
 import type { Conversation, OpenReview } from '../types/index'
-import { ESCALATION, QUIET, STALL, admitSend, decideRefusal, followUpText, frameNote, isStoppedRefusal, marksOf, readSend, reviewLine, settleOutcome } from './notes'
+import { ESCALATION, QUIET, STALL, admitSend, committedNudge, countsForPrompt, decideRefusal, followUpText, frameNote, isStoppedRefusal, marksOf, readSend, reviewLine, settleOutcome } from './notes'
 import type { Refusal, Slot } from './notes'
 import { REVIEWER_PROMPT } from './prompt'
 
@@ -55,15 +55,54 @@ describe('marksOf', () => {
   })
 })
 
+describe('countsForPrompt', () => {
+  test('a review dispatched after the user\'s latest own prompt counts for it, and one dispatched before it or at it does not', () => {
+    expect(countsForPrompt({ dispatchesAtPrompt: 2 }, 3)).toBe(true)
+    expect(countsForPrompt({ dispatchesAtPrompt: 2 }, 2)).toBe(false)
+    expect(countsForPrompt({ dispatchesAtPrompt: 2 }, 1)).toBe(false)
+  })
+})
+
+describe('committedNudge', () => {
+  // Review 3 is open, dispatched after the user's latest own prompt unless told otherwise (that prompt came after review 2).
+  const standing = (over: Partial<Pick<Conversation, 'nudged' | 'dispatchesAtPrompt'>> = {}, note?: string): Pick<Conversation, 'nudged' | 'review' | 'dispatchesAtPrompt'> =>
+    ({ nudged: false, dispatchesAtPrompt: 2, review: { number: 3, record: [], dispatchedAt: 1, nothingWakes: true, ...(note === undefined ? {} : { note }) }, ...over })
+
+  test('no guard and no note in the open review\'s slot is no nudge', () => {
+    expect(committedNudge(standing())).toBe(false)
+    expect(committedNudge({ nudged: false, dispatchesAtPrompt: 0, review: undefined })).toBe(false)
+  })
+
+  test('the guard set is a nudge, with or without an open review', () => {
+    expect(committedNudge(standing({ nudged: true }))).toBe(true)
+    expect(committedNudge({ nudged: true, dispatchesAtPrompt: 0, review: undefined })).toBe(true)
+  })
+
+  test('a stall note admitted into the slot of a review dispatched since the user\'s latest own prompt is a nudge, before it is booked', () => {
+    expect(committedNudge(standing({}, 'Stalled: you said you would update the config.'))).toBe(true)
+  })
+
+  test('a stall note in the slot of a review dispatched before the user\'s latest own prompt is not: booked, it would set no guard', () => {
+    expect(committedNudge(standing({ dispatchesAtPrompt: 3 }, 'Stalled: you said you would update the config.'))).toBe(false)
+    expect(committedNudge(standing({ dispatchesAtPrompt: 5 }, 'Stalled: you said you would update the config.'))).toBe(false)
+  })
+
+  test('a body in the slot that is not a stall note is not a nudge', () => {
+    expect(committedNudge(standing({}, 'a.ts:4 swallows it.'))).toBe(false)
+    expect(committedNudge(standing({}, 'Escalation: auth.'))).toBe(false)
+  })
+})
+
 describe('admitSend', () => {
-  const refused = (text: string, review: Slot | undefined, to = 'main'): string => {
-    const verdict = admitSend(SENT(text, to), review, 7)
+  // `committed`: whether a nudge has gone out to the worker this prompt (`committedNudge`).
+  const refused = (text: string, review: Slot | undefined, to = 'main', committed = false): string => {
+    const verdict = admitSend(SENT(text, to), review, 7, committed)
     if (verdict.admitted) throw new Error('admitted')
     return verdict.reason
   }
 
   test('a note for the open review, to main, into an empty slot is admitted at the given epoch', () => {
-    expect(admitSend(SENT('auditor, review 3:\na.ts:4 swallows it.'), OPEN(), 7)).toEqual({ admitted: true, number: 3, epoch: 7 })
+    expect(admitSend(SENT('auditor, review 3:\na.ts:4 swallows it.'), OPEN(), 7, false)).toEqual({ admitted: true, number: 3, epoch: 7 })
   })
 
   test('with no open review, a send is refused', () => {
@@ -99,7 +138,21 @@ describe('admitSend', () => {
 
   test('a stall note is refused from a review whose brief did not say nothing will wake the worker, and admitted from one that did', () => {
     expect(refused('auditor, review 3:\nStalled: x.', OPEN({ nothingWakes: false }))).toContain('sends no "Stalled:" note')
-    expect(admitSend(SENT('auditor, review 3:\nStalled: x.'), OPEN(), 7)).toMatchObject({ admitted: true })
+    expect(admitSend(SENT('auditor, review 3:\nStalled: x.'), OPEN(), 7, false)).toMatchObject({ admitted: true })
+  })
+
+  test('a stall note is refused while a nudge has gone out to the worker this prompt, and admitted while none has', () => {
+    expect(refused('auditor, review 3:\nStalled: x.', OPEN(), 'main', true)).toContain('a nudge already went out to the worker this prompt')
+    expect(admitSend(SENT('auditor, review 3:\nStalled: x.'), OPEN(), 7, false)).toEqual({ admitted: true, number: 3, epoch: 7 })
+  })
+
+  test('a note that is not a stall note is admitted whether or not a nudge has gone out', () => {
+    expect(admitSend(SENT('auditor, review 3:\na.ts:4 swallows it.'), OPEN(), 7, true)).toMatchObject({ admitted: true })
+    expect(admitSend(SENT('auditor, review 3:\nEscalation: auth.'), OPEN(), 7, true)).toMatchObject({ admitted: true })
+  })
+
+  test('a stall note from a review whose brief did not say nothing will wake the worker is refused for that, whatever the nudge', () => {
+    expect(refused('auditor, review 3:\nStalled: x.', OPEN({ nothingWakes: false }), 'main', true)).toContain('did not say nothing will wake the worker')
   })
 })
 
@@ -183,6 +236,16 @@ describe('decideRefusal', () => {
     expect(decided.next).toBe(c)
   })
 
+  test('the follow-up\'s stall note is not held once a nudge has gone out to the worker this prompt, and admission\'s reason comes back', () => {
+    const STALL_NOTE = SENT('auditor, review 3:\nStalled: x.')
+    const c = conversation({ nudged: true })
+    const decided = decideRefusal(c, refusal({ reason: STOPPED, filling: true, sent: STALL_NOTE }), booked)
+    expect(decided.outcome).toBe('untouched')
+    expect(decided.refused).toContain('a nudge already went out to the worker this prompt')
+    expect(decided.next).toBe(c)
+    expect(decideRefusal(conversation({ nudged: false }), refusal({ reason: STOPPED, filling: true, sent: STALL_NOTE }), booked).outcome).toBe('hold')
+  })
+
   test('the follow-up under an older epoch fills no slot and holds nothing', () => {
     const c = conversation({ epoch: 8 })
     const decided = decideRefusal(c, refusal({ reason: STOPPED, filling: true }), booked)
@@ -254,7 +317,7 @@ describe('the prompt and the verdict agree', () => {
     for (const marker of [reviewLine('N'), QUIET, ESCALATION, STALL]) expect(REVIEWER_PROMPT).toContain(`\`${marker}\``)
     for (const n of [1, 9, 10, 4321]) {
       const line = reviewLine('N').replace('N', String(n))
-      expect(admitSend(SENT(`${line}\na.ts:4 swallows it.`), OPEN({ number: n }), 0)).toMatchObject({ admitted: true, number: n })
+      expect(admitSend(SENT(`${line}\na.ts:4 swallows it.`), OPEN({ number: n }), 0, false)).toMatchObject({ admitted: true, number: n })
       expect(SENT(`${line}\n${QUIET}`).quiet).toBe(true)
       expect(SENT(`${line}\n${ESCALATION} auth.`).escalation).toBe(true)
       expect(SENT(`${line}\n${STALL} nothing wakes you.`).stall).toBe(true)

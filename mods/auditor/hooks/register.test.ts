@@ -2,6 +2,7 @@ import { describe, expect, test } from 'claude-code/testing'
 import { LOOKUP_TIMEOUT_MS, lineCommand, searchCommand } from './transcript'
 import { MEMORY, MEMORY_ACTION, MEMORY_FIELD, REVIEW_ENDED, printMemory, renderMemory } from './memory'
 import { followUpText } from './notes'
+import { pingText } from './ping'
 import { learn } from './reviewer'
 import type { MemoryEntry } from '../types/index'
 import { REVIEWER_PROMPT } from './prompt'
@@ -136,6 +137,14 @@ type Opts = {
   catalog?: Record<string, string> | 'none'
   // What the availableModels setting holds: nothing when not given. The setting is read only here, never from the user's own.
   available?: unknown
+  // What a hook beneath the plugin's `classic.Stop` answers, given the Stop's input; the engine's own bottom answers nothing (`{}`). It may be async, and one that throws is skipped, as the engine skips any hook that fails.
+  beneath?: (e: any) => unknown
+  // What human-plugin's state holds, by key: a key not given has no value, as before its owner's first write. A test sets a key on `seen.human` to change it between stops.
+  human?: { todo?: unknown; list?: unknown }
+  // A read of this key of human-plugin's state (`todo` or `list`) is refused.
+  humanReadFails?: string
+  // A read of this key of human-plugin's state calls reached, then waits for until before the engine answers it.
+  humanReadHold?: { key: string; until: Promise<void>; reached?: () => void }
 }
 
 // The hold that covers the reviewer spawn numbered `n` (1-based), when one does.
@@ -171,6 +180,9 @@ const engine = (on: any, opts: Opts = {}) => {
     // The conversation writes attempted so far, and the attempt number (1-based) that is refused.
     stateWriteAttempts: 0,
     stateWritesFailAt: undefined as number | undefined,
+    // The conversation reads made so far, and the read number (1-based) that is refused.
+    conversationReads: 0,
+    conversationReadFailsAt: undefined as number | undefined,
     // Whether the engine has emptied the conversation (`emptyConversation`): its reads answer no value, at the version the state stands at, until the plugin's next landed write.
     conversationEmptied: false,
     // The cost ledger reads made so far.
@@ -182,6 +194,9 @@ const engine = (on: any, opts: Opts = {}) => {
     storeHold: gate(),
     // The directories the plugin listed to find the model catalog.
     catalogLists: [] as string[],
+    // What human-plugin's state holds (`Opts['human']`), and the keys of it the plugin has read, in order.
+    human: { ...opts.human } as { todo?: unknown; list?: unknown },
+    humanReads: [] as string[],
   }
   current.seen = seen
   current.seed = opts.stateSeed
@@ -189,7 +204,7 @@ const engine = (on: any, opts: Opts = {}) => {
   let reviewerSpawns = 0
   const learnedOnThrow: { pending?: (c: any) => any } = {}
   const reviewerId = (): string => opts.reviewerIds?.[reviewerSpawns++] ?? 'ag1'
-  on('classic.Stop', () => ({}))
+  on('classic.Stop', async (_$: any, e: any) => (await opts.beneath?.(e)) ?? {})
   on('classic.PostToolBatch', () => ({}))
   on('classic.SessionStart', () => ({}))
   on('turn.complete', (_$: any, e: any) => ({ text: e.answer }))
@@ -314,30 +329,42 @@ const engine = (on: any, opts: Opts = {}) => {
   })
   let getHeld = false
   let entryTaken = false
-  let conversationReads = 0
   on('state.get', async (_$: any, e: any, next: any) => {
-    if (e.key === 'conversation' && opts.firstConversationReadFails === true && ++conversationReads === 1) return { deny: 'state unavailable' }
-    if (e.key === 'conversation' && learnedOnThrow.pending !== undefined && seen.conversation !== undefined) {
+    // human-plugin's keys answer from the test, by plugin and key; the plugin's own conversation is the rest.
+    if (e.plugin === 'human-plugin') {
+      seen.humanReads.push(e.key)
+      const hold = opts.humanReadHold
+      if (hold !== undefined && e.key === hold.key) {
+        hold.reached?.()
+        await hold.until
+      }
+      if (e.key === opts.humanReadFails) return { deny: 'state unavailable' }
+      return { value: { value: seen.human[e.key as 'todo' | 'list'] } }
+    }
+    const own = e.plugin === 'auditor' && e.key === 'conversation'
+    if (own) seen.conversationReads++
+    if (own && ((opts.firstConversationReadFails === true && seen.conversationReads === 1) || seen.conversationReads === seen.conversationReadFailsAt)) return { deny: 'state unavailable' }
+    if (own && learnedOnThrow.pending !== undefined && seen.conversation !== undefined) {
       const answer = await next(e)
       const learns = learnedOnThrow.pending
       learnedOnThrow.pending = undefined
       return { ...answer, value: { ...answer.value, value: learns(answer.value.value) } }
     }
-    if (e.key === 'conversation' && opts.spawnEntryGone === true && !entryTaken && (seen.conversation?.spawnsInFlight?.length ?? 0) > 0) {
+    if (own && opts.spawnEntryGone === true && !entryTaken && (seen.conversation?.spawnsInFlight?.length ?? 0) > 0) {
       entryTaken = true
       const answer = await next(e)
       return { ...answer, value: { ...answer.value, value: { ...answer.value.value, spawnsInFlight: [] } } }
     }
-    if (e.key === 'conversation' && opts.getHold !== undefined && !getHeld && opts.getHold.when(seen.conversation)) {
+    if (own && opts.getHold !== undefined && !getHeld && opts.getHold.when(seen.conversation)) {
       getHeld = true
       opts.getHold.reached?.()
       await opts.getHold.until
     }
-    if (e.key === 'conversation' && seen.conversationEmptied) {
+    if (own && seen.conversationEmptied) {
       const answer = await next(e)
       return { ...answer, value: { ...answer.value, value: undefined } }
     }
-    return opts.stateFails !== undefined && e.key === opts.stateFails ? { deny: 'state unavailable' } : opts.stateSeed !== undefined && e.key === 'conversation' && seen.conversation === undefined ? { value: { value: opts.stateSeed } } : next(e)
+    return opts.stateFails !== undefined && e.plugin === 'auditor' && e.key === opts.stateFails ? { deny: 'state unavailable' } : opts.stateSeed !== undefined && own && seen.conversation === undefined ? { value: { value: opts.stateSeed } } : next(e)
   })
   // The conversation as the plugin last wrote it; stripBriefs writes it as a state from before briefsInFlight existed.
   let writeHeld = false
@@ -2526,6 +2553,632 @@ describe('the stall nudge', () => {
   })
 })
 
+describe('the ping at a stop', () => {
+  // human-plugin's TODO list as its owner stores it: one entry the worker is on, one it has yet to start.
+  const OPEN: { title: string; state: 'queued' | 'in_flight' }[] = [{ title: 'Fix the parser', state: 'in_flight' }, { title: 'Update the config', state: 'queued' }]
+  const PINGED = pingText(OPEN)
+  // An item of human-plugin's human list as its owner stores one, and the store holding the items given.
+  const item = (over: Record<string, unknown> = {}) => ({ id: 3, title: 'Pick one', blocking: true, state: 'open', pressedAt: null, ...over })
+  const listing = (...items: unknown[]) => ({ items, next: 10, term: null })
+  const SHELL = { id: 'sh1', type: 'shell', status: 'running', description: 'npm test' }
+  const CRON = { id: 'c1', schedule: '0 9 * * 1-5', recurring: true, prompt: 'check the build' }
+  const WORKING_SUB = { id: 'sub9', type: 'general-purpose', status: 'running', description: 'Find the bug' }
+  const STOPPED_MAIN = 'The main conversation was not messaged: the session was stopped and nobody has sent input since.'
+  const STOPPED_TEAMMATE = 'Teammate "auditor-reviewer" was not messaged: the session was stopped and nobody has sent input since.'
+  const NUDGE_SENT = 'a nudge already went out to the worker this prompt'
+  const NOTHING_WAKES = 'Nothing will wake the worker: no background task or scheduled wake-up is in flight.'
+  // The Stop after the continuation a ping caused: `stop_hook_active` set, the worker's reply its last message.
+  const CONTINUED = { ...QUIET_STOP, stop_hook_active: true, last_assistant_message: 'Carried on.' }
+  // The worker's reply and its Stop, with nothing in flight unless `input` says otherwise: what the Stop answers.
+  const stopped = async ($: any, input: Record<string, unknown> = QUIET_STOP) => {
+    await step($, 'working')
+    return $.classic.Stop(input)
+  }
+  // The worker answers the ping and stops again.
+  const continued = async ($: any) => {
+    await step($, 'carrying on')
+    return $.classic.Stop(CONTINUED)
+  }
+  // A hook beneath that lets the user's own prompt in the first time it runs, and answers `answer`.
+  const typing = ($: any, answer: Record<string, unknown> = {}) => {
+    let typed = false
+    return async () => {
+      if (!typed) {
+        typed = true
+        await $.prompt.submit(COMPOSER('and the config too'))
+      }
+      return answer
+    }
+  }
+  const switchOff = ($: any) => $.command.run({ command: 'auditor', args: 'off' } as any)
+  const switchOn = ($: any) => $.command.run({ command: 'auditor', args: 'on' } as any)
+
+  test('a stop of the user\'s turn with entries open on the TODO list and nothing in flight returns the ping as the last context entry, and dispatches no review', ON, async ($, on) => {
+    const seen = engine(on, { human: { todo: OPEN } })
+    await $.prompt.submit(COMPOSER('fix the parser'))
+    const result = await stopped($)
+    expect(result).toEqual({ additionalContext: [PINGED] })
+    expect(PINGED.startsWith('auditor: ')).toBe(true)
+    expect(PINGED).toContain('"Fix the parser" (in_flight), "Update the config" (queued)')
+    expect(seen.spawns).toEqual([])
+    expect(seen.conversation).toMatchObject({ nudged: true, wake: null, lastMessage: 'Done.', transcript: '/tmp/w.jsonl' })
+    expect([...seen.humanReads].sort()).toEqual(['list', 'todo'])
+    expect(debugLines(seen, 'pinged the worker')).toEqual(['auditor: pinged the worker: nothing in flight to wake it; TODO entries open: 2'])
+  })
+
+  for (const [how, prompt] of [['another prompt', HELPER], ['a reviewer\'s task notification', NOTICE('Agent "auditor review" finished')]] as const) {
+    test(`a turn ${how} started is pinged too`, ON, async ($, on) => {
+      const seen = engine(on, { human: { todo: OPEN } })
+      await $.prompt.submit(prompt)
+      expect(await stopped($)).toEqual({ additionalContext: [PINGED] })
+      expect(seen.conversation.nudged).toBe(true)
+      expect(seen.spawns).toEqual([])
+    })
+  }
+
+  test('one entry on the TODO list, with the human list never written, is pinged', ON, async ($, on) => {
+    const seen = engine(on, { human: { todo: [{ title: 'Fix the parser', state: 'queued' }] } })
+    await $.prompt.submit(COMPOSER('fix the parser'))
+    expect(await stopped($)).toEqual({ additionalContext: [pingText([{ title: 'Fix the parser', state: 'queued' }])] })
+    expect(seen.humanReads).toContain('list')
+  })
+
+  test('the context entries the hooks beneath returned come first, in order, then the ping, and every other field is as they returned it', ON, async ($, on) => {
+    engine(on, { human: { todo: OPEN }, beneath: () => ({ additionalContext: ['first', 'second'], stopReason: 'kept' }) })
+    await $.prompt.submit(COMPOSER('fix the parser'))
+    expect(await stopped($)).toEqual({ additionalContext: ['first', 'second', PINGED], stopReason: 'kept' })
+  })
+
+  test('a stop at which the auditor is off adds no ping and reads neither list', ON, async ($, on) => {
+    const seen = engine(on, { human: { todo: OPEN } })
+    await switchOff($)
+    await $.prompt.submit(COMPOSER('fix the parser'))
+    expect(await stopped($)).toEqual({})
+    expect(seen.humanReads).toEqual([])
+    expect(seen.spawns).toEqual([])
+  })
+
+  test('a subagent\'s stop adds no ping and does nothing else', ON, async ($, on) => {
+    const seen = engine(on, { human: { todo: OPEN } })
+    await $.prompt.submit(COMPOSER('fix the parser'))
+    expect(await $.classic.Stop({ ...QUIET_STOP, agent_id: 'sub1' } as any)).toEqual({})
+    expect(seen.humanReads).toEqual([])
+    expect(seen.conversation.nudged).toBe(false)
+    expect(seen.spawns).toEqual([])
+  })
+
+  test('a stop that follows a continuation (stop_hook_active) adds no ping, and its review is dispatched as before', ON, async ($, on) => {
+    const seen = engine(on, { human: { todo: OPEN } })
+    await $.prompt.submit(COMPOSER('fix the parser'))
+    expect(await stopped($, { ...QUIET_STOP, stop_hook_active: true })).toEqual({})
+    expect(seen.humanReads).toEqual([])
+    expect(seen.conversation.nudged).toBe(false)
+    expect(seen.spawns.length).toBe(1)
+  })
+
+  for (const [what, call] of [
+    ['a question put to the user', { tool: 'AskUserQuestion', questions: [] }],
+    ['an item filed for the user', { tool: 'mcp__human-plugin__human_items', action: 'add', title: 'Decide X' }],
+    ['a broadcast to the team', { tool: 'SendMessage', to: '*', message: 'Stop for the day.' }],
+  ] as const) {
+    test(`a turn whose ${what === 'a broadcast to the team' ? 'main loop sent' : 'last tool call was'} ${what} adds no ping, and its review carries no wake line`, ON, async ($, on) => {
+      const seen = engine(on, { human: { todo: OPEN } })
+      await $.prompt.submit(COMPOSER('pick one'))
+      await $.tool.call(call as any)
+      expect(await stopped($)).toEqual({})
+      expect(seen.humanReads).toEqual([])
+      expect(seen.conversation.nudged).toBe(false)
+      expect(seen.spawns.length).toBe(1)
+      expect(seen.spawns[0].prompt).not.toContain('wake the worker')
+    })
+  }
+
+  for (const [what, input, agents] of [
+    ['a background task', { ...stop, background_tasks: [SHELL], session_crons: [] }, []],
+    ['a scheduled wake-up', { ...stop, background_tasks: [], session_crons: [CRON] }, []],
+    ['a working agent', QUIET_STOP, [WORKING_SUB]],
+  ] as const) {
+    test(`${what} in flight adds no ping, and the review says what will wake the worker`, ON, async ($, on) => {
+      const seen = engine(on, { human: { todo: OPEN }, agents: [...agents] })
+      await $.prompt.submit(COMPOSER('fix the parser'))
+      expect(await stopped($, input)).toEqual({})
+      expect(seen.humanReads).toEqual([])
+      expect(seen.conversation.nudged).toBe(false)
+      expect(seen.spawns[0].prompt).toContain('Will wake the worker:')
+    })
+  }
+
+  for (const [why, input, opts] of [
+    ['a stop that omits its task list', { ...stop, session_crons: [] }, {}],
+    ['a stop that omits its cron list', { ...stop, background_tasks: [] }, {}],
+    ['a stop whose agent list cannot be read', QUIET_STOP, { listFails: true }],
+  ] as const) {
+    test(`${why} adds no ping: nothing is known to be in flight or not`, ON, async ($, on) => {
+      const seen = engine(on, { human: { todo: OPEN }, ...opts })
+      await $.prompt.submit(COMPOSER('fix the parser'))
+      expect(await stopped($, input)).toEqual({})
+      expect(seen.humanReads).toEqual([])
+      expect(seen.spawns.length).toBe(1)
+      expect(seen.spawns[0].prompt).not.toContain('wake the worker')
+    })
+  }
+
+  const UNKNOWN_TODO = 'auditor: no ping: human-plugin\'s "todo" holds a value of a shape the ping does not know'
+  for (const [why, todo, named] of [
+    ['empty', [], false],
+    ['absent', undefined, false],
+    ['null', null, false],
+    ['of a shape its owner does not write', 'oops', true],
+    ['holding no entry that is queued or in flight', [{ title: 'Fix the parser', state: 'done' }], true],
+  ] as const) {
+    test(`a TODO list that is ${why} adds no ping${named ? ', and one debug line names it' : ''}, and the review is dispatched as before`, ON, async ($, on) => {
+      const seen = engine(on, { human: { todo } })
+      await $.prompt.submit(COMPOSER('fix the parser'))
+      expect(await stopped($)).toEqual({})
+      expect(debugLines(seen, 'a shape the ping does not know')).toEqual(named ? [UNKNOWN_TODO] : [])
+      expect(seen.conversation.nudged).toBe(false)
+      expect(seen.spawns.length).toBe(1)
+    })
+  }
+
+  const BLOCKING = 'auditor: no ping: human-plugin\'s human list holds an item that may be an open blocking one: #3'
+  for (const [why, over] of [
+    ['open', {}],
+    ['of no stored state', { state: undefined }],
+    ['of a state its owner does not know', { state: 'archived' }],
+    ['done-waiting with no numeric press time', { state: 'done-waiting', pressedAt: null }],
+  ] as const) {
+    test(`a blocking item that is ${why} withholds the ping, and one debug line names it`, ON, async ($, on) => {
+      const seen = engine(on, { human: { todo: OPEN, list: listing(item(over)) } })
+      await $.prompt.submit(COMPOSER('fix the parser'))
+      expect(await stopped($)).toEqual({})
+      expect(debugLines(seen, 'may be an open blocking one')).toEqual([BLOCKING])
+      expect(seen.conversation.nudged).toBe(false)
+      expect(seen.spawns.length).toBe(1)
+    })
+  }
+
+  for (const [why, over] of [
+    ['done-pending', { state: 'done-pending' }],
+    ['done-waiting with a numeric press time', { state: 'done-waiting', pressedAt: 1700 }],
+    ['open but not blocking', { blocking: false }],
+  ] as const) {
+    test(`a blocking item that is ${why} does not withhold the ping`, ON, async ($, on) => {
+      const seen = engine(on, { human: { todo: OPEN, list: listing(item(over)) } })
+      await $.prompt.submit(COMPOSER('fix the parser'))
+      expect(await stopped($)).toEqual({ additionalContext: [PINGED] })
+      expect(debugLines(seen, 'may be an open blocking one')).toEqual([])
+    })
+  }
+
+  test('a human list of a shape its owner does not write adds no ping, and one debug line names the key', ON, async ($, on) => {
+    const seen = engine(on, { human: { todo: OPEN, list: 'oops' } })
+    await $.prompt.submit(COMPOSER('fix the parser'))
+    expect(await stopped($)).toEqual({})
+    expect(debugLines(seen, 'a shape the ping does not know')).toEqual(['auditor: no ping: human-plugin\'s "list" holds a value of a shape the ping does not know'])
+    expect(seen.spawns.length).toBe(1)
+  })
+
+  for (const key of ['todo', 'list']) {
+    test(`a read of human-plugin's "${key}" that throws adds no ping, and one debug line names it`, ON, async ($, on) => {
+      const seen = engine(on, { human: { todo: OPEN }, humanReadFails: key })
+      await $.prompt.submit(COMPOSER('fix the parser'))
+      expect(await stopped($)).toEqual({})
+      expect(debugLines(seen, 'read of human-plugin').length).toBe(1)
+      expect(debugLines(seen, `read of human-plugin's "${key}" state failed`).length).toBe(1)
+      expect(seen.conversation.nudged).toBe(false)
+      expect(seen.spawns.length).toBe(1)
+    })
+  }
+
+  test('a read that does not answer within a second adds no ping, and one debug line names it as late', ON, async ($, on) => {
+    const held = gate()
+    const reached = gate()
+    const seen = engine(on, { human: { todo: OPEN }, humanReadHold: { key: 'todo', until: held.until, reached: reached.open } })
+    await $.prompt.submit(COMPOSER('fix the parser'))
+    await step($, 'working')
+    const before = seen.timers.length
+    const stopping = $.classic.Stop(QUIET_STOP)
+    await reached.until
+    await drained()
+    const bounds = seen.timers.slice(before).filter(timer => timer.ms === 1000)
+    expect(bounds.length > 0).toBe(true)
+    for (const bound of bounds) bound.fire()
+    expect(await stopping).toEqual({})
+    held.open()
+    await drained()
+    const lines = debugLines(seen, 'read of human-plugin')
+    expect(lines.length).toBe(1)
+    expect(lines[0]).toContain('"todo"')
+    expect(lines[0]).toContain('no answer within 1000 ms')
+    expect(seen.spawns.length).toBe(1)
+  })
+
+  test('a stop whose prompt count cannot be read adds no ping and stores its stall fact withheld, and the review is dispatched', ON, async ($, on) => {
+    const seen = engine(on, { human: { todo: OPEN } })
+    await $.prompt.submit(COMPOSER('fix the parser'))
+    await step($, 'working')
+    seen.conversationReadFailsAt = seen.conversationReads + 1
+    expect(await $.classic.Stop(QUIET_STOP)).toEqual({})
+    expect(debugLines(seen, 'prompt count read failed').length).toBe(1)
+    expect(seen.humanReads).toEqual([])
+    expect(seen.conversation).toMatchObject({ nudged: false, wake: null })
+    expect(seen.spawns.length).toBe(1)
+    expect(seen.spawns[0].prompt).not.toContain('wake the worker')
+  })
+
+  test('after a ping the continuation\'s stop adds none, nor does a later stop of the same prompt, and a review dispatched in the prompt carries no wake line', ON, async ($, on) => {
+    const seen = engine(on, { human: { todo: OPEN } })
+    await $.prompt.submit(COMPOSER('fix the parser'))
+    expect(await stopped($)).toEqual({ additionalContext: [PINGED] })
+    expect(await continued($)).toEqual({})
+    expect(seen.spawns.length).toBe(1)
+    expect(seen.spawns[0].prompt).not.toContain('wake the worker')
+    await mainTurnEnd($)
+    await turnEnded($, 'ag1', 'Nothing to note.')
+    expect(await stopped($)).toEqual({})
+    expect(seen.humanReads.length).toBe(2)
+  })
+
+  test('the user\'s next own prompt re-arms the ping', ON, async ($, on) => {
+    engine(on, { human: { todo: OPEN } })
+    await $.prompt.submit(COMPOSER('fix the parser'))
+    await stopped($)
+    await continued($)
+    await mainTurnEnd($)
+    expect(await stopped($)).toEqual({})
+    await $.prompt.submit(COMPOSER('and the config too'))
+    expect(await stopped($)).toEqual({ additionalContext: [PINGED] })
+  })
+
+  test('a toggle off and on re-arms the ping', ON, async ($, on) => {
+    engine(on, { human: { todo: OPEN } })
+    await $.prompt.submit(COMPOSER('fix the parser'))
+    await stopped($)
+    await continued($)
+    expect(await stopped($)).toEqual({})
+    await switchOff($)
+    await switchOn($)
+    expect(await stopped($)).toEqual({ additionalContext: [PINGED] })
+  })
+
+  test('a stall note delivered earlier in the prompt withholds the ping', ON, async ($, on) => {
+    const seen = engine(on)
+    await $.prompt.submit(COMPOSER('fix the parser'))
+    await $.classic.Stop(QUIET_STOP)
+    await mainTurnEnd($)
+    await noteSent($, STALL_NOTE)
+    await $.turn.complete(TURN_END('ag1', 'Sent.'))
+    seen.human.todo = OPEN
+    const reads = seen.humanReads.length
+    expect(await stopped($)).toEqual({})
+    expect(toMain(seen)).toEqual([FRAMED(1, STALL_NOTE)])
+    expect(seen.humanReads.length).toBe(reads)
+  })
+
+  test('a stall note held for the user\'s next prompt withholds the ping', ON, async ($, on) => {
+    const seen = engine(on, { noteFailsAt: [1], refusal: STOPPED_MAIN })
+    await $.prompt.submit(COMPOSER('fix the parser'))
+    await $.classic.Stop(QUIET_STOP)
+    await mainTurnEnd($)
+    await noteSent($, STALL_NOTE)
+    expect(seen.conversation.pendingNotes).toEqual([{ number: 1, text: STALL_NOTE }])
+    seen.human.todo = OPEN
+    const reads = seen.humanReads.length
+    expect(await stopped($)).toEqual({})
+    expect(seen.humanReads.length).toBe(reads)
+  })
+
+  test('a stall note admitted with its send in flight withholds the ping, and once delivered it is the prompt\'s one nudge', ON, async ($, on) => {
+    const sending = gate()
+    const reached = gate()
+    const seen = engine(on, { noteHold: { until: sending.until, reached: reached.open } })
+    await $.prompt.submit(COMPOSER('fix the parser'))
+    await $.classic.Stop(QUIET_STOP)
+    await mainTurnEnd($)
+    const note = noteSent($, STALL_NOTE)
+    await reached.until
+    expect(seen.conversation).toMatchObject({ nudged: false, review: { number: 1, note: STALL_NOTE } })
+    seen.human.todo = OPEN
+    const reads = seen.humanReads.length
+    expect(await stopped($)).toEqual({})
+    expect(seen.conversation.nudged).toBe(false)
+    sending.open()
+    expect(await note).toEqual({ isDelivered: true })
+    expect(seen.conversation.nudged).toBe(true)
+    await $.turn.complete(TURN_END('ag1', 'Sent.'))
+    expect(await stopped($)).toEqual({})
+    expect(toMain(seen)).toEqual([FRAMED(1, STALL_NOTE)])
+    expect(seen.humanReads.length).toBe(reads)
+  })
+
+  test('a stall note admitted for a review dispatched before the user\'s last prompt, its send in flight, does not withhold the ping', ON, async ($, on) => {
+    const sending = gate()
+    const reached = gate()
+    const seen = engine(on, { noteHold: { until: sending.until, reached: reached.open } })
+    await $.prompt.submit(COMPOSER('first'))
+    await $.classic.Stop(QUIET_STOP)
+    await mainTurnEnd($)
+    const note = noteSent($, STALL_NOTE)
+    await reached.until
+    expect(seen.conversation.review).toMatchObject({ number: 1, note: STALL_NOTE })
+    await $.prompt.submit(COMPOSER('second'))
+    seen.human.todo = OPEN
+    expect(await stopped($)).toEqual({ additionalContext: [PINGED] })
+    sending.open()
+    await note
+  })
+
+  test('a hook beneath that lets the user\'s own prompt in before it returns: no ping, no guard and no entry of the ping\'s; the review carries no wake line and has its stall note refused; the next qualifying stop of the new prompt pings', ON, async ($, on) => {
+    const seen = engine(on, { human: { todo: OPEN }, beneath: typing($) })
+    await $.prompt.submit(COMPOSER('fix the parser'))
+    expect(await stopped($)).toEqual({})
+    expect(seen.conversation).toMatchObject({ nudged: false, wake: null, prompts: 2 })
+    expect(seen.spawns.length).toBe(1)
+    expect(seen.spawns[0].prompt).not.toContain('wake the worker')
+    expect(await entriesOf($, { which: 'record' })).toBe(RECORD_OF(1, 'USER: fix the parser', 'ASSISTANT: working', 'USER: and the config too'))
+    await mainTurnEnd($)
+    const sent = await noteSent($, STALL_NOTE)
+    expect(sent.isDelivered).toBe(false)
+    expect(sent.reason).toContain('did not say nothing will wake the worker')
+    expect(toMain(seen)).toEqual([])
+    expect(await stopped($)).toEqual({ additionalContext: [PINGED] })
+  })
+
+  test('a state stored without the prompt marker reads it as the start value: a qualifying stop pings', ON, async ($, on) => {
+    const seen = engine(on, { human: { todo: OPEN }, stateSeed: { dispatches: 0 } })
+    expect(await $.classic.Stop(QUIET_STOP)).toEqual({ additionalContext: [PINGED] })
+    expect(seen.conversation).toMatchObject({ nudged: true, prompts: 0 })
+  })
+
+  test('a state stored without the prompt marker, and the user\'s own prompt submitted by a hook beneath during the stop: no ping', ON, async ($, on) => {
+    const seen = engine(on, { human: { todo: OPEN }, stateSeed: { dispatches: 0 }, beneath: typing($) })
+    expect(await $.classic.Stop(QUIET_STOP)).toEqual({})
+    expect(seen.conversation).toMatchObject({ nudged: false, wake: null, prompts: 1 })
+  })
+
+  test('a hook beneath that holds its answer holds the stop\'s review too: none is dispatched until it answers', ON, async ($, on) => {
+    const answer = gate()
+    const reached = gate()
+    const seen = engine(on, {
+      beneath: async () => {
+        reached.open()
+        await answer.until
+        return {}
+      },
+    })
+    await $.prompt.submit(COMPOSER('fix the parser'))
+    await step($, 'working')
+    const stopping = $.classic.Stop(QUIET_STOP)
+    await reached.until
+    await drained()
+    expect(seen.spawns).toEqual([])
+    answer.open()
+    await stopping
+    expect(seen.spawns.length).toBe(1)
+  })
+
+  test('a block from beneath is returned unchanged: no ping, no guard, and the review is dispatched as before', ON, async ($, on) => {
+    const seen = engine(on, { human: { todo: OPEN }, beneath: () => ({ block: 'keep going' }) })
+    await $.prompt.submit(COMPOSER('fix the parser'))
+    expect(await stopped($)).toEqual({ block: 'keep going' })
+    expect(seen.humanReads).toEqual([])
+    expect(seen.conversation.nudged).toBe(false)
+    expect(seen.spawns.length).toBe(1)
+    expect(seen.spawns[0].prompt).toContain(NOTHING_WAKES)
+  })
+
+  test('a session stop from beneath, with no block, is returned unchanged: no ping, no guard, and the review is dispatched as before', ON, async ($, on) => {
+    const seen = engine(on, { human: { todo: OPEN }, beneath: () => ({ preventContinuation: true, stopReason: 'done for the day' }) })
+    await $.prompt.submit(COMPOSER('fix the parser'))
+    expect(await stopped($)).toEqual({ preventContinuation: true, stopReason: 'done for the day' })
+    expect(seen.humanReads).toEqual([])
+    expect(seen.conversation.nudged).toBe(false)
+    expect(seen.spawns.length).toBe(1)
+    expect(seen.spawns[0].prompt).toContain(NOTHING_WAKES)
+  })
+
+  // The test engine allows one hook under the plugin's `classic.Stop` and skips it when it throws, so nothing is left to answer and `next(e)` rejects.
+  test('a hook beneath that throws, with nothing else beneath to answer, leaves next(e) rejecting: the stop adds no ping, still stores and dispatches, and the rejection reaches the caller', ON, async ($, on) => {
+    const seen = engine(on, {
+      human: { todo: OPEN },
+      beneath: () => {
+        throw new Error('beneath failed')
+      },
+    })
+    await $.prompt.submit(COMPOSER('fix the parser'))
+    await step($, 'working')
+    let caught: unknown
+    try {
+      await $.classic.Stop(QUIET_STOP)
+    } catch (err) {
+      caught = err
+    }
+    expect(String(caught)).toContain('no implementation for classic.Stop')
+    expect(seen.humanReads).toEqual([])
+    expect(seen.conversation).toMatchObject({ nudged: false, lastMessage: 'Done.' })
+    expect(seen.spawns.length).toBe(1)
+  })
+
+  // The same rejection, staged on a hand-made `$` and `next` with the Stop hook taken from the registry, so the error that reaches the caller is the one `next(e)` rejected with.
+  test('when the hooks beneath reject, the stop adds no ping, stores and dispatches as it would with none, and the rejection reaches the caller', async () => {
+    const hooks: Record<string, any> = {}
+    register.register(((name: string, ...rest: unknown[]) => {
+      hooks[name] = rest[rest.length - 1]
+    }) as any, {})
+    const logs: string[] = []
+    const reads: string[] = []
+    const dispatched = { at: 0 }
+    let stored: any
+    let version = 0
+    const $ = {
+      state: {
+        get: async (ref: { plugin: string; key: string }) => {
+          reads.push(`${ref.plugin}.${ref.key}`)
+          return { value: stored, version }
+        },
+        set: async (_ref: unknown, value: unknown, options?: { ifVersion?: number }) => {
+          if (options?.ifVersion !== undefined && options.ifVersion !== version) return { isSet: false, version }
+          stored = value
+          return { isSet: true, version: ++version }
+        },
+      },
+      agent: { list: async () => [] },
+      // The dispatch's first call: reaching it is the dispatch beginning, and it fails there.
+      clock: {
+        now: async () => {
+          dispatched.at++
+          throw new Error('the dispatch began')
+        },
+        after: () => ({ cancel: () => undefined }),
+      },
+      ui: { log: (text: string) => void logs.push(text) },
+    } as any
+    const rejection = new Error('a hook beneath rejected')
+    let caught: unknown
+    try {
+      await hooks['classic.Stop']($, QUIET_STOP, () => Promise.reject(rejection))
+    } catch (err) {
+      caught = err
+    }
+    expect(caught).toBe(rejection)
+    expect(stored).toMatchObject({ lastMessage: 'Done.', transcript: '/tmp/w.jsonl', nudged: false, wake: { tasks: [], crons: 0 }, record: { blocks: [] } })
+    expect(dispatched.at).toBe(1)
+    expect(logs.filter(line => line.includes('review dispatch failed')).length).toBe(1)
+    expect(reads.filter(read => read.startsWith('human-plugin'))).toEqual([])
+  })
+
+  test('a write of the ping that throws gives no ping, sets no guard and records nothing, and the next qualifying stop pings', ON, async ($, on) => {
+    const seen = engine(on, { human: { todo: OPEN } })
+    await $.prompt.submit(COMPOSER('fix the parser'))
+    await step($, 'working')
+    const before = seen.conversation.record.blocks
+    seen.stateWritesFailAt = seen.stateWriteAttempts + 1
+    expect(await $.classic.Stop(QUIET_STOP)).toEqual({})
+    expect(seen.conversation.nudged).toBe(false)
+    expect(seen.conversation.record.blocks).toEqual(before)
+    expect(debugLines(seen, 'pinged the worker')).toEqual([])
+    expect(await stopped($)).toEqual({ additionalContext: [PINGED] })
+  })
+
+  // The ping's write is held while the state moves under it: the held write misses, and its change runs again on the state it finds.
+  const heldStop = (on: any) => {
+    const armed = { on: false }
+    const landed = gate()
+    const reached = gate()
+    const seen = engine(on, { human: { todo: OPEN }, holdWrite: { when: () => armed.on, until: landed.until, reached: reached.open } })
+    return {
+      seen,
+      stop: async ($: any, between: () => Promise<unknown>) => {
+        await $.prompt.submit(COMPOSER('fix the parser'))
+        await step($, 'working')
+        armed.on = true
+        const stopping = $.classic.Stop(QUIET_STOP)
+        await reached.until
+        await between()
+        landed.open()
+        return stopping
+      },
+    }
+  }
+
+  test('the auditor turned off between the decision and the write: no ping, no guard, no entry', ON, async ($, on) => {
+    const run = heldStop(on)
+    expect(await run.stop($, () => switchOff($))).toEqual({})
+    expect(run.seen.conversation).toMatchObject({ off: true, nudged: false })
+    expect(run.seen.conversation.record.blocks.join('')).not.toContain('PROMPT (plugin)')
+  })
+
+  test('the epoch moved between the decision and the write, by a toggle off and on: no ping, no guard, no entry', ON, async ($, on) => {
+    const run = heldStop(on)
+    expect(
+      await run.stop($, async () => {
+        await switchOff($)
+        await switchOn($)
+      }),
+    ).toEqual({})
+    expect(run.seen.conversation).toMatchObject({ off: false, nudged: false })
+    expect(run.seen.conversation.record.blocks.join('')).not.toContain('PROMPT (plugin)')
+  })
+
+  test('the prompt marker moved between the decision and the write, by the user\'s own prompt: no ping, no guard, no entry of the ping\'s, and no wake line', ON, async ($, on) => {
+    const run = heldStop(on)
+    expect(await run.stop($, () => $.prompt.submit(COMPOSER('and the config too')))).toEqual({})
+    expect(run.seen.conversation).toMatchObject({ nudged: false, prompts: 2 })
+    expect(run.seen.spawns.length).toBe(1)
+    expect(run.seen.spawns[0].prompt).not.toContain('wake the worker')
+    expect(await entriesOf($, { which: 'record' })).toBe(RECORD_OF(1, 'USER: fix the parser', 'ASSISTANT: working', 'USER: and the config too'))
+  })
+
+  test('a stall note from a review already open when the ping goes out is refused at the gate, with the reason telling the reviewer a nudge went out', ON, async ($, on) => {
+    const seen = engine(on)
+    await $.prompt.submit(COMPOSER('fix the parser'))
+    await $.classic.Stop(QUIET_STOP)
+    seen.human.todo = OPEN
+    expect(await stopped($)).toEqual({ additionalContext: [PINGED] })
+    const sent = await noteSent($, STALL_NOTE)
+    expect(sent.isDelivered).toBe(false)
+    expect(sent.reason).toContain(NUDGE_SENT)
+    expect(toMain(seen)).toEqual([])
+    expect(seen.conversation.review.note).toBeUndefined()
+    expect(debugLines(seen, `a reviewer send (review 1) was refused: ${NUDGE_SENT}`).length).toBe(1)
+  })
+
+  test('a stall note a reviewer writes as its answer, whose follow-up is refused after an Esc, is not held once a ping went out: the review settles quiet, and the debug log gives the reason', ON, async ($, on) => {
+    const seen = engine(on, { sendFails: 'ag1', refusal: STOPPED_TEAMMATE })
+    await $.prompt.submit(COMPOSER('fix the parser'))
+    await $.classic.Stop(QUIET_STOP)
+    seen.human.todo = OPEN
+    await stopped($)
+    await $.turn.complete(TURN_END('ag1', FRAMED(1, STALL_NOTE)))
+    expect(seen.conversation.pendingNotes).toEqual([])
+    expect(logOf(seen, LOG_1)).toMatchObject({ status: 'complete', note: null, note_delivered: false })
+    expect(debugLines(seen, 'its note was not held').length).toBe(1)
+    expect(debugLines(seen, NUDGE_SENT).length).toBe(1)
+  })
+
+  test('a pinging stop stores the last message and the transcript path, and leaves one record entry, the ping as a plugin\'s prompt; the review of the turn it continues covers that entry and the reply', ON, async ($, on) => {
+    const seen = engine(on, { human: { todo: OPEN } })
+    await $.prompt.submit(COMPOSER('fix the parser'))
+    await stopped($)
+    expect(seen.conversation).toMatchObject({ lastMessage: 'Done.', transcript: '/tmp/w.jsonl' })
+    expect(seen.conversation.record.blocks).toEqual(['[1] USER: fix the parser\n\n', '[2] ASSISTANT: working\n\n', `[3] PROMPT (plugin): ${PINGED}\n\n`])
+    expect(seen.spawns).toEqual([])
+    await continued($)
+    expect(seen.spawns.length).toBe(1)
+    expect(seen.spawns[0].prompt).toContain('Review 1. Its record holds entries 1-4,')
+    expect(await entriesOf($, { which: 'record' })).toBe(RECORD_OF(1, 'USER: fix the parser', 'ASSISTANT: working', `PROMPT (plugin): ${PINGED}`, 'ASSISTANT: carrying on'))
+  })
+
+  test('in a turn a reviewer\'s task notification started, the ping\'s entry is the turn\'s first and its start reads other, and the turn\'s end dispatches a review covering the reply', ON, async ($, on) => {
+    const seen = engine(on, { human: { todo: OPEN } })
+    await $.prompt.submit(NOTICE('Agent "auditor review" finished'))
+    expect(seen.conversation.turnStart).toBe('notice')
+    expect(await stopped($)).toEqual({ additionalContext: [PINGED] })
+    expect(seen.conversation.turnStart).toBe('other')
+    expect(seen.conversation.record.blocks).toEqual([`[1] PROMPT (plugin): ${PINGED}\n\n`])
+    expect(seen.spawns).toEqual([])
+    await continued($)
+    await mainTurnEnd($)
+    expect(seen.spawns.length).toBe(1)
+    expect(await entriesOf($, { which: 'record' })).toBe(RECORD_OF(1, `PROMPT (plugin): ${PINGED}`, 'ASSISTANT: carrying on'))
+  })
+
+  test('with a failed review standing, the end of a notice turn that was pinged dispatches none, and the entries stay in the record', ON, async ($, on) => {
+    const seen = engine(on)
+    await workerTurn($)
+    await mainTurnEnd($)
+    await turnFailed($, 'ag1')
+    seen.human.todo = OPEN
+    await $.prompt.submit(NOTICE('Agent "auditor review" failed: 429'))
+    expect(await stopped($)).toEqual({ additionalContext: [PINGED] })
+    await continued($)
+    await mainTurnEnd($)
+    expect({ spawns: seen.spawns.length, sends: seen.sends.length }).toEqual({ spawns: 1, sends: 0 })
+    expect(seen.conversation.record.blocks.slice(-2)).toEqual([`[2] PROMPT (plugin): ${PINGED}\n\n`, '[3] ASSISTANT: carrying on\n\n'])
+  })
+})
+
 describe('the entries tool', () => {
   const EDIT = 'TOOL Edit(file_path="p.ts" {}) -> ran Edit'
   const bytes = (text: string) => new TextEncoder().encode(text).length
@@ -3311,7 +3964,7 @@ describe('the session mode button', () => {
   test('the band above the prompt draws nothing from this mod', ON, async ($, on) => {
     engine(on)
     otherMods(on, 'human-plugin: 2 open')
-    const ui = await $.ui.mount({ plugin: 'auditor', surface: 'terminal', component: 'AbovePrompt', props: { hasSurvey: false, isWorking: false, maxRows: 20, bodyColumns: 80, scroll: { offset: 0, bodyRows: 20 }, view: {} } })
+    const ui = await $.ui.mount({ plugin: 'auditor', surface: 'terminal', component: 'AbovePrompt', props: { hasSurvey: false, isCollapsed: false, isWorking: false, maxRows: 20, bodyColumns: 80, scroll: { offset: 0, bodyRows: 20 }, view: {} } })
     expect(await ui.find({ key: 'auditor-toggle' })).toBeUndefined()
     expect(await ui.find({ type: 'Text', text: 'auditor reviewer: on' })).toBeUndefined()
     expect(await ui.find({ type: 'Text', text: 'human-plugin: 2 open' })).toBeDefined()
