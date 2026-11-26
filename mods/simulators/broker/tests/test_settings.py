@@ -75,7 +75,7 @@ class FromMappingTest(unittest.TestCase):
     def test_a_complete_object_is_read_whole(self) -> None:
         got = parse(
             {
-                "family": "/tmp/pango-sim-test.flock",
+                "family": "/tmp/a-shared-family/lock",
                 "shared": True,
                 "max_runs": 3,
                 "slots": 3,
@@ -86,7 +86,7 @@ class FromMappingTest(unittest.TestCase):
         self.assertEqual(
             got,
             Config(
-                family="/tmp/pango-sim-test.flock",
+                family="/tmp/a-shared-family/lock",
                 slots=3,
                 shared=True,
                 max_runs=3,
