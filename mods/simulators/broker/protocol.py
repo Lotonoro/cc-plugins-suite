@@ -104,6 +104,7 @@ HELP_FLAGS = ("-h", "--help")
 # The client's environment, which the dispatcher alone reads. A variable set to nothing counts as
 # unset. The session's identifier is not read: nothing here consumes it.
 HOME_VARIABLE = "HOME"
+PWD_VARIABLE = "PWD"
 STATE_ROOT_SETTING = "CLAUDE_SIMULATORS_STATE_ROOT"
 FAMILY_VARIABLE = "SIM_LOCK_FILE"
 IGNORED_VARIABLE_PREFIX = "SIM_LOCK_"

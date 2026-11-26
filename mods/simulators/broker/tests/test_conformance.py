@@ -184,6 +184,7 @@ CLIENT_CHANGES = (
     ("an option", "[--slots N]", "[--slot N]", "configure option"),
     ("the help flags", "`-h` and `--help`", "`-h` and `--usage`", "help flags"),
     ("the state root's setting", "| `CLAUDE_SIMULATORS_STATE_ROOT` |", "| `CLAUDE_SIM_ROOT` |", "variable"),
+    ("the working directory's variable", "| `PWD` |", "| `CWD` |", "variable"),
     ("the default root", "`Library/Application Support/claude-simulators`", "`Library/Application Support/claude-sims`", "default state root"),
     ("the family variable's code", "the client exits 79", "the client exits 80", "family variable"),
     ("a path in the root", "| `state/last-decision.json` |", "| `state/last.json` |", "root path"),

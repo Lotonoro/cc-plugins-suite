@@ -379,11 +379,12 @@ def check_client_verbs(text: str) -> List[str]:
 
 def check_client_environment(text: str) -> List[str]:
     found: List[str] = []
-    rows = first_table(section(text, "The environment"), 4)
+    rows = first_table(section(text, "The environment"), 5)
     variables = {span_of(row[0]): row for row in rows}
     code = {
         protocol.STATE_ROOT_SETTING,
         protocol.HOME_VARIABLE,
+        protocol.PWD_VARIABLE,
         protocol.FAMILY_VARIABLE,
         protocol.IGNORED_VARIABLE_PREFIX + "*",
     }

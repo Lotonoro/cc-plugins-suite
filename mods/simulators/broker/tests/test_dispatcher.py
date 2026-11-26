@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import io
 import os
+import re
 import subprocess
 import sys
 import types
@@ -232,6 +233,52 @@ class EnvironmentTest(DispatcherCase):
         lookup.assert_called_once_with(os.getuid())
         expected = os.path.join(home, "Library", "Application Support", "claude-simulators")
         self.assertEqual(self.out.getvalue().splitlines()[0], f"state root: {expected}")
+
+    # The directory the slot's owner record shows is the one `sim-lock.sh` records, the shell's
+    # `$PWD`, when that names the current directory.
+
+    def chdir(self, path: str) -> None:
+        before = os.getcwd()
+        os.chdir(path)
+        self.addCleanup(os.chdir, before)
+
+    def recorded_directory(self, env: Dict[str, str]) -> str:
+        """The `cwd` the owner record shows for a run started with the environment `env`."""
+        record = os.path.join(self.dir, "owner-record")
+        source = f"import shutil, sys\nshutil.copy({self.family + '.owner'!r}, sys.argv[1])\n"
+        self.assertEqual(self.main("run", "--", *self.python(source, record), env=env), 0)
+        with open(record, encoding="utf-8") as handle:
+            owner = handle.read()
+        found = re.search(r" cwd=(.*?) started=\d{4}-\d\d-\d\dT", owner)
+        assert found is not None, owner
+        return found.group(1)
+
+    @ON_MACOS
+    def test_the_record_shows_the_directory_pwd_names_when_it_is_the_current_one_through_a_symlink(
+        self,
+    ) -> None:
+        real, link = os.path.join(self.dir, "real"), os.path.join(self.dir, "link")
+        os.makedirs(real)
+        os.symlink(real, link)
+        self.chdir(link)
+        self.assertEqual(os.getcwd(), real)  # all the process itself can say is the resolved path
+        self.assertEqual(self.recorded_directory({**self.env, "PWD": link}), link)
+
+    @ON_MACOS
+    def test_the_record_shows_the_current_directory_when_pwd_is_no_name_for_it(self) -> None:
+        other = os.path.join(self.dir, "other")
+        os.makedirs(other)
+        self.chdir(self.dir)
+        for what, pwd in (
+            ("unset", None),
+            ("empty", ""),
+            ("another directory", other),
+            ("a relative path", "."),
+            ("a path that is not there", os.path.join(self.dir, "gone")),
+        ):
+            with self.subTest(what=what):
+                env = dict(self.env) if pwd is None else {**self.env, "PWD": pwd}
+                self.assertEqual(self.recorded_directory(env), self.dir)
 
 
 class ErrorsTest(DispatcherCase):

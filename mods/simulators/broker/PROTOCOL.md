@@ -39,6 +39,7 @@ variable not named here is not read.
 |---|---|
 | `CLAUDE_SIMULATORS_STATE_ROOT` | names the state root; a relative path is made absolute from the working directory |
 | `HOME` | locates the default state root, which is `Library/Application Support/claude-simulators` in it; when `HOME` is unset the account's home directory stands in |
+| `PWD` | names the working directory the slot's owner record shows, as `sim-lock.sh` records its shell's `$PWD`, when it is an absolute path to the directory the client is in; any other value is not believed, and the record shows the directory the client is in |
 | `SIM_LOCK_FILE` | is the family the client was given: a state root whose family is another runs nothing and the client exits 79; `configure` ignores it |
 | any other `SIM_LOCK_*` | is a setting of `sim-lock.sh` that the broker does not read, and a line on stderr names it |
 

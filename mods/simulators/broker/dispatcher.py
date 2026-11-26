@@ -163,7 +163,7 @@ def _dispatch(
     if request.verb == protocol.VERB_STATUS:
         status(root, out)
         return 0
-    return _run(root, request.command, err, machine, clock)
+    return _run(root, request.command, _working_directory(environ), err, machine, clock)
 
 
 def _read(environ: Mapping[str, str], takes_family: bool) -> Environment:
@@ -190,12 +190,36 @@ def _default_root(environ: Mapping[str, str]) -> str:
     return os.path.join(home, *protocol.DEFAULT_ROOT_PARTS)
 
 
+def _working_directory(environ: Mapping[str, str]) -> str:
+    """The directory a run records as its own: `$PWD` when it names the current directory.
+
+    `sim-lock.sh` records its shell's `$PWD`, which keeps the symlinks the caller went through,
+    where `os.getcwd()` resolves them. A shell trusts `$PWD` only when it is an absolute path to
+    the directory it is in, and so does this; any other `$PWD` is stale, and the current directory
+    stands in.
+    """
+    current = os.getcwd()
+    named = _value(environ, protocol.PWD_VARIABLE)
+    if named is not None and os.path.isabs(named):
+        try:
+            if os.path.samefile(named, current):
+                return named
+        except OSError:
+            pass  # the path is not there or cannot be read: it names no directory
+    return current
+
+
 def _run(
-    root: Root, command: Sequence[str], err: TextIO, machine: MachineAdapter, clock: Clock
+    root: Root,
+    command: Sequence[str],
+    directory: str,
+    err: TextIO,
+    machine: MachineAdapter,
+    clock: Clock,
 ) -> int:
     leaf = TakeTimeLeaf(root.family(), root.rules(), machine, clock, root.decisions())
     waiter = Waiter(leaf, clock, err, notice=root.notice())
-    applicant = Applicant(pid=os.getpid(), cwd=os.getcwd(), command=command)
+    applicant = Applicant(pid=os.getpid(), cwd=directory, command=command)
     return metered_run(waiter, applicant)
 
 

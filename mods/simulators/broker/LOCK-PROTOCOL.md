@@ -116,7 +116,8 @@ one line, `pid=%s slot=%s cwd=%s started=%s command=%s` (L189), where
   recorded shell can die while its command still holds the slot, and a pid can be reused
   (L35-36, L190);
 - `slot` is the slot's number;
-- `cwd` is the working directory;
+- `cwd` is the shell's `$PWD`, the working directory as the caller named it, so a symlink the caller
+  went through stays in it (L190);
 - `started` is the local time of the admission from `date '+%Y-%m-%dT%H:%M:%S'`, with no zone (L190);
 - `command` is the command's words joined by single spaces (L190).
 
