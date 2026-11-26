@@ -79,10 +79,10 @@ class Docs:
     """What the two protocol files say, read out of them for a case to expect."""
 
     @staticmethod
-    def added_reason() -> Tuple[str, str]:
-        """When `PROTOCOL.md` says its one added reason shows, and its text with `{seconds}` left in."""
+    def added_reason() -> str:
+        """The text `PROTOCOL.md` gives its one added reason, with `{seconds}` left in."""
         (row,) = first_table(section(CLIENT_TEXT, "Reasons"), 1)
-        return row[0], span_of(row[1])
+        return span_of(row[1])
 
     @staticmethod
     def reason(check: int) -> str:
@@ -352,8 +352,9 @@ class AdmissionCase(ConformanceCase):
 class UnmeasurableIdleFallbackCase(ConformanceCase):
     """Item "The unmeasurable-idle fallback", final: decided in pango PR #546 (68e6e8af).
 
-    A CPU sample that times out gives no idle reading either, so it takes the same fallback, with
-    the reason `PROTOCOL.md` adds.
+    A CPU sample that times out is not this case: the script has no timeout and would still be
+    waiting on `iostat`, which overruns only on a badly loaded Mac, so such a sample waits a lone
+    run too, with the reason `PROTOCOL.md` adds.
     """
 
     def test_a_lone_run_starts_when_the_idle_percentage_cannot_be_measured(self) -> None:
@@ -366,7 +367,7 @@ class UnmeasurableIdleFallbackCase(ConformanceCase):
         self.assertEqual(got, Waiting(Docs.reason(4)))
 
     def test_the_reason_never_shows_on_a_lone_run_whatever_the_cpu_does(self) -> None:
-        for reading in (Unmeasurable(), TimedOut(10), Measured(80)):
+        for reading in (Unmeasurable(), Measured(80)):
             with self.subTest(reading=reading):
                 got = self.leaf(cpu=[reading]).attempt(APPLICANT)
                 self.assertIsInstance(got, Admitted)
@@ -379,19 +380,19 @@ class UnmeasurableIdleFallbackCase(ConformanceCase):
         self.assertIsInstance(self.attempt(self.leaf(min_idle=0, cpu=[Unmeasurable()])), Admitted)
         self.assertEqual(self.machine.cpu_calls, 0)
 
-    def test_a_lone_run_starts_when_the_cpu_sample_timed_out(self) -> None:
-        self.assertIsInstance(self.attempt(self.leaf(cpu=[TimedOut(10)])), Admitted)
+    def test_a_lone_run_waits_with_the_client_protocols_reason_when_the_cpu_sample_timed_out(self) -> None:
+        got = self.attempt(self.leaf(cpu=[TimedOut(10)]))
+        self.assertEqual(got, Waiting(Docs.added_reason().format(seconds=10)))
         self.assertEqual(self.machine.cpu_calls, 1)
 
     def test_a_run_beside_another_waits_with_the_client_protocols_reason_when_the_sample_timed_out(self) -> None:
         self.hold(0)
-        _, text = Docs.added_reason()
         got = self.attempt(self.leaf(cpu=[TimedOut(10)]))
-        self.assertEqual(got, Waiting(text.format(seconds=10)))
+        self.assertEqual(got, Waiting(Docs.added_reason().format(seconds=10)))
 
-    def test_the_client_protocol_says_that_reason_shows_only_beside_another_run(self) -> None:
-        when, _ = Docs.added_reason()
-        self.assertIn("not alone", when)
+    def test_the_client_protocol_says_that_reason_shows_whether_or_not_the_run_is_alone(self) -> None:
+        prose = " ".join(section(CLIENT_TEXT, "Reasons").split())
+        self.assertIn("whether or not it is alone", prose)
 
     def test_the_file_states_the_rule_as_decided_and_nothing_in_it_is_provisional(self) -> None:
         self.assertIn("#546", section(LOCK_TEXT, "3.2 The unmeasurable-idle fallback"))

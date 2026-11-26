@@ -165,11 +165,15 @@ class UnmeasurableIdleTest(unittest.TestCase):
 
 
 class TimedOutSampleTest(unittest.TestCase):
-    """A sample that timed out gives no idle reading, so it takes the unmeasurable-idle fallback."""
+    """A sample that timed out is not the unmeasurable case, so it waits a lone run as well.
 
-    def test_a_lone_run_starts_when_the_sample_timed_out(self) -> None:
+    The script has no timeout and would still be waiting on `iostat`, which overruns only on a badly
+    loaded Mac, so starting a lone run on a timeout would start it into the load the check is for.
+    """
+
+    def test_a_lone_run_waits_with_the_timeout_reason_when_the_sample_timed_out(self) -> None:
         got = decide(FREE, sample=TimedOut(10))
-        self.assertEqual(got, Decision(Verdict.ADMIT, "the checks passed"))
+        self.assertEqual(got, Decision(Verdict.WAIT, "the CPU sample timed out after 10s"))
 
     def test_a_run_beside_another_waits_with_the_timeout_reason(self) -> None:
         got = decide((True, False, False), last_start=NOW - 200, sample=TimedOut(10))
@@ -179,12 +183,19 @@ class TimedOutSampleTest(unittest.TestCase):
         got = decide((False, True, False), last_start=NOW - 200, sample=TimedOut(25))
         self.assertEqual(got.reason, "the CPU sample timed out after 25s")
 
-    def test_the_verdict_is_the_unmeasurable_one_for_a_lone_run_and_for_one_beside_another(self) -> None:
-        for held in (FREE, (True, False, False)):
-            with self.subTest(held=held):
-                timed_out = decide(held, last_start=NOW - 200, sample=TimedOut(10))
-                unmeasurable = decide(held, last_start=NOW - 200, sample=Unmeasurable())
-                self.assertEqual(timed_out.verdict, unmeasurable.verdict)
+    def test_a_lone_run_waits_on_a_timeout_where_it_starts_on_an_unmeasurable_reading(self) -> None:
+        timed_out = decide(FREE, sample=TimedOut(10))
+        unmeasurable = decide(FREE, sample=Unmeasurable())
+        self.assertEqual((timed_out.verdict, unmeasurable.verdict), (Verdict.WAIT, Verdict.ADMIT))
+
+    def test_beside_another_run_a_timeout_waits_as_an_unmeasurable_reading_does_with_its_own_reason(
+        self,
+    ) -> None:
+        held = (True, False, False)
+        timed_out = decide(held, last_start=NOW - 200, sample=TimedOut(10))
+        unmeasurable = decide(held, last_start=NOW - 200, sample=Unmeasurable())
+        self.assertEqual(timed_out.verdict, unmeasurable.verdict)
+        self.assertNotEqual(timed_out.reason, unmeasurable.reason)
 
 
 class CheckOrderTest(unittest.TestCase):

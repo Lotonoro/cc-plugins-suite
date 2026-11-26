@@ -57,7 +57,7 @@ class Unmeasurable:
 
 @dataclass(frozen=True)
 class TimedOut:
-    """The tool did not finish within `seconds`, and was killed and reaped. It gives no reading."""
+    """The tool did not finish within `seconds`, and was killed and reaped."""
 
     seconds: int
 
@@ -86,12 +86,14 @@ def _after_sample(rules: Rules, alone: bool, sample: Sample) -> Decision:
             return _wait(
                 protocol.REASON_BUSY.format(idle=sample.value, min_idle=rules.min_idle_percent)
             )
+    elif isinstance(sample, TimedOut):
+        # Not the unmeasurable case below, lone run or not: the script has no timeout and would
+        # still be waiting on `iostat`, which overruns only on a badly loaded Mac, so admitting a
+        # lone run here would start it into the load the check is for.
+        return _wait(protocol.REASON_SAMPLE_TIMED_OUT.format(seconds=sample.seconds))
     elif not alone:
-        # No idle reading, whether the tool printed nothing readable or outlasted its timeout: a
-        # lone run starts, one beside another waits. LOCK-PROTOCOL.md section 3.2 states the rule
-        # and how pango decided it; the timeout is the broker's own and has its own reason.
-        if isinstance(sample, TimedOut):
-            return _wait(protocol.REASON_SAMPLE_TIMED_OUT.format(seconds=sample.seconds))
+        # The idle percentage cannot be measured: a lone run starts, one beside another waits.
+        # LOCK-PROTOCOL.md section 3.2 states the rule and how pango decided it.
         return _wait(protocol.REASON_UNMEASURABLE)
     return Decision(Verdict.ADMIT, protocol.REASON_ADMITTED)
 

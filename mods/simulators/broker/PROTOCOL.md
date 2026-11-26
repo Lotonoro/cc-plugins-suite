@@ -109,13 +109,13 @@ the gate.
 ## Reasons
 
 The reasons a run waits are `LOCK-PROTOCOL.md` section 3's. The broker adds one, for a CPU sample
-that outlasts the machine adapter's timeout. Such a sample gives no idle reading, so it takes the
-fallback of `LOCK-PROTOCOL.md` section 3.2: a run that is alone starts, and one that is not waits
-with this reason, which therefore shows only beside another run.
+that outlasts the machine adapter's timeout. That is not the unmeasurable case of `LOCK-PROTOCOL.md`
+section 3.2: the script has no timeout and would still be waiting on `iostat`, which overruns only
+on a badly loaded Mac, so a run waits with this reason whether or not it is alone.
 
 | When | Text |
 |---|---|
-| the CPU sample outlasted the machine adapter's timeout, and the run is not alone | `the CPU sample timed out after {seconds}s` |
+| the CPU sample outlasted the machine adapter's timeout | `the CPU sample timed out after {seconds}s` |
 
 ## Lines on stderr
 

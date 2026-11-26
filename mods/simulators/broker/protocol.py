@@ -123,9 +123,8 @@ REASON_ALL_HELD = "all {slots} run slots are held"
 REASON_SETTLING = "a run started less than {settle}s ago"
 REASON_BUSY = "the CPU is {idle}% idle and a run needs {min_idle}%"
 REASON_UNMEASURABLE = "the CPU's idle percentage cannot be measured"
-# The broker's own: the script has no timeout on its measurement. A sample that outlasts the
-# adapter's gives no idle reading, so it takes the same fallback as an unmeasurable one
-# (LOCK-PROTOCOL.md section 3.2), and this is the reason it waits with beside another run.
+# The broker's own: the script has no timeout on its measurement, and a sample that outlasts the
+# adapter's is a reason to wait, lone run or not, never the unmeasurable case.
 REASON_SAMPLE_TIMED_OUT = "the CPU sample timed out after {seconds}s"
 # What the last-decision record says when the checks passed.
 REASON_ADMITTED = "the checks passed"
