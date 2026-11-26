@@ -65,6 +65,14 @@ RUN_LIMIT_SECONDS = 3600
 STATUS_SECONDS = 300
 KILL_GRACE_SECONDS = 10
 
+# What a waiting run prints on stderr. LOCK-PROTOCOL.md section 5.1 binds these three lines with
+# their prefix, which clients quote, and the holders listed under the first, each indented.
+MESSAGE_PREFIX = "sim-lock: "
+LINE_WAITING = MESSAGE_PREFIX + "waiting for a simulator run slot: {reason}; running now:"
+LINE_STILL_WAITING = MESSAGE_PREFIX + "still waiting after {waited}s: {reason}"
+LINE_GAVE_UP = MESSAGE_PREFIX + "gave up after {waited}s: {reason}"
+HOLDER_INDENT = "  "
+
 # The client's environment, which the dispatcher alone reads.
 STATE_ROOT_SETTING = "CLAUDE_SIMULATORS_STATE_ROOT"
 FAMILY_VARIABLE = "SIM_LOCK_FILE"

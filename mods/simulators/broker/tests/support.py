@@ -75,11 +75,16 @@ def gate_is_held(family: Family) -> bool:
 
 
 class FakeClock:
-    """A clock that moves only when a test says so, or when something sleeps or samples."""
+    """A clock that moves only when a test says so, or when something sleeps or samples.
+
+    `on_sleep`, when set, runs after each sleep with the number of sleeps so far, so a test can
+    change the world while a waiter sleeps.
+    """
 
     def __init__(self, start: int = EPOCH) -> None:
         self.time = start
         self.sleeps: List[float] = []
+        self.on_sleep: Optional[Callable[[int], None]] = None
 
     def now(self) -> int:
         return int(self.time)
@@ -87,6 +92,8 @@ class FakeClock:
     def sleep(self, seconds: float) -> None:
         self.sleeps.append(seconds)
         self.time += seconds
+        if self.on_sleep is not None:
+            self.on_sleep(len(self.sleeps))
 
     def advance(self, seconds: float) -> None:
         self.time += seconds
