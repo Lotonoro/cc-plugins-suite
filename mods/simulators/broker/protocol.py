@@ -47,6 +47,24 @@ KEY_SETTLE = "settle_seconds"
 KEY_MIN_IDLE = "min_idle_percent"
 CONFIG_KEYS = (KEY_FAMILY, KEY_SHARED, KEY_MAX_RUNS, KEY_SLOTS, KEY_SETTLE, KEY_MIN_IDLE)
 
+# The last-decision record: one JSON object in the state directory, written under the gate by the
+# waiter that made the decision.
+LAST_DECISION_FILE = "last-decision.json"
+DECISION_ADMIT = "admit"
+DECISION_WAIT = "wait"
+RECORD_DECISION = "decision"
+RECORD_REASON = "reason"
+RECORD_SLOT = "slot"  # the slot taken, or null for a wait
+RECORD_AT = "at"  # the epoch second of the decision
+RECORD_KEYS = (RECORD_DECISION, RECORD_REASON, RECORD_SLOT, RECORD_AT)
+
+# The timing of a waiting run. These are constants and no setting: the script's own.
+POLL_SECONDS = 10
+TIMEOUT_SECONDS = 3600
+RUN_LIMIT_SECONDS = 3600
+STATUS_SECONDS = 300
+KILL_GRACE_SECONDS = 10
+
 # The client's environment, which the dispatcher alone reads.
 STATE_ROOT_SETTING = "CLAUDE_SIMULATORS_STATE_ROOT"
 FAMILY_VARIABLE = "SIM_LOCK_FILE"
