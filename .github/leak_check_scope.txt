@@ -1,0 +1,9 @@
+# What the leak check refuses: paths that are specific to one machine.
+# Each line that is not blank and does not start with # is one literal string, and a line of a
+# checked file that holds any of them is reported.
+# Standard locations, the same on every Mac, are left out so they pass: ~/.claude/, ~/.android/.
+# This file is public. A private folder whose name should stay private goes in a file of its own,
+# given to the check with --scope.
+/Users/
+~/temp
+$HOME/temp
