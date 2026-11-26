@@ -146,7 +146,7 @@ last start is *settled* when at least SETTLE_SECONDS have passed since the epoch
 | 1 | every slot from 0 to MAX_RUNS - 1 is held | `all ${MAX_RUNS} run slots are held` | L148-151 |
 | 2 | it is not alone and the last start is not settled | `a run started less than ${SETTLE_SECONDS}s ago` | L152-155 |
 | 3 | MIN_IDLE_PERCENT is above 0 and the CPU's idle percentage is below it | `the CPU is ${idle}% idle and a run needs ${MIN_IDLE_PERCENT}%` | L156-162 |
-| 4 | provisional, section 3.2: MIN_IDLE_PERCENT is above 0, the idle percentage cannot be measured, and the run is not alone | `the CPU's idle percentage cannot be measured` | L163-165 |
+| 4 | section 3.2: MIN_IDLE_PERCENT is above 0, the idle percentage cannot be measured, and the run is not alone | `the CPU's idle percentage cannot be measured` | L163-165 |
 | 5 | checks 1 to 4 passed and it can lock none of the slots | `all ${MAX_RUNS} run slots are held` | L168-173 |
 
 With every slot held, neither the settle time nor the CPU matters, and measuring would hold the gate
@@ -164,18 +164,18 @@ measurement is skipped (L156-157). The idle percentage is the third field of the
 (L107-112). The run passes check 3 when the percentage is at least MIN_IDLE_PERCENT (L159). The
 sample is taken inside the gate, so other waiters wait behind it (L158, L182; section 2.2).
 
-### 3.2 The unmeasurable-idle fallback (provisional)
+### 3.2 The unmeasurable-idle fallback
 
 When MIN_IDLE_PERCENT is above 0 and the idle percentage cannot be measured, a run that is alone is
 admitted without a CPU check, and a run that is not alone waits with check 4's reason (L163-165;
 self-test L464-472). The reason therefore shows only beside another run, and a broken `iostat` never
 blocks the only run (L22-23).
 
-This rule is provisional until pango's item #3 is answered. It shipped on purpose in pango PR #545
-(merge 98f42947) and is live; the open part is the answer to item #3, on whether a lone run may
-start with no idle reading. Nothing in the broker depends on its being final: the broker marks its
-conformance case for this rule provisional, as check 4 above is, and if the rule changes, this
-section, that case and the script change together, with pango-core changing the script on its side.
+This rule is decided: pango's item #3, on whether a lone run may start with no idle reading, was
+answered "Yes, start (keep as merged)" in pango PR #546 (68e6e8af). The rule shipped on purpose in
+pango PR #545 (merge 98f42947), and `scripts/sim-lock.sh` is the same blob at `68e6e8af` as at
+`98f42947`. If the rule changes, this section, the broker's conformance case for it and the script
+change together, with pango-core changing the script on its side.
 
 ## 4. The shared-slot rule
 
