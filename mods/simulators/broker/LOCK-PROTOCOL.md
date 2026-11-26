@@ -202,12 +202,27 @@ is held to it:
 - N changes only at pango-core's grant, for all the script's callers at once.
 
 pango PR #622 decided the rule, and its record is
-`docs/process/2026-11-26-the-default-simulator-lock-keeps-one-slot-count.md`. The default lock's
-family is the default lock (section 2) and any of its family's files (`.1`, `.gate` and so on),
-however the directory is spelled (`/private/tmp`, a doubled slash, a symlinked directory), whether
-or not the file exists, and a symlink to the default lock itself (L77-89). The match does not catch
-a different letter case on a case-insensitive volume, or a symlink to a family file other than the
-default lock (L77-81). A lock file elsewhere takes any count (self-test L402, L557-564).
+`docs/process/2026-11-26-the-default-simulator-lock-keeps-one-slot-count.md`. The script's match of
+a lock file to the default lock's family (L82-89) compares text, and what it takes and misses is
+this:
+
+- It is a prefix over the whole path (L88): the lock file's physical directory, joined to its name,
+  begins with the default lock's own. So the family is the default lock (section 2), its family's
+  files (`.1`, `.gate` and so on), any longer name (`<lock>-mine`) and anything below a directory
+  so named (`<lock>.d/lock`), however the directory is spelled (`/private/tmp`, a doubled slash, a
+  symlinked directory), whether or not the file exists.
+- The directory must exist (L86). The script enters it with `cd`, and when that fails, because the
+  directory is absent, is no directory or cannot be searched, the file is not in the family however
+  its path reads.
+- `-ef` (L85) takes the default lock under any name that leads to it while it exists, a symlink to
+  it included. A symlink to it is missed while the lock is absent, and a symlink to another file of
+  its family is missed always.
+- Another letter case is missed in a name, and in a directory that is no symlink, since `cd -P`
+  keeps the letters it is given; only the existing lock itself is found, by `-ef`. A directory
+  reached through a symlink is found in any case, since `cd -P` gives its real letters (`/TMP` for
+  `/tmp`). The script's own comment (L77-81) says more is missed than is.
+
+A lock file elsewhere takes any count (self-test L402, L557-564).
 
 The broker holds the same on its side, with two matches. Its refusal of a shared family at a
 `max_runs` other than 3 matches as the script matches (`PROTOCOL.md`), so that it refuses where the

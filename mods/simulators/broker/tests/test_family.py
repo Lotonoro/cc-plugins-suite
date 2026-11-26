@@ -377,6 +377,12 @@ class InDefaultFamilyTest(DefaultLockCase):
     def test_the_script_matches_by_prefix_so_a_longer_name_is_in_the_family_too(self) -> None:
         self.assertTrue(self.says(self.default + "-probe"))
 
+    def test_the_prefix_takes_a_path_below_a_directory_named_for_the_default_lock_once_it_is_there(self) -> None:
+        below = os.path.join(self.default + ".d", "family", "lock")
+        self.assertFalse(self.says(below), "the script's `cd` into the directory fails")
+        os.makedirs(os.path.dirname(below))
+        self.assertTrue(self.says(below))
+
     def test_another_spelling_of_the_directory_is_the_same_family(self) -> None:
         linked = self.link(self.tmp, self.dir, "linked")
         for spelling in (
@@ -440,8 +446,29 @@ class InDefaultFamilyTest(DefaultLockCase):
         self.write(self.default + ".1", "")
         self.assertFalse(self.says(self.link(self.default + ".1", self.elsewhere, "mine.flock")))
 
-    def test_a_different_letter_case_is_a_miss_as_in_the_script(self) -> None:
+    def test_a_name_in_other_letters_is_a_miss_while_the_lock_is_absent(self) -> None:
         self.assertFalse(self.says(os.path.join(self.tmp, "Pango-Sim-Test.flock")))
+
+    def requires_a_case_insensitive_volume(self) -> None:
+        if not os.path.exists(self.tmp.upper()):
+            self.skipTest("this volume tells letters apart, so another case is another file")
+
+    def test_a_name_in_other_letters_is_found_only_as_the_existing_lock_itself(self) -> None:
+        self.requires_a_case_insensitive_volume()
+        other = os.path.join(self.tmp, self.NAME.upper())
+        self.write(self.default, "")
+        self.assertTrue(self.says(other), "the same file, which `-ef` finds")
+        self.write(self.default + ".1", "")
+        self.assertFalse(self.says(other + ".1"), "the same file as a family file, which nothing finds")
+
+    def test_a_directory_in_other_letters_is_found_only_where_cd_follows_a_symlink_for_it(self) -> None:
+        self.requires_a_case_insensitive_volume()
+        self.link(self.tmp, self.dir, "linked")
+        family_file = f"{self.NAME}.1"
+        # Where no symlink is followed, `cd -P` keeps the letters it is given.
+        self.assertFalse(self.says(os.path.join(self.dir.upper(), "tmp", family_file)))
+        # Where one is, it gives the real letters, as it does for /TMP.
+        self.assertTrue(self.says(os.path.join(self.dir, "LINKED", family_file)))
 
 
 class IsTheDefaultLockTest(DefaultLockCase):

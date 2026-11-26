@@ -100,11 +100,23 @@ def _leads_to(path: str, default: str, compare: Callable[[str, str], bool]) -> b
 def in_default_family(path: str, default: str) -> bool:
     """Whether `path` is the lock `default` or one of its family's files, as `sim-lock.sh` has it.
 
-    This is the script's `in_default_family` (LOCK-PROTOCOL.md section 4), misses included. It
-    finds the default lock and any file of its family (`.1`, `.gate`, ...) by the name's prefix,
-    under any spelling of the directory (`/private/tmp`, a doubled slash, a symlinked directory),
-    whether or not the file exists, and a symlink to the default lock itself. It does not find a
-    different letter case, or a symlink to a family file other than the default lock.
+    This is the script's `in_default_family` (LOCK-PROTOCOL.md section 4), misses included. What it
+    takes and misses is what the script's function does, which is less than its comment (L77-81)
+    says it misses:
+
+    - It is a prefix over the whole path: the physical directory, joined to the name, begins with
+      the default lock's own. So the default lock, its family's files (`.1`, `.gate`, ...), any
+      longer name and anything below a directory so named are in the family, however the directory
+      is spelled (`/private/tmp`, a doubled slash, a symlinked directory), whether or not the file
+      exists.
+    - The directory must exist and be searched, as the script's `cd` needs; if not, no match.
+    - `-ef` takes the default lock under any name that leads to it while it exists, a symlink to
+      it included. A symlink to it is missed while the lock is absent, and a symlink to another
+      file of its family is missed always.
+    - Another letter case is missed in a name, and in a directory that is no symlink, since the
+      physical path keeps the letters it is given; only the existing lock itself is found. A
+      directory reached through a symlink is found in any case, since the physical path has its
+      real letters.
     """
     return _leads_to(path, default, str.startswith)
 
