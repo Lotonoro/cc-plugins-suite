@@ -16,7 +16,7 @@ from typing import List, Optional, Union
 from broker import protocol
 from broker.decisions import DecisionStore
 from broker.leaf import Admitted, Applicant, TakeTimeLeaf
-from broker.policy import Measured, Rules, Sample
+from broker.policy import Measured, Sample
 from broker.tests.support import (
     FakeClock,
     FakeMachine,
@@ -57,8 +57,7 @@ class WaiterCase(unittest.TestCase):
         if cpu is not None:
             self.machine.cpu = tuple(cpu)
         family = SpyFamily(self.lock, slots=3, window=3, refuse_takes=refuse_takes)
-        rules = Rules(slots=3, window=3, settle_seconds=90, min_idle_percent=50)
-        leaf = TakeTimeLeaf(family, rules, self.machine, self.clock, self.decisions)
+        leaf = TakeTimeLeaf(family, 90, 50, self.machine, self.clock, self.decisions)
         return Waiter(leaf, self.clock, self.err, timing, notice)
 
     def hold_all_slots(self) -> Children:

@@ -30,7 +30,7 @@ from broker import protocol
 from broker.clock import Clock, SystemClock
 from broker.configure import Settings, configure
 from broker.errors import BrokerError, UsageError
-from broker.leaf import Applicant, TakeTimeLeaf
+from broker.leaf import Applicant
 from broker.machine import Machine, MachineAdapter
 from broker.runner import metered_run
 from broker.stateroot import Root, open_root
@@ -217,8 +217,7 @@ def _run(
     machine: MachineAdapter,
     clock: Clock,
 ) -> int:
-    leaf = TakeTimeLeaf(root.family(), root.rules(), machine, clock, root.decisions())
-    waiter = Waiter(leaf, clock, err, notice=root.notice())
+    waiter = Waiter(root.leaf(machine, clock), clock, err, notice=root.notice())
     applicant = Applicant(pid=os.getpid(), cwd=directory, command=command)
     return metered_run(waiter, applicant)
 

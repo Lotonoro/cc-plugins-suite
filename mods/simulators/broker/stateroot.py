@@ -16,10 +16,12 @@ from dataclasses import dataclass
 from typing import Optional
 
 from broker import protocol
+from broker.clock import Clock
 from broker.decisions import DecisionStore
 from broker.errors import FamilyDisagreement
 from broker.family import Family
-from broker.policy import Rules
+from broker.leaf import TakeTimeLeaf
+from broker.machine import MachineAdapter
 from broker.settings import Config, LoadedConfig, load_config
 
 
@@ -55,16 +57,19 @@ class Root:
             creates_directory=not self.config.shared,
         )
 
-    def rules(self) -> Rules:
-        return Rules(
-            slots=self.config.slots,
-            window=self.config.window,
-            settle_seconds=self.config.settle_seconds,
-            min_idle_percent=self.config.min_idle_percent,
-        )
-
     def decisions(self) -> DecisionStore:
         return DecisionStore(self.state_dir)
+
+    def leaf(self, machine: MachineAdapter, clock: Clock) -> TakeTimeLeaf:
+        """The take-time leaf over this root's family, decisions and settings."""
+        return TakeTimeLeaf(
+            self.family(),
+            self.config.settle_seconds,
+            self.config.min_idle_percent,
+            machine,
+            clock,
+            self.decisions(),
+        )
 
     def notice(self) -> Optional[str]:
         """The line a waiter prints once when the root has no configuration, and None otherwise."""

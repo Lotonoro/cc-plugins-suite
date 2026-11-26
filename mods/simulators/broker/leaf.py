@@ -71,20 +71,28 @@ def owner_record(applicant: Applicant, slot: int, at: int) -> str:
 
 
 class TakeTimeLeaf:
+    """One admission attempt at a time, on the family it is given.
+
+    The family is the one source of the slot count and the window: the core's rules take both from
+    it, with the two settings that are the core's alone.
+    """
+
     def __init__(
         self,
         family: Family,
-        rules: Rules,
+        settle_seconds: int,
+        min_idle_percent: int,
         machine: MachineAdapter,
         clock: Clock,
         decisions: DecisionStore,
     ) -> None:
-        if family.slots != rules.slots:
-            raise ValueError(f"the family has {family.slots} slots and the rules {rules.slots}")
-        if family.window != rules.window:
-            raise ValueError(f"the family has a window of {family.window} and the rules {rules.window}")
         self.family = family
-        self.rules = rules
+        self.rules = Rules(
+            slots=family.slots,
+            window=family.window,
+            settle_seconds=settle_seconds,
+            min_idle_percent=min_idle_percent,
+        )
         self.machine = machine
         self.clock = clock
         self.decisions = decisions

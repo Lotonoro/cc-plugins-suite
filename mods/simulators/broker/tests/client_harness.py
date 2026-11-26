@@ -21,7 +21,6 @@ from broker.decisions import DecisionStore
 from broker.family import Family
 from broker.leaf import Applicant, TakeTimeLeaf
 from broker.machine import Machine
-from broker.policy import Rules
 from broker.runner import RunLimits, metered_run
 from broker.waiter import Timing, Waiter
 
@@ -32,12 +31,9 @@ def main() -> None:
     command = sys.argv[2:]
     slots = params["slots"]
     family = Family(params["lock"], slots=slots, window=slots)
-    rules = Rules(
-        slots=slots, window=slots, settle_seconds=90, min_idle_percent=params["min_idle"]
-    )
     machine = Machine(iostat=["/usr/bin/printf", "%s", " 1 2 90\n"])
     clock = SystemClock()
-    leaf = TakeTimeLeaf(family, rules, machine, clock, DecisionStore(params["state"]))
+    leaf = TakeTimeLeaf(family, 90, params["min_idle"], machine, clock, DecisionStore(params["state"]))
     timing = Timing(params["poll"], params["timeout"], params["status"])
     waiter = Waiter(leaf, clock, sys.stderr, timing)
     limits = RunLimits(params["run_limit"], params["grace"])

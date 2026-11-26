@@ -13,7 +13,7 @@ from unittest import mock
 
 from broker import protocol
 from broker.errors import ConfigError, FamilyDisagreement, FamilyError
-from broker.leaf import Admitted, Applicant, TakeTimeLeaf
+from broker.leaf import Admitted, Applicant
 from broker.settings import Config
 from broker.stateroot import open_root
 from broker.tests.support import FakeClock, FakeMachine, hold_in_another_process, scratch_dir
@@ -66,9 +66,9 @@ class OpenTest(RootCase):
         self.assertEqual(got.state_dir, os.path.join(self.root, "state"))
         self.assertEqual(got.decisions().state_dir, got.state_dir)
 
-    def test_the_rules_carry_the_configured_settings_and_the_window(self) -> None:
+    def test_the_leaf_decides_with_the_configured_settings_and_the_window(self) -> None:
         self.full_configuration(shared=True, max_runs=3, slots=2, settle_seconds=45, min_idle_percent=60)
-        rules = open_root(self.root, CORES).rules()
+        rules = open_root(self.root, CORES).leaf(FakeMachine(), FakeClock()).rules
         self.assertEqual((rules.slots, rules.window, rules.settle_seconds, rules.min_idle_percent), (2, 3, 45, 60))
 
     def test_the_family_is_built_with_the_slots_and_the_window_of_the_configuration(self) -> None:
@@ -179,11 +179,11 @@ class IsolationTest(RootCase):
             with open(path + ".owner", "w", encoding="utf-8") as handle:
                 handle.write(f"pid=1 slot={slot} cwd=/ started=t command=first-root-run\n")
             hold_in_another_process(self, path)
-        full = TakeTimeLeaf(first.family(), first.rules(), FakeMachine(), FakeClock(), first.decisions())
+        full = first.leaf(FakeMachine(), FakeClock())
         self.assertEqual(full.attempt(APPLICANT).reason, "all 3 run slots are held")  # type: ignore[union-attr]
         # The second root sees none of them: it lists no holder and admits a run to its slot 0.
         self.assertEqual(second.family().list_holders(), [])
-        free = TakeTimeLeaf(second.family(), second.rules(), FakeMachine(), FakeClock(), second.decisions())
+        free = second.leaf(FakeMachine(), FakeClock())
         got = free.attempt(APPLICANT)
         self.assertIsInstance(got, Admitted)
         os.close(got.fd)  # type: ignore[union-attr]
@@ -192,8 +192,7 @@ class IsolationTest(RootCase):
     def test_each_root_keeps_its_own_last_decision(self) -> None:
         first = open_root(os.path.join(self.dir, "first"), CORES)
         second = open_root(os.path.join(self.dir, "second"), CORES)
-        leaf = TakeTimeLeaf(first.family(), first.rules(), FakeMachine(), FakeClock(), first.decisions())
-        got = leaf.attempt(APPLICANT)
+        got = first.leaf(FakeMachine(), FakeClock()).attempt(APPLICANT)
         os.close(got.fd)  # type: ignore[union-attr]
         self.assertIsNotNone(first.decisions().read())
         self.assertIsNone(second.decisions().read())

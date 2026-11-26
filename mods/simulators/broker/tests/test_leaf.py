@@ -52,10 +52,7 @@ class LeafCase(unittest.TestCase):
         if cpu is not None:
             self.machine.cpu = tuple(cpu)
         self.family = SpyFamily(self.lock, slots=slots, window=window, refuse_takes=refuse_takes)
-        rules = Rules(
-            slots=slots, window=window, settle_seconds=settle, min_idle_percent=min_idle
-        )
-        return TakeTimeLeaf(self.family, rules, self.machine, self.clock, self.decisions)
+        return TakeTimeLeaf(self.family, settle, min_idle, self.machine, self.clock, self.decisions)
 
     def attempt(self, leaf: TakeTimeLeaf) -> object:
         got = leaf.attempt(APPLICANT)
@@ -337,17 +334,13 @@ class GateTest(LeafCase):
 
 
 class ConstructionTest(LeafCase):
-    def test_rules_that_disagree_with_the_family_about_the_slots_are_refused(self) -> None:
-        family = SpyFamily(self.lock, slots=3, window=3)
-        rules = Rules(slots=2, window=3, settle_seconds=90, min_idle_percent=50)
-        with self.assertRaisesRegex(ValueError, "slots"):
-            TakeTimeLeaf(family, rules, self.machine, self.clock, self.decisions)
+    """The family is the one source of the slot count and the window, so the two cannot disagree."""
 
-    def test_rules_that_disagree_with_the_family_about_the_window_are_refused(self) -> None:
-        family = SpyFamily(self.lock, slots=2, window=2)
-        rules = Rules(slots=2, window=3, settle_seconds=90, min_idle_percent=50)
-        with self.assertRaisesRegex(ValueError, "window"):
-            TakeTimeLeaf(family, rules, self.machine, self.clock, self.decisions)
+    def test_the_rules_take_the_slots_and_the_window_of_the_family_and_the_two_settings_given(self) -> None:
+        leaf = self.leaf(slots=2, window=3, settle=45, min_idle=60)
+        self.assertEqual(
+            leaf.rules, Rules(slots=2, window=3, settle_seconds=45, min_idle_percent=60)
+        )
 
 
 if __name__ == "__main__":

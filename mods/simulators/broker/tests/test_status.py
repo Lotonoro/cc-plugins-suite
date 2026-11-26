@@ -18,7 +18,7 @@ from unittest import mock
 from broker import protocol
 from broker.decisions import LastDecision
 from broker.errors import StateError
-from broker.leaf import Admitted, Applicant, TakeTimeLeaf
+from broker.leaf import Admitted, Applicant
 from broker.policy import Measured
 from broker.status import status
 from broker.stateroot import open_root
@@ -54,8 +54,7 @@ class StatusCase(unittest.TestCase):
         self.out = io.StringIO()
 
     def attempt(self) -> object:
-        leaf = TakeTimeLeaf(self.root.family(), self.root.rules(), self.machine, self.clock, self.root.decisions())
-        got = leaf.attempt(APPLICANT)
+        got = self.root.leaf(self.machine, self.clock).attempt(APPLICANT)
         if isinstance(got, Admitted):
             self.addCleanup(os.close, got.fd)
         return got

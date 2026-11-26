@@ -33,7 +33,7 @@ from broker.decisions import DecisionStore
 from broker.errors import ConfigError
 from broker.family import Family
 from broker.leaf import Admitted, Applicant, TakeTimeLeaf, Waiting
-from broker.policy import Measured, Rules, Sample, TimedOut, Unmeasurable
+from broker.policy import Measured, Sample, TimedOut, Unmeasurable
 from broker.runner import RunLimits, metered_run
 from broker.settings import Config, load_config
 from broker.tests import programs
@@ -258,8 +258,7 @@ class ConformanceCase(unittest.TestCase):
         if cpu is not None:
             self.machine.cpu = tuple(cpu)
         self.family = SpyFamily(self.lock, slots=slots, window=window, refuse_takes=refuse_takes)
-        rules = Rules(slots=slots, window=window, settle_seconds=settle, min_idle_percent=min_idle)
-        return TakeTimeLeaf(self.family, rules, self.machine, self.clock, self.decisions)
+        return TakeTimeLeaf(self.family, settle, min_idle, self.machine, self.clock, self.decisions)
 
     def attempt(self, leaf: TakeTimeLeaf) -> object:
         got = leaf.attempt(APPLICANT)
