@@ -140,6 +140,33 @@ class ReadsNothingTest(ConfigureCase):
         self.assertEqual(self.out.getvalue(), "")
 
 
+class DefaultLockFamilyTest(ConfigureCase):
+    """The verb refuses what the open step would: another MAX_RUNS on the script's default lock family.
+
+    The default lock stands in as a file of the scratch directory: no test here names the real one.
+    """
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.default = os.path.join(self.dir, "pango-sim-test.flock")
+        patch = mock.patch.object(protocol, "DEFAULT_LOCK_FILE", self.default)
+        patch.start()
+        self.addCleanup(patch.stop)
+
+    def test_another_max_runs_is_refused_and_nothing_is_written_or_made(self) -> None:
+        with self.assertRaisesRegex(ConfigError, "max_runs is 4"):
+            self.run_configure(Settings(family=self.default + ".gate", shared=True, max_runs=4, slots=3))
+        self.assertEqual(os.listdir(self.dir), [])
+        self.assertEqual(self.out.getvalue(), "")
+
+    def test_the_default_locks_own_count_is_written_and_the_family_tried(self) -> None:
+        got = self.run_configure(Settings(family=self.default, shared=True, max_runs=3, slots=3))
+        self.assertEqual((got.family, got.max_runs), (self.default, 3))
+        self.assertEqual(self.written()["family"], self.default)
+        self.assertIn(f"family: {self.default}", self.lines())
+        self.assertIn(f"  {self.default}.gate: opened", self.lines())
+
+
 class VerifiesTest(ConfigureCase):
     def test_the_configuration_is_read_back_through_the_loader(self) -> None:
         # The file written has 3 slots; a loader that reads back 2 shows the verify step compares.

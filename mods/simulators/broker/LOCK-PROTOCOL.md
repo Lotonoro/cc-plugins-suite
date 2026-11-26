@@ -192,17 +192,28 @@ holder on slot 2, and a run at 3 does not list a holder on slot 3, which a run a
 So on a family the broker shares with the script, the script's callers share one N and the broker
 is held to it:
 
-- every script caller runs at one N: 3 today (L56), and no caller on the shared family sets the
-  variable;
+- every script caller runs at one N. On the default lock's family that N is 3, and the script
+  holds it: it refuses a `SIM_LOCK_MAX_RUNS` other than 3 there, before it touches the gate or a
+  slot (L374-376). On any other shared family N is what its callers agree on, and nothing holds it;
 - the broker's alone check and its holder listing look at slots 0 to N - 1, its window;
 - the broker's slot count c is at most N. A smaller c is safe, because the script sees slots 0 to
   N - 1, which include every broker slot;
 - N changes only at pango-core's grant, for all the script's callers at once.
 
+The default lock's family is the default lock (section 2) and any of its family's files (`.1`,
+`.gate` and so on), however the directory is spelled (`/private/tmp`, a doubled slash, a symlinked
+directory), whether or not the file exists, and a symlink to the default lock itself (L77-89). The
+match does not catch a different letter case on a case-insensitive volume, or a symlink to a family
+file other than the default lock (L77-81). A lock file elsewhere takes any count (self-test L402,
+L557-564). The broker holds the same on its side: a configuration that shares a family in the
+default lock's family, matched as the script matches it, is refused unless its `max_runs` is 3
+(`PROTOCOL.md`).
+
 Where this file says MAX_RUNS of a broker run, it means c in its take loop and in checks 1 and 5 of
 section 3, so the number in their text is c; in its alone check and its holder listing it means N.
-The script cannot enforce that N is one: it reads MAX_RUNS per run and the family records none.
-pango-core is asked to hold it.
+The script cannot hold N to one on a family it has no name for: it reads MAX_RUNS per run and the
+family records none. On the default lock's family it needs no record, since N is 3 there; on any
+other shared family the callers keep one N between them.
 
 More concurrency is pango-core's to grant. pango-core changes N only by a change to sim-lock.sh,
 announced first, and the grant follows the order below. Each run reads MAX_RUNS when it starts

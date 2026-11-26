@@ -8,6 +8,7 @@ wrapper and so is run on macOS only; the rest runs anywhere.
 from __future__ import annotations
 
 import io
+import json
 import os
 import re
 import subprocess
@@ -341,6 +342,28 @@ class ErrorsTest(DispatcherCase):
     def test_configure_arguments_the_loader_refuses_exit_78_and_write_nothing(self) -> None:
         self.assertEqual(self.main("configure", "--slots", "0"), protocol.EXIT_CONFIG)
         self.assertFalse(os.path.exists(os.path.join(self.root, "config.json")))
+
+    def test_a_shared_family_in_the_default_locks_family_at_another_max_runs_exits_78_and_runs_nothing(self) -> None:
+        default = os.path.join(self.dir, "pango-sim-test.flock")  # stands for the script's default lock
+        os.makedirs(self.root)
+        with open(os.path.join(self.root, "config.json"), "w", encoding="utf-8") as handle:
+            json.dump({"family": default, "shared": True, "max_runs": 5, "slots": 3}, handle)
+        mark = os.path.join(self.dir, "mark")
+        with mock.patch.object(protocol, "DEFAULT_LOCK_FILE", default):
+            self.assertEqual(self.main("status"), protocol.EXIT_CONFIG)
+            self.assertEqual(self.main("run", "--", *self.python(LEAVE_A_MARK, "ran", mark)), protocol.EXIT_CONFIG)
+        self.assertRegex(self.err_lines()[0], r"^sim-lock: .*config\.json: max_runs is 5, .*set max_runs to 3")
+        self.assertFalse(os.path.exists(mark))
+        self.assertFalse(os.path.exists(default + ".gate"))
+
+    def test_configure_refuses_the_same_and_writes_nothing_and_accepts_the_files_count(self) -> None:
+        default = os.path.join(self.dir, "pango-sim-test.flock")
+        options = ("configure", "--family", default, "--shared", "--slots", "3")
+        with mock.patch.object(protocol, "DEFAULT_LOCK_FILE", default):
+            self.assertEqual(self.main(*options, "--max-runs", "4"), protocol.EXIT_CONFIG)
+            self.assertFalse(os.path.exists(os.path.join(self.root, "config.json")))
+            self.assertEqual(self.main(*options, "--max-runs", "3"), 0)
+        self.assertTrue(os.path.exists(os.path.join(self.root, "config.json")))
 
     def test_a_record_that_is_not_ours_exits_78_naming_the_file(self) -> None:
         os.makedirs(os.path.join(self.root, "state"))

@@ -27,6 +27,10 @@ EXIT_NOT_FOUND = 127
 DEFAULT_MAX_RUNS = 3
 DEFAULT_MIN_IDLE_PERCENT = 50
 DEFAULT_SETTLE_SECONDS = 90
+# The script's default lock, which it takes when SIM_LOCK_FILE is unset or empty (LOCK-PROTOCOL.md
+# section 2). On that lock's family the script refuses a MAX_RUNS other than DEFAULT_MAX_RUNS, and
+# a shared root of the broker does the same (section 4).
+DEFAULT_LOCK_FILE = "/tmp/pango-sim-test.flock"
 # The slot count's default on a machine of `cores` is max(SLOT_FLOOR, cores // CORES_PER_SLOT),
 # and on a family shared with the script it is capped at the script's MAX_RUNS.
 SLOT_FLOOR = 3

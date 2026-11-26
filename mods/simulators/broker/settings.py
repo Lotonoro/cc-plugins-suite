@@ -15,6 +15,7 @@ from typing import Optional
 
 from broker import protocol
 from broker.errors import ConfigError
+from broker.family import in_default_family
 
 
 def default_family(root: str) -> str:
@@ -50,8 +51,10 @@ class Config:
 
     `slots` is the broker's own count, c. On a family `shared` with `sim-lock.sh`, `max_runs` is
     the MAX_RUNS that the script's callers use, N, which c may not pass; on any other family it
-    is not read. Every default is written in `defaults`, the one path to them, so a field has none
-    of its own.
+    is not read. The script keeps its default lock's family at one N, and refuses any other
+    (LOCK-PROTOCOL.md section 4), so a shared family there is refused at any other `max_runs`;
+    that is the one setting `validate` checks against the file system. Every default is written
+    in `defaults`, the one path to them, so a field has none of its own.
     """
 
     family: str
@@ -117,6 +120,16 @@ class Config:
         """
         if type(self.family) is not str or not os.path.isabs(self.family):
             raise ConfigError(f"family must be an absolute path, not {self.family!r}")
+        if (
+            self.shared
+            and self.max_runs != protocol.DEFAULT_MAX_RUNS
+            and in_default_family(self.family, protocol.DEFAULT_LOCK_FILE)
+        ):
+            raise ConfigError(
+                f"max_runs is {self.max_runs}, but {self.family} is in the family of sim-lock.sh's "
+                f"default lock, whose callers all use {protocol.DEFAULT_MAX_RUNS}: set max_runs to "
+                f"{protocol.DEFAULT_MAX_RUNS}, or family to another lock file"
+            )
         _positive(protocol.KEY_SLOTS, self.slots)
         if self.shared and self.slots > self.max_runs:
             raise ConfigError(

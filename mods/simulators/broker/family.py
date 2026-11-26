@@ -11,6 +11,10 @@ writes: a probe briefly holds a free slot's flock, which must not happen while a
 decides. Opening the gate twice in one process deadlocks, since flock conflicts between two open
 files of one process too, so these methods never open it themselves; `list_holders` does, being
 a whole operation of its own.
+
+`in_default_family` is the one function here that concerns no family of its own: it says whether a
+path belongs to the family of the script's default lock, which a shared root may not give another
+slot count (LOCK-PROTOCOL.md section 4).
 """
 
 from __future__ import annotations
@@ -50,6 +54,44 @@ def _try_lock(fd: int, path: str) -> bool:
     except OSError as err:
         raise FamilyError(f"cannot lock {path}: {err.strerror or err}") from err
     return True
+
+
+def _is_the_file(path: str, other: str) -> bool:
+    """Whether the two paths lead to one file, as the shell's `-ef` has it: false when either is absent."""
+    try:
+        return os.path.samestat(os.stat(path), os.stat(other))
+    except OSError:
+        return False
+
+
+def _directory_and_name(path: str) -> Tuple[str, str]:
+    """The directory and the name of `path` as dirname(1) and basename(1) give them.
+
+    A trailing slash does not count, so `/a/b/` is the name `b` in `/a`, and a name with no
+    directory is in `.`.
+    """
+    trimmed = path.rstrip("/") or path[:1]
+    return os.path.dirname(trimmed) or ".", os.path.basename(trimmed)
+
+
+def in_default_family(path: str, default: str) -> bool:
+    """Whether `path` is the lock `default` or one of its family's files, as `sim-lock.sh` has it.
+
+    This is the script's `in_default_family` (LOCK-PROTOCOL.md section 4), misses included. It
+    finds the default lock and any file of its family (`.1`, `.gate`, ...) by the name's prefix,
+    under any spelling of the directory (`/private/tmp`, a doubled slash, a symlinked directory),
+    whether or not the file exists, and a symlink to the default lock itself. It does not find a
+    different letter case, or a symlink to a family file other than the default lock.
+    """
+    if _is_the_file(path, default):
+        return True
+    directory, name = _directory_and_name(path)
+    if not (os.path.isdir(directory) and os.access(directory, os.X_OK)):
+        return False  # the script's `cd` into it fails
+    default_directory, default_name = _directory_and_name(default)
+    physical = os.path.realpath(directory)
+    default_physical = os.path.realpath(default_directory)
+    return f"{physical}/{name}".startswith(f"{default_physical}/{default_name}")
 
 
 class Family:

@@ -10,6 +10,7 @@ from dataclasses import replace
 from typing import Any, Dict
 from unittest import mock
 
+from broker import protocol
 from broker.errors import ConfigError
 from broker.settings import Config, default_family, default_slots, load_config
 from broker.tests.support import scratch_dir
@@ -179,6 +180,60 @@ class LimitsTest(unittest.TestCase):
         for value in (1000, -1):
             with self.subTest(value=value), self.assertRaisesRegex(ConfigError, "min_idle_percent"):
                 parse({"min_idle_percent": value})
+
+
+class DefaultLockFamilyTest(unittest.TestCase):
+    """The script's default lock has one count, 3, and a shared root of the broker keeps it too.
+
+    The default lock stands in as a file of a scratch directory: no test here names the real one.
+    """
+
+    def setUp(self) -> None:
+        self.dir = scratch_dir(self)
+        self.default = os.path.join(self.dir, "pango-sim-test.flock")
+        patch = mock.patch.object(protocol, "DEFAULT_LOCK_FILE", self.default)
+        patch.start()
+        self.addCleanup(patch.stop)
+
+    def shared(self, family: str, max_runs: int, slots: int = 1) -> Config:
+        return parse({"family": family, "shared": True, "max_runs": max_runs, "slots": slots})
+
+    def test_the_default_lock_and_each_file_of_its_family_is_refused_at_any_max_runs_but_3(self) -> None:
+        for suffix in ("", ".1", ".gate", ".last-start", ".2.owner"):
+            for max_runs in (1, 2, 4, 5):
+                with self.subTest(suffix=suffix, max_runs=max_runs), self.assertRaises(ConfigError):
+                    self.shared(self.default + suffix, max_runs)
+
+    def test_the_refusal_names_the_setting_the_family_and_the_fix(self) -> None:
+        with self.assertRaises(ConfigError) as caught:
+            self.shared(self.default, 5)
+        message = str(caught.exception)
+        self.assertIn("max_runs is 5", message)
+        self.assertIn(self.default, message)
+        self.assertIn("set max_runs to 3, or family to another lock file", message)
+
+    def test_a_max_runs_of_3_is_accepted_on_the_default_lock_and_each_file_of_its_family(self) -> None:
+        for suffix in ("", ".1", ".gate"):
+            with self.subTest(suffix=suffix):
+                self.assertEqual(self.shared(self.default + suffix, 3, slots=3).max_runs, 3)
+
+    def test_another_spelling_of_the_directory_is_refused_too(self) -> None:
+        for spelling in (self.dir + "//pango-sim-test.flock", self.dir + "/./pango-sim-test.flock.1"):
+            with self.subTest(spelling=spelling), self.assertRaises(ConfigError):
+                self.shared(spelling, 4)
+
+    def test_a_lock_file_elsewhere_takes_any_count(self) -> None:
+        for family in (os.path.join(self.dir, "scratch.flock"), os.path.join(self.dir, "no", "such", "lock")):
+            for max_runs in (1, 2, 4, 5):
+                with self.subTest(family=family, max_runs=max_runs):
+                    self.assertEqual(self.shared(family, max_runs).max_runs, max_runs)
+
+    def test_an_unshared_family_has_no_max_runs_to_keep(self) -> None:
+        got = parse({"family": self.default, "shared": False, "max_runs": 5})
+        self.assertEqual((got.shared, got.max_runs), (False, 5))
+
+    def test_a_shared_root_on_the_brokers_own_family_takes_any_count(self) -> None:
+        self.assertEqual(parse({"shared": True, "max_runs": 5}).max_runs, 5)
 
 
 class SerializationTest(unittest.TestCase):

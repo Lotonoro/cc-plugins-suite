@@ -117,6 +117,38 @@ class RefusalTest(RootCase):
         self.assertEqual(open_root(self.root, CORES).config.settle_seconds, 9_999_999)
 
 
+class DefaultLockFamilyTest(RootCase):
+    """A shared root in the script's default lock family opens at a MAX_RUNS of 3 only.
+
+    The default lock stands in as a file of the scratch directory: no test here names the real one.
+    """
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.default = os.path.join(self.dir, "pango-sim-test.flock")
+        patch = mock.patch.object(protocol, "DEFAULT_LOCK_FILE", self.default)
+        patch.start()
+        self.addCleanup(patch.stop)
+
+    def test_another_max_runs_is_refused_naming_the_file_and_the_setting_and_touching_no_slot(self) -> None:
+        self.full_configuration(family=self.default + ".1", shared=True, max_runs=4, slots=3)
+        with self.assertRaisesRegex(ConfigError, r"config\.json: max_runs is 4") as caught:
+            open_root(self.root, CORES)
+        self.assertEqual(caught.exception.exit_code, protocol.EXIT_CONFIG)
+        self.assertEqual(os.listdir(self.dir), ["root"], "nothing of the family was created")
+
+    def test_a_max_runs_of_3_opens_and_the_window_is_3(self) -> None:
+        self.full_configuration(family=self.default, shared=True, max_runs=3, slots=2)
+        got = open_root(self.root, CORES)
+        self.assertEqual((got.config.family, got.config.slots, got.config.window), (self.default, 2, 3))
+
+    def test_the_brokers_own_family_and_any_other_lock_file_take_any_count(self) -> None:
+        self.full_configuration(shared=True, max_runs=5, slots=5)
+        self.assertEqual(open_root(self.root, CORES).config.window, 5)
+        self.full_configuration(family=os.path.join(self.dir, "scratch.flock"), shared=True, max_runs=2, slots=2)
+        self.assertEqual(open_root(self.root, CORES).config.window, 2)
+
+
 class GivenFamilyTest(RootCase):
     def test_no_given_family_is_no_check(self) -> None:
         self.assertFalse(open_root(self.root, CORES).configured)

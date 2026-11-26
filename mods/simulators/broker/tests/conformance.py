@@ -243,6 +243,42 @@ def _family_file(family: Family, name: str) -> Tuple[str, str]:
     raise Missing(f"section 2 names {name!r}, which is no file the code knows")
 
 
+def default_lock(text: str) -> str:
+    """The path section 2 gives as the script's default lock."""
+    flat = " ".join(section(text, "2. The lock family").split())
+    found = re.search(r"`(/[^`]+)` when that is unset or empty", flat)
+    if found is None:
+        raise Missing("section 2 gives no default lock")
+    return found.group(1)
+
+
+def default_lock_count(text: str) -> int:
+    """The one MAX_RUNS section 4 says the script keeps on the default lock's family."""
+    flat = " ".join(section(text, "4. The shared-slot rule").split())
+    found = re.search(r"refuses a `SIM_LOCK_MAX_RUNS` other than (\d+)", flat)
+    if found is None:
+        raise Missing("section 4 gives no count that the default lock's family keeps")
+    return int(found.group(1))
+
+
+def family_files(text: str, lock: str) -> List[str]:
+    """Each file of a family at `lock` that section 2's table names, with `<lock>` filled in."""
+    rows = first_table(section(text, "2. The lock family"), 5)
+    return [name.replace("<lock>", lock) for row in rows for name in spans(row[0])]
+
+
+def check_lock_default_family(text: str) -> List[str]:
+    found: List[str] = []
+    compare(found, "the default lock's", {"path": default_lock(text)}, {"path": protocol.DEFAULT_LOCK_FILE})
+    compare(
+        found,
+        "the default lock's",
+        {"count": default_lock_count(text)},
+        {"count": protocol.DEFAULT_MAX_RUNS},
+    )
+    return found
+
+
 def check_lock_owner_record(text: str) -> List[str]:
     found: List[str] = []
     block = section(text, "2.3 The records")
@@ -337,6 +373,7 @@ def check_lock_exit_codes(text: str) -> List[str]:
 LOCK_CHECKS: Tuple[Callable[[str], List[str]], ...] = (
     check_lock_defaults,
     check_lock_files,
+    check_lock_default_family,
     check_lock_owner_record,
     check_lock_reasons,
     check_lock_iostat,

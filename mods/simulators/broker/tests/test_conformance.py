@@ -27,7 +27,9 @@ import threading
 import unittest
 from io import StringIO
 from typing import Callable, List, Optional, Tuple
+from unittest import mock
 
+from broker import protocol
 from broker.clock import local_stamp
 from broker.decisions import DecisionStore
 from broker.errors import ConfigError
@@ -42,6 +44,9 @@ from broker.tests.conformance import (
     LOCK_PROTOCOL,
     REASON_VALUES,
     client_protocol_differences,
+    default_lock,
+    default_lock_count,
+    family_files,
     fill,
     first_table,
     lock_protocol_differences,
@@ -127,6 +132,21 @@ class Docs:
         raise AssertionError(f"section 1 has no setting {setting}")
 
     @staticmethod
+    def default_lock() -> str:
+        """The path section 2 gives as the script's default lock."""
+        return default_lock(LOCK_TEXT)
+
+    @staticmethod
+    def default_lock_count() -> int:
+        """The one MAX_RUNS section 4 says the script keeps on the default lock's family."""
+        return default_lock_count(LOCK_TEXT)
+
+    @staticmethod
+    def family_files(lock: str) -> List[str]:
+        """Each file of a family at `lock` that section 2's table names."""
+        return family_files(LOCK_TEXT, lock)
+
+    @staticmethod
     def owner_record(pid: int, slot: int, cwd: str, started: str, command: str) -> str:
         form = re.search(r"one line, `([^`]+)`", section(LOCK_TEXT, "2.3 The records"))
         assert form is not None
@@ -163,6 +183,8 @@ LOCK_CHANGES = (
     ("a default", "| `SIM_LOCK_SETTLE` | 90 |", "| `SIM_LOCK_SETTLE` | 60 |", "SETTLE_SECONDS"),
     ("a default", "| `SIM_LOCK_STATUS` | 300 |", "| `SIM_LOCK_STATUS` | 600 |", "STATUS_SECONDS"),
     ("a default", "| none | 10 |", "| none | 15 |", "KILL_GRACE_SECONDS"),
+    ("the default lock's path", "`/tmp/pango-sim-test.flock` when that is unset", "`/tmp/pango-sim.flock` when that is unset", "the default lock's path"),
+    ("the default lock's count", "refuses a `SIM_LOCK_MAX_RUNS` other than 3", "refuses a `SIM_LOCK_MAX_RUNS` other than 4", "the default lock's count"),
     ("a file's name", "| `<lock>.last-start` |", "| `<lock>.laststart` |", "section 2"),
     ("the gate's name", "| `<lock>.gate` |", "| `<lock>.lock` |", "section 2"),
     ("the owner file's name", "`<lock>.owner`, `<lock>.1.owner`", "`<lock>.own`, `<lock>.1.own`", "section 2"),
@@ -225,7 +247,7 @@ class NegativeControlTest(unittest.TestCase):
         self.changes_are_found(CLIENT_TEXT, CLIENT_CHANGES, client_protocol_differences)
 
     def test_a_file_with_nothing_in_it_differs_in_every_check(self) -> None:
-        self.assertGreaterEqual(len(lock_protocol_differences("")), 8)
+        self.assertGreaterEqual(len(lock_protocol_differences("")), 9)
         self.assertGreaterEqual(len(client_protocol_differences("")), 9)
 
     def test_a_change_to_one_thing_is_found_in_that_check_alone(self) -> None:
@@ -698,10 +720,46 @@ class SharedLockProtocolCase(ConformanceCase):
 
 
 class SharedSlotRuleCase(ConformanceCase):
-    """Item "The shared-slot rule": the broker's count c is at most the script's N, its window N."""
+    """Item "The shared-slot rule": the broker's count c is at most the script's N, its window N.
+
+    The default lock's family keeps one N, which the script holds and the broker holds too. The
+    default lock stands in as a file of the scratch directory, named as the file names it.
+    """
 
     def shared(self, **settings: object) -> Config:
         return Config.from_mapping({"shared": True, "max_runs": 3, **settings}, self.dir, 12)
+
+    def stand_in_for_the_default_lock(self) -> str:
+        default = os.path.join(self.dir, os.path.basename(Docs.default_lock()))
+        patch = mock.patch.object(protocol, "DEFAULT_LOCK_FILE", default)
+        patch.start()
+        self.addCleanup(patch.stop)
+        return default
+
+    def test_the_default_locks_family_takes_the_files_one_count_and_no_other(self) -> None:
+        default = self.stand_in_for_the_default_lock()
+        count = Docs.default_lock_count()
+        for path in Docs.family_files(default):
+            for other in (count - 1, count + 1, count + 2):
+                with self.subTest(path=path, max_runs=other), self.assertRaises(ConfigError):
+                    self.shared(family=path, max_runs=other, slots=1)
+            self.assertEqual(self.shared(family=path, max_runs=count).max_runs, count)
+
+    def test_the_default_locks_family_is_matched_under_another_spelling_of_its_directory(self) -> None:
+        default = self.stand_in_for_the_default_lock()
+        count = Docs.default_lock_count()
+        name = os.path.basename(default)
+        os.symlink(self.dir, os.path.join(self.dir, "linked"))
+        for spelling in (f"{self.dir}//{name}", f"{self.dir}/./{name}.1", os.path.join(self.dir, "linked", name)):
+            with self.subTest(spelling=spelling), self.assertRaises(ConfigError):
+                self.shared(family=spelling, max_runs=count + 1, slots=1)
+
+    def test_a_lock_file_elsewhere_takes_any_count(self) -> None:
+        self.stand_in_for_the_default_lock()
+        scratch = os.path.join(self.dir, "scratch.flock")
+        for other in (1, 2, Docs.default_lock_count() + 1, 5):
+            with self.subTest(max_runs=other):
+                self.assertEqual(self.shared(family=scratch, max_runs=other, slots=1).max_runs, other)
 
     def test_on_a_shared_family_a_slot_count_above_max_runs_is_refused(self) -> None:
         with self.assertRaises(ConfigError):
