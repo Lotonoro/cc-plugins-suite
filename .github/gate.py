@@ -92,7 +92,7 @@ def tracked_files(root: Path) -> List[str]:
     return [name for name in names if name]
 
 
-def leak_scope(tracked: Iterable[str]) -> List[str]:
+def files_to_leak_check(tracked: Iterable[str]) -> List[str]:
     """The tracked files the leak check covers: under a mod's directory, README and marketplace."""
     return [
         path
@@ -160,7 +160,7 @@ def plan(root: Path, tracked: Sequence[str]) -> Tuple[List[Step], List[Problem]]
             steps.append(Step(f"{mod}: check", ("./check",), root / mod))
         else:
             problems.append((f"{mod}: check", "not executable"))
-    files = leak_scope(tracked)
+    files = files_to_leak_check(tracked)
     command = f"python3 {LEAK_CHECK.name} -- {len(files)} files"
     steps.append(Step("leak check", (sys.executable, str(LEAK_CHECK), "--", *files), root, command))
     return steps, problems

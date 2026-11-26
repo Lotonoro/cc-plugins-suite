@@ -294,7 +294,7 @@ class GateTest(unittest.TestCase):
         self.assertEqual(result.code, 0, result.out)
         self.assertEqual(result.out.splitlines()[-1], "gate: all 3 steps passed")
 
-    def test_empty_leak_scope_fails_the_gate(self) -> None:
+    def test_no_file_to_leak_check_fails_the_gate(self) -> None:
         self.git("rm", "--quiet", "--force", "--cached", "README.md")
         self.git("rm", "--quiet", "--force", "--cached", ".claude-plugin/marketplace.json")
         result = self.gate()
