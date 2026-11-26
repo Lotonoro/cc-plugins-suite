@@ -5333,7 +5333,7 @@ test('/todo answer asks about each open item through the hooks, blocking first, 
   expect(asked[1]?.split('\n').slice(0, 2)).toEqual(['answered #2 with done', '▶ 2 of 2 — #1 non-blocking: Item 1'])
   expect(through).toEqual([true, true])
   expect(answered).toEqual({
-    text: ['  skipped #1', '  It asked about every open item.', '  The walk sent 1 answer; 1 item is still open. /todo answer asks about it again.'].join('\n'),
+    text: ['  skipped #1', '  It asked about every open item.', '  The walk sent 1 answer; when it ended, 1 item was still open. /todo answer asks about any item still open.'].join('\n'),
   })
   expect(values.list).toMatchObject({ items: [{ id: 1, state: 'open' }, { id: 2, state: 'done-waiting' }] })
   expect(submitted).toEqual([])
@@ -5448,8 +5448,22 @@ test('/do asks the questions /todo answer asks about the same list, writes the a
   expect(byDo?.asked).toHaveLength(2)
   expect(byDo?.asked[0]?.split('\n')[2]).toBe('▶ 1 of 2 — #2 blocking: Item 2')
   expect(byDo?.asked[1]?.split('\n').slice(0, 2)).toEqual(['answered #2 with done', '▶ 2 of 2 — #1 non-blocking: Item 1'])
-  expect(byDo?.text).toBe(['  skipped #1', '  It asked about every open item.', '  The walk sent 1 answer; 1 item is still open. /todo answer asks about it again.'].join('\n'))
+  expect(byDo?.text).toBe(['  skipped #1', '  It asked about every open item.', '  The walk sent 1 answer; when it ended, 1 item was still open. /todo answer asks about any item still open.'].join('\n'))
   expect(byDo?.list).toMatchObject({ items: [{ id: 1, state: 'open' }, { id: 2, state: 'done-waiting' }] })
+})
+
+test('a walk over two open items, the first answered and Stop on the second, ends with the one item still open, by /do and by /todo answer alike', async () => {
+  const texts: string[] = []
+  for (const start of Object.values(starters)) {
+    freshModule()
+    const { hooks } = wire()
+    const { env, clock } = memEnv([made(1, { detail: '' }), made(2, { detail: '' })], [], null)
+    await endSession(hooks, env)
+    clock.now = 1000
+    texts.push(await start(hooks, askingHost(hooks, env, ['Done', 'Stop'])))
+  }
+  const ended = ['  It ended on Stop.', '  The walk sent 1 answer; when it ended, 1 item was still open. /todo answer asks about any item still open.'].join('\n')
+  expect(texts).toEqual([ended, ended])
 })
 
 test('/do with anything after it answers its usage and asks nothing, and blanks alone are no argument: each starts the walk', async () => {
@@ -5590,7 +5604,7 @@ test('the session\'s end releases the walk that is asking: the next /todo answer
   expect(await askText(hooks, askingHost(hooks, env, ['Skip'], { asked }), 'answer')).toContain('It asked about every open item.')
   expect(asked).toHaveLength(2)
   release()
-  expect(await old).toBe(['  It ended with its session; nothing more was asked or sent.', '  The walk sent nothing; 1 item is still open. /todo answer asks about it again.'].join('\n'))
+  expect(await old).toBe(['  It ended with its session; nothing more was asked or sent.', '  The walk sent nothing; when it ended, 1 item was still open. /todo answer asks about any item still open.'].join('\n'))
   expect(values.list).toMatchObject({ items: [{ id: 1, state: 'open' }] })
 })
 
@@ -5674,7 +5688,7 @@ test('/todo answer in an idle session tries no submit while it asks: each answer
     between.push({ submits: submitted.length, saved: values.notices })
   }
   const text = await askText(wired.hooks, askingHost(wired.hooks, env, ['Done', 'Done', 'Done'], { logs, during: pause }), 'answer')
-  expect(text).toContain('The walk sent 3 answers; nothing is left open.')
+  expect(text).toContain('The walk sent 3 answers; when it ended, nothing was left open.')
   expect(between.map(seen => seen.submits)).toEqual([0, 0])
   expect(between.map(seen => waitingIds(seen.saved))).toEqual([[1], [1, 2]])
   expect(submitted).toEqual([])

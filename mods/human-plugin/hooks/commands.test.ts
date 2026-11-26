@@ -1189,7 +1189,7 @@ test('an outcome line says what became of the item; an applied answer is the wor
   expect(outcomeLine(item, { ...applied, answer: 'a'.repeat(200) })).toBe(`answered #5 with ${'a'.repeat(79)}…`)
   expect(outcomeLine(item, { ...applied, answer: 'one\ntwo' })).toBe('answered #5 with one two')
   expect(skippedLine(item)).toBe('skipped #5')
-  expect(outcomeLine(item, { kind: 'changed' })).toBe('#5 changed while it was shown, so nothing was sent; /todo answer asks it again.')
+  expect(outcomeLine(item, { kind: 'changed' })).toBe('#5 changed while it was shown, so nothing was sent.')
   expect(outcomeLine(item, { kind: 'missing' })).toBe('#5 left the list while it was shown, so nothing was sent.')
 })
 
@@ -1198,15 +1198,20 @@ test('the end text is the outcome line no question showed, why the walk ended, a
   expect(lines('answered #2 with sqlite', { kind: 'stop' }, 2, 5)).toEqual([
     '  answered #2 with sqlite',
     '  It ended on Stop.',
-    '  The walk sent 2 answers; 5 items are still open. /todo answer asks about them again.',
+    '  The walk sent 2 answers; when it ended, 5 items were still open. /todo answer asks about any item still open.',
   ])
-  expect(lines(null, { kind: 'every' }, 0, 0)).toEqual(['  It asked about every open item.', '  The walk sent nothing; nothing is left open.'])
+  expect(lines(null, { kind: 'every' }, 0, 0)).toEqual(['  It asked about every open item.', '  The walk sent nothing; when it ended, nothing was left open.'])
   expect(lines(null, { kind: 'error' }, 1, 1)).toEqual([
     '  It stopped on an error, which was logged.',
-    '  The walk sent 1 answer; 1 item is still open. /todo answer asks about it again.',
+    '  The walk sent 1 answer; when it ended, 1 item was still open. /todo answer asks about any item still open.',
   ])
-  expect(lines(null, { kind: 'every' }, 3, 0)[1]).toBe('  The walk sent 3 answers; nothing is left open.')
-  expect(lines(null, { kind: 'every' }, 0, 4)[1]).toBe('  The walk sent nothing; 4 items are still open. /todo answer asks about them again.')
+  expect(lines(null, { kind: 'every' }, 3, 0)[1]).toBe('  The walk sent 3 answers; when it ended, nothing was left open.')
+  expect(lines(null, { kind: 'every' }, 0, 4)[1]).toBe('  The walk sent nothing; when it ended, 4 items were still open. /todo answer asks about any item still open.')
+  expect(lines('#5 changed while it was shown, so nothing was sent.', { kind: 'every' }, 0, 2)).toEqual([
+    '  #5 changed while it was shown, so nothing was sent.',
+    '  It asked about every open item.',
+    '  The walk sent nothing; when it ended, 2 items were still open. /todo answer asks about any item still open.',
+  ])
 })
 
 test('when the open items cannot be counted the count line keeps the sent count and points to /todo, in the singular for one answer', () => {
@@ -1224,7 +1229,7 @@ test('each reason has its line: closed names the item and how to answer it, auto
   expect(reasonOf({ kind: 'every' })).toBe('  It asked about every open item.')
   expect(reasonOf({ kind: 'stop' })).toBe('  It ended on Stop.')
   expect(reasonOf({ kind: 'closed', id: 7 })).toBe(
-    '  It ended when the question on #7 was closed, timed out or refused; nothing was sent for it. /todo 7 shows it, and /todo 7 <form> answers it.',
+    '  It ended when the question on #7 was closed, timed out or refused; nothing was sent for it. /todo 7 <form> answers it while it is open.',
   )
   expect(reasonOf({ kind: 'auto', id: 8 })).toBe('  It ended when the question auto-continued while you were away; nothing was sent for #8.')
   expect(reasonOf({ kind: 'unconfirmed', id: 9 })).toBe('  It ended because the answer to #9 could not be confirmed as yours; nothing was sent, and this was logged.')

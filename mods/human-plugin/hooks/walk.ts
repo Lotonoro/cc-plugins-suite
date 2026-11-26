@@ -217,7 +217,7 @@ function logWalkError($: EngineInterface, err: unknown): void {
 }
 
 // `/todo answer`: the command's output. A walk already asking, or nothing open, ends it at once and asks nothing. Otherwise the walk asks about each open item
-// and returns its end text: the outcome no question showed, why it ended, and what it sent and what is still open. A throw ends it with the error reason and the
+// and returns its end text: the outcome no question showed, why it ended, and what it sent and what it left open. A throw ends it with the error reason and the
 // same counts, and the error is logged with its stack. So does a throw from the read of the list for those counts, which leaves the end text the count of what was
 // sent alone, since what is still open is unknown. The answers already written stay written, whatever ends the walk. A walk that still owns its session when it ends,
 // whatever ended it, arms the release; one told that a walk is already asking, and one that lost its session, arm nothing and clear nothing.

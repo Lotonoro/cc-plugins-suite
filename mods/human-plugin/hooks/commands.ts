@@ -464,7 +464,7 @@ export const outcomeLine = (item: Item, outcome: ShownOutcome): string => {
     case 'applied':
       return answeredText(outcome.item.id, outcome.answer)
     case 'changed':
-      return `#${item.id} changed while it was shown, so nothing was sent; ${WALK_POINTER} asks it again.`
+      return `#${item.id} changed while it was shown, so nothing was sent.`
     case 'missing':
       return `#${item.id} left the list while it was shown, so nothing was sent.`
   }
@@ -485,7 +485,7 @@ const reasonLine = (reason: Reason): string => {
     case 'stop':
       return 'It ended on Stop.'
     case 'closed':
-      return `It ended when the question on #${reason.id} was closed, timed out or refused; nothing was sent for it. /${COMMAND} ${reason.id} shows it, and /${COMMAND} ${reason.id} <form> answers it.`
+      return `It ended when the question on #${reason.id} was closed, timed out or refused; nothing was sent for it. /${COMMAND} ${reason.id} <form> answers it while it is open.`
     case 'auto':
       return `It ended when the question auto-continued while you were away; nothing was sent for #${reason.id}.`
     case 'unconfirmed':
@@ -497,7 +497,7 @@ const reasonLine = (reason: Reason): string => {
   }
 }
 
-// How many answers the walk sent and how many items are still open, in the singular for a count of one. With nothing left open there is no pointer. When the
+// How many answers the walk sent and how many items it left open, in the singular for a count of one. With nothing left open there is no pointer. When the
 // list could not be read for the count (`open` is null) the line gives what was sent and points to `/todo`, which shows what is open.
 const countLine = (sent: number, open: number | null): string => {
   const sentWords = sent === 0 ? 'nothing' : `${sent} ${sent === 1 ? 'answer' : 'answers'}`
@@ -505,12 +505,12 @@ const countLine = (sent: number, open: number | null): string => {
     open === null
       ? `/${COMMAND} shows what is still open.`
       : open === 0
-        ? 'nothing is left open.'
-        : `${open} ${open === 1 ? 'item is' : 'items are'} still open. ${WALK_POINTER} asks about ${open === 1 ? 'it' : 'them'} again.`
+        ? 'when it ended, nothing was left open.'
+        : `when it ended, ${open} ${open === 1 ? 'item was' : 'items were'} still open. ${WALK_POINTER} asks about any item still open.`
   return `The walk sent ${sentWords}; ${openWords}`
 }
 
 // The output of `/do` and `/todo answer` when the walk has ended, each line indented as the commands' other prints are: the outcome line no question showed (`pending`, the
-// last item's, when it has one), why the walk ended, and the count of what it sent and what is still open (`open`, null when the list could not be read).
+// last item's, when it has one), why the walk ended, and the count of what it sent and what it left open (`open`, null when the list could not be read).
 export const walkEnd = (pending: string | null, reason: Reason, sent: number, open: number | null): string =>
   [...(pending === null ? [] : [pending]), reasonLine(reason), countLine(sent, open)].map(line => `${INDENT}${line}`).join('\n')
