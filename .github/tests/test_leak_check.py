@@ -156,6 +156,17 @@ class LeakCheckTest(unittest.TestCase):
         result = self.run_check("a.md")
         self.assertEqual(result.out, "a.md:2:/Users/a\na.md:3:/Users/b\n")
 
+    def test_a_carriage_return_inside_a_matching_line_prints_escaped_so_a_match_is_one_line(
+        self,
+    ) -> None:
+        self.write("a.md", b"see /Users/a\r::error::x\nb\r/Users/b\n/Users/c\r\r\n")
+        result = self.run_check("a.md")
+        self.assertEqual(result.code, 1)
+        self.assertEqual(
+            result.out,
+            "a.md:1:see /Users/a%0D::error::x\na.md:2:b%0D/Users/b\na.md:3:/Users/c%0D\n",
+        )
+
     def test_bytes_that_are_not_utf8_do_not_hide_a_match(self) -> None:
         self.write("bin.dat", b"\xff\xfe junk /Users/x\n")
         result = self.run_check("bin.dat")

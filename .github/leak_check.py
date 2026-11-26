@@ -3,10 +3,11 @@
     python3 leak_check.py PATH [PATH ...]
 
 Each line of a PATH that holds a machine-specific path is printed as `PATH:LINE:TEXT`: PATH as it
-was given, LINE counted from 1, TEXT the line without its line end. A path is machine-specific
-when it belongs to one account of one machine: `/Users/`, `~/temp` and `$HOME/temp`, where `temp`
-is the whole name, so that `~/templates` is another. A standard location, the same on every Mac,
-such as `~/.claude/` or `~/.android/`, passes.
+was given, LINE counted from 1, TEXT the line without its line end and with a CR inside it written
+`%0D`, so that a match is one line of output. A path is machine-specific when it belongs to one
+account of one machine: `/Users/`, `~/temp` and `$HOME/temp`, where `temp` is the whole name, so
+that `~/templates` is another. A standard location, the same on every Mac, such as `~/.claude/` or
+`~/.android/`, passes.
 
 Exit status:
     0  no line matched
@@ -42,7 +43,8 @@ def matching_lines(path: str) -> List[Tuple[int, str]]:
     for number, line in enumerate(text.split("\n"), start=1):
         line = line.removesuffix("\r")
         if MACHINE_SPECIFIC.search(line):
-            found.append((number, line))
+            # A CR ends a line in the CI log as a LF does, and the text holds no LF: it was split.
+            found.append((number, line.replace("\r", "%0D")))
     return found
 
 
