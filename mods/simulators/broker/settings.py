@@ -122,6 +122,8 @@ class Config:
         """
         if type(self.family) is not str or not os.path.isabs(self.family):
             raise ConfigError(f"family must be an absolute path, not {self.family!r}")
+        if "\0" in self.family:
+            raise ConfigError(f"family must not hold a NUL byte: {self.family!r}")
         if (
             self.shared
             and self.max_runs != protocol.DEFAULT_MAX_RUNS

@@ -348,6 +348,13 @@ class ErrorsTest(DispatcherCase):
         self.assertEqual(self.main("status"), protocol.EXIT_CONFIG)
         self.assertRegex(self.err_lines()[0], r"^sim-lock: .*config\.json")
 
+    def test_a_family_with_a_nul_byte_exits_78_naming_the_file(self) -> None:
+        os.makedirs(self.root)
+        with open(os.path.join(self.root, "config.json"), "w", encoding="utf-8") as handle:
+            json.dump({"family": "/tmp/a\x00b"}, handle)
+        self.assertEqual(self.main("status"), protocol.EXIT_CONFIG)
+        self.assertRegex(self.err_lines()[0], r"^sim-lock: .*config\.json: family must not hold a NUL byte")
+
     def test_configure_arguments_the_loader_refuses_exit_78_and_write_nothing(self) -> None:
         self.assertEqual(self.main("configure", "--slots", "0"), protocol.EXIT_CONFIG)
         self.assertFalse(os.path.exists(os.path.join(self.root, "config.json")))

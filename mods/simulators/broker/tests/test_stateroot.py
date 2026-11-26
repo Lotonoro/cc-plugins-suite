@@ -112,6 +112,14 @@ class RefusalTest(RootCase):
         with self.assertRaisesRegex(ConfigError, "config.json"):
             open_root(self.root, CORES)
 
+    def test_a_family_with_a_nul_byte_which_no_file_system_call_takes(self) -> None:
+        for shared in (False, True):
+            with self.subTest(shared=shared):
+                self.full_configuration(family="/tmp/a\x00b", shared=shared)
+                with self.assertRaisesRegex(ConfigError, r"config\.json: family must not hold a NUL byte") as caught:
+                    open_root(self.root, CORES)
+                self.assertEqual(caught.exception.exit_code, protocol.EXIT_CONFIG)
+
     def test_the_limits_themselves_are_accepted(self) -> None:
         self.full_configuration(settle_seconds=9_999_999, min_idle_percent=999)
         self.assertEqual(open_root(self.root, CORES).config.settle_seconds, 9_999_999)

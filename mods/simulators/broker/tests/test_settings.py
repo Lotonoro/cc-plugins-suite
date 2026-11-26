@@ -145,6 +145,11 @@ class FromMappingTest(unittest.TestCase):
             with self.subTest(value=value), self.assertRaisesRegex(ConfigError, "family"):
                 parse({"family": value})
 
+    def test_the_family_may_not_hold_a_nul_byte_which_no_file_system_call_takes(self) -> None:
+        for shared in (False, True):
+            with self.subTest(shared=shared), self.assertRaisesRegex(ConfigError, "family must not hold a NUL byte"):
+                parse({"family": "/tmp/a\x00b", "shared": shared})
+
 
 class LimitsTest(unittest.TestCase):
     def test_the_slot_count_is_a_positive_whole_number(self) -> None:
