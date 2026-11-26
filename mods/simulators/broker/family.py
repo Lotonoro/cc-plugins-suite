@@ -22,6 +22,7 @@ import re
 from contextlib import contextmanager
 from typing import Iterator, List, Optional, Tuple
 
+from broker import protocol
 from broker.errors import FamilyError
 
 logger = logging.getLogger(__name__)
@@ -188,5 +189,5 @@ class Family:
                     continue
                 record = self._read_owner(slot)
                 if record is not None:
-                    lines.extend("  " + line for line in record.splitlines())
+                    lines.extend(protocol.HOLDER_INDENT + line for line in record.splitlines())
         return lines
