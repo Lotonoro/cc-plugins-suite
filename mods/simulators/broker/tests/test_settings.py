@@ -8,6 +8,7 @@ import stat
 import unittest
 from dataclasses import replace
 from typing import Any, Dict
+from unittest import mock
 
 from broker.errors import ConfigError
 from broker.settings import Config, default_family, default_slots, load_config
@@ -60,6 +61,21 @@ class DefaultsTest(unittest.TestCase):
 
     def test_the_default_family_is_inside_the_root(self) -> None:
         self.assertEqual(default_family("/a/b"), "/a/b/family/lock")
+
+    def test_the_defaults_of_a_shared_family_cap_the_slots_at_its_max_runs(self) -> None:
+        got = Config.defaults(ROOT, cores=24, shared=True, max_runs=5)
+        self.assertEqual((got.shared, got.max_runs, got.slots), (True, 5, 5))
+
+    def test_a_configuration_cannot_be_built_without_saying_every_setting(self) -> None:
+        with self.assertRaises(TypeError):
+            Config(family="/a/lock", slots=3)  # type: ignore[call-arg]
+
+    def test_a_mapping_takes_every_default_from_the_defaults_and_writes_none_of_its_own(self) -> None:
+        marker = Config(
+            family="/marker/lock", slots=4, shared=False, max_runs=7, settle_seconds=11, min_idle_percent=13
+        )
+        with mock.patch.object(Config, "defaults", return_value=marker):
+            self.assertEqual(parse({}), marker)
 
     def test_the_window_of_an_unshared_family_is_its_slot_count(self) -> None:
         self.assertEqual(base(slots=6).window, 6)

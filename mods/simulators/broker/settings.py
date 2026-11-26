@@ -50,21 +50,38 @@ class Config:
 
     `slots` is the broker's own count, c. On a family `shared` with `sim-lock.sh`, `max_runs` is
     the MAX_RUNS that the script's callers use, N, which c may not pass; on any other family it
-    is not read. Defaults live in the field definitions, except the two that depend on the root
-    and the machine, which `defaults` and `from_mapping` compute.
+    is not read. Every default is written in `defaults`, the one path to them, so a field has none
+    of its own.
     """
 
     family: str
     slots: int
-    shared: bool = False
-    max_runs: int = protocol.DEFAULT_MAX_RUNS
-    settle_seconds: int = protocol.DEFAULT_SETTLE_SECONDS
-    min_idle_percent: int = protocol.DEFAULT_MIN_IDLE_PERCENT
+    shared: bool
+    max_runs: int
+    settle_seconds: int
+    min_idle_percent: int
 
     @classmethod
-    def defaults(cls, root: str, cores: int) -> "Config":
-        slots = default_slots(cores, False, protocol.DEFAULT_MAX_RUNS)
-        return cls(family=default_family(root), slots=slots)
+    def defaults(
+        cls,
+        root: str,
+        cores: int,
+        shared: bool = False,
+        max_runs: int = protocol.DEFAULT_MAX_RUNS,
+    ) -> "Config":
+        """The settings of a root that sets none, or only `shared` and `max_runs`.
+
+        The default slot count depends on those two, so a configuration that sets either asks here
+        for the defaults they imply.
+        """
+        return cls(
+            family=default_family(root),
+            slots=default_slots(cores, shared, max_runs),
+            shared=shared,
+            max_runs=max_runs,
+            settle_seconds=protocol.DEFAULT_SETTLE_SECONDS,
+            min_idle_percent=protocol.DEFAULT_MIN_IDLE_PERCENT,
+        )
 
     @classmethod
     def from_mapping(cls, data: object, root: str, cores: int) -> "Config":
@@ -77,17 +94,17 @@ class Config:
         unknown = sorted(str(key) for key in data if key not in protocol.CONFIG_KEYS)
         if unknown:
             raise ConfigError("unknown setting " + ", ".join(unknown))
-        shared = _flag(protocol.KEY_SHARED, data.get(protocol.KEY_SHARED, False))
-        max_runs = _positive(
-            protocol.KEY_MAX_RUNS, data.get(protocol.KEY_MAX_RUNS, protocol.DEFAULT_MAX_RUNS)
-        )
+        plain = cls.defaults(root, cores)
+        shared = _flag(protocol.KEY_SHARED, data.get(protocol.KEY_SHARED, plain.shared))
+        max_runs = _positive(protocol.KEY_MAX_RUNS, data.get(protocol.KEY_MAX_RUNS, plain.max_runs))
+        base = cls.defaults(root, cores, shared, max_runs)
         config = cls(
-            family=data.get(protocol.KEY_FAMILY, default_family(root)),
-            slots=data.get(protocol.KEY_SLOTS, default_slots(cores, shared, max_runs)),
+            family=data.get(protocol.KEY_FAMILY, base.family),
+            slots=data.get(protocol.KEY_SLOTS, base.slots),
             shared=shared,
             max_runs=max_runs,
-            settle_seconds=data.get(protocol.KEY_SETTLE, protocol.DEFAULT_SETTLE_SECONDS),
-            min_idle_percent=data.get(protocol.KEY_MIN_IDLE, protocol.DEFAULT_MIN_IDLE_PERCENT),
+            settle_seconds=data.get(protocol.KEY_SETTLE, base.settle_seconds),
+            min_idle_percent=data.get(protocol.KEY_MIN_IDLE, base.min_idle_percent),
         )
         config.validate()
         return config
