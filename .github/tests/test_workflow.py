@@ -94,6 +94,10 @@ class WorkflowTest(unittest.TestCase):
         self.assertRegex(text, r'(?m)^          python-version: "3\.9"$')
         self.assertRegex(text, r'(?m)^  CLAUDE_CODE_VERSION: "\d+\.\d+\.\d+"$')
         self.assertRegex(text, r'(?m)^  DISABLE_UPDATES: "1"$')
+        for name in ("CLAUDE_CODE_VERSION", "DISABLE_UPDATES"):
+            with self.subTest(name=name):
+                declared = re.findall(name + r"""["']?[ \t]*:""", text)
+                self.assertEqual(len(declared), 1, "a job's or step's own env would override it")
 
     def test_workflow_installs_the_pinned_cli_and_runs_its_postinstall_itself(self) -> None:
         joined = re.sub(r"\\\n\s*", "", workflow_text())
