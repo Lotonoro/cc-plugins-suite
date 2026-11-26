@@ -20,6 +20,7 @@ from broker import protocol
 from broker.configure import Settings, configure
 from broker.errors import ConfigError, FamilyError, StateError
 from broker.settings import Config, LoadedConfig, load_config
+from broker.stateroot import open_root
 from broker.tests.support import hold_in_another_process, scratch_dir
 
 CORES = 12
@@ -141,8 +142,8 @@ class ReadsNothingTest(ConfigureCase):
 
 
 class DefaultLockFamilyTest(ConfigureCase):
-    """The verb refuses what the open step would: a family in the script's default lock family that is
-    not shared, or that has another MAX_RUNS.
+    """The verb refuses what the open step would: the script's default lock when it is not shared, and a
+    shared family in its family when it has another MAX_RUNS; and it writes what the open step opens.
 
     The default lock stands in as a file of the scratch directory: no test here names the real one.
     """
@@ -160,12 +161,20 @@ class DefaultLockFamilyTest(ConfigureCase):
         self.assertEqual(os.listdir(self.dir), [])
         self.assertEqual(self.out.getvalue(), "")
 
-    def test_a_family_that_is_not_shared_is_refused_and_nothing_is_written_or_made(self) -> None:
-        for settings in (Settings(family=self.default), Settings(family=self.default + ".1", shared=False, slots=2)):
+    def test_the_default_lock_that_is_not_shared_is_refused_and_nothing_is_written_or_made(self) -> None:
+        another_spelling = self.dir + "//pango-sim-test.flock"
+        for settings in (Settings(family=self.default), Settings(family=another_spelling, shared=False, slots=2)):
             with self.subTest(settings=settings), self.assertRaisesRegex(ConfigError, "shared is false"):
                 self.run_configure(settings)
         self.assertEqual(os.listdir(self.dir), [])
         self.assertEqual(self.out.getvalue(), "")
+
+    def test_a_family_below_a_directory_named_for_the_default_lock_is_configured_opened_and_configured_again(self) -> None:
+        settings = Settings(family=os.path.join(self.default + ".d", "family", "lock"), slots=2)
+        self.run_configure(settings)
+        self.assertTrue(os.path.isdir(os.path.dirname(settings.family)), "configure made the directory")
+        self.assertEqual(open_root(self.root, CORES).config.family, settings.family)
+        self.assertEqual(self.run_configure(settings).family, settings.family)
 
     def test_the_default_locks_own_count_is_written_and_the_family_tried(self) -> None:
         got = self.run_configure(Settings(family=self.default, shared=True, max_runs=3, slots=3))

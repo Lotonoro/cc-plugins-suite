@@ -118,7 +118,7 @@ class RefusalTest(RootCase):
 
 
 class DefaultLockFamilyTest(RootCase):
-    """A root in the script's default lock family opens shared, at a MAX_RUNS of 3, and no other way.
+    """A root on the script's default lock opens shared, and a shared root in its family opens at a MAX_RUNS of 3.
 
     The default lock stands in as a file of the scratch directory: no test here names the real one.
     """
@@ -137,13 +137,19 @@ class DefaultLockFamilyTest(RootCase):
         self.assertEqual(caught.exception.exit_code, protocol.EXIT_CONFIG)
         self.assertEqual(os.listdir(self.dir), ["root"], "nothing of the family was created")
 
-    def test_an_unshared_family_is_refused_naming_the_file_the_setting_and_the_fix_and_touching_no_slot(self) -> None:
+    def test_an_unshared_default_lock_is_refused_naming_the_file_the_setting_and_the_fix_and_touching_no_slot(self) -> None:
         self.full_configuration(family=self.default, shared=False)
         with self.assertRaisesRegex(ConfigError, r"config\.json: shared is false") as caught:
             open_root(self.root, CORES)
         self.assertEqual(caught.exception.exit_code, protocol.EXIT_CONFIG)
         self.assertIn("set shared to true, or family to another lock file", str(caught.exception))
         self.assertEqual(os.listdir(self.dir), ["root"], "nothing of the family was created")
+
+    def test_an_unshared_family_below_a_directory_named_for_the_default_lock_opens(self) -> None:
+        family = os.path.join(self.default + ".d", "family", "lock")
+        os.makedirs(os.path.dirname(family))  # what `configure` makes for an unshared family
+        self.full_configuration(family=family, shared=False, slots=2)
+        self.assertEqual(open_root(self.root, CORES).config.family, family)
 
     def test_a_max_runs_of_3_opens_and_the_window_is_3(self) -> None:
         self.full_configuration(family=self.default, shared=True, max_runs=3, slots=2)

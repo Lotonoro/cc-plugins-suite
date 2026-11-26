@@ -267,9 +267,9 @@ def family_files(text: str, lock: str) -> List[str]:
     return [name.replace("<lock>", lock) for row in rows for name in spans(row[0])]
 
 
-def says_default_lock_family_is_shared(text: str) -> bool:
-    """Whether section 4 says that a family in the default lock's family is shared by definition."""
-    return "default lock's family is shared by definition" in " ".join(section(text, "4. The shared-slot rule").split())
+def says_default_lock_is_shared(text: str) -> bool:
+    """Whether section 4 says that the default lock itself is shared by definition."""
+    return "default lock itself is shared by definition" in " ".join(section(text, "4. The shared-slot rule").split())
 
 
 def check_lock_default_family(text: str) -> List[str]:
@@ -281,8 +281,8 @@ def check_lock_default_family(text: str) -> List[str]:
         {"count": default_lock_count(text)},
         {"count": protocol.DEFAULT_MAX_RUNS},
     )
-    if not says_default_lock_family_is_shared(text):
-        found.append("the default lock's family: section 4 does not say that it is shared by definition")
+    if not says_default_lock_is_shared(text):
+        found.append("the default lock's sharing: section 4 does not say that it is shared by definition")
     return found
 
 

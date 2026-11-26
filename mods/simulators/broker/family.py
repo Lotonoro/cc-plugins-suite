@@ -12,19 +12,21 @@ decides. Opening the gate twice in one process deadlocks, since flock conflicts 
 files of one process too, so these methods never open it themselves; `list_holders` does, being
 a whole operation of its own.
 
-`in_default_family` is the one function here that concerns no family of its own: it says whether a
-path belongs to the family of the script's default lock, which a root of the broker may use only
-shared, at the script's slot count (LOCK-PROTOCOL.md section 4).
+`in_default_family` and `is_the_default_lock` are the functions here that concern no family of
+their own. The first is the script's match of a path to its default lock's family, in which a
+shared root of the broker may not give another slot count; the second says whether a path is the
+default lock itself, which a root of the broker may use only shared (LOCK-PROTOCOL.md section 4).
 """
 
 from __future__ import annotations
 
 import fcntl
 import logging
+import operator
 import os
 import re
 from contextlib import contextmanager
-from typing import Iterator, List, Optional, Tuple
+from typing import Callable, Iterator, List, Optional, Tuple
 
 from broker import protocol
 from broker.errors import FamilyError
@@ -74,6 +76,27 @@ def _directory_and_name(path: str) -> Tuple[str, str]:
     return os.path.dirname(trimmed) or ".", os.path.basename(trimmed)
 
 
+def _physical_path(path: str) -> Optional[str]:
+    """The path's directory made physical, then its name; None where the script's `cd` into it fails.
+
+    The directory must be there and be searched. A symlink or a `..` in it is followed as `cd -P`
+    follows it, and the name is kept as it is written.
+    """
+    directory, name = _directory_and_name(path)
+    if not (os.path.isdir(directory) and os.access(directory, os.X_OK)):
+        return None
+    return f"{os.path.realpath(directory)}/{name}"
+
+
+def _leads_to(path: str, default: str, compare: Callable[[str, str], bool]) -> bool:
+    """Whether `path` is the file `default`, or its physical path compares so with the default's."""
+    if _is_the_file(path, default):
+        return True
+    physical = _physical_path(path)
+    default_physical = _physical_path(default)
+    return physical is not None and default_physical is not None and compare(physical, default_physical)
+
+
 def in_default_family(path: str, default: str) -> bool:
     """Whether `path` is the lock `default` or one of its family's files, as `sim-lock.sh` has it.
 
@@ -83,15 +106,16 @@ def in_default_family(path: str, default: str) -> bool:
     whether or not the file exists, and a symlink to the default lock itself. It does not find a
     different letter case, or a symlink to a family file other than the default lock.
     """
-    if _is_the_file(path, default):
-        return True
-    directory, name = _directory_and_name(path)
-    if not (os.path.isdir(directory) and os.access(directory, os.X_OK)):
-        return False  # the script's `cd` into it fails
-    default_directory, default_name = _directory_and_name(default)
-    physical = os.path.realpath(directory)
-    default_physical = os.path.realpath(default_directory)
-    return f"{physical}/{name}".startswith(f"{default_physical}/{default_name}")
+    return _leads_to(path, default, str.startswith)
+
+
+def is_the_default_lock(path: str, default: str) -> bool:
+    """Whether `path` is the lock `default` itself: the same file, or its name in its physical directory.
+
+    This is the broker's own match, and the script has none like it: `in_default_family` also takes
+    a longer name and anything below a directory so named, which are other locks.
+    """
+    return _leads_to(path, default, operator.eq)
 
 
 class Family:

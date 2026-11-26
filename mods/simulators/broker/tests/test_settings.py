@@ -183,8 +183,9 @@ class LimitsTest(unittest.TestCase):
 
 
 class DefaultLockFamilyTest(unittest.TestCase):
-    """The script's callers use its default lock's family at one count, 3: a root of the broker whose
-    family is there must be shared with them, at that count.
+    """The script's callers use its default lock at one count, 3, and the script matches its family by
+    prefix: a root of the broker on the lock itself must be shared, and a shared root in its family
+    must keep that count.
 
     The default lock stands in as a file of a scratch directory: no test here names the real one.
     """
@@ -229,23 +230,38 @@ class DefaultLockFamilyTest(unittest.TestCase):
                 with self.subTest(family=family, max_runs=max_runs):
                     self.assertEqual(self.shared(family, max_runs).max_runs, max_runs)
 
-    def test_an_unshared_family_in_the_default_locks_family_is_refused_at_any_max_runs(self) -> None:
-        for suffix in ("", ".1", ".gate"):
+    def test_a_shared_family_whose_name_only_begins_like_the_default_lock_keeps_its_count_as_the_script_does(self) -> None:
+        os.makedirs(os.path.join(self.default + ".d", "family"))
+        for suffix in ("-mine", ".d/lock", ".d/family/lock"):
+            with self.subTest(suffix=suffix):
+                with self.assertRaises(ConfigError):
+                    self.shared(self.default + suffix, 5)
+                self.assertEqual(self.shared(self.default + suffix, 3, slots=3).max_runs, 3)
+
+    def test_an_unshared_family_that_is_the_default_lock_is_refused_at_any_max_runs(self) -> None:
+        for spelling in (self.default, self.dir + "//pango-sim-test.flock", self.dir + "/./pango-sim-test.flock"):
             for data in ({"shared": False}, {"shared": False, "max_runs": 3}, {"shared": False, "max_runs": 5}, {}):
-                with self.subTest(suffix=suffix, data=data), self.assertRaises(ConfigError):
-                    parse({"family": self.default + suffix, **data})
+                with self.subTest(spelling=spelling, data=data), self.assertRaises(ConfigError):
+                    parse({"family": spelling, **data})
 
     def test_the_refusal_of_an_unshared_family_names_the_setting_the_family_and_the_fix(self) -> None:
         with self.assertRaises(ConfigError) as caught:
-            parse({"family": self.default + ".1"})
+            parse({"family": self.default})
         message = str(caught.exception)
         self.assertIn("shared is false", message)
-        self.assertIn(self.default + ".1", message)
+        self.assertIn(self.default, message)
         self.assertIn("set shared to true, or family to another lock file", message)
 
     def test_an_unshared_family_at_another_max_runs_is_refused_for_its_sharing_first(self) -> None:
         with self.assertRaisesRegex(ConfigError, "shared is false"):
             parse({"family": self.default, "shared": False, "max_runs": 5})
+
+    def test_an_unshared_family_that_only_begins_like_the_default_lock_is_another_family_and_takes_any_count(self) -> None:
+        os.makedirs(os.path.join(self.default + ".d", "family"))  # what `configure` makes for an unshared family
+        for suffix in (".1", ".gate", "-mine", ".d/lock", ".d/family/lock"):
+            with self.subTest(suffix=suffix):
+                got = parse({"family": self.default + suffix, "max_runs": 5})
+                self.assertEqual((got.shared, got.max_runs), (False, 5))
 
     def test_an_unshared_family_elsewhere_takes_any_count(self) -> None:
         got = parse({"family": os.path.join(self.dir, "scratch.flock"), "max_runs": 5})

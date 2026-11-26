@@ -111,6 +111,15 @@ class RoutingTest(DispatcherCase):
         self.assertEqual(self.main("configure"), 0)
         self.assertEqual(self.main("status"), 0)
 
+    def test_a_family_that_only_begins_like_the_default_lock_is_configured_and_read_again(self) -> None:
+        default = os.path.join(self.dir, "pango-sim-test.flock")  # stands for the script's default lock
+        family = os.path.join(default + ".d", "family", "lock")
+        with mock.patch.object(protocol, "DEFAULT_LOCK_FILE", default):
+            self.assertEqual(self.main("configure", "--family", family), 0)  # which makes the directory
+            self.assertEqual(self.main("status"), 0)
+            self.assertEqual(self.main("configure", "--family", family), 0)
+        self.assertEqual(self.err.getvalue(), "")
+
     @ON_MACOS
     def test_the_run_verb_exits_with_the_commands_status_and_prints_nothing_of_its_own(self) -> None:
         self.assertEqual(self.main("run", "--", *self.python(EXIT_WITH, "7")), 7)
@@ -356,7 +365,7 @@ class ErrorsTest(DispatcherCase):
         self.assertFalse(os.path.exists(mark))
         self.assertFalse(os.path.exists(default + ".gate"))
 
-    def test_a_family_in_the_default_locks_family_that_is_not_shared_exits_78_and_runs_nothing(self) -> None:
+    def test_the_default_lock_that_is_not_shared_exits_78_and_runs_nothing(self) -> None:
         default = os.path.join(self.dir, "pango-sim-test.flock")  # stands for the script's default lock
         os.makedirs(self.root)
         with open(os.path.join(self.root, "config.json"), "w", encoding="utf-8") as handle:
@@ -369,7 +378,7 @@ class ErrorsTest(DispatcherCase):
         self.assertFalse(os.path.exists(mark))
         self.assertFalse(os.path.exists(default + ".gate"))
 
-    def test_configure_refuses_an_unshared_family_there_and_writes_nothing_and_accepts_it_shared(self) -> None:
+    def test_configure_refuses_the_default_lock_unshared_and_writes_nothing_and_accepts_it_shared(self) -> None:
         default = os.path.join(self.dir, "pango-sim-test.flock")
         with mock.patch.object(protocol, "DEFAULT_LOCK_FILE", default):
             self.assertEqual(self.main("configure", "--family", default, "--slots", "3"), protocol.EXIT_CONFIG)

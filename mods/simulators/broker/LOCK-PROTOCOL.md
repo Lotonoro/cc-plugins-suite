@@ -207,10 +207,17 @@ family is the default lock (section 2) and any of its family's files (`.1`, `.ga
 however the directory is spelled (`/private/tmp`, a doubled slash, a symlinked directory), whether
 or not the file exists, and a symlink to the default lock itself (L77-89). The match does not catch
 a different letter case on a case-insensitive volume, or a symlink to a family file other than the
-default lock (L77-81). A lock file elsewhere takes any count (self-test L402, L557-564). The broker
-holds the same on its side, matching as the script matches: the default lock's family is shared
-by definition, since the script's callers use it, so a configuration whose family is in it is
-refused unless its `shared` is true and its `max_runs` is 3 (`PROTOCOL.md`).
+default lock (L77-81). A lock file elsewhere takes any count (self-test L402, L557-564).
+
+The broker holds the same on its side, with two matches. Its refusal of a shared family at a
+`max_runs` other than 3 matches as the script matches (`PROTOCOL.md`), so that it refuses where the
+script refuses and nowhere else. Its refusal of an unshared family is its own decision, and it
+matches the default lock itself and nothing longer: the same file, or the same name in the same
+physical directory. The default lock itself is shared by definition, since the script's callers
+use it. A match by prefix would refuse an unrelated unshared family whose path only begins like
+the default lock's. Below a directory so named it would refuse too late: `configure` takes the
+family while the directory is absent and then makes it, and every open and `configure` after that
+is refused.
 
 Where this file says MAX_RUNS of a broker run, it means c in its take loop and in checks 1 and 5 of
 section 3, so the number in their text is c; in its alone check and its holder listing it means N.
