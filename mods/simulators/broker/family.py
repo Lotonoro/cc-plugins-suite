@@ -13,8 +13,8 @@ files of one process too, so these methods never open it themselves; `list_holde
 a whole operation of its own.
 
 `in_default_family` is the one function here that concerns no family of its own: it says whether a
-path belongs to the family of the script's default lock, which a shared root may not give another
-slot count (LOCK-PROTOCOL.md section 4).
+path belongs to the family of the script's default lock, which a root of the broker may use only
+shared, at the script's slot count (LOCK-PROTOCOL.md section 4).
 """
 
 from __future__ import annotations

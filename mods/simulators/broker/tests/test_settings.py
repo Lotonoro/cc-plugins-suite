@@ -183,7 +183,8 @@ class LimitsTest(unittest.TestCase):
 
 
 class DefaultLockFamilyTest(unittest.TestCase):
-    """The script's default lock has one count, 3, and a shared root of the broker keeps it too.
+    """The script's callers use its default lock's family at one count, 3: a root of the broker whose
+    family is there must be shared with them, at that count.
 
     The default lock stands in as a file of a scratch directory: no test here names the real one.
     """
@@ -228,8 +229,26 @@ class DefaultLockFamilyTest(unittest.TestCase):
                 with self.subTest(family=family, max_runs=max_runs):
                     self.assertEqual(self.shared(family, max_runs).max_runs, max_runs)
 
-    def test_an_unshared_family_has_no_max_runs_to_keep(self) -> None:
-        got = parse({"family": self.default, "shared": False, "max_runs": 5})
+    def test_an_unshared_family_in_the_default_locks_family_is_refused_at_any_max_runs(self) -> None:
+        for suffix in ("", ".1", ".gate"):
+            for data in ({"shared": False}, {"shared": False, "max_runs": 3}, {"shared": False, "max_runs": 5}, {}):
+                with self.subTest(suffix=suffix, data=data), self.assertRaises(ConfigError):
+                    parse({"family": self.default + suffix, **data})
+
+    def test_the_refusal_of_an_unshared_family_names_the_setting_the_family_and_the_fix(self) -> None:
+        with self.assertRaises(ConfigError) as caught:
+            parse({"family": self.default + ".1"})
+        message = str(caught.exception)
+        self.assertIn("shared is false", message)
+        self.assertIn(self.default + ".1", message)
+        self.assertIn("set shared to true, or family to another lock file", message)
+
+    def test_an_unshared_family_at_another_max_runs_is_refused_for_its_sharing_first(self) -> None:
+        with self.assertRaisesRegex(ConfigError, "shared is false"):
+            parse({"family": self.default, "shared": False, "max_runs": 5})
+
+    def test_an_unshared_family_elsewhere_takes_any_count(self) -> None:
+        got = parse({"family": os.path.join(self.dir, "scratch.flock"), "max_runs": 5})
         self.assertEqual((got.shared, got.max_runs), (False, 5))
 
     def test_a_shared_root_on_the_brokers_own_family_takes_any_count(self) -> None:

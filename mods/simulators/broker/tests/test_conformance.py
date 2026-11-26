@@ -52,6 +52,7 @@ from broker.tests.conformance import (
     lock_protocol_differences,
     named,
     read,
+    says_default_lock_family_is_shared,
     section,
     span_of,
     whole_number,
@@ -147,6 +148,11 @@ class Docs:
         return family_files(LOCK_TEXT, lock)
 
     @staticmethod
+    def default_lock_family_is_shared() -> bool:
+        """Whether section 4 says that a family in the default lock's family is shared by definition."""
+        return says_default_lock_family_is_shared(LOCK_TEXT)
+
+    @staticmethod
     def owner_record(pid: int, slot: int, cwd: str, started: str, command: str) -> str:
         form = re.search(r"one line, `([^`]+)`", section(LOCK_TEXT, "2.3 The records"))
         assert form is not None
@@ -185,6 +191,7 @@ LOCK_CHANGES = (
     ("a default", "| none | 10 |", "| none | 15 |", "KILL_GRACE_SECONDS"),
     ("the default lock's path", "`/tmp/pango-sim-test.flock` when that is unset", "`/tmp/pango-sim.flock` when that is unset", "the default lock's path"),
     ("the default lock's count", "refuses a `SIM_LOCK_MAX_RUNS` other than 3", "refuses a `SIM_LOCK_MAX_RUNS` other than 4", "the default lock's count"),
+    ("the default lock's sharing", "by definition, since the script's callers use it", "on request, since the script's callers use it", "shared by definition"),
     ("a file's name", "| `<lock>.last-start` |", "| `<lock>.laststart` |", "section 2"),
     ("the gate's name", "| `<lock>.gate` |", "| `<lock>.lock` |", "section 2"),
     ("the owner file's name", "`<lock>.owner`, `<lock>.1.owner`", "`<lock>.own`, `<lock>.1.own`", "section 2"),
@@ -722,8 +729,9 @@ class SharedLockProtocolCase(ConformanceCase):
 class SharedSlotRuleCase(ConformanceCase):
     """Item "The shared-slot rule": the broker's count c is at most the script's N, its window N.
 
-    The default lock's family keeps one N, which the script holds and the broker holds too. The
-    default lock stands in as a file of the scratch directory, named as the file names it.
+    The default lock's family keeps one N, which the script holds and the broker holds too, and a
+    family there is shared by definition. The default lock stands in as a file of the scratch
+    directory, named as the file names it.
     """
 
     def shared(self, **settings: object) -> Config:
@@ -754,12 +762,26 @@ class SharedSlotRuleCase(ConformanceCase):
             with self.subTest(spelling=spelling), self.assertRaises(ConfigError):
                 self.shared(family=spelling, max_runs=count + 1, slots=1)
 
+    def test_a_family_in_the_default_locks_family_is_shared_by_definition(self) -> None:
+        default = self.stand_in_for_the_default_lock()
+        self.assertTrue(Docs.default_lock_family_is_shared(), "section 4 does not say so")
+        for path in Docs.family_files(default):
+            for data in ({}, {"shared": False}):
+                with self.subTest(path=path, data=data), self.assertRaises(ConfigError):
+                    Config.from_mapping({"family": path, **data}, self.dir, 12)
+            self.assertTrue(self.shared(family=path).shared)
+
     def test_a_lock_file_elsewhere_takes_any_count(self) -> None:
         self.stand_in_for_the_default_lock()
         scratch = os.path.join(self.dir, "scratch.flock")
         for other in (1, 2, Docs.default_lock_count() + 1, 5):
             with self.subTest(max_runs=other):
                 self.assertEqual(self.shared(family=scratch, max_runs=other, slots=1).max_runs, other)
+
+    def test_a_lock_file_elsewhere_need_not_be_shared(self) -> None:
+        self.stand_in_for_the_default_lock()
+        own = Config.from_mapping({"family": os.path.join(self.dir, "scratch.flock")}, self.dir, 12)
+        self.assertFalse(own.shared)
 
     def test_on_a_shared_family_a_slot_count_above_max_runs_is_refused(self) -> None:
         with self.assertRaises(ConfigError):

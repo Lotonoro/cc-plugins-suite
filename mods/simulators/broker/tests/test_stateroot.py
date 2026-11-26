@@ -118,7 +118,7 @@ class RefusalTest(RootCase):
 
 
 class DefaultLockFamilyTest(RootCase):
-    """A shared root in the script's default lock family opens at a MAX_RUNS of 3 only.
+    """A root in the script's default lock family opens shared, at a MAX_RUNS of 3, and no other way.
 
     The default lock stands in as a file of the scratch directory: no test here names the real one.
     """
@@ -137,16 +137,27 @@ class DefaultLockFamilyTest(RootCase):
         self.assertEqual(caught.exception.exit_code, protocol.EXIT_CONFIG)
         self.assertEqual(os.listdir(self.dir), ["root"], "nothing of the family was created")
 
+    def test_an_unshared_family_is_refused_naming_the_file_the_setting_and_the_fix_and_touching_no_slot(self) -> None:
+        self.full_configuration(family=self.default, shared=False)
+        with self.assertRaisesRegex(ConfigError, r"config\.json: shared is false") as caught:
+            open_root(self.root, CORES)
+        self.assertEqual(caught.exception.exit_code, protocol.EXIT_CONFIG)
+        self.assertIn("set shared to true, or family to another lock file", str(caught.exception))
+        self.assertEqual(os.listdir(self.dir), ["root"], "nothing of the family was created")
+
     def test_a_max_runs_of_3_opens_and_the_window_is_3(self) -> None:
         self.full_configuration(family=self.default, shared=True, max_runs=3, slots=2)
         got = open_root(self.root, CORES)
         self.assertEqual((got.config.family, got.config.slots, got.config.window), (self.default, 2, 3))
 
-    def test_the_brokers_own_family_and_any_other_lock_file_take_any_count(self) -> None:
+    def test_the_brokers_own_family_and_any_other_lock_file_take_any_count_shared_or_not(self) -> None:
         self.full_configuration(shared=True, max_runs=5, slots=5)
         self.assertEqual(open_root(self.root, CORES).config.window, 5)
-        self.full_configuration(family=os.path.join(self.dir, "scratch.flock"), shared=True, max_runs=2, slots=2)
+        scratch = os.path.join(self.dir, "scratch.flock")
+        self.full_configuration(family=scratch, shared=True, max_runs=2, slots=2)
         self.assertEqual(open_root(self.root, CORES).config.window, 2)
+        self.full_configuration(family=scratch, shared=False, slots=4)
+        self.assertEqual(open_root(self.root, CORES).config.window, 4)
 
 
 class GivenFamilyTest(RootCase):

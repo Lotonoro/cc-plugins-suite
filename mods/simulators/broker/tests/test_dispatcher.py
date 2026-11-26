@@ -356,6 +356,28 @@ class ErrorsTest(DispatcherCase):
         self.assertFalse(os.path.exists(mark))
         self.assertFalse(os.path.exists(default + ".gate"))
 
+    def test_a_family_in_the_default_locks_family_that_is_not_shared_exits_78_and_runs_nothing(self) -> None:
+        default = os.path.join(self.dir, "pango-sim-test.flock")  # stands for the script's default lock
+        os.makedirs(self.root)
+        with open(os.path.join(self.root, "config.json"), "w", encoding="utf-8") as handle:
+            json.dump({"family": default, "shared": False, "slots": 3}, handle)
+        mark = os.path.join(self.dir, "mark")
+        with mock.patch.object(protocol, "DEFAULT_LOCK_FILE", default):
+            self.assertEqual(self.main("status"), protocol.EXIT_CONFIG)
+            self.assertEqual(self.main("run", "--", *self.python(LEAVE_A_MARK, "ran", mark)), protocol.EXIT_CONFIG)
+        self.assertRegex(self.err_lines()[0], r"^sim-lock: .*config\.json: shared is false, .*set shared to true")
+        self.assertFalse(os.path.exists(mark))
+        self.assertFalse(os.path.exists(default + ".gate"))
+
+    def test_configure_refuses_an_unshared_family_there_and_writes_nothing_and_accepts_it_shared(self) -> None:
+        default = os.path.join(self.dir, "pango-sim-test.flock")
+        with mock.patch.object(protocol, "DEFAULT_LOCK_FILE", default):
+            self.assertEqual(self.main("configure", "--family", default, "--slots", "3"), protocol.EXIT_CONFIG)
+            self.assertFalse(os.path.exists(os.path.join(self.root, "config.json")))
+            self.assertEqual(self.main("configure", "--family", default, "--slots", "3", "--shared"), 0)
+        self.assertRegex(self.err_lines()[0], r"^sim-lock: shared is false, .*set shared to true, or family")
+        self.assertTrue(os.path.exists(os.path.join(self.root, "config.json")))
+
     def test_configure_refuses_the_same_and_writes_nothing_and_accepts_the_files_count(self) -> None:
         default = os.path.join(self.dir, "pango-sim-test.flock")
         options = ("configure", "--family", default, "--shared", "--slots", "3")

@@ -141,7 +141,8 @@ class ReadsNothingTest(ConfigureCase):
 
 
 class DefaultLockFamilyTest(ConfigureCase):
-    """The verb refuses what the open step would: another MAX_RUNS on the script's default lock family.
+    """The verb refuses what the open step would: a family in the script's default lock family that is
+    not shared, or that has another MAX_RUNS.
 
     The default lock stands in as a file of the scratch directory: no test here names the real one.
     """
@@ -156,6 +157,13 @@ class DefaultLockFamilyTest(ConfigureCase):
     def test_another_max_runs_is_refused_and_nothing_is_written_or_made(self) -> None:
         with self.assertRaisesRegex(ConfigError, "max_runs is 4"):
             self.run_configure(Settings(family=self.default + ".gate", shared=True, max_runs=4, slots=3))
+        self.assertEqual(os.listdir(self.dir), [])
+        self.assertEqual(self.out.getvalue(), "")
+
+    def test_a_family_that_is_not_shared_is_refused_and_nothing_is_written_or_made(self) -> None:
+        for settings in (Settings(family=self.default), Settings(family=self.default + ".1", shared=False, slots=2)):
+            with self.subTest(settings=settings), self.assertRaisesRegex(ConfigError, "shared is false"):
+                self.run_configure(settings)
         self.assertEqual(os.listdir(self.dir), [])
         self.assertEqual(self.out.getvalue(), "")
 

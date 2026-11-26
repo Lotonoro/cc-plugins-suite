@@ -208,8 +208,9 @@ however the directory is spelled (`/private/tmp`, a doubled slash, a symlinked d
 or not the file exists, and a symlink to the default lock itself (L77-89). The match does not catch
 a different letter case on a case-insensitive volume, or a symlink to a family file other than the
 default lock (L77-81). A lock file elsewhere takes any count (self-test L402, L557-564). The broker
-holds the same on its side: a configuration that shares a family in the default lock's family,
-matched as the script matches it, is refused unless its `max_runs` is 3 (`PROTOCOL.md`).
+holds the same on its side, matching as the script matches: the default lock's family is shared
+by definition, since the script's callers use it, so a configuration whose family is in it is
+refused unless its `shared` is true and its `max_runs` is 3 (`PROTOCOL.md`).
 
 Where this file says MAX_RUNS of a broker run, it means c in its take loop and in checks 1 and 5 of
 section 3, so the number in their text is c; in its alone check and its holder listing it means N.

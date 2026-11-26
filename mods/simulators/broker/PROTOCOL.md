@@ -92,7 +92,7 @@ client that meets such a file exits 78 naming it.
 | Setting | What it is | Default | Range |
 |---|---|---|---|
 | `family` | the lock family's path | `family/lock` in the root | an absolute path |
-| `shared` | whether `sim-lock.sh` uses the family too | `false` | `true` or `false` |
+| `shared` | whether `sim-lock.sh` uses the family too | `false` | `true` or `false`, and `true` for a family in `sim-lock.sh`'s default lock family (`LOCK-PROTOCOL.md` section 4) |
 | `max_runs` | on a shared family, the MAX_RUNS that the script's callers use | 3 | a positive whole number, and 3 on a shared family in `sim-lock.sh`'s default lock family (`LOCK-PROTOCOL.md` section 4) |
 | `slots` | the number of slots the broker takes | `max(3, cores / 4)`, at most `max_runs` on a shared family | a positive whole number, at most `max_runs` on a shared family |
 | `settle_seconds` | from the last start to a start beside another run | 90 | a whole number of at most 7 digits |
