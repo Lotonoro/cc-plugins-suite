@@ -73,6 +73,15 @@ LINE_STILL_WAITING = MESSAGE_PREFIX + "still waiting after {waited}s: {reason}"
 LINE_GAVE_UP = MESSAGE_PREFIX + "gave up after {waited}s: {reason}"
 HOLDER_INDENT = "  "
 
+# The wrapper's own lines on stderr. LOCK-PROTOCOL.md section 5.5 does not bind them: the script's
+# second line names a variable the broker does not read, so the broker's names the limit in seconds.
+LINE_CANNOT_START = MESSAGE_PREFIX + "{command}: {reason}"
+LINE_RUN_LIMIT = (
+    MESSAGE_PREFIX
+    + "command ran over the run limit of {limit}s and was killed; "
+    + "its simulator may still be booted, so delete it"
+)
+
 # The client's environment, which the dispatcher alone reads.
 STATE_ROOT_SETTING = "CLAUDE_SIMULATORS_STATE_ROOT"
 FAMILY_VARIABLE = "SIM_LOCK_FILE"

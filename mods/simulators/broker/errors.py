@@ -33,6 +33,12 @@ class StateError(BrokerError):
     """A record in the state directory cannot be read or written."""
 
 
+class WrapperError(BrokerError):
+    """The wrapper that runs the command could not be started: the run fails as an unrunnable one."""
+
+    exit_code = protocol.EXIT_CANNOT_EXECUTE
+
+
 class FamilyDisagreement(BrokerError):
     """The family the client was given is not the family its state root names."""
 
