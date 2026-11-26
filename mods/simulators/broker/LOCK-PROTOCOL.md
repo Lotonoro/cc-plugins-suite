@@ -104,9 +104,10 @@ run deletes either, so a record outlives its run (L197-198).
 
 `<lock>.last-start` holds the epoch second of the admission as `date +%s` prints it: decimal digits
 and a newline (L184). A reader counts a missing file, or content that is not all digits, as settled
-(L117-118). A writer writes plain epoch seconds with no leading zero: bash reads a leading zero as
-octal, so `08` is an arithmetic error at L120 and counts as not settled, and an epoch in the future
-stays unsettled until the clock is SETTLE_SECONDS past it (L119-120).
+(L117-118). The broker's rule as a writer is plain epoch seconds with no leading zero, which the
+script meets with `date +%s` (L184): bash reads a leading zero as octal, so `08` is an arithmetic
+error at L120 and counts as not settled, and an epoch in the future stays unsettled until the clock
+is SETTLE_SECONDS past it (L119-120).
 
 The owner record is written after `.last-start`, to the taken slot's `.owner` file (L188-190). It is
 one line, `pid=%s slot=%s cwd=%s started=%s command=%s` (L189), where
@@ -170,11 +171,11 @@ admitted without a CPU check, and a run that is not alone waits with check 4's r
 self-test L464-472). The reason therefore shows only beside another run, and a broken `iostat` never
 blocks the only run (L22-23).
 
-This rule is provisional: it is what the script does today. What follows is proposed, for pango-core
-to correct. pango's decision on the rule is open. Nothing in the broker would depend on its being
-final: the broker would mark its conformance case for this rule provisional, as check 4 above is, and
-if the rule changes, this section, that case and the script would change together, with pango-core
-changing the script on its side.
+This rule is provisional until pango's item #3 is answered. It shipped on purpose in pango PR #545
+(merge 98f42947) and is live; the open part is the answer to item #3, on whether a lone run may
+start with no idle reading. Nothing in the broker depends on its being final: the broker marks its
+conformance case for this rule provisional, as check 4 above is, and if the rule changes, this
+section, that case and the script change together, with pango-core changing the script on its side.
 
 ## 4. The shared-slot rule
 
@@ -201,12 +202,13 @@ section 3, so the number in their text is c; in its alone check and its holder l
 The script cannot enforce that N is one: it reads MAX_RUNS per run and the family records none.
 pango-core is asked to hold it.
 
-More concurrency is pango-core's to grant. Each run reads MAX_RUNS when it starts (L56), a waiting
-run included, so a run started under the old N keeps its window until it ends. A grant therefore
-keeps the broker's window at least as wide as the largest N of any run in flight and its c no
-larger than the smallest: the broker widens its window no later than the script's callers move to
-the new N, lets the runs started under the old N drain, and only then raises c. Moving the script's
-callers to the broker's client ends the constraint once none is left on the family.
+More concurrency is pango-core's to grant. pango-core changes N only by a change to sim-lock.sh,
+announced first, and the grant follows the order below. Each run reads MAX_RUNS when it starts
+(L56), a waiting run included, so a run started under the old N keeps its window until it ends. A
+grant therefore keeps the broker's window at least as wide as the largest N of any run in flight and
+its c no larger than the smallest: the broker widens its window no later than the script's callers
+move to the new N, lets the runs started under the old N drain, and only then raises c. Moving the
+script's callers to the broker's client ends the constraint once none is left on the family.
 
 ## 5. A metered run
 
@@ -279,9 +281,10 @@ self-test L537-541), and a grandchild that ignores TERM dies with the group (sel
 Once a run is admitted the script traps TERM, HUP and INT (L262-264) and passes each to the wrapper
 (L243-250), which sends it to the command's process group (L281-285). The script goes on waiting for
 the wrapper, so the slot stays held until the group leader has exited (L49-50, L336-340; self-test
-L543-547). A signal that lands just as the command ends leaves the command's status unchanged
-(L287-293, L331-340; self-test L549-556). Before admission nothing handles these signals: the traps
-are set in `run_capped`, after `acquire` has returned (L262-264, L358-359).
+L543-547). A signal that lands just as the command ends with exit 0 leaves the run exiting 0
+(self-test L549-556); the code intends the same for any status (L287-293, L331-340), but the
+self-test covers only exit 0. Before admission nothing handles these signals: the traps are set in
+`run_capped`, after `acquire` has returned (L262-264, L358-359).
 
 ### 5.5 Exit codes and the wrapper's messages
 
@@ -315,6 +318,6 @@ the waiter whose attempt takes the gate first with the checks passing (L178-194)
 script's behaviour and is not carried over: the order in which the broker's own waiters take a freed
 slot is not set here.
 
-Whatever order the broker applies, it applies before a waiter enters the gate. Admission still
-follows sections 2 and 3, and the broker never holds a slot or the gate for a waiter, so a script
-waiter can take any free slot.
+Constraints on the broker, not facts about the script: whatever order the broker applies, it applies
+before a waiter enters the gate; admission still follows sections 2 and 3; and the broker never
+holds a slot or the gate for a waiter, so a script waiter can take any free slot.
