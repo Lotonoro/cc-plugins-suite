@@ -355,6 +355,16 @@ class ErrorsTest(DispatcherCase):
         self.assertEqual(self.main("status"), protocol.EXIT_CONFIG)
         self.assertRegex(self.err_lines()[0], r"^sim-lock: .*config\.json: family must not hold a NUL byte")
 
+    def test_a_family_with_a_dot_dot_component_exits_78_naming_the_file_and_the_fix(self) -> None:
+        os.makedirs(self.root)
+        with open(os.path.join(self.root, "config.json"), "w", encoding="utf-8") as handle:
+            json.dump({"family": "/tmp/nosuch/../lock"}, handle)
+        self.assertEqual(self.main("status"), protocol.EXIT_CONFIG)
+        self.assertRegex(
+            self.err_lines()[0],
+            r"^sim-lock: .*config\.json: family must not hold a \.\. component: spell the family without \.\.",
+        )
+
     def test_configure_arguments_the_loader_refuses_exit_78_and_write_nothing(self) -> None:
         self.assertEqual(self.main("configure", "--slots", "0"), protocol.EXIT_CONFIG)
         self.assertFalse(os.path.exists(os.path.join(self.root, "config.json")))
@@ -402,6 +412,16 @@ class ErrorsTest(DispatcherCase):
             self.assertFalse(os.path.exists(os.path.join(self.root, "config.json")))
             self.assertEqual(self.main(*options, "--max-runs", "3"), 0)
         self.assertTrue(os.path.exists(os.path.join(self.root, "config.json")))
+
+    def test_configure_refuses_a_family_spelled_through_a_directory_that_is_not_there_and_makes_nothing(self) -> None:
+        default = os.path.join(self.dir, "pango-sim-test.flock")
+        family = os.path.join(self.dir, "nosuch", "..", "pango-sim-test.flock")
+        with mock.patch.object(protocol, "DEFAULT_LOCK_FILE", default):
+            self.assertEqual(self.main("configure", "--family", family), protocol.EXIT_CONFIG)
+        self.assertRegex(
+            self.err_lines()[0], r"^sim-lock: family must not hold a \.\. component: spell the family without \.\."
+        )
+        self.assertEqual(os.listdir(self.dir), [], "no directory was made and no configuration written")
 
     def test_a_record_that_is_not_ours_exits_78_naming_the_file(self) -> None:
         os.makedirs(os.path.join(self.root, "state"))

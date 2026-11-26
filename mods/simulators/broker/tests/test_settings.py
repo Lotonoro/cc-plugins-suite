@@ -150,6 +150,20 @@ class FromMappingTest(unittest.TestCase):
             with self.subTest(shared=shared), self.assertRaisesRegex(ConfigError, "family must not hold a NUL byte"):
                 parse({"family": "/tmp/a\x00b", "shared": shared})
 
+    def test_the_family_may_not_hold_a_dot_dot_component_and_the_refusal_names_the_fix(self) -> None:
+        for family in ("/tmp/nosuch/../lock", "/tmp/a/b/../../lock", "/tmp//../lock", "/tmp/lock/.."):
+            for shared in (False, True):
+                with self.subTest(family=family, shared=shared):
+                    with self.assertRaisesRegex(ConfigError, r"family must not hold a \.\. component") as caught:
+                        parse({"family": family, "shared": shared})
+                    self.assertIn("spell the family without ..", str(caught.exception))
+                    self.assertIn(repr(family), str(caught.exception))
+
+    def test_a_name_that_holds_dots_and_is_no_dot_dot_component_is_a_family(self) -> None:
+        for family in ("/tmp/..lock", "/tmp/lock..", "/tmp/a..b/lock", "/tmp/.../lock", "/tmp/.d/lock", "/tmp/./lock"):
+            with self.subTest(family=family):
+                self.assertEqual(parse({"family": family}).family, family)
+
 
 class LimitsTest(unittest.TestCase):
     def test_the_slot_count_is_a_positive_whole_number(self) -> None:

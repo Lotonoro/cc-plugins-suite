@@ -176,6 +176,16 @@ class DefaultLockFamilyTest(ConfigureCase):
         self.assertEqual(open_root(self.root, CORES).config.family, settings.family)
         self.assertEqual(self.run_configure(settings).family, settings.family)
 
+    def test_a_family_spelled_through_a_directory_that_is_not_there_is_refused_before_the_directory_is_made(self) -> None:
+        # `nosuch/..` is the default lock's own directory only once `nosuch` is made, and the verify step
+        # makes it: such a family was accepted unshared, and then every open of the root refused it.
+        family = os.path.join(self.dir, "nosuch", "..", "pango-sim-test.flock")
+        with self.assertRaisesRegex(ConfigError, r"family must not hold a \.\. component") as caught:
+            self.run_configure(Settings(family=family))
+        self.assertIn("spell the family without ..", str(caught.exception))
+        self.assertEqual(os.listdir(self.dir), [], "no directory was made and no configuration written")
+        self.assertEqual(self.out.getvalue(), "")
+
     def test_the_default_locks_own_count_is_written_and_the_family_tried(self) -> None:
         got = self.run_configure(Settings(family=self.default, shared=True, max_runs=3, slots=3))
         self.assertEqual((got.family, got.max_runs), (self.default, 3))

@@ -124,6 +124,13 @@ class Config:
             raise ConfigError(f"family must be an absolute path, not {self.family!r}")
         if "\0" in self.family:
             raise ConfigError(f"family must not hold a NUL byte: {self.family!r}")
+        # `a/..` is the directory before `a` only once `a` exists, and `configure` makes the directories
+        # of an unshared family after it has accepted the family. The checks below read the file system,
+        # so a family with a `..` could pass them now and fail them at every open after.
+        if ".." in self.family.split("/"):
+            raise ConfigError(
+                f"family must not hold a .. component: spell the family without .., not {self.family!r}"
+            )
         if (
             self.shared
             and self.max_runs != protocol.DEFAULT_MAX_RUNS
