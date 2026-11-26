@@ -90,11 +90,28 @@ LINE_RUN_LIMIT = (
     + "its simulator may still be booted, so delete it"
 )
 
-# The client's environment, which the dispatcher alone reads.
+# The client's verbs. The first word of a command line is one of these, or a request for the usage.
+VERB_RUN = "run"
+VERB_CONFIGURE = "configure"
+VERB_STATUS = "status"
+VERB_HELP = "help"
+HELP_FLAGS = ("-h", "--help")
+
+# The client's environment, which the dispatcher alone reads. A variable set to nothing counts as
+# unset. The session's identifier is not read: nothing here consumes it.
+HOME_VARIABLE = "HOME"
 STATE_ROOT_SETTING = "CLAUDE_SIMULATORS_STATE_ROOT"
 FAMILY_VARIABLE = "SIM_LOCK_FILE"
 IGNORED_VARIABLE_PREFIX = "SIM_LOCK_"
-SESSION_VARIABLE = "CLAUDE_CODE_SESSION_ID"
+
+# What a client says on stderr when its environment sets `sim-lock.sh`'s knobs, which it does not
+# read: one line, naming each variable in name order, before anything else the verb prints. The text
+# is the broker's, and LOCK-PROTOCOL.md does not bind it.
+LINE_IGNORED = (
+    MESSAGE_PREFIX
+    + "ignoring {names}: the broker takes its settings from the state root's configuration, "
+    + "never from the environment"
+)
 
 # The reasons a run waits, in the order the checks run. The first four are the script's, and
 # LOCK-PROTOCOL.md section 3 binds their texts.
