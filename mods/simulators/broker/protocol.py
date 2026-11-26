@@ -82,3 +82,8 @@ REASON_UNMEASURABLE = "the CPU's idle percentage cannot be measured"
 REASON_SAMPLE_TIMED_OUT = "the CPU sample timed out after {seconds}s"
 # What the last-decision record says when the checks passed.
 REASON_ADMITTED = "the checks passed"
+
+# The owner record's form: one line written to the taken slot's `.owner` file (LOCK-PROTOCOL.md
+# section 2.3). `started` is the local time of the admission, in the form below, with no zone.
+OWNER_RECORD = "pid={pid} slot={slot} cwd={cwd} started={started} command={command}"
+OWNER_TIME_FORMAT = "%Y-%m-%dT%H:%M:%S"

@@ -9,23 +9,13 @@ from __future__ import annotations
 
 import fcntl
 import os
-import subprocess
-import sys
 import threading
 import unittest
 from typing import List, Optional, Tuple
 
 from broker.errors import FamilyError
 from broker.family import Family
-from broker.tests.support import scratch_dir
-
-HOLDER = (
-    "import fcntl, os, sys, time\n"
-    "fd = os.open(sys.argv[1], os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o666)\n"
-    "fcntl.flock(fd, fcntl.LOCK_EX)\n"
-    "print('held', flush=True)\n"
-    "time.sleep(60)\n"
-)
+from broker.tests.support import hold_in_another_process, scratch_dir
 
 
 class FamilyCase(unittest.TestCase):
@@ -43,22 +33,6 @@ class FamilyCase(unittest.TestCase):
     def write(self, path: str, text: str) -> None:
         with open(path, "w", encoding="utf-8") as handle:
             handle.write(text)
-
-    def hold_in_another_process(self, path: str) -> "subprocess.Popen[str]":
-        """A process that holds the flock on `path` until it is killed."""
-        child = subprocess.Popen(
-            [sys.executable, "-c", HOLDER, path], stdout=subprocess.PIPE, text=True
-        )
-        self.addCleanup(self.stop, child)
-        self.assertEqual(child.stdout.readline().strip(), "held")  # type: ignore[union-attr]
-        return child
-
-    def stop(self, child: "subprocess.Popen[str]") -> None:
-        if child.poll() is None:
-            child.kill()
-        child.wait()
-        if child.stdout is not None:
-            child.stdout.close()
 
 
 class PathsTest(FamilyCase):
@@ -203,13 +177,13 @@ class ProbeTest(FamilyCase):
         os.close(taken[1])  # type: ignore[index]
 
     def test_a_slot_held_by_another_process_probes_held(self) -> None:
-        self.hold_in_another_process(self.lock + ".1")
+        hold_in_another_process(self, self.lock + ".1")
         fam = self.family()
         with fam.gate():
             self.assertEqual(fam.probe_all(), (False, True, False))
 
     def test_a_holder_that_dies_leaves_the_slot_free_with_no_stale_state(self) -> None:
-        child = self.hold_in_another_process(self.lock)
+        child = hold_in_another_process(self, self.lock)
         fam = self.family()
         with fam.gate():
             self.assertTrue(fam.probe(0))
@@ -219,7 +193,7 @@ class ProbeTest(FamilyCase):
             self.assertFalse(fam.probe(0))
 
     def test_the_probe_covers_the_window_not_only_the_brokers_slots(self) -> None:
-        self.hold_in_another_process(self.lock + ".2")
+        hold_in_another_process(self, self.lock + ".2")
         fam = self.family(slots=2, window=3)
         with fam.gate():
             self.assertEqual(fam.probe_all(), (False, False, True))
@@ -256,7 +230,7 @@ class TakeTest(FamilyCase):
             self.assertFalse(fam.probe(0))
 
     def test_a_slot_the_script_holds_below_the_brokers_count_is_skipped(self) -> None:
-        self.hold_in_another_process(self.lock)
+        hold_in_another_process(self, self.lock)
         got = self.take(self.family())
         self.assertEqual(got[0], 1)  # type: ignore[index]
 
@@ -325,7 +299,7 @@ class HoldersTest(FamilyCase):
 
     def test_a_held_slot_lists_its_record_indented_two_spaces(self) -> None:
         self.write(self.lock + ".owner", "pid=41231 slot=0 cwd=/tmp/work started=2026-11-25T14:03:11 command=xcodebuild test\n")
-        self.hold_in_another_process(self.lock)
+        hold_in_another_process(self, self.lock)
         self.assertEqual(
             self.family().list_holders(),
             ["  pid=41231 slot=0 cwd=/tmp/work started=2026-11-25T14:03:11 command=xcodebuild test"],
@@ -336,20 +310,20 @@ class HoldersTest(FamilyCase):
         self.assertEqual(self.family().list_holders(), [])
 
     def test_a_held_slot_with_no_record_lists_nothing(self) -> None:
-        self.hold_in_another_process(self.lock + ".1")
+        hold_in_another_process(self, self.lock + ".1")
         self.assertEqual(self.family().list_holders(), [])
 
     def test_the_holders_are_listed_in_slot_order(self) -> None:
         for k, name in ((0, ".owner"), (2, ".2.owner")):
             self.write(self.lock + name, f"pid={k} slot={k} cwd=/ started=t command=run{k}\n")
-        self.hold_in_another_process(self.lock + ".2")
-        self.hold_in_another_process(self.lock)
+        hold_in_another_process(self, self.lock + ".2")
+        hold_in_another_process(self, self.lock)
         got: List[str] = self.family().list_holders()
         self.assertEqual([line.split()[1] for line in got], ["slot=0", "slot=2"])
 
     def test_the_listing_covers_the_window_beyond_the_brokers_slots(self) -> None:
         self.write(self.lock + ".2.owner", "pid=9 slot=2 cwd=/ started=t command=script-run\n")
-        self.hold_in_another_process(self.lock + ".2")
+        hold_in_another_process(self, self.lock + ".2")
         got = self.family(slots=2, window=3).list_holders()
         self.assertEqual(got, ["  pid=9 slot=2 cwd=/ started=t command=script-run"])
 
