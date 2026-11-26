@@ -10,10 +10,10 @@ deletion log are `PROTOCOL.md`'s.
 
 ## The source
 
-`scripts/sim-lock.sh` in pango at commit `4af6051e`: 625 lines, git blob
-`d494f9bfab6b645240694d16749414acff4af38b`, the same blob as at `98f42947`. Below, `L148` is line 148
-of that file, `L148-151` lines 148 to 151, and `self-test L398-404` lines of its `--self-test`, which
-checks most of the behaviours described.
+`scripts/sim-lock.sh` in pango at commit `4b173403`: 651 lines, git blob
+`7cf3e76b0b0e00293cd93e29d679d804ccf1b377`, the blob that pango PR #603 made (commit `163cfc9e`,
+merged as `0c5e7032`). Below, `L148` is line 148 of that file, `L148-151` lines 148 to 151, and
+`self-test L407-413` lines of its `--self-test`, which checks most of the behaviours described.
 
 A message, a record format or a command in a code span is quoted from the script character for
 character; in such a text `%s`, `${name}` and `{name}` stand for the value the script puts there.
@@ -130,7 +130,7 @@ A waiter lists the holders once, when it first starts to wait (section 5.1). Und
 slots 0 to MAX_RUNS - 1 in turn, and for each whose flock is held and whose `.owner` file exists it
 prints that file to stderr with two spaces before each line (L201-208). A record whose slot is not
 held is never listed, since the file stays after its run ends, and a held slot is listed whether or
-not the recorded shell is alive (L33-36, L197-198; self-test L584-608).
+not the recorded shell is alive (L33-36, L197-198; self-test L610-634).
 
 ## 3. Admission
 
@@ -169,7 +169,7 @@ sample is taken inside the gate, so other waiters wait behind it (L158, L182; se
 
 When MIN_IDLE_PERCENT is above 0 and the idle percentage cannot be measured, a run that is alone is
 admitted without a CPU check, and a run that is not alone waits with check 4's reason (L163-165;
-self-test L464-472). The reason therefore shows only beside another run, and a broken `iostat` never
+self-test L473-481). The reason therefore shows only beside another run, and a broken `iostat` never
 blocks the only run (L22-23).
 
 This rule is decided: pango's item #3, on whether a lone run may start with no idle reading, was
@@ -214,8 +214,8 @@ script's callers to the broker's client ends the constraint once none is left on
 ## 5. A metered run
 
 A metered run waits for admission, runs its command under the slot it was admitted to, and exits with
-the command's status (L358-359). What the script prints on its own account goes to stderr, and the
-command's output is the command's own (L74, L206, L219, L224, L228, L314, L319-320).
+the command's status (L367-368). What the script prints on its own account goes to stderr, and the
+command's output is the command's own (L74, L206, L219, L224, L228, L292).
 
 ### 5.1 Waiting
 
@@ -249,65 +249,71 @@ sim-lock: waiting for a simulator run slot: all 3 run slots are held; running no
 - The script keeps the admitted slot's flock on a descriptor of its own and starts a wrapper, a
   `/usr/bin/python3 -I -c` process, in the background with that descriptor inherited, so the script
   and the wrapper both hold the flock; the script then waits until the wrapper is gone
-  (L27-30, L252-254, L266, L328-329, L336-340).
-- The wrapper starts the command with `start_new_session=True` (L312): the command leads its own
+  (L27-30, L252-254, L266, L337-338, L345-349).
+- The wrapper starts the command with `start_new_session=True` (L321): the command leads its own
   process group and session and has no controlling terminal, so a caller's terminal cannot answer a
   prompt from it (L40, L46-48). Python's default `close_fds` closes the inherited slot descriptor in
-  the command (L311), so a daemon the command leaves behind holds no slot (L31-32; self-test
-  L412-415).
-- The command keeps the script's stdin (L265, L328; self-test L567-568).
+  the command (L320), so a daemon the command leaves behind holds no slot (L31-32; self-test
+  L421-424).
+- The command keeps the script's stdin (L265, L337; self-test L593-594).
 - A SIGKILL to the script leaves the slot held until the wrapper is gone, which is when the command's
-  group leader has exited (L27-30, L326-327; self-test L398-404). A holder that dies leaves no stale
-  state once its command is gone (self-test L406-410).
+  group leader has exited (L27-30, L335-336; self-test L407-413). A holder that dies leaves no stale
+  state once its command is gone (self-test L415-419).
 
 ### 5.3 The run limit
 
 A command that runs longer than RUN_LIMIT_SECONDS is stopped, because a hung run would hold its slot
-forever; 0 sets no limit (L38-39, L318). The wrapper waits for the command's group leader to exit
+forever; 0 sets no limit (L38-39, L327). The wrapper waits for the command's group leader to exit
 without reaping it, by kqueue, so the group's id cannot be reused before the KILL that follows
-(L254-256, L295-304). At the limit it
+(L254-256, L304-313). At the limit it
 
-1. prints a message on stderr that tells the kill from a command's own 124 (the script's message is
-   in section 5.5; L319-320);
-2. sends SIGTERM to the group (L321);
-3. waits for the leader to exit, at most KILL_GRACE_SECONDS (L322);
-4. sends SIGKILL to the group, whether or not the leader has exited (L323);
-5. reaps the leader and exits 124 (L324-325).
+1. prints a message on stderr that tells the kill from a command's own 124; when stderr cannot be
+   written the message is dropped and the steps below follow (the script's message is in section
+   5.5; L328-329);
+2. sends SIGTERM to the group (L330);
+3. waits for the leader to exit, at most KILL_GRACE_SECONDS (L331);
+4. sends SIGKILL to the group, whether or not the leader has exited (L332);
+5. reaps the leader and exits 124 (L333-334).
 
 So a leader that traps TERM has until it exits, within the grace period, to run its trap (L40-42;
-self-test L537-541), and a grandchild that ignores TERM dies with the group (self-test L532-535).
+self-test L563-567), and a grandchild that ignores TERM dies with the group (self-test L558-561).
 
 ### 5.4 Signals
 
 Once a run is admitted the script traps TERM, HUP and INT (L262-264) and passes each to the wrapper
 (L243-250), which sends it to the command's process group (L281-285). The script goes on waiting for
-the wrapper, so the slot stays held until the group leader has exited (L49-50, L336-340; self-test
-L543-547). A signal that lands just as the command ends with exit 0 leaves the run exiting 0
-(self-test L549-556, which covers only exit 0); the code intends the same for any status (L287-293,
-L331-340). Before admission nothing handles these signals: the traps are set in `run_capped`, after
-`acquire` has returned (L262-264, L358-359).
+the wrapper, so the slot stays held until the group leader has exited (L49-50, L345-349; self-test
+L569-573). A signal that lands just as the command ends with exit 0 leaves the run exiting 0
+(self-test L575-582, which covers only exit 0); the code intends the same for any status (L296-302,
+L340-349). Before admission nothing handles these signals: the traps are set in `run_capped`, after
+`acquire` has returned (L262-264, L367-368).
 
 ### 5.5 Exit codes and the wrapper's messages
 
 | Exit | When | Script |
 |---|---|---|
-| 75 | the wait reached TIMEOUT_SECONDS; the command did not run (section 5.1) | L60, L227-230; self-test L417-421 |
-| 124 | the command ran over RUN_LIMIT_SECONDS and was killed (section 5.3) | L61, L325; self-test L527-530 |
-| 127 | starting the command failed with ENOENT: the command is not found, or the interpreter named on its first line is not | L313-315 |
-| 126 | starting the command failed with any other operating-system error, such as permission denied | L313-315 |
-| 128+N | signal N killed the command | L327; self-test L564-565 |
-| the command's own status | in every other case | L326-327; self-test L379-380 |
+| 75 | the wait reached TIMEOUT_SECONDS; the command did not run (section 5.1) | L60, L227-230; self-test L426-430 |
+| 124 | the command ran over RUN_LIMIT_SECONDS and was killed (section 5.3) | L61, L334; self-test L536-539 |
+| 127 | starting the command failed with ENOENT: the command is not found, or the interpreter named on its first line is not | L322-324 |
+| 126 | starting the command failed with any other operating-system error, such as permission denied | L322-324 |
+| 128+N | signal N killed the command | L336; self-test L590-591 |
+| the command's own status | in every other case | L335-336; self-test L388-389 |
 
-A command that itself exits 75, 124, 126 or 127 leaves the run with that status (L326-327), so the
+A command that itself exits 75, 124, 126 or 127 leaves the run with that status (L335-336), so the
 status alone does not show that the script produced it; the script's own line on stderr does (L42-44
 for 124). The script also exits 1, before any wait, on a usage error or a setting out of range
-(L73-76, L345-357); those refusals belong to the script's own command line and variables, and this
+(L73-76, L354-366); those refusals belong to the script's own command line and variables, and this
 protocol does not carry them.
 
 | When | Text | Filled with | Script |
 |---|---|---|---|
-| the command cannot be started | `sim-lock: {cmd[0]}: {err.strerror}` | the command's first word, the operating system's message | L313-315 |
-| the command ran over the limit | `sim-lock: command ran over SIM_LOCK_RUN_LIMIT={limit}s and was killed; its simulator may still be booted, so delete it` | the limit in seconds | L318-320 |
+| the command cannot be started | `sim-lock: {cmd[0]}: {err.strerror}` | the command's first word, the operating system's message | L287-294, L322-324 |
+| the command ran over the limit | `sim-lock: command ran over SIM_LOCK_RUN_LIMIT={limit}s and was killed; its simulator may still be booted, so delete it` | the limit in seconds | L287-294, L327-329 |
+
+The wrapper writes both through `warn()` (L287-294): one `os.write` to descriptor 2, whose failure is
+dropped. A stderr whose reader has gone, because the caller was killed, therefore keeps neither the
+kill at the limit nor the exit status 124, 126 or 127 from following (pango PR #603; self-test
+L541-556). The broker's `say()` guards its writes in the same way.
 
 The broker is not bound to these two messages (see "What binds the broker").
 
