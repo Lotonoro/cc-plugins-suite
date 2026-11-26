@@ -248,6 +248,15 @@ class TakeFailureTest(LeafCase):
         self.assertFalse(self.exists(".last-start"))
         self.assertFalse(self.exists(".owner"))
 
+    def test_a_take_that_finds_no_slot_counts_the_brokers_slots_and_not_the_window(self) -> None:
+        # c = 2 and N = 3, with nothing held: the checks pass, and the take is refused.
+        got = self.attempt(self.leaf(slots=2, window=3, refuse_takes=1))
+        self.assertEqual(got, Waiting("all 2 run slots are held"))
+        self.assertEqual(
+            self.decisions.read(),
+            LastDecision(protocol.DECISION_WAIT, "all 2 run slots are held", None, EPOCH + 1),
+        )
+
     def test_the_same_leaf_admits_at_its_next_attempt_once_the_take_succeeds(self) -> None:
         leaf = self.leaf(refuse_takes=1)
         self.assertIsInstance(self.attempt(leaf), Waiting)
