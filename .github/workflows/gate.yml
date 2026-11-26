@@ -1,0 +1,46 @@
+# The gate every pull request to main must pass. Its steps are in .github/gate.py.
+name: gate
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+env:
+  # The CLI's own validate and test give the verdict, so a new release is a reviewed edit here.
+  CLAUDE_CODE_VERSION: "2.1.326"
+  # The CLI must not update itself during the run and undo the pin.
+  DISABLE_UPDATES: "1"
+
+defaults:
+  run:
+    shell: bash --noprofile --norc -euo pipefail {0}
+
+jobs:
+  gate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.9"
+      - name: Test the gate
+        run: python3 -m unittest discover -s .github/tests -v
+      - name: Install the Claude Code CLI
+        # The CLI's postinstall links its native binary in, and npm 12 skips a dependency's
+        # install scripts by default, so this step runs the postinstall itself on any npm.
+        run: |
+          prefix="$RUNNER_TEMP/claude-code"
+          mkdir -p "$prefix"
+          npm install --global --ignore-scripts --prefix "$prefix" \
+            "@anthropic-ai/claude-code@$CLAUDE_CODE_VERSION"
+          node "$prefix/lib/node_modules/@anthropic-ai/claude-code/install.cjs"
+          echo "$prefix/bin" >> "$GITHUB_PATH"
+          "$prefix/bin/claude" --version
+      - name: Run the gate
+        run: python3 .github/gate.py
