@@ -282,9 +282,9 @@ Once a run is admitted the script traps TERM, HUP and INT (L262-264) and passes 
 (L243-250), which sends it to the command's process group (L281-285). The script goes on waiting for
 the wrapper, so the slot stays held until the group leader has exited (L49-50, L336-340; self-test
 L543-547). A signal that lands just as the command ends with exit 0 leaves the run exiting 0
-(self-test L549-556); the code intends the same for any status (L287-293, L331-340), but the
-self-test covers only exit 0. Before admission nothing handles these signals: the traps are set in
-`run_capped`, after `acquire` has returned (L262-264, L358-359).
+(self-test L549-556, which covers only exit 0); the code intends the same for any status (L287-293,
+L331-340). Before admission nothing handles these signals: the traps are set in `run_capped`, after
+`acquire` has returned (L262-264, L358-359).
 
 ### 5.5 Exit codes and the wrapper's messages
 
