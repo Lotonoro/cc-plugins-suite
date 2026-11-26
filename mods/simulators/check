@@ -1,0 +1,27 @@
+#!/usr/bin/env bash
+# The simulators mod's declared check. The CI gate runs it from this directory, and a developer runs
+# it by hand: the broker's tests and the conformance suite, on fakes and scratch roots. It starts no
+# simulator and no emulator, and its lock families are scratch ones under /tmp.
+#
+# The tests are unittests, since the Python on this Mac, /usr/bin/python3, is 3.9 and has no pytest.
+# The wrapper's process tests watch a process by kqueue, which only macOS has, so elsewhere unittest
+# skips them and prints the reason.
+set -euo pipefail
+
+readonly MAC_PYTHON=/usr/bin/python3
+readonly OTHER_PYTHON=python3
+
+python() {
+    if [[ "$(uname -s)" == Darwin ]]; then
+        "$MAC_PYTHON" "$@"
+    else
+        "$OTHER_PYTHON" "$@"
+    fi
+}
+
+main() {
+    cd -- "$(dirname -- "${BASH_SOURCE[0]}")"
+    python -m unittest discover -v -s broker -t .
+}
+
+main "$@"
