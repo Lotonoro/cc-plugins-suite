@@ -19,6 +19,28 @@ LEAK_CHECK = Path(__file__).resolve().parents[1] / "leak_check.py"
 
 MACHINE_SPECIFIC = ("/Users/someone/x", "~/temp/x", "$HOME/temp/x")
 STANDARD_LOCATIONS = ("~/.claude/x", "~/.android/avd", "/home/someone/x")
+# Other names that begin as `~/temp` and `$HOME/temp` do.
+OTHER_NAMES = (
+    "~/templates/x",
+    "$HOME/templates",
+    "~/temp-files/x",
+    "~/temp_x",
+    "$HOME/temp2",
+    "~/temp.d/x",
+    "~/tempé",
+)
+# `temp` where the path ends: at a `/`, at a line end, or before a mark that is no part of a name.
+ENDS_IN_TEMP = (
+    "~/temp",
+    "$HOME/temp",
+    "~/temp/",
+    "`~/temp`",
+    '"$HOME/temp"',
+    "(~/temp)",
+    "see ~/temp.",
+    "~/temp, then",
+    "PATH=~/temp:/bin",
+)
 
 
 class LeakCheckTest(unittest.TestCase):
@@ -94,6 +116,20 @@ class LeakCheckTest(unittest.TestCase):
                 self.write("a.md", f"{text}\n")
                 result = self.run_check("a.md")
                 self.assertEqual((result.code, result.out), (0, ""))
+
+    def test_other_names_that_begin_like_a_machine_specific_path_pass(self) -> None:
+        for text in OTHER_NAMES:
+            with self.subTest(text=text):
+                self.write("a.md", f"{text}\n")
+                result = self.run_check("a.md")
+                self.assertEqual((result.code, result.out), (0, ""))
+
+    def test_temp_fails_wherever_the_path_ends(self) -> None:
+        for text in ENDS_IN_TEMP:
+            with self.subTest(text=text):
+                self.write("a.md", f"before\n{text}\n")
+                result = self.run_check("a.md")
+                self.assertEqual((result.code, result.out), (1, f"a.md:2:{text}\n"))
 
     def test_no_option_changes_what_the_check_refuses(self) -> None:
         self.write("scope.txt", "/Volumes/Backup\n")

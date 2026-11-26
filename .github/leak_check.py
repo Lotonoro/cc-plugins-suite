@@ -4,8 +4,9 @@
 
 Each line of a PATH that holds a machine-specific path is printed as `PATH:LINE:TEXT`: PATH as it
 was given, LINE counted from 1, TEXT the line without its line end. A path is machine-specific
-when it belongs to one account of one machine: `/Users/`, `~/temp` and `$HOME/temp`. A standard
-location, the same on every Mac, such as `~/.claude/` or `~/.android/`, passes.
+when it belongs to one account of one machine: `/Users/`, `~/temp` and `$HOME/temp`, where `temp`
+is the whole name, so that `~/templates` is another. A standard location, the same on every Mac,
+such as `~/.claude/` or `~/.android/`, passes.
 
 Exit status:
     0  no line matched
@@ -19,12 +20,15 @@ Stdlib only, so that it runs on the Python 3.9 the CI gate runs on.
 from __future__ import annotations
 
 import argparse
+import re
 import sys
 from pathlib import Path
 from typing import List, Optional, Sequence, Tuple
 
-# Literal text, not patterns: `$` and `~` mean nothing special here.
-MACHINE_SPECIFIC = ("/Users/", "~/temp", "$HOME/temp")
+# `temp` must be the whole name. More name after it (a letter, digit, `_` or `-`, or a `.` and one
+# of those) makes another name: `~/templates`, `~/temp-files`, `~/temp.d`. A `/`, a line end or any
+# other mark ends the path: `~/temp`, `~/temp/x`, `` `~/temp` ``, `see ~/temp.`.
+MACHINE_SPECIFIC = re.compile(r"/Users/|(?:~|\$HOME)/temp(?![\w-]|\.[\w-])")
 
 EXIT_CLEAN = 0
 EXIT_MATCHED = 1
@@ -37,7 +41,7 @@ def matching_lines(path: str) -> List[Tuple[int, str]]:
     found: List[Tuple[int, str]] = []
     for number, line in enumerate(text.split("\n"), start=1):
         line = line.removesuffix("\r")
-        if any(string in line for string in MACHINE_SPECIFIC):
+        if MACHINE_SPECIFIC.search(line):
             found.append((number, line))
     return found
 
