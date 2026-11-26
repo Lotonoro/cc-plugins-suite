@@ -53,6 +53,19 @@ class CommandLineTest(unittest.TestCase):
         self.assertIn("sys.dont_write_bytecode = True", wrapper.BOOT)
 
 
+class FailingWrapperTest(unittest.TestCase):
+    """A wrapper that fails inside shows as a traceback and status 1, as PROTOCOL.md's exit codes say."""
+
+    def test_a_wrapper_that_cannot_import_its_package_ends_with_a_traceback_and_status_1(self) -> None:
+        argv = [sys.executable, "-I", "-c", wrapper.BOOT, "/nonexistent", "0", "1", "/usr/bin/true"]
+        done = subprocess.run(
+            argv, stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=30
+        )
+        self.assertEqual(done.returncode, 1)
+        self.assertEqual(done.stdout, "")
+        self.assertIn("ModuleNotFoundError: No module named 'broker'", done.stderr)
+
+
 class PendingSignalTest(unittest.TestCase):
     """A signal that lands before the command exists is held, and sent as soon as it does.
 

@@ -75,6 +75,12 @@ broker's own line on stderr does.
 | 128+N | signal N killed the command |
 | the command's own status | in every other case |
 
+The wrapper is the process the client starts to run and watch the command. A wrapper that cannot be
+started is a refusal: the client exits 126 and says so. One that starts and then fails inside, as an
+import error makes it, ends with Python's traceback on stderr and status 1, or 120 when stderr
+cannot be written either. A command may exit with any status, so the table has no row for this, and
+the traceback is what shows it.
+
 ## Records
 
 ### The configuration, `config.json`
