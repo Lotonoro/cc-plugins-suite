@@ -1,0 +1,66 @@
+#!/usr/bin/env bash
+# The simulators mod's declared check. The CI gate runs it from this directory, and a developer runs
+# it by hand: the broker's tests and the conformance suite, on fakes and scratch roots. It starts no
+# simulator and no emulator, and its lock families are scratch ones under /tmp.
+#
+# The tests are unittests, since the Python on this Mac, /usr/bin/python3, is 3.9 and has no pytest.
+# The wrapper's process tests watch a process by kqueue, which only macOS has, so elsewhere unittest
+# skips them and prints the reason.
+#
+# unittest passes a run that found no tests, as one does when its start directory holds none, so
+# the check reads the run's output too: every test file on disk must have run a test of its own.
+set -euo pipefail
+
+readonly MAC_PYTHON=/usr/bin/python3
+readonly OTHER_PYTHON=python3
+
+# The run's output, kept for the check below. It is global because the EXIT trap that removes it
+# runs after main has returned.
+log_file=""
+
+python() {
+    if [[ "$(uname -s)" == Darwin ]]; then
+        "$MAC_PYTHON" "$@"
+    else
+        "$OTHER_PYTHON" "$@"
+    fi
+}
+
+die() {
+    printf 'check: %s\n' "$*" >&2
+    exit 1
+}
+
+cleanup() {
+    rm -f -- "$log_file"
+}
+
+# Fails, naming each test file whose module shows in no line of the run's output.
+require_a_run_of_every_test_file() {
+    local -a files=(broker/tests/test_*.py)
+    [[ -e "${files[0]}" ]] || die "broker/tests holds no test file"
+    local file module
+    local -i missing=0
+    for file in "${files[@]}"; do
+        module="broker.tests.$(basename -- "$file" .py)"
+        if ! grep -q -F -- "($module." "$log_file"; then
+            printf 'check: the run held no test of %s\n' "$module" >&2
+            missing+=1
+        fi
+    done
+    if ((missing > 0)); then
+        return 1
+    fi
+}
+
+main() {
+    cd -- "$(dirname -- "${BASH_SOURCE[0]}")"
+    # The run leaves nothing behind in the tree, bytecode included.
+    export PYTHONDONTWRITEBYTECODE=1
+    log_file="$(mktemp)"
+    trap cleanup EXIT
+    python -m unittest discover -v -s broker -t . 2>&1 | tee -- "$log_file"
+    require_a_run_of_every_test_file
+}
+
+main "$@"
