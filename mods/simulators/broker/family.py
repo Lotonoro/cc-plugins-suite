@@ -36,6 +36,9 @@ _DIGITS = re.compile(r"[0-9]+")
 # shell's `>>` creates a file with, before the umask.
 _OPEN_FLAGS = os.O_WRONLY | os.O_APPEND | os.O_CREAT
 _OPEN_MODE = 0o666
+# The `fcntl` command that gives the path of an open file as the kernel names it: macOS has it and
+# Linux has not.
+_GETPATH: Optional[int] = getattr(fcntl, "F_GETPATH", None)
 
 
 def _open(path: str) -> int:
@@ -64,35 +67,85 @@ def _is_the_file(path: str, other: str) -> bool:
         return False
 
 
-def _where(path: str) -> str:
-    """Where a family at `path` has its files, as a string to compare: the directory part resolved
-    through every link, then the name, in lower case.
+def _kernel_name(directory: str, command: int) -> Optional[str]:
+    """What the kernel calls the directory at `directory` once it is open, by the `fcntl` `command`
+    that gives a path; None when it will not say.
 
-    `realpath` resolves what is there and takes the rest as written, so a directory that is not
-    there yet is read as it will be once made. A trailing slash stays, as the files then sit in it.
+    A directory that is not there, is no directory or is not the user's to open has no name, and
+    neither has one the kernel refuses to name. That is no failure: `_canonical` asks about the
+    directory above it.
+    """
+    try:
+        fd = os.open(directory, os.O_RDONLY | os.O_DIRECTORY)
+    except OSError:
+        return None
+    try:
+        named = fcntl.fcntl(fd, command, bytes(1024))  # PATH_MAX bytes, which the kernel fills in
+    except OSError:
+        return None
+    finally:
+        os.close(fd)
+    return os.fsdecode(named.split(b"\0", 1)[0])
+
+
+def _canonical(directory: str) -> str:
+    """The canonical path of `directory`: the kernel's name for its nearest existing directory, then
+    the rest as written.
+
+    `realpath` goes first, so links, dots and doubled slashes are settled and the rest is plain
+    names. The kernel's name is what `realpath` cannot give: macOS lists the files of its data volume
+    a second time, under `/System/Volumes/Data`, so that `/private/tmp` is also
+    `/System/Volumes/Data/private/tmp`, and the kernel names an open directory by the first and in
+    the letters the disk keeps. Without `F_GETPATH`, and for a directory the kernel will not name,
+    `realpath` is the answer for that part, and the rest is read as it will be once made.
+    """
+    resolved = os.path.realpath(directory)
+    command = _GETPATH
+    if command is None:
+        return resolved
+    existing = resolved
+    rest: List[str] = []
+    while True:
+        named = _kernel_name(existing, command)
+        if named is not None:
+            return os.path.join(named, *reversed(rest))
+        above, name = os.path.split(existing)
+        if above == existing:  # the root, which nothing above can name
+            return resolved
+        existing = above
+        rest.append(name)
+
+
+def _where(path: str) -> str:
+    """Where a family at `path` has its files, as a string to compare: the canonical path of its
+    directory part, then its name, in lower case.
+
+    A trailing slash stays, as the files then sit in it.
     """
     directory, name = os.path.split(path)
-    return os.path.join(os.path.realpath(directory), name).casefold()
+    return os.path.join(_canonical(directory), name).casefold()
 
 
 def collides_with(path: str, default: str) -> bool:
     """Whether a family at `path` is in the family of the default lock `default`.
 
-    It is when the physical path of `path` begins with that of `default`, or with the file `default`
+    It is when the canonical path of `path` begins with that of `default`, or with the file `default`
     leads to when it is a link, or when `path` is the same file as `default` (`-ef`, which two
-    files that are there can be); the physical path is the directory part resolved through every
-    link, then the name, and the letter case is not compared (LOCK-PROTOCOL.md section 4). So the
-    lock, each file of its family, a longer name and anything inside one of them are all taken:
-    making the directory of a family inside one would turn a file of the script's family into a
-    directory. The script's own match takes the same prefix of the physical path in the same letter
-    case once the family's directory is there; this one takes every letter case and does not wait
-    for the directory.
+    files that are there can be); the canonical path is the kernel's name for the nearest existing
+    directory of the directory part, then the rest as written, then the name, and the letter case is
+    not compared (LOCK-PROTOCOL.md section 4). So the lock, each file of its family, a longer name
+    and anything inside one of them are all taken: making the directory of a family inside one would
+    turn a file of the script's family into a directory. The script's own match takes the same prefix
+    once the family's directory is there, in the same letter case; this one takes every letter case
+    and does not wait for the directory.
 
     The answer is the same whether `default` is there or not, and the same before the broker makes
     the family's directory and files as after: only the same-file question reads a file, and a
-    directory that is not there is read as it will be once made. `Config.validate` refuses first a
-    path the file system cannot encode, a `..` component and a final symlink: the last two would
-    name another place once the broker has made what the family names.
+    directory that is not there is read as it will be once made. Two aliases go undetected: a hard
+    link planted between a file of another family and a family file other than the lock, and a
+    second mount of the same volume. `Config.validate` refuses first a path the file system cannot
+    encode, a `..` component and a final symlink: the last two would name another place once the
+    broker has made what the family names.
     """
     if _is_the_file(path, default):
         return True

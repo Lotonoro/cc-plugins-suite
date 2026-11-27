@@ -100,6 +100,29 @@ def tree(path: str) -> List[str]:
     return sorted(os.path.join(at, name) for at, directories, files in os.walk(path) for name in (*directories, *files))
 
 
+# macOS also lists the files of its data volume under this directory: `/private/tmp` is
+# `/System/Volumes/Data/private/tmp` too, a second path to the same place that `realpath` leaves be.
+DATA_VOLUME = "/System/Volumes/Data"
+
+
+def _data_volume_names_tmp_too() -> bool:
+    try:
+        return sys.platform == "darwin" and os.path.samestat(os.stat("/tmp"), os.stat(DATA_VOLUME + "/private/tmp"))
+    except OSError:
+        return False
+
+
+# Every scratch directory is under /tmp, so a test that spells one through the data volume needs this.
+ON_THE_DATA_VOLUME = unittest.skipUnless(
+    _data_volume_names_tmp_too(), "only macOS names a place a second way, under /System/Volumes/Data"
+)
+
+
+def through_the_data_volume(path: str) -> str:
+    """`path`, a path under a scratch directory, spelled through the data volume."""
+    return DATA_VOLUME + os.path.realpath(path)
+
+
 def stop_process(child: "subprocess.Popen[str]") -> None:
     """Kills the child by the id it was started with, reaps it and closes its pipes."""
     if child.poll() is None:

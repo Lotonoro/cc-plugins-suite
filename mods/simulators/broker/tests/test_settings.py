@@ -14,7 +14,17 @@ from unittest import mock
 from broker import protocol
 from broker.errors import ConfigError
 from broker.settings import Config, default_family, default_slots, load_config
-from broker.tests.support import STATES, be_there, in_other_letters, inside, scratch_dir, set_state, starts_like
+from broker.tests.support import (
+    ON_THE_DATA_VOLUME,
+    STATES,
+    be_there,
+    in_other_letters,
+    inside,
+    scratch_dir,
+    set_state,
+    starts_like,
+    through_the_data_volume,
+)
 
 ROOT = "/state/root"
 
@@ -359,6 +369,23 @@ class DefaultLockFamilyTest(unittest.TestCase):
                                 parse({"family": family})
                             with self.assertRaisesRegex(ConfigError, "max_runs is 5"):
                                 self.shared(family, 5)
+
+    @ON_THE_DATA_VOLUME
+    def test_a_family_spelled_through_the_data_volume_is_in_the_default_locks_family_whether_the_lock_is_there_or_not(
+        self,
+    ) -> None:
+        # `/System/Volumes/Data/private/tmp/x` is `/private/tmp/x`, which `realpath` does not know.
+        for there in (False, True):
+            be_there(self.default, there)
+            for start in starts_like(self.default):
+                for family in (start, *inside(start)):
+                    spelling = through_the_data_volume(family)
+                    with self.subTest(lock_is_there=there, family=spelling):
+                        with self.assertRaisesRegex(ConfigError, "shared is false"):
+                            parse({"family": spelling})
+                        with self.assertRaisesRegex(ConfigError, "max_runs is 5"):
+                            self.shared(spelling, 5)
+                        self.assertEqual(self.shared(spelling, 3, slots=3).max_runs, 3)
 
     def test_a_trailing_slash_does_not_take_a_family_out_of_the_default_locks_family(self) -> None:
         for start in starts_like(self.default):

@@ -66,6 +66,7 @@ from broker.tests.process_case import (
 )
 from broker.tests.support import (
     EPOCH,
+    ON_THE_DATA_VOLUME,
     STATES,
     FakeClock,
     FakeMachine,
@@ -77,6 +78,7 @@ from broker.tests.support import (
     inside,
     scratch_dir,
     set_state,
+    through_the_data_volume,
 )
 from broker.waiter import GaveUp, Timing, Waiter
 
@@ -773,6 +775,20 @@ class SharedSlotRuleCase(ConformanceCase):
         for there in (False, True):
             be_there(default, there)
             for spelling in in_other_letters(default):
+                with self.subTest(lock_is_there=there, spelling=spelling):
+                    with self.assertRaises(ConfigError):
+                        self.shared(family=spelling, max_runs=count + 1, slots=1)
+                    with self.assertRaises(ConfigError):
+                        Config.from_mapping({"family": spelling}, self.dir, 12)
+
+    @ON_THE_DATA_VOLUME
+    def test_the_default_locks_family_is_matched_through_the_data_volume_whether_the_lock_is_there_or_not(self) -> None:
+        default = self.stand_in_for_the_default_lock()
+        count = Docs.default_lock_count()
+        for there in (False, True):
+            be_there(default, there)
+            for path in Docs.family_files(default):
+                spelling = through_the_data_volume(path)
                 with self.subTest(lock_is_there=there, spelling=spelling):
                     with self.assertRaises(ConfigError):
                         self.shared(family=spelling, max_runs=count + 1, slots=1)

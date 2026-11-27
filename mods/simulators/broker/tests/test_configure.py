@@ -22,6 +22,7 @@ from broker.errors import ConfigError, FamilyError, StateError
 from broker.settings import Config, LoadedConfig, load_config
 from broker.stateroot import open_root
 from broker.tests.support import (
+    ON_THE_DATA_VOLUME,
     STATES,
     be_there,
     hold_in_another_process,
@@ -30,6 +31,7 @@ from broker.tests.support import (
     scratch_dir,
     set_state,
     starts_like,
+    through_the_data_volume,
     tree,
 )
 
@@ -219,6 +221,28 @@ class DefaultLockFamilyTest(ConfigureCase):
                         (Settings(family=family, shared=True, max_runs=5, slots=3), "max_runs is 5"),
                     ):
                         with self.subTest(family=family, state=state, settings=settings):
+                            with self.assertRaisesRegex(ConfigError, words):
+                                self.run_configure(settings)
+                            self.assertEqual(tree(self.dir), before, "nothing was written or made")
+        self.assertEqual(self.out.getvalue(), "")
+
+    @ON_THE_DATA_VOLUME
+    def test_a_family_spelled_through_the_data_volume_is_refused_at_configure_whether_the_lock_is_there_or_not(
+        self,
+    ) -> None:
+        # `/System/Volumes/Data/private/tmp/x` is `/private/tmp/x`. The verify step would make the lock and the
+        # script's gate the family's own files, and every open of the root after that refused the family.
+        for there in (False, True):
+            be_there(self.default, there)
+            before = tree(self.dir)
+            for start in starts_like(self.default):
+                for family in (start, *inside(start)):
+                    spelling = through_the_data_volume(family)
+                    for settings, words in (
+                        (Settings(family=spelling, slots=2), "shared is false"),
+                        (Settings(family=spelling, shared=True, max_runs=5, slots=3), "max_runs is 5"),
+                    ):
+                        with self.subTest(lock_is_there=there, settings=settings):
                             with self.assertRaisesRegex(ConfigError, words):
                                 self.run_configure(settings)
                             self.assertEqual(tree(self.dir), before, "nothing was written or made")

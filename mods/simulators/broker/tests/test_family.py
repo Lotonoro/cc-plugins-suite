@@ -7,15 +7,19 @@ this one: a flock held by a process that dies is gone, and a probe never keeps w
 
 from __future__ import annotations
 
+import errno
 import fcntl
 import os
 import threading
 import unittest
 from typing import List, Optional, Tuple
+from unittest import mock
 
+from broker import family as family_module
 from broker.errors import FamilyError
 from broker.family import Family, collides_with
 from broker.tests.support import (
+    ON_THE_DATA_VOLUME,
     STATES,
     be_there,
     hold_in_another_process,
@@ -24,6 +28,7 @@ from broker.tests.support import (
     scratch_dir,
     set_state,
     starts_like,
+    through_the_data_volume,
 )
 
 
@@ -366,11 +371,12 @@ class DefaultLockCase(FamilyCase):
 class CollidesWithTest(DefaultLockCase):
     """Whether a family at a path collides with the family of the default lock: the broker's own test.
 
-    A family does when it is the same file as the lock, or when its physical path begins with the
-    lock's, or with the file the lock leads to when it is a link. The physical path is the directory
-    part resolved through every link, then the name, and the letter case is not compared
-    (LOCK-PROTOCOL.md section 4). The test reads no more of a family's own directory than its path,
-    so its answer is the same before the broker makes the family's directory and files as after.
+    A family does when it is the same file as the lock, or when its canonical path begins with the
+    lock's, or with the file the lock leads to when it is a link. The canonical path is the kernel's
+    name for the nearest existing directory of its directory part, then the rest as written, then
+    the name, and the letter case is not compared (LOCK-PROTOCOL.md section 4). The test asks the
+    kernel the name of a directory that is there and nothing of one that is not, so its answer is
+    the same before the broker makes the family's directory and files as after.
     """
 
     FAMILY_FILES = (".1", ".2", ".gate", ".last-start", ".owner", ".1.owner")
@@ -511,6 +517,46 @@ class CollidesWithTest(DefaultLockCase):
         os.makedirs(os.path.join(self.tmp, "nosuch"))
         self.assertTrue(self.says(text))
 
+    def test_a_directory_the_kernel_will_not_name_is_read_as_realpath_gives_it(self) -> None:
+        # No directory can be opened, as when the user may open none of them, or the kernel refuses to name
+        # one it has opened, as when it was removed while open: in the end `realpath` answers, at the root.
+        refusals = (
+            ("the open", mock.patch.object(family_module.os, "open", side_effect=PermissionError(errno.EACCES, "no"))),
+            ("the name", mock.patch.object(family_module.fcntl, "fcntl", side_effect=OSError(errno.ENOENT, "no path"))),
+        )
+        for refused, patch in refusals:
+            with mock.patch.object(family_module, "_GETPATH", 50), patch:
+                for start in starts_like(self.default):
+                    for path in (start, *inside(start)):
+                        with self.subTest(refused=refused, path=path):
+                            self.assertTrue(self.says(path))
+                for start in starts_like(os.path.join(self.elsewhere, self.NAME)):
+                    for path in (start, *inside(start)):
+                        with self.subTest(refused=refused, path=path):
+                            self.assertFalse(self.says(path))
+
+    def test_only_a_directory_is_opened_to_ask_the_kernel_its_name(self) -> None:
+        # A path in the way may be a pipe, which opening for reading waits on.
+        with mock.patch.object(family_module, "_GETPATH", 50):
+            with mock.patch.object(family_module.fcntl, "fcntl", side_effect=OSError(errno.ENOENT, "no path")):
+                with mock.patch.object(family_module.os, "open", wraps=os.open) as opened:
+                    self.says(os.path.join(self.default + ".gate", "x", "lock"))
+        self.assertTrue(opened.call_args_list, "no directory was opened")
+        for call in opened.call_args_list:
+            with self.subTest(call=call):
+                self.assertTrue(call.args[1] & os.O_DIRECTORY)
+
+    def test_no_descriptor_is_left_open_whether_the_kernel_names_the_directory_or_not(self) -> None:
+        paths = [os.path.join(self.default + ".gate", "x", "lock"), os.path.join(self.elsewhere, self.NAME)]
+        before = len(os.listdir("/dev/fd"))
+        for path in paths:
+            self.says(path)
+        with mock.patch.object(family_module, "_GETPATH", 50):
+            with mock.patch.object(family_module.fcntl, "fcntl", side_effect=OSError(errno.ENOENT, "no path")):
+                for path in paths:
+                    self.says(path)
+        self.assertEqual(len(os.listdir("/dev/fd")), before)
+
     def test_the_answer_is_the_same_before_the_family_is_made_as_after_with_the_default_lock_there_or_not(self) -> None:
         for path in (
             self.default + ".gate",
@@ -531,6 +577,88 @@ class CollidesWithTest(DefaultLockCase):
                     os.makedirs(os.path.dirname(path), exist_ok=True)  # what the broker's gate does
                     be_there(path, True)  # and the verify step
                     self.assertEqual(self.says(path), before)
+                    be_there(path, False)
+
+
+class CollidesWithoutTheKernelsNamesTest(CollidesWithTest):
+    """Where `fcntl` has no F_GETPATH, as on Linux, `realpath` names the directory: every answer above holds."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        patch = mock.patch.object(family_module, "_GETPATH", None)
+        patch.start()
+        self.addCleanup(patch.stop)
+
+
+class DataVolumeSpellingTest(DefaultLockCase):
+    """macOS lists every file of its data volume a second time, under /System/Volumes/Data, and `realpath`
+    leaves that path be: `/private/tmp/x` is also `/System/Volumes/Data/private/tmp/x`. A family spelled
+    that way has the files of the family spelled the other way, and the kernel's name for its directory
+    shows it, whether or not the lock is there to be the same file.
+    """
+
+    def says(self, path: str) -> bool:
+        return collides_with(path, self.default)
+
+    @ON_THE_DATA_VOLUME
+    def test_a_family_spelled_through_the_data_volume_collides_whether_the_default_lock_is_there_or_not(self) -> None:
+        for there in (False, True):
+            be_there(self.default, there)
+            for base in (self.default, *in_other_letters(self.default)):
+                for start in starts_like(base):
+                    for path in (start, *inside(start)):
+                        with self.subTest(lock_is_there=there, path=path):
+                            self.assertTrue(self.says(through_the_data_volume(path)))
+
+    @ON_THE_DATA_VOLUME
+    def test_a_default_lock_spelled_through_the_data_volume_is_the_same_lock(self) -> None:
+        default = through_the_data_volume(self.default)
+        for there in (False, True):
+            be_there(self.default, there)
+            for start in starts_like(self.default):
+                for path in (start, *inside(start)):
+                    with self.subTest(lock_is_there=there, path=path):
+                        self.assertTrue(collides_with(path, default))
+        self.assertFalse(collides_with(os.path.join(self.elsewhere, self.NAME), default))
+
+    @ON_THE_DATA_VOLUME
+    def test_the_names_of_the_default_locks_family_in_another_directory_collide_with_nothing_through_the_data_volume(
+        self,
+    ) -> None:
+        for start in starts_like(os.path.join(self.elsewhere, self.NAME)):
+            for path in (start, *inside(start)):
+                with self.subTest(path=path):
+                    self.assertFalse(self.says(through_the_data_volume(path)))
+
+    @ON_THE_DATA_VOLUME
+    def test_a_directory_in_the_way_that_cannot_be_opened_is_read_through_the_one_above_it(self) -> None:
+        # The kernel names a directory by an open descriptor of it, which this one does not allow, and the
+        # families below it are the gate's.
+        gate = self.default + ".gate"
+        os.mkdir(gate, 0o300)  # its owner may search it and make files in it, and may not read it
+        self.addCleanup(os.chmod, gate, 0o700)
+        for path in inside(gate):
+            with self.subTest(path=path):
+                self.assertTrue(self.says(through_the_data_volume(path)))
+
+    @ON_THE_DATA_VOLUME
+    def test_the_answer_is_the_same_before_the_family_is_made_as_after_when_it_is_spelled_through_the_data_volume(
+        self,
+    ) -> None:
+        for path, collides in (
+            (self.default + ".gate", True),
+            (os.path.join(self.default + ".d", "family", "lock"), True),
+            (os.path.join(self.elsewhere, self.NAME + ".gate"), False),
+            (os.path.join(self.elsewhere, "family", "lock"), False),
+        ):
+            spelling = through_the_data_volume(path)
+            for there in (False, True):
+                with self.subTest(path=spelling, lock_is_there=there):
+                    be_there(self.default, there)
+                    self.assertEqual(self.says(spelling), collides)
+                    os.makedirs(os.path.dirname(path), exist_ok=True)  # what the broker's gate does
+                    be_there(path, True)  # and the verify step
+                    self.assertEqual(self.says(spelling), collides)
                     be_there(path, False)
 
 
