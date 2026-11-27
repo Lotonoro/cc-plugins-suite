@@ -372,11 +372,12 @@ class CollidesWithTest(DefaultLockCase):
     """Whether a family at a path collides with the family of the default lock: the broker's own test.
 
     A family does when it is the same file as the lock, or when its canonical path begins with the
-    lock's, or with the file the lock leads to when it is a link. The canonical path is the kernel's
-    name for the nearest existing directory of its directory part, then the rest as written, then
-    the name, and the letter case is not compared (LOCK-PROTOCOL.md section 4). The test asks the
-    kernel the name of a directory that is there and nothing of one that is not, so its answer is
-    the same before the broker makes the family's directory and files as after.
+    lock's, or with the file the lock leads to when it is a link. The canonical path is its
+    directory part resolved through every link first, then the kernel's name for the nearest
+    directory of that path which can be opened, then the rest of that path, then the name, and the
+    letter case is not compared (LOCK-PROTOCOL.md section 4). The test asks the kernel the name of a
+    directory that is there and nothing of one that is not, so its answer is the same before the
+    broker makes the family's directory and files as after.
     """
 
     FAMILY_FILES = (".1", ".2", ".gate", ".last-start", ".owner", ".1.owner")

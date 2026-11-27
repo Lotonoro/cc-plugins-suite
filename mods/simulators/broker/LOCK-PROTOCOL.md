@@ -208,24 +208,25 @@ takes any count (self-test L402, L557-564).
 The broker holds the same on its side by one rule, which asks where a family's files are and not
 how its path is spelled. A family is in the default lock's family when its canonical path begins
 with the default lock's, compared without regard to letter case, which this Mac's volume does not
-tell apart. The canonical path is the kernel's name for the nearest existing directory of the
-family's directory part, then the rest as written, then the name. The kernel's name is what
-`realpath` cannot give: macOS lists the files of its data volume a second time, under
-`/System/Volumes/Data`, so `/private/tmp` is also `/System/Volumes/Data/private/tmp`, and the
-kernel names a directory by the first. Where `fcntl` has no `F_GETPATH`, `realpath` stands in for
-the kernel's name. The rule takes the lock, every file of its family (section 2), a longer name,
-and a path inside any of them, since `configure` would turn a file of the script's into a
-directory. When the default lock is a link, the file it leads to counts as the lock, and a family
-that is the same file as the lock is in its family too (the shell's `-ef`, which only files that
-are there can pass). A shared family in it must keep `max_runs` at 3, and
-a family in it must be shared: the script's callers use its files, the gate among them, and an
-unshared family there would hold the script's gate. The answer is the same whether the default
-lock is there or not, and before `configure` makes the family's directory as after, so `configure`
-never takes a family that every later open refuses. The rule takes everything the script's match
-behind its own refusal (L374-376) takes, and besides other letter cases, the data volume's second
-path and a family whose directory is not there yet. Two aliases are not detected: a hard link
-planted between a file of another family and a family file other than the lock, `<lock>.gate` say,
-since the same-file test compares the two locks alone, and a second mount of the same volume.
+tell apart. The canonical path is made in steps: the family's directory part is resolved through
+every link first; then the kernel names the nearest directory of that path which can be opened;
+then the rest of that path follows, then the name. The kernel's name is what `realpath` cannot
+give: macOS lists the files of its data volume a second time, under `/System/Volumes/Data`, so
+`/private/tmp` is also `/System/Volumes/Data/private/tmp`, and the kernel names a directory by the
+first. Where `fcntl` has no `F_GETPATH`, `realpath` stands in for the kernel's name. The rule takes
+the lock, every file of its family (section 2), a longer name, and a path inside any of them, since
+`configure` would turn a file of the script's into a directory. When the default lock is a link,
+the file it leads to counts as the lock, and a family that is the same file as the lock is in its
+family too (the shell's `-ef`, which only files that are there can pass). A shared family in it
+must keep `max_runs` at 3, and a family in it must be shared: the script's callers use its files,
+the gate among them, and an unshared family there would hold the script's gate. The answer is the
+same whether the default lock is there or not, and before `configure` makes the family's directory
+as after, so `configure` never takes a family that every later open refuses. The rule takes
+everything the script's match behind its own refusal (L374-376) takes, and besides other letter
+cases, the data volume's second path and a family whose directory is not there yet. Two aliases are
+not detected: a hard link planted between a file of another family and a family file other than the
+lock, `<lock>.gate` say, since the same-file test compares the two locks alone, and a second mount
+of the same volume.
 
 Where this file says MAX_RUNS of a broker run, it means c in its take loop and in checks 1 and 5 of
 section 3, so the number in their text is c; in its alone check and its holder listing it means N.

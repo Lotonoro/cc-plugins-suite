@@ -89,8 +89,9 @@ def _kernel_name(directory: str, command: int) -> Optional[str]:
 
 
 def _canonical(directory: str) -> str:
-    """The canonical path of `directory`: the kernel's name for its nearest existing directory, then
-    the rest as written.
+    """The canonical path of `directory`: `directory` resolved through every link first, then the
+    kernel's name for the nearest directory of that path which can be opened, then the rest of that
+    path.
 
     `realpath` goes first, so links, dots and doubled slashes are settled and the rest is plain
     names. The kernel's name is what `realpath` cannot give: macOS lists the files of its data volume
@@ -129,15 +130,16 @@ def _where(path: str) -> str:
 def collides_with(path: str, default: str) -> bool:
     """Whether a family at `path` is in the family of the default lock `default`.
 
-    It is when the canonical path of `path` begins with that of `default`, or with the file `default`
-    leads to when it is a link, or when `path` is the same file as `default` (`-ef`, which two
-    files that are there can be); the canonical path is the kernel's name for the nearest existing
-    directory of the directory part, then the rest as written, then the name, and the letter case is
-    not compared (LOCK-PROTOCOL.md section 4). So the lock, each file of its family, a longer name
-    and anything inside one of them are all taken: making the directory of a family inside one would
-    turn a file of the script's family into a directory. The script's own match takes the same prefix
-    once the family's directory is there, in the same letter case; this one takes every letter case
-    and does not wait for the directory.
+    It is when the canonical path of `path` begins with that of `default`, or with the file
+    `default` leads to when it is a link, or when `path` is the same file as `default` (`-ef`, which
+    two files that are there can be); the canonical path is the directory part resolved through
+    every link first, then the kernel's name for the nearest directory of that path which can be
+    opened, then the rest of that path, then the name, and the letter case is not compared
+    (LOCK-PROTOCOL.md section 4). So the lock, each file of its family, a longer name and anything
+    inside one of them are all taken: making the directory of a family inside one would turn a file
+    of the script's family into a directory. The script's own match takes the same prefix once the
+    family's directory is there, in the same letter case; this one takes every letter case and does
+    not wait for the directory.
 
     The answer is the same whether `default` is there or not, and the same before the broker makes
     the family's directory and files as after: only the same-file question reads a file, and a
