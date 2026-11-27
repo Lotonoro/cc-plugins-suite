@@ -38,7 +38,7 @@ variable not named here is not read.
 | Variable | What the client does with it |
 |---|---|
 | `CLAUDE_SIMULATORS_STATE_ROOT` | names the state root; a relative path is made absolute from the working directory |
-| `HOME` | locates the default state root, which is `Library/Application Support/claude-simulators` in it; when `HOME` is unset the account's home directory stands in |
+| `HOME` | locates the default state root, which is `Library/Application Support/claude-simulators` in it, made absolute as the setting's path is; when `HOME` is unset the account's home directory stands in |
 | `PWD` | names the working directory the slot's owner record shows, as `sim-lock.sh` records its shell's `$PWD`, when it is an absolute path to the directory the client is in; any other value is not believed, and the record shows the directory the client is in |
 | `SIM_LOCK_FILE` | is the family the client was given: a state root whose family is another runs nothing and the client exits 79; `configure` ignores it |
 | any other `SIM_LOCK_*` | is a setting of `sim-lock.sh` that the broker does not read, and a line on stderr names it |
@@ -91,7 +91,7 @@ client that meets such a file exits 78 naming it.
 
 | Setting | What it is | Default | Range |
 |---|---|---|---|
-| `family` | the lock family's path | `family/lock` in the root | an absolute path with no NUL byte and no `..` component, since a `..` after a directory that is not there yet names another directory once `configure` has made it |
+| `family` | the lock family's path | `family/lock` in the root | an absolute path with no NUL byte, no `..` component, and not itself a symbolic link (a directory in it may be one); a `..` after a directory that is not there yet names another directory once `configure` has made it, and opening a link that dangles makes the file it points to |
 | `shared` | whether `sim-lock.sh` uses the family too | `false` | `true` or `false`, and `true` for `sim-lock.sh`'s default lock itself, matched as that file and not by prefix (`LOCK-PROTOCOL.md` section 4) |
 | `max_runs` | on a shared family, the MAX_RUNS that the script's callers use | 3 | a positive whole number, and 3 on a shared family in `sim-lock.sh`'s default lock family, matched as the script matches it (`LOCK-PROTOCOL.md` section 4) |
 | `slots` | the number of slots the broker takes | `max(3, cores / 4)`, at most `max_runs` on a shared family | a positive whole number, at most `max_runs` on a shared family |

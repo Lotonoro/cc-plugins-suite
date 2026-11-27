@@ -244,6 +244,18 @@ class EnvironmentTest(DispatcherCase):
         expected = os.path.join(home, "Library", "Application Support", "claude-simulators")
         self.assertEqual(self.out.getvalue().splitlines()[0], f"state root: {expected}")
 
+    def test_a_home_that_holds_a_dot_dot_gives_the_default_root_without_it_and_a_family_that_is_accepted(self) -> None:
+        home = os.path.join(self.dir, "home")
+        os.makedirs(home)
+        env = {"HOME": os.path.join(home, "..", "home")}
+        self.assertEqual(self.main("configure", env=env), 0)  # the family it derives from the root has no `..`
+        self.assertEqual(self.main("status", env=env), 0)
+        root = os.path.join(home, "Library", "Application Support", "claude-simulators")
+        self.assertIn(f"state root: {root}", self.out.getvalue().splitlines())
+        with open(os.path.join(root, "config.json"), encoding="utf-8") as handle:
+            self.assertEqual(json.load(handle)["family"], os.path.join(root, "family", "lock"))
+        self.assertEqual(self.err.getvalue(), "")
+
     # The directory the slot's owner record shows is the one `sim-lock.sh` records, the shell's
     # `$PWD`, when that names the current directory.
 
@@ -365,6 +377,19 @@ class ErrorsTest(DispatcherCase):
             r"^sim-lock: .*config\.json: family must not hold a \.\. component: spell the family without \.\.",
         )
 
+    def test_a_family_that_is_a_link_exits_78_naming_the_file_and_the_fix(self) -> None:
+        link = os.path.join(self.dir, "link")
+        os.symlink(os.path.join(self.dir, "gone"), link)
+        os.makedirs(self.root)
+        with open(os.path.join(self.root, "config.json"), "w", encoding="utf-8") as handle:
+            json.dump({"family": link}, handle)
+        self.assertEqual(self.main("status"), protocol.EXIT_CONFIG)
+        self.assertRegex(
+            self.err_lines()[0],
+            r"^sim-lock: .*config\.json: family must not be a symbolic link, but .* is one: "
+            r"name the lock file itself, not a link to it$",
+        )
+
     def test_configure_arguments_the_loader_refuses_exit_78_and_write_nothing(self) -> None:
         self.assertEqual(self.main("configure", "--slots", "0"), protocol.EXIT_CONFIG)
         self.assertFalse(os.path.exists(os.path.join(self.root, "config.json")))
@@ -422,6 +447,18 @@ class ErrorsTest(DispatcherCase):
             self.err_lines()[0], r"^sim-lock: family must not hold a \.\. component: spell the family without \.\."
         )
         self.assertEqual(os.listdir(self.dir), [], "no directory was made and no configuration written")
+
+    def test_configure_refuses_a_link_to_a_default_lock_that_is_not_there_and_does_not_make_the_lock(self) -> None:
+        default = os.path.join(self.dir, "pango-sim-test.flock")
+        link = os.path.join(self.dir, "link")
+        os.symlink(default, link)  # dangles: the default lock is not there
+        with mock.patch.object(protocol, "DEFAULT_LOCK_FILE", default):
+            self.assertEqual(self.main("configure", "--family", link), protocol.EXIT_CONFIG)
+        self.assertRegex(
+            self.err_lines()[0],
+            r"^sim-lock: family must not be a symbolic link, but .* is one: name the lock file itself, not a link to it$",
+        )
+        self.assertEqual(os.listdir(self.dir), ["link"], "the lock was not made through the link, and nothing else was")
 
     def test_a_record_that_is_not_ours_exits_78_naming_the_file(self) -> None:
         os.makedirs(os.path.join(self.root, "state"))

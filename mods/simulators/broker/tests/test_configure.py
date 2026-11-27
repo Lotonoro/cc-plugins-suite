@@ -186,6 +186,18 @@ class DefaultLockFamilyTest(ConfigureCase):
         self.assertEqual(os.listdir(self.dir), [], "no directory was made and no configuration written")
         self.assertEqual(self.out.getvalue(), "")
 
+    def test_a_link_to_a_default_lock_that_is_not_there_is_refused_before_opening_the_family_makes_the_lock(self) -> None:
+        # The link dangles, so the checks against the default lock find no file to match; opening the family
+        # makes the lock through the link, and every open of the root after that refused the family.
+        link = os.path.join(self.dir, "link")
+        os.symlink(self.default, link)
+        for settings in (Settings(family=link), Settings(family=link, shared=True, max_runs=5, slots=3)):
+            with self.subTest(settings=settings):
+                with self.assertRaisesRegex(ConfigError, "name the lock file itself, not a link to it"):
+                    self.run_configure(settings)
+        self.assertEqual(os.listdir(self.dir), ["link"], "the lock was not made through the link, and nothing else was")
+        self.assertEqual(self.out.getvalue(), "")
+
     def test_the_default_locks_own_count_is_written_and_the_family_tried(self) -> None:
         got = self.run_configure(Settings(family=self.default, shared=True, max_runs=3, slots=3))
         self.assertEqual((got.family, got.max_runs), (self.default, 3))

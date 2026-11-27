@@ -165,6 +165,41 @@ class FromMappingTest(unittest.TestCase):
                 self.assertEqual(parse({"family": family}).family, family)
 
 
+class LinkedFamilyTest(unittest.TestCase):
+    """A family that is itself a symbolic link is refused, whether it leads to a file or dangles.
+
+    A link that dangles is no file for the checks against the default lock to match, and opening the
+    family creates what it points to. A directory in the path may be a link, as `/tmp` is on a Mac.
+    """
+
+    def setUp(self) -> None:
+        self.dir = scratch_dir(self)
+        self.file = os.path.join(self.dir, "file")
+        with open(self.file, "w", encoding="utf-8"):
+            pass
+        self.live = os.path.join(self.dir, "live")
+        os.symlink(self.file, self.live)
+        self.dangling = os.path.join(self.dir, "dangling")
+        os.symlink(os.path.join(self.dir, "gone"), self.dangling)
+        self.directory = os.path.join(self.dir, "directory")
+        os.symlink(self.dir, self.directory)
+
+    def test_a_family_that_is_a_link_is_refused_leading_to_a_file_or_not_and_the_refusal_names_the_fix(self) -> None:
+        for link in (self.live, self.dangling):
+            for shared in (False, True):
+                with self.subTest(link=link, shared=shared):
+                    with self.assertRaisesRegex(ConfigError, "family must not be a symbolic link") as caught:
+                        parse({"family": link, "shared": shared})
+                    self.assertIn("name the lock file itself, not a link to it", str(caught.exception))
+                    self.assertIn(repr(link), str(caught.exception))
+
+    def test_a_family_below_a_linked_directory_a_file_that_is_there_and_a_name_that_is_not_are_families(self) -> None:
+        for family in (os.path.join(self.directory, "lock"), self.file, os.path.join(self.dir, "not-there")):
+            for shared in (False, True):
+                with self.subTest(family=family, shared=shared):
+                    self.assertEqual(parse({"family": family, "shared": shared}).family, family)
+
+
 class LimitsTest(unittest.TestCase):
     def test_the_slot_count_is_a_positive_whole_number(self) -> None:
         for value in (0, -1):
@@ -288,6 +323,18 @@ class DefaultLockFamilyTest(unittest.TestCase):
 
     def test_a_shared_root_on_the_brokers_own_family_takes_any_count(self) -> None:
         self.assertEqual(parse({"shared": True, "max_runs": 5}).max_runs, 5)
+
+    def test_a_link_to_the_default_lock_is_refused_as_a_link_whether_the_lock_is_there_or_not(self) -> None:
+        link = os.path.join(self.dir, "link")
+        os.symlink(self.default, link)  # dangles: the default lock is not there, and no check can match it
+        for lock_is_there in (False, True):
+            if lock_is_there:
+                with open(self.default, "w", encoding="utf-8"):
+                    pass
+            for data in ({}, {"shared": True, "max_runs": 5, "slots": 3}):
+                with self.subTest(lock_is_there=lock_is_there, data=data):
+                    with self.assertRaisesRegex(ConfigError, "name the lock file itself, not a link to it"):
+                        parse({"family": link, **data})
 
 
 class SerializationTest(unittest.TestCase):

@@ -129,6 +129,17 @@ class RefusalTest(RootCase):
                 self.assertEqual(caught.exception.exit_code, protocol.EXIT_CONFIG)
                 self.assertIn("spell the family without ..", str(caught.exception))
 
+    def test_a_family_that_is_a_link_is_refused_naming_the_file_and_the_fix(self) -> None:
+        link = os.path.join(self.dir, "link")
+        os.symlink(os.path.join(self.dir, "gone"), link)
+        for shared in (False, True):
+            with self.subTest(shared=shared):
+                self.full_configuration(family=link, shared=shared)
+                with self.assertRaisesRegex(ConfigError, r"config\.json: family must not be a symbolic link") as caught:
+                    open_root(self.root, CORES)
+                self.assertEqual(caught.exception.exit_code, protocol.EXIT_CONFIG)
+                self.assertIn("name the lock file itself, not a link to it", str(caught.exception))
+
     def test_the_limits_themselves_are_accepted(self) -> None:
         self.full_configuration(settle_seconds=9_999_999, min_idle_percent=999)
         self.assertEqual(open_root(self.root, CORES).config.settle_seconds, 9_999_999)

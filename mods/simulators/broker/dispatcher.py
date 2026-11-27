@@ -169,7 +169,7 @@ def _dispatch(
 def _read(environ: Mapping[str, str], takes_family: bool) -> Environment:
     """The environment's part in a verb: the root, the family the verb takes, and the knobs it ignores."""
     setting = _value(environ, protocol.STATE_ROOT_SETTING)
-    state_root = os.path.abspath(setting) if setting else _default_root(environ)
+    state_root = os.path.abspath(setting or _default_root(environ))
     family = _value(environ, protocol.FAMILY_VARIABLE) if takes_family else None
     ignored = sorted(
         name
