@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import stat
+import sys
 import unittest
 from dataclasses import replace
 from typing import Any, Dict
@@ -13,7 +14,7 @@ from unittest import mock
 from broker import protocol
 from broker.errors import ConfigError
 from broker.settings import Config, default_family, default_slots, load_config
-from broker.tests.support import be_there, in_other_letters, scratch_dir
+from broker.tests.support import STATES, be_there, in_other_letters, inside, scratch_dir, set_state, starts_like
 
 ROOT = "/state/root"
 
@@ -151,8 +152,9 @@ class FromMappingTest(unittest.TestCase):
                 parse({"family": "/tmp/a\x00b", "shared": shared})
 
     def test_the_family_must_be_a_path_the_file_system_can_encode_and_the_refusal_names_the_family(self) -> None:
-        # No file system takes a lone surrogate that `surrogateescape` has no byte for, which is any but U+DC80 to U+DCFF.
-        for family in ("/tmp/\ud800", "/tmp/a\udfffb/lock", "/tmp/\udc7f/lock"):
+        # A lone surrogate is no part of a name. Most have no bytes at all; U+DC80 to U+DCFF stand for one
+        # byte each, which is no valid UTF-8 on its own.
+        for family in ("/tmp/\ud800", "/tmp/a\udfffb/lock", "/tmp/\udc7f/lock", "/tmp/\udc80/lock", "/tmp/a\udcffb"):
             for shared in (False, True):
                 with self.subTest(family=family, shared=shared):
                     with self.assertRaisesRegex(ConfigError, "family must be a path the file system can encode") as caught:
@@ -160,12 +162,12 @@ class FromMappingTest(unittest.TestCase):
                     self.assertIn(repr(family), str(caught.exception))
 
     def test_a_family_the_file_system_can_encode_is_a_family_whatever_its_characters(self) -> None:
-        for family in ("/tmp/café/lock", "/tmp/日本/lock", "/tmp/\udc80/lock"):
+        for family in ("/tmp/café/lock", "/tmp/日本/lock"):
             with self.subTest(family=family):
                 try:
-                    os.fsencode(family)
-                except UnicodeEncodeError:
-                    self.skipTest(f"this file system encoding has no bytes for {family!r}")
+                    os.fsencode(family).decode(sys.getfilesystemencoding())
+                except UnicodeError:
+                    self.skipTest(f"this file system encoding has no valid bytes for {family!r}")
                 self.assertEqual(parse({"family": family}).family, family)
 
     def test_the_family_may_not_hold_a_dot_dot_component_and_the_refusal_names_the_fix(self) -> None:
@@ -323,19 +325,71 @@ class DefaultLockFamilyTest(unittest.TestCase):
                         self.shared(spelling, 5)
                     self.assertEqual(self.shared(spelling, 3, slots=3).max_runs, 3)
 
-    def test_a_family_below_the_default_lock_itself_is_in_its_family_whether_the_lock_is_there_or_not(self) -> None:
-        # Opening it would make the default lock a directory, or find the lock a file in the way.
+    def test_a_family_inside_a_name_that_starts_like_the_default_lock_is_in_its_family_in_every_state_of_that_name(
+        self,
+    ) -> None:
+        # Making the directory of such a family would turn a file of the script's family into a directory.
+        for start in starts_like(self.default):
+            for family in inside(start):
+                for state in STATES:
+                    set_state(start, family, state)
+                    with self.subTest(family=family, state=state):
+                        with self.assertRaisesRegex(ConfigError, "shared is false"):
+                            parse({"family": family})
+                        with self.assertRaisesRegex(ConfigError, "max_runs is 5"):
+                            self.shared(family, 5)
+                        self.assertEqual(self.shared(family, 3, slots=3).max_runs, 3)
+
+    def test_a_family_inside_a_name_that_starts_like_the_default_lock_is_in_its_family_in_other_letters_and_through_a_link(
+        self,
+    ) -> None:
         os.symlink(self.dir, os.path.join(self.dir, "linked"))
-        starts = (self.default, *in_other_letters(self.default), os.path.join(self.dir, "linked", "pango-sim-test.flock"))
+        bases = (
+            *in_other_letters(self.default),
+            self.dir + "//pango-sim-test.flock",
+            os.path.join(self.dir, "linked", "pango-sim-test.flock"),
+        )
         for there in (False, True):
             be_there(self.default, there)
-            for start in starts:
-                for below in (os.path.join(start, "lock"), os.path.join(start, "x", "lock")):
-                    with self.subTest(there=there, below=below):
-                        with self.assertRaisesRegex(ConfigError, "shared is false"):
-                            parse({"family": below})
-                        with self.assertRaisesRegex(ConfigError, "max_runs is 5"):
-                            self.shared(below, 5)
+            for base in bases:
+                for start in starts_like(base):
+                    for family in (start, *inside(start)):
+                        with self.subTest(lock_is_there=there, family=family):
+                            with self.assertRaisesRegex(ConfigError, "shared is false"):
+                                parse({"family": family})
+                            with self.assertRaisesRegex(ConfigError, "max_runs is 5"):
+                                self.shared(family, 5)
+
+    def test_a_trailing_slash_does_not_take_a_family_out_of_the_default_locks_family(self) -> None:
+        for start in starts_like(self.default):
+            with self.subTest(start=start), self.assertRaisesRegex(ConfigError, "shared is false"):
+                parse({"family": start + "/"})
+
+    def test_a_default_lock_with_capitals_in_its_directory_and_name_is_matched_in_every_letter_case(self) -> None:
+        default = os.path.join(self.dir, "Mixed-CASE", "Pango-SIM-Test.flock")
+        os.makedirs(os.path.dirname(default))
+        with mock.patch.object(protocol, "DEFAULT_LOCK_FILE", default):
+            for base in (default, default.lower(), default.upper()):
+                for start in starts_like(base):
+                    for family in (start, *inside(start)):
+                        with self.subTest(family=family):
+                            with self.assertRaisesRegex(ConfigError, "shared is false"):
+                                parse({"family": family})
+                            with self.assertRaisesRegex(ConfigError, "max_runs is 5"):
+                                self.shared(family, 5)
+
+    def test_a_default_lock_that_is_a_link_is_matched_by_the_file_it_leads_to_whether_that_is_there_or_not(self) -> None:
+        target = os.path.join(self.dir, "elsewhere", "real.flock")
+        os.makedirs(os.path.dirname(target))
+        os.symlink(target, self.default)
+        for there in (False, True):
+            be_there(target, there)
+            for family in (target, *inside(target)):
+                with self.subTest(target_is_there=there, family=family):
+                    with self.assertRaisesRegex(ConfigError, "shared is false"):
+                        parse({"family": family})
+                    with self.assertRaisesRegex(ConfigError, "max_runs is 5"):
+                        self.shared(family, 5)
 
     def test_the_same_file_under_another_name_is_in_its_family_while_the_lock_is_there(self) -> None:
         hard = os.path.join(self.dir, "elsewhere", "hard.flock")
@@ -356,31 +410,22 @@ class DefaultLockFamilyTest(unittest.TestCase):
             self.shared(longer, 5)
         self.assertEqual(self.shared(longer, 3, slots=3).max_runs, 3)
 
-    def test_a_family_below_a_directory_that_only_begins_like_the_default_lock_takes_any_count_whether_or_not_it_is_there(
+    def test_a_family_shared_below_a_name_that_starts_like_the_default_lock_at_another_count_is_refused_as_the_script_would(
         self,
     ) -> None:
-        for below in (
-            os.path.join(self.default + ".d", "lock"),
-            os.path.join(self.default + ".d", "family", "lock"),
-            os.path.join(self.default + "-mine", "lock"),
-        ):
-            for directory_is_there in (False, True):
-                if directory_is_there:
-                    os.makedirs(os.path.dirname(below), exist_ok=True)
-                for there in (False, True):
-                    be_there(self.default, there)
-                    with self.subTest(below=below, directory_is_there=directory_is_there, lock_is_there=there):
-                        got = parse({"family": below, "max_runs": 5})
-                        self.assertEqual((got.shared, got.max_runs), (False, 5))
-                        for max_runs in (1, 2, 4, 5):
-                            self.assertEqual(self.shared(below, max_runs).max_runs, max_runs)
+        # The script refuses a MAX_RUNS other than 3 for a lock file inside a directory that starts like the
+        # default lock's, once that directory is there; the answer must not wait for the directory.
+        for family in (os.path.join(self.default + ".d", "lock"), os.path.join(self.default + "-mine", "lock")):
+            for max_runs in (1, 2, 4, 5):
+                with self.subTest(family=family, max_runs=max_runs), self.assertRaisesRegex(ConfigError, "max_runs is"):
+                    self.shared(family, max_runs)
 
     def test_a_lock_file_elsewhere_takes_any_count(self) -> None:
-        for family in (
-            os.path.join(self.dir, "scratch.flock"),
-            os.path.join(self.dir, "no", "such", "lock"),
-            os.path.join(self.dir, "elsewhere", "pango-sim-test.flock", "lock"),
-        ):
+        elsewhere = os.path.join(self.dir, "elsewhere", "pango-sim-test.flock")
+        families = [os.path.join(self.dir, "scratch.flock"), os.path.join(self.dir, "no", "such", "lock")]
+        for start in starts_like(elsewhere):
+            families += [start, *inside(start)]
+        for family in families:
             for max_runs in (1, 2, 4, 5):
                 with self.subTest(family=family, max_runs=max_runs):
                     self.assertEqual(self.shared(family, max_runs).max_runs, max_runs)

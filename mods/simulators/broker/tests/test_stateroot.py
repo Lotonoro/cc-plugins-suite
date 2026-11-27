@@ -17,12 +17,17 @@ from broker.leaf import Admitted, Applicant
 from broker.settings import Config
 from broker.stateroot import open_root
 from broker.tests.support import (
+    STATES,
     FakeClock,
     FakeMachine,
     be_there,
     hold_in_another_process,
     in_other_letters,
+    inside,
     scratch_dir,
+    set_state,
+    starts_like,
+    tree,
 )
 
 CORES = 12
@@ -128,14 +133,15 @@ class RefusalTest(RootCase):
                 self.assertEqual(caught.exception.exit_code, protocol.EXIT_CONFIG)
 
     def test_a_family_the_file_system_cannot_encode_is_refused_naming_the_file(self) -> None:
-        for shared in (False, True):
-            with self.subTest(shared=shared):
-                self.full_configuration(family="/tmp/\ud800/lock", shared=shared)
-                with self.assertRaisesRegex(
-                    ConfigError, r"config\.json: family must be a path the file system can encode"
-                ) as caught:
-                    open_root(self.root, CORES)
-                self.assertEqual(caught.exception.exit_code, protocol.EXIT_CONFIG)
+        for family in ("/tmp/\ud800/lock", "/tmp/\udc80/lock"):  # the second is a byte, which is no valid UTF-8 alone
+            for shared in (False, True):
+                with self.subTest(family=family, shared=shared):
+                    self.full_configuration(family=family, shared=shared)
+                    with self.assertRaisesRegex(
+                        ConfigError, r"config\.json: family must be a path the file system can encode"
+                    ) as caught:
+                        open_root(self.root, CORES)
+                    self.assertEqual(caught.exception.exit_code, protocol.EXIT_CONFIG)
 
     def test_a_family_with_a_dot_dot_component_is_refused_naming_the_file_and_the_fix(self) -> None:
         for shared in (False, True):
@@ -202,19 +208,22 @@ class DefaultLockFamilyTest(RootCase):
                 self.assertIn("set shared to true, or family to another lock file", str(caught.exception))
                 self.assertEqual(os.listdir(self.dir), ["root"], "nothing of the family was created")
 
-    def test_a_family_below_the_default_lock_itself_is_refused_whether_the_lock_is_there_or_not_and_makes_nothing(
+    def test_a_family_inside_a_name_that_starts_like_the_default_lock_is_refused_in_every_state_of_that_name_and_makes_nothing(
         self,
     ) -> None:
-        for there in (False, True):
-            be_there(self.default, there)
-            for below in (os.path.join(self.default, "lock"), os.path.join(self.default, "x", "lock")):
-                with self.subTest(lock_is_there=there, below=below):
-                    self.full_configuration(family=below, shared=False)
-                    with self.assertRaisesRegex(ConfigError, r"config\.json: shared is false") as caught:
-                        open_root(self.root, CORES)
-                    self.assertEqual(caught.exception.exit_code, protocol.EXIT_CONFIG)
-        self.assertTrue(os.path.isfile(self.default), "the lock is as the test left it, and no directory took its place")
-        self.assertEqual(sorted(os.listdir(self.dir)), ["pango-sim-test.flock", "root"])
+        # Opening it would make a file of the script's family a directory, or put the family's files beside them.
+        for start in starts_like(self.default):
+            for family in inside(start):
+                for state in STATES:
+                    set_state(start, family, state)
+                    for shared, max_runs, words in ((False, 3, "shared is false"), (True, 5, "max_runs is 5")):
+                        with self.subTest(family=family, state=state, shared=shared):
+                            self.full_configuration(family=family, shared=shared, max_runs=max_runs, slots=3)
+                            before = tree(self.dir)
+                            with self.assertRaisesRegex(ConfigError, rf"config\.json: {words}") as caught:
+                                open_root(self.root, CORES)
+                            self.assertEqual(caught.exception.exit_code, protocol.EXIT_CONFIG)
+                            self.assertEqual(tree(self.dir), before, "nothing of the family was made")
 
     def test_the_default_lock_in_other_letters_is_refused_whether_the_lock_is_there_or_not(self) -> None:
         for there in (False, True):
@@ -228,10 +237,10 @@ class DefaultLockFamilyTest(RootCase):
                     with self.assertRaisesRegex(ConfigError, r"config\.json: max_runs is 5"):
                         open_root(self.root, CORES)
 
-    def test_an_unshared_family_below_a_directory_that_only_begins_like_the_default_lock_opens_whether_the_directory_and_the_lock_are_there_or_not(
+    def test_an_unshared_family_inside_a_directory_with_the_default_locks_name_elsewhere_opens_whether_the_directory_and_the_lock_are_there_or_not(
         self,
     ) -> None:
-        family = os.path.join(self.default + ".d", "family", "lock")
+        family = os.path.join(self.dir, "elsewhere", "pango-sim-test.flock", "family", "lock")
         self.full_configuration(family=family, shared=False, slots=2)
         for directory_is_there in (False, True):
             if directory_is_there:

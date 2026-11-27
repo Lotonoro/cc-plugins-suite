@@ -9,14 +9,22 @@ from __future__ import annotations
 
 import fcntl
 import os
-import shutil
 import threading
 import unittest
 from typing import List, Optional, Tuple
 
 from broker.errors import FamilyError
 from broker.family import Family, collides_with
-from broker.tests.support import be_there, hold_in_another_process, in_other_letters, scratch_dir
+from broker.tests.support import (
+    STATES,
+    be_there,
+    hold_in_another_process,
+    in_other_letters,
+    inside,
+    scratch_dir,
+    set_state,
+    starts_like,
+)
 
 
 class FamilyCase(unittest.TestCase):
@@ -358,11 +366,11 @@ class DefaultLockCase(FamilyCase):
 class CollidesWithTest(DefaultLockCase):
     """Whether a family at a path collides with the family of the default lock: the broker's own test.
 
-    A family does when it is the same file as the lock, or when its physical directory is the lock's
-    and its name begins with the lock's, or when its physical directory is the lock's own path or
-    below it, all compared without regard to letter case (LOCK-PROTOCOL.md section 4). The test reads
-    no more of a family's own directory than its path, so its answer is the same before the broker
-    makes the family's directory and files as after.
+    A family does when it is the same file as the lock, or when its physical path begins with the
+    lock's, or with the file the lock leads to when it is a link. The physical path is the directory
+    part resolved through every link, then the name, and the letter case is not compared
+    (LOCK-PROTOCOL.md section 4). The test reads no more of a family's own directory than its path,
+    so its answer is the same before the broker makes the family's directory and files as after.
     """
 
     FAMILY_FILES = (".1", ".2", ".gate", ".last-start", ".owner", ".1.owner")
@@ -390,30 +398,26 @@ class CollidesWithTest(DefaultLockCase):
                     with self.subTest(there=there, spelling=spelling, suffix=suffix):
                         self.assertTrue(self.says(spelling + suffix))
 
-    def test_a_family_below_the_default_lock_itself_collides_whether_the_lock_is_not_there_a_directory_or_a_file(
+    def test_a_family_inside_a_name_that_starts_like_the_default_lock_collides_in_every_state_of_that_name(
         self,
     ) -> None:
-        below = (
-            os.path.join(self.default, "lock"),
-            os.path.join(self.default, "x", "lock"),
-            os.path.join(self.default, "x", "y", "lock"),
-        )
-        for lock_is in ("not there", "a directory", "a file"):
-            if lock_is == "a directory":
-                os.makedirs(os.path.dirname(below[-1]))  # what the broker's gate makes for an unshared family
-            elif lock_is == "a file":
-                shutil.rmtree(self.default)
-                be_there(self.default, True)
-            for path in below:
-                with self.subTest(path=path, lock=lock_is):
-                    self.assertTrue(self.says(path))
+        # Making the directory of such a family would turn a file of the script's family into a directory.
+        for start in starts_like(self.default):
+            for path in inside(start):
+                for state in STATES:
+                    set_state(start, path, state)
+                    with self.subTest(path=path, state=state):
+                        self.assertTrue(self.says(path))
 
-    def test_a_family_below_the_default_lock_itself_collides_in_other_letters_and_through_a_link(self) -> None:
+    def test_a_family_inside_a_name_that_starts_like_the_default_lock_collides_in_other_letters_and_through_a_link(
+        self,
+    ) -> None:
         linked = self.link(self.tmp, self.dir, "linked")
-        for start in (*in_other_letters(self.default), f"{self.tmp}//{self.NAME}", os.path.join(linked, self.NAME)):
-            for below in (("lock",), ("x", "lock")):
-                with self.subTest(start=start, below=below):
-                    self.assertTrue(self.says(os.path.join(start, *below)))
+        for base in (*in_other_letters(self.default), f"{self.tmp}//{self.NAME}", os.path.join(linked, self.NAME)):
+            for start in starts_like(base):
+                for path in (start, *inside(start)):
+                    with self.subTest(path=path):
+                        self.assertTrue(self.says(path))
 
     def test_another_spelling_of_the_directory_collides(self) -> None:
         linked = self.link(self.tmp, self.dir, "linked")
@@ -447,34 +451,59 @@ class CollidesWithTest(DefaultLockCase):
             with self.subTest(path=path, lock="gone"):
                 self.assertFalse(self.says(path), "the lock is not there, and the name is nothing like it")
 
-    def test_a_family_below_a_directory_that_only_begins_like_the_default_lock_collides_with_none_of_its_files(
-        self,
-    ) -> None:
-        for below in (
-            os.path.join(self.default + ".d", "lock"),
-            os.path.join(self.default + ".d", "family", "lock"),
-            os.path.join(self.default + "-mine", "lock"),
-        ):
-            with self.subTest(below=below):
-                self.assertFalse(self.says(below), "the directory is not there")
-                os.makedirs(os.path.dirname(below))
-                self.assertFalse(self.says(below), "the directory is there")
-
     def test_a_lock_elsewhere_collides_with_nothing(self) -> None:
         for path in (
             os.path.join(self.tmp, "other.flock"),
             os.path.join(self.tmp, self.NAME[:-1]),
-            os.path.join(self.elsewhere, self.NAME),
-            os.path.join(self.elsewhere, self.NAME + ".1"),
-            os.path.join(self.elsewhere, self.NAME, "x", "lock"),
+            os.path.join(self.tmp, self.NAME[:-1], "lock"),
             os.path.join(self.dir, "no", "such", "directory", self.NAME),
         ):
             with self.subTest(path=path):
                 self.assertFalse(self.says(path))
 
-    def test_a_trailing_slash_does_not_change_the_name(self) -> None:
-        self.assertTrue(self.says(self.default + "/"))
+    def test_the_names_of_the_default_locks_family_in_another_directory_collide_with_nothing(self) -> None:
+        for start in starts_like(os.path.join(self.elsewhere, self.NAME)):
+            for path in (start, *inside(start)):
+                with self.subTest(path=path):
+                    self.assertFalse(self.says(path))
+
+    def test_a_trailing_slash_hides_no_collision_and_makes_none(self) -> None:
+        for start in starts_like(self.default):
+            with self.subTest(start=start):
+                self.assertTrue(self.says(start + "/"))
         self.assertFalse(self.says(os.path.join(self.elsewhere, self.NAME) + "/"))
+
+    def test_a_default_lock_with_capitals_in_its_directory_and_name_collides_in_every_letter_case(self) -> None:
+        default = os.path.join(self.dir, "Mixed-CASE", "Pango-SIM-Test.flock")
+        os.makedirs(os.path.dirname(default))
+        for base in (default, default.lower(), default.upper(), default.swapcase()):
+            for start in starts_like(base):
+                for path in (start, *inside(start)):
+                    with self.subTest(path=path):
+                        self.assertTrue(collides_with(path, default))
+        other = os.path.join(os.path.dirname(default), "Other.flock")
+        for path in (other, other.lower(), other.upper()):
+            with self.subTest(path=path):
+                self.assertFalse(collides_with(path, default))
+
+    def test_a_default_lock_that_is_a_link_collides_with_the_file_it_leads_to_there_or_not_and_what_is_inside_it(
+        self,
+    ) -> None:
+        target = os.path.join(self.elsewhere, "real.flock")
+        os.symlink(target, self.default)
+        reached = self.link(self.elsewhere, self.dir, "reached")
+        for there in (False, True):
+            be_there(target, there)
+            for path in (
+                target,
+                os.path.join(reached, "real.flock"),
+                *inside(target),
+                self.default + ".gate",
+                *inside(self.default + ".gate"),
+            ):
+                with self.subTest(path=path, target_is_there=there):
+                    self.assertTrue(self.says(path))
+        self.assertFalse(self.says(os.path.join(self.elsewhere, "other.flock")))
 
     def test_a_path_through_a_directory_that_is_not_there_is_read_as_it_is_once_the_directory_is_made(self) -> None:
         text = os.path.join(self.tmp, "nosuch", "..", self.NAME)

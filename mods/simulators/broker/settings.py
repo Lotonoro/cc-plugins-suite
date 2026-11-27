@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 from dataclasses import dataclass
 from typing import Optional
 
@@ -122,12 +123,16 @@ class Config:
             raise ConfigError(f"family must be an absolute path, not {self.family!r}")
         if "\0" in self.family:
             raise ConfigError(f"family must not hold a NUL byte: {self.family!r}")
+        # The bytes a call gets must read back as characters of the file system's encoding: `fsencode`
+        # raises for a surrogate it has no byte for, and the bytes it gives U+DC80 to U+DCFF are no
+        # valid UTF-8 alone, which this Mac's volume refuses in a name (EILSEQ).
+        encoding = sys.getfilesystemencoding()
         try:
-            os.fsencode(self.family)
-        except UnicodeEncodeError as err:
+            os.fsencode(self.family).decode(encoding)
+        except UnicodeError as err:
             raise ConfigError(
                 f"family must be a path the file system can encode, not {self.family!r}: "
-                "it holds a character with no bytes in the file system's encoding"
+                f"it holds a character that has no valid bytes in {encoding}"
             ) from err
         # Two spellings name another place once the broker has made what the family names, which it
         # does after `configure` has accepted the family: `a/..` is the directory before `a` only once

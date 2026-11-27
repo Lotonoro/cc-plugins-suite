@@ -205,21 +205,22 @@ pango PR #622 decided the rule, and its record is
 `docs/process/2026-11-26-the-default-simulator-lock-keeps-one-slot-count.md`. A lock file elsewhere
 takes any count (self-test L402, L557-564).
 
-The broker holds the same on its side by one rule, which asks whether a family's files can be the
-default lock's family's files, and not how its path is spelled. A family is in the default lock's
-family when it is the same file as the default lock (the shell's `-ef`, which only files that are
-there can pass), when its physical directory, the `realpath` of its directory part, is the default
-lock's and its name begins with the default lock's name, or when that directory is the default
-lock's own path or below it, which would make the lock a directory. All are compared without regard
-to letter case, which this Mac's volume does not tell apart. A prefix takes every file of the
-family (section 2) without a list of their suffixes. A shared family in it must keep `max_runs` at
-3, and a family in it must be shared: the script's callers use its files, the gate among them, and
-an unshared family there would hold the script's gate. The answer is the same whether the default
-lock is there or not, and before `configure` makes the family's directory as after, so `configure`
-never takes a family that every later open refuses. The rule differs from the script's match behind
-its own refusal (L374-376), which compares the text of the path: it also takes another letter case,
-and it does not take a family below a directory whose name only begins like the default lock's
-(`<lock>.d/lock`), whose files are none of the default lock's.
+The broker holds the same on its side by one rule, which asks where a family's files are and not
+how its path is spelled. A family is in the default lock's family when its physical path begins
+with the default lock's: the directory part resolved through every link, whether or not it is
+there yet, then the name, compared without regard to letter case, which this Mac's volume does not
+tell apart. That takes the lock, every file of its family (section 2), a longer name, and a path
+inside any of them, since `configure` would turn a file of the script's into a directory. When the
+default lock is a link, the file it leads to counts as the lock, and a family that is the same file
+as the lock is in its family too (the shell's `-ef`, which only files that are there can pass). A
+shared family in it must keep `max_runs` at 3, and a family in it must be shared: the script's
+callers use its files, the gate among them, and an unshared family there would hold the script's
+gate. The answer is the same whether the default lock is there or not, and before `configure`
+makes the family's directory as after, so `configure` never takes a family that every later open
+refuses. The rule takes everything the script's match behind its own refusal (L374-376) takes, and
+other letter cases and a family whose directory is not there yet besides. A hard link planted
+between a file of another family and a family file other than the lock, `<lock>.gate` say, is not
+detected: the same-file test compares the two locks alone.
 
 Where this file says MAX_RUNS of a broker run, it means c in its take loop and in checks 1 and 5 of
 section 3, so the number in their text is c; in its alone check and its holder listing it means N.

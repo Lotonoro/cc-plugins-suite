@@ -13,9 +13,8 @@ files of one process too, so these methods never open it themselves; `list_holde
 a whole operation of its own.
 
 `collides_with` is the function here that concerns no family of its own: it says whether a family
-of the broker is in the default lock's family, because its files can be that family's or it sits
-below the default lock itself, which a root of the broker may then use only shared and at the
-script's one slot count (LOCK-PROTOCOL.md section 4).
+of the broker is in the default lock's family, which a root of the broker may then use only shared
+and at the script's one slot count (LOCK-PROTOCOL.md section 4).
 """
 
 from __future__ import annotations
@@ -65,45 +64,39 @@ def _is_the_file(path: str, other: str) -> bool:
         return False
 
 
-def _directory_and_name(path: str) -> Tuple[str, str]:
-    """The directory and the name of `path` as dirname(1) and basename(1) give them.
+def _where(path: str) -> str:
+    """Where a family at `path` has its files, as a string to compare: the directory part resolved
+    through every link, then the name, in lower case.
 
-    A trailing slash does not count, so `/a/b/` is the name `b` in `/a`, and a name with no
-    directory is in `.`.
+    `realpath` resolves what is there and takes the rest as written, so a directory that is not
+    there yet is read as it will be once made. A trailing slash stays, as the files then sit in it.
     """
-    trimmed = path.rstrip("/") or path[:1]
-    return os.path.dirname(trimmed) or ".", os.path.basename(trimmed)
+    directory, name = os.path.split(path)
+    return os.path.join(os.path.realpath(directory), name).casefold()
 
 
 def collides_with(path: str, default: str) -> bool:
     """Whether a family at `path` is in the family of the default lock `default`.
 
-    It is when `path` is the same file as `default` (`-ef`, which two files that are there can be),
-    or when its physical directory, the `realpath` of its directory part, is `default`'s and its
-    name begins with `default`'s name, or when that directory is `default`'s own path or below it,
-    where the broker would make the default lock a directory; all compared without regard to
-    letter case (LOCK-PROTOCOL.md section 4). This asks whether the family's files can be the
-    default lock's family's, and not how the path is spelled: an other-case spelling is in the
-    family, which the script's own match misses, and a path below a directory that only begins
-    like the default lock's name is not, which that prefix match takes, since its files are none
-    of the default lock's.
+    It is when the physical path of `path` begins with that of `default`, or with the file `default`
+    leads to when it is a link, or when `path` is the same file as `default` (`-ef`, which two
+    files that are there can be); the physical path is the directory part resolved through every
+    link, then the name, and the letter case is not compared (LOCK-PROTOCOL.md section 4). So the
+    lock, each file of its family, a longer name and anything inside one of them are all taken:
+    making the directory of a family inside one would turn a file of the script's family into a
+    directory. The script's own match takes the same prefix of the physical path in the same letter
+    case once the family's directory is there; this one takes every letter case and does not wait
+    for the directory.
 
     The answer is the same whether `default` is there or not, and the same before the broker makes
-    the family's directory and files as after: only the first question reads a file, and a
+    the family's directory and files as after: only the same-file question reads a file, and a
     directory that is not there is read as it will be once made. `Config.validate` refuses first a
     path the file system cannot encode, a `..` component and a final symlink: the last two would
     name another place once the broker has made what the family names.
     """
     if _is_the_file(path, default):
         return True
-    directory, name = _directory_and_name(path)
-    default_directory, default_name = _directory_and_name(default)
-    where = os.path.realpath(directory).casefold()
-    default_where = os.path.realpath(default_directory).casefold()
-    lock = os.path.join(default_where, default_name.casefold())
-    beside = where == default_where and name.casefold().startswith(default_name.casefold())
-    below = where == lock or where.startswith(lock + "/")
-    return beside or below
+    return _where(path).startswith((_where(default), _where(os.path.realpath(default))))
 
 
 class Family:

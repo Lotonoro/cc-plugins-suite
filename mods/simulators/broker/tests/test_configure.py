@@ -21,7 +21,17 @@ from broker.configure import Settings, configure
 from broker.errors import ConfigError, FamilyError, StateError
 from broker.settings import Config, LoadedConfig, load_config
 from broker.stateroot import open_root
-from broker.tests.support import be_there, hold_in_another_process, in_other_letters, scratch_dir
+from broker.tests.support import (
+    STATES,
+    be_there,
+    hold_in_another_process,
+    in_other_letters,
+    inside,
+    scratch_dir,
+    set_state,
+    starts_like,
+    tree,
+)
 
 CORES = 12
 
@@ -134,6 +144,7 @@ class ReadsNothingTest(ConfigureCase):
             Settings(settle_seconds=10_000_000),
             Settings(min_idle_percent=1000),
             Settings(family="/tmp/\ud800/lock"),  # no file system takes this name
+            Settings(family="/tmp/\udc80/lock"),  # nor one that is a byte of no valid UTF-8
         ):
             with self.subTest(settings=settings):
                 with self.assertRaises(ConfigError):
@@ -193,21 +204,24 @@ class DefaultLockFamilyTest(ConfigureCase):
                         self.assertEqual(os.listdir(self.dir), made, "nothing was written or made")
         self.assertEqual(self.out.getvalue(), "")
 
-    def test_a_family_below_the_default_lock_itself_is_refused_at_configure_whether_the_lock_is_there_or_not(self) -> None:
-        # Making its directory would make the default lock a directory, which the script's callers open as a file.
-        for there in (False, True):
-            be_there(self.default, there)
-            made = [os.path.basename(self.default)] if there else []
-            for below in (os.path.join(self.default, "lock"), os.path.join(self.default, "x", "lock")):
-                for settings, words in (
-                    (Settings(family=below, slots=2), "shared is false"),
-                    (Settings(family=below, shared=True, max_runs=5, slots=3), "max_runs is 5"),
-                ):
-                    with self.subTest(there=there, settings=settings):
-                        with self.assertRaisesRegex(ConfigError, words):
-                            self.run_configure(settings)
-                        self.assertEqual(os.listdir(self.dir), made, "nothing was written or made")
-                        self.assertFalse(os.path.isdir(self.default), "the default lock was not made a directory")
+    def test_a_family_inside_a_name_that_starts_like_the_default_lock_is_refused_at_configure_in_every_state_of_that_name(
+        self,
+    ) -> None:
+        # Making its directory would turn a file of the script's family into a directory, which the script's
+        # callers open as a file: `<lock>.gate/lock` would take the script's gate, and `<lock>/lock` the lock.
+        for start in starts_like(self.default):
+            for family in inside(start):
+                for state in STATES:
+                    set_state(start, family, state)
+                    before = tree(self.dir)
+                    for settings, words in (
+                        (Settings(family=family, slots=2), "shared is false"),
+                        (Settings(family=family, shared=True, max_runs=5, slots=3), "max_runs is 5"),
+                    ):
+                        with self.subTest(family=family, state=state, settings=settings):
+                            with self.assertRaisesRegex(ConfigError, words):
+                                self.run_configure(settings)
+                            self.assertEqual(tree(self.dir), before, "nothing was written or made")
         self.assertEqual(self.out.getvalue(), "")
 
     def test_the_default_lock_through_a_link_to_its_directory_is_refused_whether_the_lock_is_there_or_not(self) -> None:
@@ -226,18 +240,18 @@ class DefaultLockFamilyTest(ConfigureCase):
     def test_every_family_it_accepts_is_one_the_open_step_accepts_whether_the_default_lock_is_there_or_not(self) -> None:
         # The sequence the verify step once turned into a refusal: configure, which makes the directory of an
         # unshared family and tries the lock files, then open, then configure again.
-        below = os.path.join(self.default + ".d", "family", "lock")
-        beside = os.path.join(self.default + ".d", "lock")
+        named_like_it = os.path.join(self.dir, "elsewhere", "pango-sim-test.flock", "family", "lock")
+        shorter = os.path.join(self.dir, "pango-sim-test.floc", "lock")
         elsewhere = os.path.join(self.dir, "elsewhere", "lock")
         another_name = os.path.join(self.dir, "scratch.flock")
         in_other_letters_at_3 = os.path.join(self.dir, "PANGO-SIM-TEST.FLOCK")
         cases = (
-            Settings(family=below, slots=2),
-            Settings(family=beside, slots=2),
+            Settings(family=named_like_it, slots=2),
+            Settings(family=shorter, slots=2),
             Settings(family=elsewhere, slots=2),
             Settings(family=another_name, slots=2),
-            Settings(family=below, shared=True, max_runs=5, slots=3),
-            Settings(family=beside, shared=True, max_runs=2, slots=2),
+            Settings(family=named_like_it, shared=True, max_runs=5, slots=3),
+            Settings(family=shorter, shared=True, max_runs=2, slots=2),
             Settings(family=elsewhere, shared=True, max_runs=5, slots=3),
             Settings(family=another_name, shared=True, max_runs=4, slots=3),
             Settings(family=self.default, shared=True, max_runs=3, slots=3),

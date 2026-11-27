@@ -28,7 +28,10 @@ from broker.tests.support import (
     be_there,
     hold_in_another_process,
     in_other_letters,
+    inside,
     scratch_dir,
+    starts_like,
+    tree,
 )
 
 ON_MACOS = unittest.skipUnless(sys.platform == "darwin", ONLY_ON_MACOS)
@@ -118,14 +121,14 @@ class RoutingTest(DispatcherCase):
         self.assertEqual(self.main("configure"), 0)
         self.assertEqual(self.main("status"), 0)
 
-    def test_a_family_below_a_directory_that_only_begins_like_the_default_lock_is_configured_and_read_again_whether_the_lock_is_there_or_not(
+    def test_a_family_in_a_directory_with_the_default_locks_name_elsewhere_is_configured_and_read_again_whether_the_lock_is_there_or_not(
         self,
     ) -> None:
         default = os.path.join(self.dir, "pango-sim-test.flock")  # stands for the script's default lock
         with mock.patch.object(protocol, "DEFAULT_LOCK_FILE", default):
             for there in (False, True):
                 be_there(default, there)
-                for family in (os.path.join(default + ".d", "lock"), os.path.join(default + ".d", "family", "lock")):
+                for family in inside(os.path.join(self.dir, "elsewhere", "pango-sim-test.flock")):
                     with self.subTest(lock_is_there=there, family=family):
                         self.assertEqual(self.main("configure", "--family", family), 0)  # which makes the directory
                         self.assertEqual(self.main("status"), 0)
@@ -380,16 +383,20 @@ class ErrorsTest(DispatcherCase):
         self.assertRegex(self.err_lines()[0], r"^sim-lock: .*config\.json: family must not hold a NUL byte")
 
     def test_a_family_the_file_system_cannot_encode_exits_78_naming_the_file_and_configure_refuses_it_too(self) -> None:
-        family = "/tmp/\ud800/lock"  # no file system takes this name
         os.makedirs(self.root)
-        with open(os.path.join(self.root, "config.json"), "w", encoding="utf-8") as handle:
-            json.dump({"family": family}, handle)
-        self.assertEqual(self.main("status"), protocol.EXIT_CONFIG)
-        self.assertRegex(
-            self.err_lines()[0], r"^sim-lock: .*config\.json: family must be a path the file system can encode, not "
-        )
-        self.assertEqual(self.main("configure", "--family", family), protocol.EXIT_CONFIG)
-        self.assertRegex(self.err_lines()[1], r"^sim-lock: family must be a path the file system can encode, not ")
+        for family in ("/tmp/\ud800/lock", "/tmp/\udc80/lock"):  # the second is a byte, which is no valid UTF-8 alone
+            with self.subTest(family=family):
+                with open(os.path.join(self.root, "config.json"), "w", encoding="utf-8") as handle:
+                    json.dump({"family": family}, handle)
+                self.assertEqual(self.main("status"), protocol.EXIT_CONFIG)
+                self.assertRegex(
+                    self.err_lines()[-1],
+                    r"^sim-lock: .*config\.json: family must be a path the file system can encode, not ",
+                )
+                self.assertEqual(self.main("configure", "--family", family), protocol.EXIT_CONFIG)
+                self.assertRegex(
+                    self.err_lines()[-1], r"^sim-lock: family must be a path the file system can encode, not "
+                )
 
     def test_a_family_with_a_dot_dot_component_exits_78_naming_the_file_and_the_fix(self) -> None:
         os.makedirs(self.root)
@@ -491,19 +498,25 @@ class ErrorsTest(DispatcherCase):
         self.assertEqual(os.listdir(self.dir), [os.path.basename(default)], "nothing was made but the lock itself")
         self.assertFalse(os.path.exists(default + ".gate"))
 
-    def test_configure_refuses_a_family_below_the_default_lock_itself_whether_the_lock_is_there_or_not_and_makes_nothing(
+    def test_configure_refuses_a_family_inside_a_name_that_starts_like_the_default_lock_and_makes_nothing(
         self,
     ) -> None:
         default = os.path.join(self.dir, "pango-sim-test.flock")
+        refused = 0
         with mock.patch.object(protocol, "DEFAULT_LOCK_FILE", default):
             for there in (False, True):
                 be_there(default, there)
-                for below in (os.path.join(default, "lock"), os.path.join(default, "x", "lock")):
-                    with self.subTest(lock_is_there=there, below=below):
-                        self.assertEqual(self.main("configure", "--family", below), protocol.EXIT_CONFIG)
+                before = tree(self.dir)
+                for start in starts_like(default):
+                    for family in inside(start):
+                        with self.subTest(lock_is_there=there, family=family):
+                            self.assertEqual(self.main("configure", "--family", family), protocol.EXIT_CONFIG)
+                            self.assertEqual(tree(self.dir), before, "nothing was made")
+                            refused += 1
         self.assertEqual(self.out.getvalue(), "")
-        self.assertEqual(os.listdir(self.dir), [os.path.basename(default)], "nothing was made but the lock itself")
-        self.assertTrue(os.path.isfile(default))
+        self.assertEqual(len(self.err_lines()), refused)
+        for line in self.err_lines():
+            self.assertRegex(line, r"^sim-lock: shared is false, .*set shared to true, or family")
 
     def test_configure_refuses_a_family_spelled_through_a_directory_that_is_not_there_and_makes_nothing(self) -> None:
         default = os.path.join(self.dir, "pango-sim-test.flock")

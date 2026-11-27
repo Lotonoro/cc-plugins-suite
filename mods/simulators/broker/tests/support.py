@@ -64,6 +64,42 @@ def be_there(path: str, there: bool) -> None:
         os.unlink(path)
 
 
+# What a path in the family of a default lock starts with: the lock, each file of its family
+# (LOCK-PROTOCOL.md section 2), and three longer names. The script's own match takes all of them.
+STARTS = ("", ".1", ".2", ".gate", ".last-start", ".owner", ".1.owner", ".d", "-mine", "2")
+
+# What a family inside such a name may find there: nothing, its own directory as `configure` makes
+# it, or a file where that directory should be.
+STATES = ("its directory is not there", "its directory is there", "a file is in the way")
+
+
+def starts_like(lock: str) -> List[str]:
+    """The lock and the names that start with it: each file of its family, and longer names."""
+    return [lock + suffix for suffix in STARTS]
+
+
+def inside(path: str) -> List[str]:
+    """Two families that use `path` as a directory: one a level down and one two."""
+    return [os.path.join(path, "lock"), os.path.join(path, "x", "lock")]
+
+
+def set_state(start: str, family: str, state: str) -> None:
+    """Puts what is at `start`, the name `family` is inside, in `state`, whatever was there."""
+    if os.path.isdir(start) and not os.path.islink(start):
+        shutil.rmtree(start)
+    elif os.path.lexists(start):
+        os.unlink(start)
+    if state == STATES[1]:
+        os.makedirs(os.path.dirname(family))
+    elif state == STATES[2]:
+        be_there(start, True)
+
+
+def tree(path: str) -> List[str]:
+    """Every path under `path`, so that a step which was refused can be shown to have made nothing."""
+    return sorted(os.path.join(at, name) for at, directories, files in os.walk(path) for name in (*directories, *files))
+
+
 def stop_process(child: "subprocess.Popen[str]") -> None:
     """Kills the child by the id it was started with, reaps it and closes its pipes."""
     if child.poll() is None:
