@@ -133,6 +133,7 @@ class ReadsNothingTest(ConfigureCase):
             Settings(shared=True, max_runs=3, slots=4),
             Settings(settle_seconds=10_000_000),
             Settings(min_idle_percent=1000),
+            Settings(family="/tmp/\ud800/lock"),  # no file system takes this name
         ):
             with self.subTest(settings=settings):
                 with self.assertRaises(ConfigError):
@@ -190,6 +191,23 @@ class DefaultLockFamilyTest(ConfigureCase):
                         with self.assertRaisesRegex(ConfigError, words):
                             self.run_configure(settings)
                         self.assertEqual(os.listdir(self.dir), made, "nothing was written or made")
+        self.assertEqual(self.out.getvalue(), "")
+
+    def test_a_family_below_the_default_lock_itself_is_refused_at_configure_whether_the_lock_is_there_or_not(self) -> None:
+        # Making its directory would make the default lock a directory, which the script's callers open as a file.
+        for there in (False, True):
+            be_there(self.default, there)
+            made = [os.path.basename(self.default)] if there else []
+            for below in (os.path.join(self.default, "lock"), os.path.join(self.default, "x", "lock")):
+                for settings, words in (
+                    (Settings(family=below, slots=2), "shared is false"),
+                    (Settings(family=below, shared=True, max_runs=5, slots=3), "max_runs is 5"),
+                ):
+                    with self.subTest(there=there, settings=settings):
+                        with self.assertRaisesRegex(ConfigError, words):
+                            self.run_configure(settings)
+                        self.assertEqual(os.listdir(self.dir), made, "nothing was written or made")
+                        self.assertFalse(os.path.isdir(self.default), "the default lock was not made a directory")
         self.assertEqual(self.out.getvalue(), "")
 
     def test_the_default_lock_through_a_link_to_its_directory_is_refused_whether_the_lock_is_there_or_not(self) -> None:

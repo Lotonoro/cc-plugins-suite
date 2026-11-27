@@ -12,9 +12,10 @@ decides. Opening the gate twice in one process deadlocks, since flock conflicts 
 files of one process too, so these methods never open it themselves; `list_holders` does, being
 a whole operation of its own.
 
-`collides_with` is the function here that concerns no family of its own: it says whether the
-files of a family of the broker can be those of the default lock's family, which a root of the
-broker may then use only shared and at the script's one slot count (LOCK-PROTOCOL.md section 4).
+`collides_with` is the function here that concerns no family of its own: it says whether a family
+of the broker is in the default lock's family, because its files can be that family's or it sits
+below the default lock itself, which a root of the broker may then use only shared and at the
+script's one slot count (LOCK-PROTOCOL.md section 4).
 """
 
 from __future__ import annotations
@@ -79,24 +80,30 @@ def collides_with(path: str, default: str) -> bool:
 
     It is when `path` is the same file as `default` (`-ef`, which two files that are there can be),
     or when its physical directory, the `realpath` of its directory part, is `default`'s and its
-    name begins with `default`'s name, both compared without regard to letter case
-    (LOCK-PROTOCOL.md section 4). This asks whether the family's files can be the default lock's
-    family's, and not how the path is spelled: an other-case spelling is in the family, which the
-    script's own match misses, and a path below a directory named for the default lock is not,
-    which that prefix match takes, since its files are none of the default lock's.
+    name begins with `default`'s name, or when that directory is `default`'s own path or below it,
+    where the broker would make the default lock a directory; all compared without regard to
+    letter case (LOCK-PROTOCOL.md section 4). This asks whether the family's files can be the
+    default lock's family's, and not how the path is spelled: an other-case spelling is in the
+    family, which the script's own match misses, and a path below a directory that only begins
+    like the default lock's name is not, which that prefix match takes, since its files are none
+    of the default lock's.
 
     The answer is the same whether `default` is there or not, and the same before the broker makes
     the family's directory and files as after: only the first question reads a file, and a
-    directory that is not there is read as it will be once made. `Config.validate` refuses a `..`
-    component and a final symlink first, the two spellings that would name another place once the
-    broker has made what the family names.
+    directory that is not there is read as it will be once made. `Config.validate` refuses first a
+    path the file system cannot encode, a `..` component and a final symlink: the last two would
+    name another place once the broker has made what the family names.
     """
     if _is_the_file(path, default):
         return True
     directory, name = _directory_and_name(path)
     default_directory, default_name = _directory_and_name(default)
-    same_directory = os.path.realpath(directory).casefold() == os.path.realpath(default_directory).casefold()
-    return same_directory and name.casefold().startswith(default_name.casefold())
+    where = os.path.realpath(directory).casefold()
+    default_where = os.path.realpath(default_directory).casefold()
+    lock = os.path.join(default_where, default_name.casefold())
+    beside = where == default_where and name.casefold().startswith(default_name.casefold())
+    below = where == lock or where.startswith(lock + "/")
+    return beside or below
 
 
 class Family:

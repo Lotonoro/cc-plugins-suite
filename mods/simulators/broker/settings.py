@@ -122,6 +122,13 @@ class Config:
             raise ConfigError(f"family must be an absolute path, not {self.family!r}")
         if "\0" in self.family:
             raise ConfigError(f"family must not hold a NUL byte: {self.family!r}")
+        try:
+            os.fsencode(self.family)
+        except UnicodeEncodeError as err:
+            raise ConfigError(
+                f"family must be a path the file system can encode, not {self.family!r}: "
+                "it holds a character with no bytes in the file system's encoding"
+            ) from err
         # Two spellings name another place once the broker has made what the family names, which it
         # does after `configure` has accepted the family: `a/..` is the directory before `a` only once
         # `a` exists, and a link that dangles leads to no file until opening the family makes its

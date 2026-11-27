@@ -786,6 +786,18 @@ class SharedSlotRuleCase(ConformanceCase):
         with self.assertRaises(ConfigError):
             Config.from_mapping({"family": hard}, self.dir, 12)
 
+    def test_a_family_below_the_default_lock_itself_is_in_its_family_whether_the_lock_is_there_or_not(self) -> None:
+        default = self.stand_in_for_the_default_lock()
+        count = Docs.default_lock_count()
+        for there in (False, True):
+            be_there(default, there)
+            for below in (os.path.join(default, "lock"), os.path.join(default, "x", "lock")):
+                with self.subTest(lock_is_there=there, below=below):
+                    with self.assertRaises(ConfigError):
+                        self.shared(family=below, max_runs=count + 1, slots=1)
+                    with self.assertRaises(ConfigError):
+                        Config.from_mapping({"family": below}, self.dir, 12)
+
     def test_a_family_in_the_default_locks_family_must_be_shared(self) -> None:
         default = self.stand_in_for_the_default_lock()
         name = os.path.basename(default)
@@ -803,7 +815,7 @@ class SharedSlotRuleCase(ConformanceCase):
                     Config.from_mapping({"family": spelling, **data}, self.dir, 12)
             self.assertTrue(self.shared(family=spelling).shared)
 
-    def test_a_family_below_a_directory_named_for_the_default_lock_is_another_family_and_need_not_be_shared(
+    def test_a_family_below_a_directory_that_only_begins_like_the_default_lock_is_another_family_and_need_not_be_shared(
         self,
     ) -> None:
         default = self.stand_in_for_the_default_lock()

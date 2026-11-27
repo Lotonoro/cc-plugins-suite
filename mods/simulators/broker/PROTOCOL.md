@@ -91,9 +91,9 @@ client that meets such a file exits 78 naming it.
 
 | Setting | What it is | Default | Range |
 |---|---|---|---|
-| `family` | the lock family's path | `family/lock` in the root | an absolute path with no NUL byte, no `..` component, and not itself a symbolic link (a directory in it may be one); a `..` after a directory that is not there yet names another directory once `configure` has made it, and opening a link that dangles makes the file it points to |
-| `shared` | whether `sim-lock.sh` uses the family too | `false` | `true` or `false`, and `true` for a family whose files can be those of `sim-lock.sh`'s default lock's family (`LOCK-PROTOCOL.md` section 4) |
-| `max_runs` | on a shared family, the MAX_RUNS that the script's callers use | 3 | a positive whole number, and 3 on a shared family whose files can be those of `sim-lock.sh`'s default lock's family (`LOCK-PROTOCOL.md` section 4) |
+| `family` | the lock family's path | `family/lock` in the root | an absolute path with no NUL byte, no `..` component, no character the file system cannot encode (a lone surrogate, for one), and not itself a symbolic link (a directory in it may be one); a `..` after a directory that is not there yet names another directory once `configure` has made it, and opening a link that dangles makes the file it points to |
+| `shared` | whether `sim-lock.sh` uses the family too | `false` | `true` or `false`, and `true` for a family in `sim-lock.sh`'s default lock's family, which `LOCK-PROTOCOL.md` section 4 defines |
+| `max_runs` | on a shared family, the MAX_RUNS that the script's callers use | 3 | a positive whole number, and 3 on a shared family in `sim-lock.sh`'s default lock's family, which `LOCK-PROTOCOL.md` section 4 defines |
 | `slots` | the number of slots the broker takes | `max(3, cores / 4)`, at most `max_runs` on a shared family | a positive whole number, at most `max_runs` on a shared family |
 | `settle_seconds` | from the last start to a start beside another run | 90 | a whole number of at most 7 digits |
 | `min_idle_percent` | the idle CPU a run needs | 50 | a whole number of at most 3 digits |

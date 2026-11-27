@@ -41,7 +41,10 @@ def scratch_dir(case: unittest.TestCase) -> str:
 
 
 def in_other_letters(lock: str) -> List[str]:
-    """Spellings of the lock's path in other letters: its name, its directory, both, and a family file's name."""
+    """Spellings of the lock's path in other letters: its name, its directory, and both.
+
+    A file of the lock's family, or a path below the lock, takes one of these as its start.
+    """
     directory, name = os.path.split(lock)
     return [
         os.path.join(directory, name.upper()),
@@ -49,7 +52,6 @@ def in_other_letters(lock: str) -> List[str]:
         os.path.join(directory.upper(), name),
         os.path.join(directory.upper(), name.upper()),
         os.path.join(directory.title(), name.title()),
-        os.path.join(directory, name.upper() + ".GATE"),
     ]
 
 
