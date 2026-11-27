@@ -22,7 +22,14 @@ from broker import protocol
 from broker.dispatcher import USAGE, main
 from broker.tests.process_case import ONLY_ON_MACOS, ROOT
 from broker.tests.programs import EXIT_WITH, LEAVE_A_MARK
-from broker.tests.support import FakeClock, FakeMachine, hold_in_another_process, scratch_dir
+from broker.tests.support import (
+    FakeClock,
+    FakeMachine,
+    be_there,
+    hold_in_another_process,
+    in_other_letters,
+    scratch_dir,
+)
 
 ON_MACOS = unittest.skipUnless(sys.platform == "darwin", ONLY_ON_MACOS)
 
@@ -111,13 +118,18 @@ class RoutingTest(DispatcherCase):
         self.assertEqual(self.main("configure"), 0)
         self.assertEqual(self.main("status"), 0)
 
-    def test_a_family_that_only_begins_like_the_default_lock_is_configured_and_read_again(self) -> None:
+    def test_a_family_below_a_directory_named_for_the_default_lock_is_configured_and_read_again_whether_the_lock_is_there_or_not(
+        self,
+    ) -> None:
         default = os.path.join(self.dir, "pango-sim-test.flock")  # stands for the script's default lock
-        family = os.path.join(default + ".d", "family", "lock")
         with mock.patch.object(protocol, "DEFAULT_LOCK_FILE", default):
-            self.assertEqual(self.main("configure", "--family", family), 0)  # which makes the directory
-            self.assertEqual(self.main("status"), 0)
-            self.assertEqual(self.main("configure", "--family", family), 0)
+            for there in (False, True):
+                be_there(default, there)
+                for family in (os.path.join(default + ".d", "lock"), os.path.join(default + ".d", "family", "lock")):
+                    with self.subTest(lock_is_there=there, family=family):
+                        self.assertEqual(self.main("configure", "--family", family), 0)  # which makes the directory
+                        self.assertEqual(self.main("status"), 0)
+                        self.assertEqual(self.main("configure", "--family", family), 0)
         self.assertEqual(self.err.getvalue(), "")
 
     @ON_MACOS
@@ -437,6 +449,35 @@ class ErrorsTest(DispatcherCase):
             self.assertFalse(os.path.exists(os.path.join(self.root, "config.json")))
             self.assertEqual(self.main(*options, "--max-runs", "3"), 0)
         self.assertTrue(os.path.exists(os.path.join(self.root, "config.json")))
+
+    def test_configure_refuses_an_unshared_file_of_the_default_locks_family_and_makes_nothing(self) -> None:
+        default = os.path.join(self.dir, "pango-sim-test.flock")
+        suffixes = (".gate", ".1", ".last-start", ".1.owner")
+        with mock.patch.object(protocol, "DEFAULT_LOCK_FILE", default):
+            for suffix in suffixes:
+                with self.subTest(suffix=suffix):
+                    self.assertEqual(self.main("configure", "--family", default + suffix), protocol.EXIT_CONFIG)
+        self.assertEqual(len(self.err_lines()), len(suffixes))
+        for line in self.err_lines():
+            self.assertRegex(line, r"^sim-lock: shared is false, .*set shared to true, or family")
+        self.assertEqual(os.listdir(self.dir), [], "no directory was made and no configuration written")
+
+    def test_configure_refuses_the_default_lock_in_other_letters_whether_the_lock_is_there_or_not_and_makes_nothing(
+        self,
+    ) -> None:
+        default = os.path.join(self.dir, "pango-sim-test.flock")
+        with mock.patch.object(protocol, "DEFAULT_LOCK_FILE", default):
+            for there in (False, True):
+                be_there(default, there)
+                for spelling in in_other_letters(default):
+                    for options in (("--slots", "3"), ("--shared", "--max-runs", "5", "--slots", "3")):
+                        with self.subTest(lock_is_there=there, spelling=spelling, options=options):
+                            self.assertEqual(
+                                self.main("configure", "--family", spelling, *options), protocol.EXIT_CONFIG
+                            )
+        self.assertEqual(self.out.getvalue(), "")
+        self.assertEqual(os.listdir(self.dir), [os.path.basename(default)], "nothing was made but the lock itself")
+        self.assertFalse(os.path.exists(default + ".gate"))
 
     def test_configure_refuses_a_family_spelled_through_a_directory_that_is_not_there_and_makes_nothing(self) -> None:
         default = os.path.join(self.dir, "pango-sim-test.flock")

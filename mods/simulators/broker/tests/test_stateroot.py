@@ -16,7 +16,14 @@ from broker.errors import ConfigError, FamilyDisagreement, FamilyError
 from broker.leaf import Admitted, Applicant
 from broker.settings import Config
 from broker.stateroot import open_root
-from broker.tests.support import FakeClock, FakeMachine, hold_in_another_process, scratch_dir
+from broker.tests.support import (
+    FakeClock,
+    FakeMachine,
+    be_there,
+    hold_in_another_process,
+    in_other_letters,
+    scratch_dir,
+)
 
 CORES = 12
 APPLICANT = Applicant(pid=1, cwd="/tmp", command=("true",))
@@ -146,7 +153,7 @@ class RefusalTest(RootCase):
 
 
 class DefaultLockFamilyTest(RootCase):
-    """A root on the script's default lock opens shared, and a shared root in its family opens at a MAX_RUNS of 3.
+    """A root in the family of the script's default lock opens shared and at a MAX_RUNS of 3.
 
     The default lock stands in as a file of the scratch directory: no test here names the real one.
     """
@@ -173,11 +180,42 @@ class DefaultLockFamilyTest(RootCase):
         self.assertIn("set shared to true, or family to another lock file", str(caught.exception))
         self.assertEqual(os.listdir(self.dir), ["root"], "nothing of the family was created")
 
-    def test_an_unshared_family_below_a_directory_named_for_the_default_lock_opens(self) -> None:
+    def test_an_unshared_file_of_the_default_locks_family_is_refused_naming_the_file_and_the_fix_and_touching_no_slot(
+        self,
+    ) -> None:
+        for suffix in (".gate", ".1", ".last-start", ".1.owner"):
+            with self.subTest(suffix=suffix):
+                self.full_configuration(family=self.default + suffix, shared=False)
+                with self.assertRaisesRegex(ConfigError, r"config\.json: shared is false") as caught:
+                    open_root(self.root, CORES)
+                self.assertEqual(caught.exception.exit_code, protocol.EXIT_CONFIG)
+                self.assertIn("set shared to true, or family to another lock file", str(caught.exception))
+                self.assertEqual(os.listdir(self.dir), ["root"], "nothing of the family was created")
+
+    def test_the_default_lock_in_other_letters_is_refused_whether_the_lock_is_there_or_not(self) -> None:
+        for there in (False, True):
+            be_there(self.default, there)
+            for spelling in in_other_letters(self.default):
+                with self.subTest(there=there, spelling=spelling):
+                    self.full_configuration(family=spelling, shared=False)
+                    with self.assertRaisesRegex(ConfigError, r"config\.json: shared is false"):
+                        open_root(self.root, CORES)
+                    self.full_configuration(family=spelling, shared=True, max_runs=5, slots=3)
+                    with self.assertRaisesRegex(ConfigError, r"config\.json: max_runs is 5"):
+                        open_root(self.root, CORES)
+
+    def test_an_unshared_family_below_a_directory_named_for_the_default_lock_opens_whether_the_directory_and_the_lock_are_there_or_not(
+        self,
+    ) -> None:
         family = os.path.join(self.default + ".d", "family", "lock")
-        os.makedirs(os.path.dirname(family))  # what `configure` makes for an unshared family
         self.full_configuration(family=family, shared=False, slots=2)
-        self.assertEqual(open_root(self.root, CORES).config.family, family)
+        for directory_is_there in (False, True):
+            if directory_is_there:
+                os.makedirs(os.path.dirname(family))  # what `configure` makes for an unshared family
+            for there in (False, True):
+                be_there(self.default, there)
+                with self.subTest(directory_is_there=directory_is_there, lock_is_there=there):
+                    self.assertEqual(open_root(self.root, CORES).config.family, family)
 
     def test_a_max_runs_of_3_opens_and_the_window_is_3(self) -> None:
         self.full_configuration(family=self.default, shared=True, max_runs=3, slots=2)

@@ -202,37 +202,23 @@ is held to it:
 - N changes only at pango-core's grant, for all the script's callers at once.
 
 pango PR #622 decided the rule, and its record is
-`docs/process/2026-11-26-the-default-simulator-lock-keeps-one-slot-count.md`. The script's match of
-a lock file to the default lock's family (L82-89) compares text, and what it takes and misses is
-this:
+`docs/process/2026-11-26-the-default-simulator-lock-keeps-one-slot-count.md`. A lock file elsewhere
+takes any count (self-test L402, L557-564).
 
-- It is a prefix over the whole path (L88): the lock file's physical directory, joined to its name,
-  begins with the default lock's own. So the family is the default lock (section 2), its family's
-  files (`.1`, `.gate` and so on), any longer name (`<lock>-mine`) and anything below a directory
-  so named (`<lock>.d/lock`), however the directory is spelled (`/private/tmp`, a doubled slash, a
-  symlinked directory), whether or not the file exists.
-- The directory must exist (L86). The script enters it with `cd`, and when that fails, because the
-  directory is absent, is no directory or cannot be searched, the file is not in the family however
-  its path reads.
-- `-ef` (L85) takes the default lock under any name that leads to it while it exists, a symlink to
-  it included. A symlink to it is missed while the lock is absent, and a symlink to another file of
-  its family is missed always.
-- Another letter case is missed in a name, and in a directory that is no symlink, since `cd -P`
-  keeps the letters it is given; only the existing lock itself is found, by `-ef`. A directory
-  reached through a symlink is found in any case, since `cd -P` gives its real letters (`/TMP` for
-  `/tmp`). The script's own comment (L77-81) says more is missed than is.
-
-A lock file elsewhere takes any count (self-test L402, L557-564).
-
-The broker holds the same on its side, with two matches. Its refusal of a shared family at a
-`max_runs` other than 3 matches as the script matches (`PROTOCOL.md`), so that it refuses where the
-script refuses and nowhere else. Its refusal of an unshared family is its own decision, and it
-matches the default lock itself and nothing longer: the same file, or the same name in the same
-physical directory. The default lock itself is shared by definition, since the script's callers
-use it. A match by prefix would refuse an unrelated unshared family whose path only begins like
-the default lock's. Below a directory so named it would refuse too late: `configure` takes the
-family while the directory is absent and then makes it, and every open and `configure` after that
-is refused.
+The broker holds the same on its side by one rule, which asks whether a family's files can be the
+default lock's family's files, and not how its path is spelled. A family is in the default lock's
+family when it is the same file as the default lock (the shell's `-ef`, which only files that are
+there can pass), or when its physical directory, the `realpath` of its directory part, is the
+default lock's and its name begins with the default lock's name, both compared without regard to
+letter case, which this Mac's volume does not tell apart. A prefix takes every file of the family
+(section 2) without a list of their suffixes. A shared family in it must keep `max_runs` at 3,
+and a family in it must be shared: the script's callers use its files, the gate among them, and an
+unshared family there would hold the script's gate. The answer is the same whether the default
+lock is there or not, and before `configure` makes the family's directory as after, so `configure`
+never takes a family that every later open refuses. The rule differs from the script's match behind
+its own refusal (L374-376), which compares the text of the path: it also takes another letter case,
+and it does not take a family below a directory named for the default lock (`<lock>.d/lock`), whose
+files are none of the default lock's.
 
 Where this file says MAX_RUNS of a broker run, it means c in its take loop and in checks 1 and 5 of
 section 3, so the number in their text is c; in its alone check and its holder listing it means N.

@@ -15,7 +15,7 @@ from typing import Optional
 
 from broker import protocol
 from broker.errors import ConfigError
-from broker.family import in_default_family, is_the_default_lock
+from broker.family import collides_with
 
 
 def default_family(root: str) -> str:
@@ -51,12 +51,10 @@ class Config:
 
     `slots` is the broker's own count, c. On a family `shared` with `sim-lock.sh`, `max_runs` is
     the MAX_RUNS that the script's callers use, N, which c may not pass; on any other family it
-    is not read. The script's callers use its default lock, at the one N that the script holds on
-    its family (LOCK-PROTOCOL.md section 4). So `validate` refuses a shared family there at any
-    other `max_runs`, matched as the script matches its family, and the default lock itself unless
-    it is shared, matched as that file and no other; these are the checks it makes against the
-    file system. Every default is written in `defaults`, the one path to them, so a field has none
-    of its own.
+    is not read. The script's callers use the files of its default lock's family, the lock at the
+    one N that the script holds (LOCK-PROTOCOL.md section 4). So `validate` refuses a family that
+    `collides_with` the default lock unless it is shared, and a shared one at any other `max_runs`.
+    Every default is written in `defaults`, the one path to them, so a field has none of its own.
     """
 
     family: str
@@ -138,21 +136,19 @@ class Config:
                 f"family must not be a symbolic link, but {self.family!r} is one: "
                 "name the lock file itself, not a link to it"
             )
-        if (
-            self.shared
-            and self.max_runs != protocol.DEFAULT_MAX_RUNS
-            and in_default_family(self.family, protocol.DEFAULT_LOCK_FILE)
-        ):
-            raise ConfigError(
-                f"max_runs is {self.max_runs}, but {self.family} is in the family of sim-lock.sh's "
-                f"default lock, whose callers all use {protocol.DEFAULT_MAX_RUNS}: set max_runs to "
-                f"{protocol.DEFAULT_MAX_RUNS}, or family to another lock file"
-            )
-        if not self.shared and is_the_default_lock(self.family, protocol.DEFAULT_LOCK_FILE):
-            raise ConfigError(
-                f"shared is false, but {self.family} is sim-lock.sh's default lock, which the "
-                "script's callers use: set shared to true, or family to another lock file"
-            )
+        if collides_with(self.family, protocol.DEFAULT_LOCK_FILE):
+            if not self.shared:
+                raise ConfigError(
+                    f"shared is false, but {self.family} is in the family of sim-lock.sh's default "
+                    "lock, whose files the script's callers use: set shared to true, or family to "
+                    "another lock file"
+                )
+            if self.max_runs != protocol.DEFAULT_MAX_RUNS:
+                raise ConfigError(
+                    f"max_runs is {self.max_runs}, but {self.family} is in the family of sim-lock.sh's "
+                    f"default lock, whose callers all use {protocol.DEFAULT_MAX_RUNS}: set max_runs to "
+                    f"{protocol.DEFAULT_MAX_RUNS}, or family to another lock file"
+                )
         _positive(protocol.KEY_SLOTS, self.slots)
         if self.shared and self.slots > self.max_runs:
             raise ConfigError(

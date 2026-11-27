@@ -12,21 +12,19 @@ decides. Opening the gate twice in one process deadlocks, since flock conflicts 
 files of one process too, so these methods never open it themselves; `list_holders` does, being
 a whole operation of its own.
 
-`in_default_family` and `is_the_default_lock` are the functions here that concern no family of
-their own. The first is the script's match of a path to its default lock's family, in which a
-shared root of the broker may not give another slot count; the second says whether a path is the
-default lock itself, which a root of the broker may use only shared (LOCK-PROTOCOL.md section 4).
+`collides_with` is the function here that concerns no family of its own: it says whether the
+files of a family of the broker can be those of the default lock's family, which a root of the
+broker may then use only shared and at the script's one slot count (LOCK-PROTOCOL.md section 4).
 """
 
 from __future__ import annotations
 
 import fcntl
 import logging
-import operator
 import os
 import re
 from contextlib import contextmanager
-from typing import Callable, Iterator, List, Optional, Tuple
+from typing import Iterator, List, Optional, Tuple
 
 from broker import protocol
 from broker.errors import FamilyError
@@ -76,58 +74,29 @@ def _directory_and_name(path: str) -> Tuple[str, str]:
     return os.path.dirname(trimmed) or ".", os.path.basename(trimmed)
 
 
-def _physical_path(path: str) -> Optional[str]:
-    """The path's directory made physical, then its name; None where the script's `cd` into it fails.
+def collides_with(path: str, default: str) -> bool:
+    """Whether a family at `path` is in the family of the default lock `default`.
 
-    The directory must be there and be searched. A symlink or a `..` in it is followed as `cd -P`
-    follows it, and the name is kept as it is written.
+    It is when `path` is the same file as `default` (`-ef`, which two files that are there can be),
+    or when its physical directory, the `realpath` of its directory part, is `default`'s and its
+    name begins with `default`'s name, both compared without regard to letter case
+    (LOCK-PROTOCOL.md section 4). This asks whether the family's files can be the default lock's
+    family's, and not how the path is spelled: an other-case spelling is in the family, which the
+    script's own match misses, and a path below a directory named for the default lock is not,
+    which that prefix match takes, since its files are none of the default lock's.
+
+    The answer is the same whether `default` is there or not, and the same before the broker makes
+    the family's directory and files as after: only the first question reads a file, and a
+    directory that is not there is read as it will be once made. `Config.validate` refuses a `..`
+    component and a final symlink first, the two spellings that would name another place once the
+    broker has made what the family names.
     """
-    directory, name = _directory_and_name(path)
-    if not (os.path.isdir(directory) and os.access(directory, os.X_OK)):
-        return None
-    return f"{os.path.realpath(directory)}/{name}"
-
-
-def _leads_to(path: str, default: str, compare: Callable[[str, str], bool]) -> bool:
-    """Whether `path` is the file `default`, or its physical path compares so with the default's."""
     if _is_the_file(path, default):
         return True
-    physical = _physical_path(path)
-    default_physical = _physical_path(default)
-    return physical is not None and default_physical is not None and compare(physical, default_physical)
-
-
-def in_default_family(path: str, default: str) -> bool:
-    """Whether `path` is the lock `default` or one of its family's files, as `sim-lock.sh` has it.
-
-    This is the script's `in_default_family` (LOCK-PROTOCOL.md section 4), misses included. What it
-    takes and misses is what the script's function does, which is less than its comment (L77-81)
-    says it misses:
-
-    - It is a prefix over the whole path: the physical directory, joined to the name, begins with
-      the default lock's own. So the default lock, its family's files (`.1`, `.gate`, ...), any
-      longer name and anything below a directory so named are in the family, however the directory
-      is spelled (`/private/tmp`, a doubled slash, a symlinked directory), whether or not the file
-      exists.
-    - The directory must exist and be searched, as the script's `cd` needs; if not, no match.
-    - `-ef` takes the default lock under any name that leads to it while it exists, a symlink to
-      it included. A symlink to it is missed while the lock is absent, and a symlink to another
-      file of its family is missed always.
-    - Another letter case is missed in a name, and in a directory that is no symlink, since the
-      physical path keeps the letters it is given; only the existing lock itself is found. A
-      directory reached through a symlink is found in any case, since the physical path has its
-      real letters.
-    """
-    return _leads_to(path, default, str.startswith)
-
-
-def is_the_default_lock(path: str, default: str) -> bool:
-    """Whether `path` is the lock `default` itself: the same file, or its name in its physical directory.
-
-    This is the broker's own match, and the script has none like it: `in_default_family` also takes
-    a longer name and anything below a directory so named, which are other locks.
-    """
-    return _leads_to(path, default, operator.eq)
+    directory, name = _directory_and_name(path)
+    default_directory, default_name = _directory_and_name(default)
+    same_directory = os.path.realpath(directory).casefold() == os.path.realpath(default_directory).casefold()
+    return same_directory and name.casefold().startswith(default_name.casefold())
 
 
 class Family:

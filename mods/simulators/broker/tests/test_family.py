@@ -14,8 +14,8 @@ import unittest
 from typing import List, Optional, Tuple
 
 from broker.errors import FamilyError
-from broker.family import Family, in_default_family, is_the_default_lock
-from broker.tests.support import hold_in_another_process, scratch_dir
+from broker.family import Family, collides_with
+from broker.tests.support import be_there, hold_in_another_process, in_other_letters, scratch_dir
 
 
 class FamilyCase(unittest.TestCase):
@@ -354,36 +354,40 @@ class DefaultLockCase(FamilyCase):
         return path
 
 
-class InDefaultFamilyTest(DefaultLockCase):
-    """Whether a path is the script's default lock or one of its family's files, as the script says.
+class CollidesWithTest(DefaultLockCase):
+    """Whether a family at a path collides with the family of the default lock: the broker's own test.
 
-    `sim-lock.sh` refuses a MAX_RUNS other than 3 there (LOCK-PROTOCOL.md section 4), and its
-    matcher is ported as it is, misses included.
+    A family does when it is the same file as the lock, or when its physical directory is the lock's
+    and its name begins with the lock's, both compared without regard to letter case
+    (LOCK-PROTOCOL.md section 4). The test reads no more of a family's own directory than its path, so
+    its answer is the same before the broker makes the family's directory and files as after.
     """
 
+    FAMILY_FILES = (".1", ".2", ".gate", ".last-start", ".owner", ".1.owner")
+
     def says(self, path: str) -> bool:
-        return in_default_family(path, self.default)
+        return collides_with(path, self.default)
 
-    def test_the_default_lock_is_in_its_own_family_whether_or_not_the_file_is_there(self) -> None:
-        self.assertTrue(self.says(self.default))
-        self.write(self.default, "")
-        self.assertTrue(self.says(self.default))
+    def test_the_default_lock_and_each_file_of_its_family_collide_whether_they_are_there_or_not(self) -> None:
+        for there in (False, True):
+            for suffix in ("", *self.FAMILY_FILES):
+                be_there(self.default + suffix, there)
+                with self.subTest(there=there, suffix=suffix):
+                    self.assertTrue(self.says(self.default + suffix))
 
-    def test_a_file_of_its_family_is_in_it_whether_or_not_the_file_is_there(self) -> None:
-        for suffix in (".1", ".2", ".gate", ".last-start", ".owner", ".1.owner"):
-            with self.subTest(suffix=suffix):
-                self.assertTrue(self.says(self.default + suffix))
+    def test_a_longer_name_beside_the_default_lock_collides_too(self) -> None:
+        for name in (self.NAME + "-mine", self.NAME + ".d", self.NAME + "2"):
+            with self.subTest(name=name):
+                self.assertTrue(self.says(os.path.join(self.tmp, name)))
 
-    def test_the_script_matches_by_prefix_so_a_longer_name_is_in_the_family_too(self) -> None:
-        self.assertTrue(self.says(self.default + "-probe"))
+    def test_the_default_lock_in_other_letters_collides_whether_it_is_there_or_not(self) -> None:
+        for there in (False, True):
+            be_there(self.default, there)
+            for spelling in in_other_letters(self.default):
+                with self.subTest(there=there, spelling=spelling):
+                    self.assertTrue(self.says(spelling))
 
-    def test_the_prefix_takes_a_path_below_a_directory_named_for_the_default_lock_once_it_is_there(self) -> None:
-        below = os.path.join(self.default + ".d", "family", "lock")
-        self.assertFalse(self.says(below), "the script's `cd` into the directory fails")
-        os.makedirs(os.path.dirname(below))
-        self.assertTrue(self.says(below))
-
-    def test_another_spelling_of_the_directory_is_the_same_family(self) -> None:
+    def test_another_spelling_of_the_directory_collides(self) -> None:
         linked = self.link(self.tmp, self.dir, "linked")
         for spelling in (
             f"{self.tmp}//{self.NAME}",
@@ -395,25 +399,37 @@ class InDefaultFamilyTest(DefaultLockCase):
             with self.subTest(spelling=spelling):
                 self.assertTrue(self.says(spelling))
 
-    def test_a_trailing_slash_does_not_change_the_name_as_the_shells_basename_reads_it(self) -> None:
-        self.assertTrue(self.says(self.default + "/"))
-        self.assertFalse(self.says(os.path.join(self.elsewhere, self.NAME) + "/"))
+    def test_the_default_locks_own_directory_may_be_a_link_as_tmp_is_on_a_mac(self) -> None:
+        lock = os.path.join(self.link(self.tmp, self.dir, "linked"), self.NAME)
+        self.assertTrue(collides_with(self.default + ".1", lock))
+        self.assertFalse(collides_with(os.path.join(self.elsewhere, self.NAME), lock))
 
-    def test_the_default_locks_own_directory_may_be_a_symlink_as_tmp_is_on_a_mac(self) -> None:
-        linked = self.link(self.tmp, self.dir, "linked")
-        self.assertTrue(in_default_family(self.default + ".1", os.path.join(linked, self.NAME)))
-        self.assertFalse(in_default_family(os.path.join(self.elsewhere, self.NAME), os.path.join(linked, self.NAME)))
+    def test_the_same_file_under_another_name_collides_while_both_are_there(self) -> None:
+        hard = os.path.join(self.elsewhere, "hard.flock")
+        soft = self.link(self.default, self.elsewhere, "soft.flock")
+        through_a_link = os.path.join(self.link(self.elsewhere, self.dir, "reached"), "hard.flock")
+        self.assertFalse(self.says(soft), "the link leads nowhere yet")
+        be_there(self.default, True)
+        os.link(self.default, hard)
+        for path in (hard, soft, through_a_link):
+            with self.subTest(path=path):
+                self.assertTrue(self.says(path))
+        os.unlink(self.default)
+        for path in (hard, soft, through_a_link):
+            with self.subTest(path=path, lock="gone"):
+                self.assertFalse(self.says(path), "the lock is not there, and the name is nothing like it")
 
-    def test_a_symlink_to_the_default_lock_is_in_the_family_once_the_lock_is_there(self) -> None:
-        mine = self.link(self.default, self.elsewhere, "mine.flock")
-        self.assertFalse(self.says(mine), "the link leads nowhere yet")
-        self.write(self.default, "")
-        self.assertTrue(self.says(mine))
+    def test_a_family_below_a_directory_named_for_the_default_lock_collides_with_none_of_its_files(self) -> None:
+        for below in (os.path.join(self.default + ".d", "lock"), os.path.join(self.default + ".d", "family", "lock")):
+            with self.subTest(below=below):
+                self.assertFalse(self.says(below), "the directory is not there")
+                os.makedirs(os.path.dirname(below))
+                self.assertFalse(self.says(below), "the directory is there")
 
-    def test_a_file_that_is_neither_beside_the_default_lock_nor_named_for_it_is_not_in_the_family(self) -> None:
+    def test_a_lock_elsewhere_collides_with_nothing(self) -> None:
         for path in (
             os.path.join(self.tmp, "other.flock"),
-            os.path.join(self.tmp, "pango-sim-test"),
+            os.path.join(self.tmp, self.NAME[:-1]),
             os.path.join(self.elsewhere, self.NAME),
             os.path.join(self.elsewhere, self.NAME + ".1"),
             os.path.join(self.dir, "no", "such", "directory", self.NAME),
@@ -421,126 +437,37 @@ class InDefaultFamilyTest(DefaultLockCase):
             with self.subTest(path=path):
                 self.assertFalse(self.says(path))
 
-    def test_a_directory_that_is_not_there_is_no_match_though_its_path_reads_as_the_default_locks(self) -> None:
-        # Read as text, `nosuch/..` is the default lock's own directory; the shell's `cd` into it fails.
-        self.assertFalse(self.says(os.path.join(self.tmp, "nosuch", "..", self.NAME)))
+    def test_a_trailing_slash_does_not_change_the_name(self) -> None:
+        self.assertTrue(self.says(self.default + "/"))
+        self.assertFalse(self.says(os.path.join(self.elsewhere, self.NAME) + "/"))
 
-    def test_a_directory_that_is_a_regular_file_is_no_match_whether_or_not_it_can_be_executed(self) -> None:
-        for mode in (0o644, 0o755):
-            with self.subTest(mode=oct(mode)):
-                # Named for the default lock, so that a path in it would match by prefix if `cd` were not asked.
-                named_for_it = f"{self.default}.{mode:o}"
-                self.write(named_for_it, "")
-                os.chmod(named_for_it, mode)
-                self.assertFalse(self.says(os.path.join(named_for_it, "lock")))
+    def test_a_path_through_a_directory_that_is_not_there_is_read_as_it_is_once_the_directory_is_made(self) -> None:
+        text = os.path.join(self.tmp, "nosuch", "..", self.NAME)
+        self.assertTrue(self.says(text))
+        os.makedirs(os.path.join(self.tmp, "nosuch"))
+        self.assertTrue(self.says(text))
 
-    @unittest.skipIf(os.geteuid() == 0, "root searches any directory")
-    def test_a_directory_that_cannot_be_searched_is_no_match(self) -> None:
-        closed = self.default + ".closed"
-        os.makedirs(closed)
-        os.chmod(closed, 0o600)
-        self.addCleanup(os.chmod, closed, 0o700)
-        self.assertFalse(self.says(os.path.join(closed, "lock")))
-
-    def test_a_symlink_to_a_family_file_other_than_the_default_lock_is_a_miss_as_in_the_script(self) -> None:
-        self.write(self.default + ".1", "")
-        self.assertFalse(self.says(self.link(self.default + ".1", self.elsewhere, "mine.flock")))
-
-    def test_a_name_in_other_letters_is_a_miss_while_the_lock_is_absent(self) -> None:
-        self.assertFalse(self.says(os.path.join(self.tmp, "Pango-Sim-Test.flock")))
-
-    def requires_a_case_insensitive_volume(self) -> None:
-        if not os.path.exists(self.tmp.upper()):
-            self.skipTest("this volume tells letters apart, so another case is another file")
-
-    def test_a_name_in_other_letters_is_found_only_as_the_existing_lock_itself(self) -> None:
-        self.requires_a_case_insensitive_volume()
-        other = os.path.join(self.tmp, self.NAME.upper())
-        self.write(self.default, "")
-        self.assertTrue(self.says(other), "the same file, which `-ef` finds")
-        self.write(self.default + ".1", "")
-        self.assertFalse(self.says(other + ".1"), "the same file as a family file, which nothing finds")
-
-    def test_a_directory_in_other_letters_is_found_only_where_cd_follows_a_symlink_for_it(self) -> None:
-        self.requires_a_case_insensitive_volume()
-        self.link(self.tmp, self.dir, "linked")
-        family_file = f"{self.NAME}.1"
-        # Where no symlink is followed, `cd -P` keeps the letters it is given.
-        self.assertFalse(self.says(os.path.join(self.dir.upper(), "tmp", family_file)))
-        # Where one is, it gives the real letters, as it does for /TMP.
-        self.assertTrue(self.says(os.path.join(self.dir, "LINKED", family_file)))
-
-
-class IsTheDefaultLockTest(DefaultLockCase):
-    """Whether a path is the default lock itself, which is the broker's own match and not the script's.
-
-    The script matches by prefix, so that a name which only begins like the default lock's is in its
-    family. The broker holds the lock itself to be shared (LOCK-PROTOCOL.md section 4), and for that
-    a path is the lock when it is the same file or has the lock's name in the lock's physical directory.
-    """
-
-    def says(self, path: str) -> bool:
-        return is_the_default_lock(path, self.default)
-
-    def test_the_default_lock_is_itself_whether_or_not_the_file_is_there(self) -> None:
-        self.assertTrue(self.says(self.default))
-        self.write(self.default, "")
-        self.assertTrue(self.says(self.default))
-
-    def test_another_spelling_of_the_directory_is_the_same_lock(self) -> None:
-        linked = self.link(self.tmp, self.dir, "linked")
-        for spelling in (
-            f"{self.tmp}//{self.NAME}",
-            f"{self.tmp}/./{self.NAME}",
-            os.path.join(self.elsewhere, "..", "tmp", self.NAME),
-            os.path.join(linked, self.NAME),
-        ):
-            with self.subTest(spelling=spelling):
-                self.assertTrue(self.says(spelling))
-
-    def test_the_default_locks_own_directory_may_be_a_symlink_as_tmp_is_on_a_mac(self) -> None:
-        linked = self.link(self.tmp, self.dir, "linked")
-        self.assertTrue(is_the_default_lock(self.default, os.path.join(linked, self.NAME)))
-        self.assertFalse(is_the_default_lock(os.path.join(self.elsewhere, self.NAME), os.path.join(linked, self.NAME)))
-
-    def test_a_symlink_to_the_default_lock_is_it_once_the_lock_is_there(self) -> None:
-        mine = self.link(self.default, self.elsewhere, "mine.flock")
-        self.assertFalse(self.says(mine), "the link leads nowhere yet")
-        self.write(self.default, "")
-        self.assertTrue(self.says(mine))
-
-    def test_a_file_of_its_family_is_not_it(self) -> None:
-        for suffix in (".1", ".2", ".gate", ".last-start", ".owner", ".1.owner"):
-            with self.subTest(suffix=suffix):
-                self.assertFalse(self.says(self.default + suffix))
-
-    def test_a_longer_name_is_not_it(self) -> None:
-        self.assertFalse(self.says(self.default + "-probe"))
-
-    def test_a_path_below_a_directory_named_for_it_is_not_it_whether_or_not_the_directory_is_there(self) -> None:
-        below = os.path.join(self.default + ".d", "family", "lock")
-        self.assertFalse(self.says(below))
-        os.makedirs(os.path.dirname(below))
-        self.assertFalse(self.says(below))
-
-    def test_a_symlink_to_a_file_of_its_family_is_not_it(self) -> None:
-        self.write(self.default + ".1", "")
-        self.assertFalse(self.says(self.link(self.default + ".1", self.elsewhere, "mine.flock")))
-
-    def test_a_lock_elsewhere_is_not_it(self) -> None:
+    def test_the_answer_is_the_same_before_the_family_is_made_as_after_with_the_default_lock_there_or_not(self) -> None:
         for path in (
+            self.default + ".gate",
+            self.default + "-mine",
+            os.path.join(self.default + ".d", "lock"),
+            os.path.join(self.default + ".d", "family", "lock"),
             os.path.join(self.tmp, "other.flock"),
             os.path.join(self.elsewhere, self.NAME),
-            os.path.join(self.dir, "no", "such", "directory", self.NAME),
+            os.path.join(self.tmp, "nosuch", "..", self.NAME),
+            os.path.join(self.tmp, self.NAME.upper()),
+            os.path.join(self.dir, "TMP", self.NAME),
+            os.path.join(self.dir, "TMP", self.NAME.upper() + ".GATE"),
         ):
-            with self.subTest(path=path):
-                self.assertFalse(self.says(path))
-
-    def test_a_directory_that_leads_nowhere_is_no_name_for_the_default_lock(self) -> None:
-        # Read as text, `nosuch/..` is the default lock's own directory; the shell's `cd` into it fails.
-        self.assertFalse(self.says(os.path.join(self.tmp, "nosuch", "..", self.NAME)))
-        self.write(self.default, "")
-        self.assertFalse(self.says(os.path.join(self.default, "..", self.NAME)), "a file is no directory")
+            for there in (False, True):
+                with self.subTest(path=path, lock_is_there=there):
+                    be_there(self.default, there)
+                    before = self.says(path)
+                    os.makedirs(os.path.dirname(path), exist_ok=True)  # what the broker's gate does
+                    be_there(path, True)  # and the verify step
+                    self.assertEqual(self.says(path), before)
+                    be_there(path, False)
 
 
 if __name__ == "__main__":

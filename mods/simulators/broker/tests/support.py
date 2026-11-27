@@ -40,6 +40,28 @@ def scratch_dir(case: unittest.TestCase) -> str:
     return os.path.realpath(path)
 
 
+def in_other_letters(lock: str) -> List[str]:
+    """Spellings of the lock's path in other letters: its name, its directory, both, and a family file's name."""
+    directory, name = os.path.split(lock)
+    return [
+        os.path.join(directory, name.upper()),
+        os.path.join(directory, name.title()),
+        os.path.join(directory.upper(), name),
+        os.path.join(directory.upper(), name.upper()),
+        os.path.join(directory.title(), name.title()),
+        os.path.join(directory, name.upper() + ".GATE"),
+    ]
+
+
+def be_there(path: str, there: bool) -> None:
+    """Makes the file at `path` an empty one that is there, or one that is not."""
+    if there:
+        with open(path, "a", encoding="utf-8"):
+            pass
+    elif os.path.lexists(path):
+        os.unlink(path)
+
+
 def stop_process(child: "subprocess.Popen[str]") -> None:
     """Kills the child by the id it was started with, reaps it and closes its pipes."""
     if child.poll() is None:

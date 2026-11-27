@@ -21,7 +21,7 @@ from broker.configure import Settings, configure
 from broker.errors import ConfigError, FamilyError, StateError
 from broker.settings import Config, LoadedConfig, load_config
 from broker.stateroot import open_root
-from broker.tests.support import hold_in_another_process, scratch_dir
+from broker.tests.support import be_there, hold_in_another_process, in_other_letters, scratch_dir
 
 CORES = 12
 
@@ -142,8 +142,9 @@ class ReadsNothingTest(ConfigureCase):
 
 
 class DefaultLockFamilyTest(ConfigureCase):
-    """The verb refuses what the open step would: the script's default lock when it is not shared, and a
-    shared family in its family when it has another MAX_RUNS; and it writes what the open step opens.
+    """The verb refuses what the open step would: a family in the family of the script's default lock
+    when it is not shared, and a shared one when it has another MAX_RUNS; and it writes what the open
+    step opens, whether the default lock is there or not.
 
     The default lock stands in as a file of the scratch directory: no test here names the real one.
     """
@@ -169,12 +170,70 @@ class DefaultLockFamilyTest(ConfigureCase):
         self.assertEqual(os.listdir(self.dir), [])
         self.assertEqual(self.out.getvalue(), "")
 
-    def test_a_family_below_a_directory_named_for_the_default_lock_is_configured_opened_and_configured_again(self) -> None:
-        settings = Settings(family=os.path.join(self.default + ".d", "family", "lock"), slots=2)
-        self.run_configure(settings)
-        self.assertTrue(os.path.isdir(os.path.dirname(settings.family)), "configure made the directory")
-        self.assertEqual(open_root(self.root, CORES).config.family, settings.family)
-        self.assertEqual(self.run_configure(settings).family, settings.family)
+    def test_a_file_of_the_default_locks_family_that_is_not_shared_is_refused_and_nothing_is_written_or_made(self) -> None:
+        for suffix in (".gate", ".1", ".last-start", ".1.owner"):
+            with self.subTest(suffix=suffix), self.assertRaisesRegex(ConfigError, "shared is false"):
+                self.run_configure(Settings(family=self.default + suffix, slots=2))
+        self.assertEqual(os.listdir(self.dir), [])
+        self.assertEqual(self.out.getvalue(), "")
+
+    def test_the_default_lock_in_other_letters_is_refused_at_configure_whether_the_lock_is_there_or_not(self) -> None:
+        for there in (False, True):
+            be_there(self.default, there)
+            made = [os.path.basename(self.default)] if there else []
+            for spelling in in_other_letters(self.default):
+                for settings, words in (
+                    (Settings(family=spelling), "shared is false"),
+                    (Settings(family=spelling, shared=True, max_runs=5, slots=3), "max_runs is 5"),
+                ):
+                    with self.subTest(there=there, spelling=spelling, settings=settings):
+                        with self.assertRaisesRegex(ConfigError, words):
+                            self.run_configure(settings)
+                        self.assertEqual(os.listdir(self.dir), made, "nothing was written or made")
+        self.assertEqual(self.out.getvalue(), "")
+
+    def test_the_default_lock_through_a_link_to_its_directory_is_refused_whether_the_lock_is_there_or_not(self) -> None:
+        os.symlink(self.dir, os.path.join(self.dir, "linked"))
+        through = os.path.join(self.dir, "linked", "pango-sim-test.flock")
+        for there in (False, True):
+            be_there(self.default, there)
+            for settings, words in (
+                (Settings(family=through), "shared is false"),
+                (Settings(family=through, shared=True, max_runs=5, slots=3), "max_runs is 5"),
+            ):
+                with self.subTest(there=there, settings=settings), self.assertRaisesRegex(ConfigError, words):
+                    self.run_configure(settings)
+        self.assertEqual(self.out.getvalue(), "")
+
+    def test_every_family_it_accepts_is_one_the_open_step_accepts_whether_the_default_lock_is_there_or_not(self) -> None:
+        # The sequence the verify step once turned into a refusal: configure, which makes the directory of an
+        # unshared family and tries the lock files, then open, then configure again.
+        below = os.path.join(self.default + ".d", "family", "lock")
+        beside = os.path.join(self.default + ".d", "lock")
+        elsewhere = os.path.join(self.dir, "elsewhere", "lock")
+        another_name = os.path.join(self.dir, "scratch.flock")
+        in_other_letters_at_3 = os.path.join(self.dir, "PANGO-SIM-TEST.FLOCK")
+        cases = (
+            Settings(family=below, slots=2),
+            Settings(family=beside, slots=2),
+            Settings(family=elsewhere, slots=2),
+            Settings(family=another_name, slots=2),
+            Settings(family=below, shared=True, max_runs=5, slots=3),
+            Settings(family=beside, shared=True, max_runs=2, slots=2),
+            Settings(family=elsewhere, shared=True, max_runs=5, slots=3),
+            Settings(family=another_name, shared=True, max_runs=4, slots=3),
+            Settings(family=self.default, shared=True, max_runs=3, slots=3),
+            Settings(family=in_other_letters_at_3, shared=True, max_runs=3, slots=3),
+        )
+        for settings in cases:
+            for there in (False, True):
+                with self.subTest(settings=settings, lock_is_there=there):
+                    be_there(self.default, there)
+                    if settings.shared:  # the broker makes the directory of an unshared family and of no other
+                        os.makedirs(os.path.dirname(str(settings.family)), exist_ok=True)
+                    self.run_configure(settings)
+                    self.assertEqual(open_root(self.root, CORES).config.family, settings.family)
+                    self.assertEqual(self.run_configure(settings).family, settings.family)
 
     def test_a_family_spelled_through_a_directory_that_is_not_there_is_refused_before_the_directory_is_made(self) -> None:
         # `nosuch/..` is the default lock's own directory only once `nosuch` is made, and the verify step
